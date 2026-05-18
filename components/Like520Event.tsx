@@ -1686,28 +1686,48 @@ const LetterView: React.FC<{ text: string; onNext: () => void; charName: string 
 // 拼图（char chibi + user chibi 并列在背景上）
 // ============================================================
 
+/**
+ * 拼图卡片背景图（"像我们耶" 那张）。
+ * 1200×780 左右的横版 520 DAY 装饰框（蕾丝 doily + 爱心/星星/小花），
+ * 中间是空白的圆形 doily，让两个 chibi 居中靠下排进去。
+ */
+const LIKE520_PHOTO_BG_URL = 'https://cdn.jsdelivr.net/gh/qegj567-cloud/SullyOS-assets@main/img/photo_bg.png';
+
 const PuzzleView: React.FC<{
     charChibi: string;
     userChibi: string;
     title: string;
     onDone: () => void;
 }> = ({ charChibi, userChibi, title, onDone }) => (
-    <div className="flex flex-col items-center min-h-full px-6 py-8 max-w-md mx-auto">
+    <div className="flex flex-col items-center min-h-full px-4 py-8 max-w-md mx-auto">
         <div className="text-[#C76182] text-sm tracking-widest mb-1">♥ 拼图卡片 ♥</div>
         <div className="text-[10px] text-[#9D7585] mb-5">{title}</div>
         <div
-            className="w-full aspect-[4/5] rounded-3xl relative overflow-hidden flex items-end justify-center"
+            className="w-full relative overflow-hidden rounded-2xl"
             style={{
-                background: 'linear-gradient(180deg, #FFE8DC 0%, #FFD3DC 60%, #FFBFCB 100%)',
-                boxShadow: '0 12px 32px rgba(199, 97, 130, 0.18), inset 0 0 0 2px rgba(255,255,255,0.6)',
+                aspectRatio: '1200 / 780',
+                backgroundImage: `url(${LIKE520_PHOTO_BG_URL})`,
+                backgroundSize: 'cover',
+                backgroundPosition: 'center',
+                backgroundColor: '#FFE0E8',
+                boxShadow: '0 12px 32px rgba(199, 97, 130, 0.22)',
             }}
         >
-            <div className="absolute inset-0 flex items-center justify-center text-[10px] tracking-[8px] text-white/40">
-                BG · TO BE DRAWN
-            </div>
-            <div className="relative flex items-end justify-center gap-2 pb-8 px-4">
-                <img src={charChibi} alt="char chibi" className="h-44 object-contain drop-shadow-md" />
-                <img src={userChibi} alt="user chibi" className="h-44 object-contain drop-shadow-md" />
+            {/* 两个 chibi：高度 = 容器高度的 55%，居中、靠下 */}
+            <div
+                className="absolute inset-x-0 flex items-end justify-center gap-1"
+                style={{ bottom: '6%', height: '55%' }}
+            >
+                <img
+                    src={charChibi}
+                    alt="char chibi"
+                    style={{ height: '100%', objectFit: 'contain', objectPosition: 'bottom', filter: 'drop-shadow(0 4px 8px rgba(199, 97, 130, 0.25))' }}
+                />
+                <img
+                    src={userChibi}
+                    alt="user chibi"
+                    style={{ height: '100%', objectFit: 'contain', objectPosition: 'bottom', filter: 'drop-shadow(0 4px 8px rgba(199, 97, 130, 0.25))' }}
+                />
             </div>
         </div>
         <div className="text-[#5C3A4A] text-sm italic mt-5 text-center">「这很像我们耶。」</div>
