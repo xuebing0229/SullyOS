@@ -114,6 +114,9 @@ const processInboxMessageWithPostProcessing = async (message: ActiveMsg2InboxMes
         'Content-Type': 'application/json',
         ...(apiConfig.apiKey ? { Authorization: `Bearer ${apiConfig.apiKey}` } : {}),
       },
+      // effectiveApi 在 push 路径里没人读 — skipSecondPassLLM=true 把所有二轮 LLM 入口都堵了。
+      // 留着只为满足 ctx 类型形状; Phase 2 worker 走续跑时也不会让客户端再发 LLM 请求, 所以这里
+      // 长期就是个空架子, 不要花精力同步 os_api_presets / os_available_models 等运行时切换。
       effectiveApi: {
         baseUrl: apiConfig.baseUrl,
         apiKey: apiConfig.apiKey,
@@ -167,6 +170,8 @@ const flushInboxToChat = async () => {
         // 落库失败: 有可能 post-processing 中途已经写了部分 chunk 进 DB, 这里再 raw save 一遍
         // 会重复; 但中途失败时通常是初始化阶段就挂了 (char 找不到 / DB 故障), 部分写入概率低。
         // 为了不丢消息, 仍尝试 raw save; 若它也失败, 会进下面的 catch 把消息 requeue。
+        // TODO(Phase 2): worker 续跑落地后, 这里的"部分写入 + raw save 重复"窗口要改成基于
+        // sessionId 的 dedupe (worker push payload 会带稳定 id), 而不是依赖低概率假设。
       }
     }
 
