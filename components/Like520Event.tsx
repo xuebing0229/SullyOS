@@ -1095,11 +1095,90 @@ const OrnateChoice: React.FC<OrnateChoiceProps> = ({ title, sub, options, onPick
 );
 
 // ============================================================
+// 慢慢睁开眼 —— 进入梦境
+// ============================================================
+
+const EyesOpeningOverlay: React.FC<{ onDone: () => void }> = ({ onDone }) => {
+    const [phase, setPhase] = useState<0 | 1 | 2 | 3>(0); // 0:全黑 1:微微一缝 2:渐开 3:淡出
+    useEffect(() => {
+        const t1 = setTimeout(() => setPhase(1), 500);
+        const t2 = setTimeout(() => setPhase(2), 1600);
+        const t3 = setTimeout(() => setPhase(3), 3000);
+        const t4 = setTimeout(() => onDone(), 3900);
+        return () => { clearTimeout(t1); clearTimeout(t2); clearTimeout(t3); clearTimeout(t4); };
+    }, [onDone]);
+
+    return (
+        <div
+            onClick={() => { setPhase(3); setTimeout(onDone, 400); }}
+            style={{
+                position: 'absolute',
+                inset: 0,
+                zIndex: 9999,
+                background: '#000',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                cursor: 'pointer',
+                opacity: phase === 3 ? 0 : 1,
+                transition: 'opacity 0.7s ease-out',
+            }}
+        >
+            {/* 上下睑闭合的眼睑感 — 两个黑条往中间夹 */}
+            <div style={{
+                position: 'absolute',
+                top: 0, left: 0, right: 0,
+                background: '#000',
+                height: phase === 0 ? '50%' : phase === 1 ? '46%' : '0%',
+                transition: 'height 1.1s cubic-bezier(0.4, 0, 0.2, 1)',
+                boxShadow: '0 6px 24px rgba(0,0,0,0.7)',
+            }} />
+            <div style={{
+                position: 'absolute',
+                bottom: 0, left: 0, right: 0,
+                background: '#000',
+                height: phase === 0 ? '50%' : phase === 1 ? '46%' : '0%',
+                transition: 'height 1.1s cubic-bezier(0.4, 0, 0.2, 1)',
+                boxShadow: '0 -6px 24px rgba(0,0,0,0.7)',
+            }} />
+
+            {/* 朦胧光晕 */}
+            <div style={{
+                position: 'absolute',
+                inset: 0,
+                background: 'radial-gradient(ellipse at center, rgba(255,228,236,0.35) 0%, rgba(255,182,200,0.18) 30%, transparent 65%)',
+                opacity: phase >= 1 ? 1 : 0,
+                transition: 'opacity 1.2s ease-in',
+                filter: 'blur(8px)',
+            }} />
+
+            {/* 提示文字 */}
+            <div style={{
+                color: 'rgba(255,228,236,0.65)',
+                fontFamily: "'Cormorant Garamond', serif",
+                fontStyle: 'italic',
+                fontSize: 13,
+                letterSpacing: 6,
+                opacity: phase === 2 ? 1 : 0,
+                transition: 'opacity 0.9s ease-in',
+                textAlign: 'center',
+                lineHeight: 2,
+            }}>
+                <div style={{ fontSize: 10, letterSpacing: 10, marginBottom: 6 }}>—— 慢慢 ——</div>
+                <div>睁&nbsp;开&nbsp;眼&nbsp;睛</div>
+                <div style={{ fontSize: 10, letterSpacing: 4, marginTop: 12, opacity: 0.6 }}>（点击跳过）</div>
+            </div>
+        </div>
+    );
+};
+
+// ============================================================
 // Y520Scene — 持久化养成场景（珍重 风格）
-// 覆盖 opening → 吐槽 → free（锚点+抚摸）→ reveal → 自我意识
+// 覆盖 eyes_opening → opening → 吐槽 → free（锚点+抚摸）→ reveal → 自我意识
 // ============================================================
 
 type Y520Stage =
+    | 'eyes_opening'
     | 'opening'
     | 'tucao_choose'
     | 'tucao_reply'
@@ -1130,7 +1209,8 @@ interface Y520SceneProps {
 }
 
 const Y520Scene: React.FC<Y520SceneProps> = ({ callA, charName, charAvatar, charChibiUrl, onTucaoSelected, onComplete, initialChosenTucao }) => {
-    const [stage, setStage] = useState<Y520Stage>('opening');
+    const isReplay = !!initialChosenTucao;
+    const [stage, setStage] = useState<Y520Stage>(isReplay ? 'opening' : 'eyes_opening');
     const [queue, setQueue] = useState<string[]>(callA.opening);
     const [lineIdx, setLineIdx] = useState(0);
     const [usedAnchors, setUsedAnchors] = useState<Set<number>>(new Set());
@@ -1321,6 +1401,11 @@ const Y520Scene: React.FC<Y520SceneProps> = ({ callA, charName, charAvatar, char
             <Like520StyleTag />
             <CornerOrnaments />
             <AmbientLayer />
+
+            {/* 慢慢睁开眼 —— 进入梦境 */}
+            {stage === 'eyes_opening' && (
+                <EyesOpeningOverlay onDone={() => setStage('opening')} />
+            )}
 
             {/* Top bar */}
             <div className="l520-topbar">
