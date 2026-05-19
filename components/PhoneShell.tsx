@@ -38,6 +38,7 @@ import MemoryPalaceApp from '../apps/MemoryPalaceApp';
 import HandbookApp from '../apps/HandbookApp';
 import QQBridge from '../apps/QQBridge';
 import { SpecialMomentsApp } from './ValentineEvent';
+import { Like520Controller, shouldShowLike520Popup } from './Like520Event';
 import { UpdateNotificationController, shouldShowUpdateNotification } from './UpdateNotificationEvent';
 import { AppID } from '../types';
 import { App as CapApp } from '@capacitor/app';
@@ -205,7 +206,7 @@ const DisclaimerPopup: React.FC<{ onAccept: () => void }> = ({ onAccept }) => (
 );
 
 const PhoneShell: React.FC = () => {
-  const { theme, isLocked, unlock, activeApp, closeApp, virtualTime, isDataLoaded, toasts, unreadMessages, characters, handleBack, suspendedCall, resumeCall, activeCharacterId, errorDialog, dismissError } = useOS();
+  const { theme, isLocked, unlock, activeApp, closeApp, openApp, virtualTime, isDataLoaded, toasts, unreadMessages, characters, handleBack, suspendedCall, resumeCall, activeCharacterId, errorDialog, dismissError } = useOS();
   const useIOSStandaloneLayout = isIOSStandaloneWebApp();
 
   // Disclaimer popup for first-time users
@@ -238,6 +239,14 @@ const PhoneShell: React.FC = () => {
       }
     }
   }, [showDisclaimer]);
+
+  // 520 特别活动弹窗（2026-05-20 当天，且没被 dismiss / completed）
+  const [showLike520Popup, setShowLike520Popup] = useState(false);
+  useEffect(() => {
+    if (showDisclaimer || showUpdateNotification) return;
+    if (!isDataLoaded) return;
+    if (shouldShowLike520Popup()) setShowLike520Popup(true);
+  }, [showDisclaimer, showUpdateNotification, isDataLoaded]);
 
   // Capacitor Native Handling
   useEffect(() => {
@@ -494,6 +503,14 @@ const PhoneShell: React.FC = () => {
        {/* Version update popup (2026-04) — forced until acknowledged */}
        {!showDisclaimer && showUpdateNotification && (
          <UpdateNotificationController onClose={() => setShowUpdateNotification(false)} />
+       )}
+
+       {/* 520 特别活动弹窗（2026-05-20 当天） */}
+       {!showDisclaimer && !showUpdateNotification && showLike520Popup && (
+         <Like520Controller
+           onClose={() => setShowLike520Popup(false)}
+           onCheckApi={() => { setShowLike520Popup(false); openApp(AppID.Settings); }}
+         />
        )}
     </div>
   );

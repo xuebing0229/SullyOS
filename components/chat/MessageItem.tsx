@@ -320,6 +320,229 @@ const ForwardCard: React.FC<{
     );
 };
 
+// ============================================================
+// Like520 卡片：520 限定典藏，展开后看完整合照 + 信
+// ============================================================
+
+const Like520ChatCard: React.FC<{ data: any }> = ({ data }) => {
+    const [open, setOpen] = useState(false);
+    const stop = (e: React.MouseEvent | React.TouchEvent) => e.stopPropagation();
+    const dateStr = (() => {
+        try {
+            const d = new Date(data.timestamp || Date.now());
+            return `${d.getFullYear()} · ${String(d.getMonth() + 1).padStart(2, '0')} · ${String(d.getDate()).padStart(2, '0')}`;
+        } catch { return '5 · 2 · 0'; }
+    })();
+
+    return (
+        <>
+            {/* 拍立得 / 复古剪贴本：照片 + 胶带 + 手写感落款 */}
+            <div
+                onClick={() => setOpen(true)}
+                style={{
+                    width: 256,
+                    padding: '14px 14px 18px',
+                    background: 'linear-gradient(180deg, #fdf6e3 0%, #f7eed4 100%)',
+                    boxShadow:
+                        '0 1px 2px rgba(74,36,24,0.18), ' +
+                        '0 8px 22px rgba(74,36,24,0.22), ' +
+                        '0 0 0 1px rgba(184,146,63,0.3)',
+                    cursor: 'pointer',
+                    position: 'relative',
+                    transform: 'rotate(-1.4deg)',
+                    transformOrigin: 'center',
+                    marginTop: 8,
+                }}
+            >
+                {/* 左上胶带 */}
+                <div style={{
+                    position: 'absolute', top: -6, left: 18,
+                    width: 36, height: 14,
+                    background: 'linear-gradient(135deg, rgba(218,190,140,0.55), rgba(184,146,63,0.4))',
+                    boxShadow: '0 1px 2px rgba(74,36,24,0.15)',
+                    transform: 'rotate(-6deg)',
+                    pointerEvents: 'none',
+                }} />
+                {/* 右上胶带 */}
+                <div style={{
+                    position: 'absolute', top: -6, right: 18,
+                    width: 36, height: 14,
+                    background: 'linear-gradient(135deg, rgba(218,190,140,0.55), rgba(184,146,63,0.4))',
+                    boxShadow: '0 1px 2px rgba(74,36,24,0.15)',
+                    transform: 'rotate(6deg)',
+                    pointerEvents: 'none',
+                }} />
+
+                {/* 照片本体 */}
+                <div style={{
+                    position: 'relative',
+                    background: '#fff',
+                    padding: 0,
+                    boxShadow: '0 2px 6px rgba(74,36,24,0.18), inset 0 0 0 1px rgba(184,146,63,0.25)',
+                }}>
+                    {data.photoDataUrl
+                        ? <img src={data.photoDataUrl} alt="合照" style={{ width: '100%', display: 'block' }} />
+                        : <div style={{ width: '100%', aspectRatio: '1200 / 780', background: 'linear-gradient(180deg, #FFE0E8, #FFD3DC)' }} />}
+                </div>
+
+                {/* 手写感标题 */}
+                <div style={{
+                    marginTop: 12,
+                    textAlign: 'center',
+                    fontFamily: '"Cormorant Garamond", "Noto Serif SC", serif',
+                    fontStyle: 'italic',
+                    fontSize: 14,
+                    color: '#7a2e3a',
+                    letterSpacing: 1,
+                    lineHeight: 1.35,
+                }}>
+                    「 {data.title || '我们的下午'} 」
+                </div>
+
+                {/* 日期 + 落款 */}
+                <div style={{
+                    marginTop: 6,
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'baseline',
+                    paddingTop: 6,
+                    borderTop: '0.5px dashed rgba(184,146,63,0.4)',
+                    fontFamily: 'Cinzel, serif',
+                    fontSize: 9.5,
+                    letterSpacing: 2,
+                    color: '#8b6914',
+                    fontWeight: 600,
+                }}>
+                    <span>{dateStr}</span>
+                    <span style={{ fontFamily: '"Cormorant Garamond", serif', fontStyle: 'italic', fontWeight: 400, letterSpacing: 1, fontSize: 10 }}>
+                        — {data.charName}
+                    </span>
+                </div>
+
+                {/* 暗示有信 */}
+                <div style={{
+                    marginTop: 6,
+                    textAlign: 'center',
+                    fontFamily: '"Cormorant Garamond", "Noto Serif SC", serif',
+                    fontStyle: 'italic',
+                    fontSize: 10.5,
+                    color: '#b8923f',
+                    letterSpacing: 2,
+                }}>
+                    ❦ 点 开 看 信 ❦
+                </div>
+
+                {/* 左下角复古火漆/印章："♥ 520" */}
+                <div style={{
+                    position: 'absolute',
+                    bottom: -8, left: -8,
+                    width: 44, height: 44,
+                    borderRadius: '50%',
+                    background: 'radial-gradient(circle at 35% 35%, #d4516a 0%, #a04050 50%, #7a2e3a 100%)',
+                    color: '#fff8ec',
+                    display: 'grid', placeItems: 'center',
+                    fontFamily: '"Cormorant Garamond", serif',
+                    fontSize: 9,
+                    fontWeight: 700,
+                    letterSpacing: 0,
+                    lineHeight: 1.1,
+                    transform: 'rotate(-12deg)',
+                    boxShadow: '0 3px 8px rgba(74,36,24,0.4), inset 0 2px 2px rgba(255,255,255,0.18), inset 0 -2px 2px rgba(0,0,0,0.25)',
+                    border: '1px solid rgba(212,177,106,0.5)',
+                    textAlign: 'center',
+                    pointerEvents: 'none',
+                }}>
+                    <div>
+                        <div style={{ fontSize: 14, lineHeight: 1, fontFamily: 'serif' }}>♥</div>
+                        <div style={{ fontSize: 7, letterSpacing: 1, marginTop: 1, fontFamily: 'Cinzel, serif' }}>5·20</div>
+                    </div>
+                </div>
+            </div>
+
+            {open && (
+                <div
+                    onClick={() => setOpen(false)}
+                    style={{
+                        position: 'fixed', inset: 0, zIndex: 9999,
+                        background: 'rgba(74,36,24,0.55)',
+                        backdropFilter: 'blur(8px)',
+                        overflowY: 'auto', padding: 16,
+                        animation: 'l520-card-mask-in .25s ease',
+                    }}
+                >
+                    <style>{`
+                        @keyframes l520-card-mask-in { from { opacity: 0; } to { opacity: 1; } }
+                        @keyframes l520-card-pop-in { from { opacity: 0; transform: scale(0.94) translateY(20px); } to { opacity: 1; transform: scale(1) translateY(0); } }
+                    `}</style>
+                    <div
+                        onClick={stop}
+                        style={{
+                            maxWidth: 420, margin: '24px auto',
+                            background: 'linear-gradient(180deg, #fffcf3, #f9efd9)',
+                            borderRadius: 4,
+                            position: 'relative',
+                            padding: '22px 18px 26px',
+                            boxShadow: '0 0 0 1px #b8923f, 0 0 0 4px #faf3e7, 0 0 0 5px #d4b16a, 0 20px 60px rgba(74,36,24,0.5)',
+                            animation: 'l520-card-pop-in .35s cubic-bezier(.4,1.4,.5,1)',
+                        }}
+                    >
+                        <button
+                            onClick={() => setOpen(false)}
+                            title="关闭"
+                            style={{
+                                position: 'absolute', top: 10, right: 10, zIndex: 5,
+                                width: 30, height: 30, borderRadius: '50%',
+                                background: 'rgba(255,248,236,0.95)',
+                                border: '1px solid #b8923f',
+                                color: '#7a2e3a',
+                                fontSize: 14,
+                                fontFamily: '"Cormorant Garamond", serif',
+                                cursor: 'pointer',
+                                display: 'grid', placeItems: 'center',
+                            }}
+                        >✕</button>
+
+                        <div style={{ textAlign: 'center', marginBottom: 12 }}>
+                            <div style={{ fontSize: 9, letterSpacing: 6, color: '#8b6914', fontFamily: 'Cinzel, serif', fontWeight: 600 }}>5 · 2 · 0 · TRÉSOR</div>
+                            <div style={{ fontSize: 13, color: '#7a2e3a', fontFamily: '"Noto Serif SC", serif', fontWeight: 500, letterSpacing: 4, marginTop: 4 }}>{data.title || '我们的下午'}</div>
+                        </div>
+
+                        {data.photoDataUrl ? (
+                            <>
+                                <img src={data.photoDataUrl} alt="合照" draggable={false} style={{ width: '100%', display: 'block', borderRadius: 8, boxShadow: '0 8px 20px rgba(122,46,58,0.2), 0 0 0 1px rgba(184,146,63,0.4)' }} />
+                                <div style={{ fontSize: 10, fontStyle: 'italic', color: '#9D7585', textAlign: 'center', marginTop: 4, fontFamily: '"Cormorant Garamond", serif', letterSpacing: 2 }}>长按图片保存到相册</div>
+                            </>
+                        ) : null}
+
+                        <div style={{
+                            marginTop: 18,
+                            padding: '22px 18px',
+                            background: 'linear-gradient(180deg, #fffcf3, #f9efd9)',
+                            border: '1px solid #d4b16a',
+                            backgroundImage: 'repeating-linear-gradient(transparent, transparent 28px, rgba(184,146,63,0.05) 28px, rgba(184,146,63,0.05) 29px)',
+                            borderRadius: 2,
+                            position: 'relative',
+                        }}>
+                            <div style={{ textAlign: 'center', marginBottom: 14 }}>
+                                <div style={{ fontFamily: '"Cormorant Garamond", serif', fontStyle: 'italic', fontSize: 11, color: '#8b6914', letterSpacing: 3 }}>致 · 我的</div>
+                                <div style={{ fontFamily: '"Noto Serif SC", serif', fontSize: 20, color: '#7a2e3a', letterSpacing: 6, marginTop: 4 }}>{data.userName}</div>
+                                <div style={{ color: '#b8923f', fontSize: 11, letterSpacing: 8, marginTop: 6 }}>❦ ⸙ ❦</div>
+                            </div>
+                            <div style={{ fontFamily: '"Noto Serif SC", serif', fontSize: 13.5, lineHeight: 2.05, color: '#3a2418', textIndent: '2em', whiteSpace: 'pre-wrap', letterSpacing: 0.5 }}>
+                                {data.letter}
+                            </div>
+                            <div style={{ textAlign: 'right', marginTop: 16, paddingTop: 8, borderTop: '0.5px dashed rgba(184,146,63,0.3)' }}>
+                                <div style={{ color: '#b8923f', fontSize: 11, letterSpacing: 6, marginBottom: 4 }}>~ ❦ ~</div>
+                                <div style={{ fontFamily: '"Noto Serif SC", serif', fontSize: 13, color: '#7a2e3a', letterSpacing: 3 }}>— {data.charName}</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            )}
+        </>
+    );
+};
+
 const LifeSimResetCardView: React.FC<{ card: any }> = ({ card }) => {
     const parsed = tryParseLifeSimResetCard(card);
     if (!parsed) return null;
@@ -1355,6 +1578,11 @@ const MessageItem = React.memo(({
             );
         }
 
+        // === Like 520 Card === (必须放在 if (scoreData) 兜底前)
+        if (scoreData?.type === 'like520_card') {
+            return commonLayout(<Like520ChatCard data={scoreData} />);
+        }
+
         if (scoreData) {
             const coverGradients: Record<string, string> = {
                 sunset: 'from-orange-400 via-pink-500 to-purple-600',
@@ -1395,6 +1623,7 @@ const MessageItem = React.memo(({
                 </div>
             );
         }
+
     }
 
     if (m.type === 'transfer') {
