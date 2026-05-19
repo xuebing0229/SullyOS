@@ -47,6 +47,32 @@ export const isLike520EventAvailable = (): boolean => {
     return now.getFullYear() === 2026 && now.getMonth() === 4;
 };
 
+/**
+ * 520 弹窗默认进入的角色：
+ *   1) 优先选 Sully（如果还在）
+ *   2) 否则选**和 user 聊得最频繁的角色**（消息数最多）
+ *   3) 都没有时退回第一个角色（或空）
+ */
+export async function pickDefaultLike520Char(characters: CharacterProfile[]): Promise<string> {
+    if (!characters || characters.length === 0) return '';
+    const sully = characters.find(c => (c.name || '').toLowerCase().includes('sully'));
+    if (sully) return sully.id;
+    // 没有 Sully —— 数每个角色的消息条数，挑最多的那个
+    try {
+        const counts = await Promise.all(characters.map(async c => {
+            try {
+                const msgs = await DB.getMessagesByCharId(c.id);
+                return { id: c.id, n: msgs?.length || 0 };
+            } catch { return { id: c.id, n: 0 }; }
+        }));
+        counts.sort((a, b) => b.n - a.n);
+        if (counts[0] && counts[0].n > 0) return counts[0].id;
+    } catch (e) {
+        console.warn('[520] pickDefaultLike520Char fallback:', e);
+    }
+    return characters[0]?.id || '';
+}
+
 export const isLike520Past = (): boolean => {
     const now = new Date();
     return now.getFullYear() > 2026 || (now.getFullYear() === 2026 && now.getMonth() > 4);
@@ -3415,37 +3441,93 @@ export const Like520Session: React.FC<SessionProps> = ({ charId, onClose }) => {
 interface Like520ControllerProps {
     onClose: () => void;
     initialCharId?: string;
+    /** 由 PhoneShell 注入：跳到设置 → API 配置 */
+    onCheckApi?: () => void;
 }
 
-export const Like520Controller: React.FC<Like520ControllerProps> = ({ onClose, initialCharId }) => {
+export const Like520Controller: React.FC<Like520ControllerProps> = ({ onClose, initialCharId, onCheckApi }) => {
     const { characters } = useOS();
     const [stage, setStage] = useState<'popup' | 'select' | 'session'>(initialCharId ? 'session' : 'popup');
     const [charId, setCharId] = useState<string>(initialCharId || '');
+    const [defaultCharId, setDefaultCharId] = useState<string>('');
+
+    // popup 一打开就预选一个角色：优先 Sully，没有 Sully 选聊得最频繁的那个
+    useEffect(() => {
+        if (stage !== 'popup' || initialCharId) return;
+        let cancelled = false;
+        pickDefaultLike520Char(characters).then(id => {
+            if (!cancelled) setDefaultCharId(id);
+        });
+        return () => { cancelled = true; };
+    }, [stage, characters, initialCharId]);
+
+    const defaultChar = useMemo(() => characters.find(c => c.id === defaultCharId), [characters, defaultCharId]);
+    const isSullyDefault = defaultChar ? (defaultChar.name || '').toLowerCase().includes('sully') : false;
 
     const dismiss = () => {
         try { localStorage.setItem(LIKE520_DISMISSED_KEY, '1'); } catch { /* ignore */ }
         onClose();
     };
 
+    const enterWithDefault = () => {
+        if (!defaultCharId) return;
+        setCharId(defaultCharId);
+        setStage('session');
+    };
+
     if (stage === 'popup') {
+        const charName = defaultChar?.name || (characters.length === 0 ? '' : '...');
+        const popupHeading = defaultChar
+            ? (isSullyDefault ? 'Sully 好像有事找你？' : `${charName} 好像有事找你？`)
+            : '特别活动';
+        const popupBody = defaultChar
+            ? (isSullyDefault
+                ? 'ta 突然变得小小的——\n要不要去看看？'
+                : `${charName} 今天有点不一样——\nta 突然变得小小的。`)
+            : '今天是 5 月 20 号——\n但还没有可以陪你的角色。';
+
         return (
             <div className="fixed inset-0 z-[9998] flex items-center justify-center p-5 animate-fade-in">
-                <div className="absolute inset-0 bg-black/40 backdrop-blur" onClick={dismiss} />
-                <div className="relative w-full max-w-sm bg-gradient-to-br from-[#FFF8F1] to-[#FFE4EC] rounded-[2rem] shadow-2xl border border-white/40 overflow-hidden animate-slide-up">
-                    <div className="px-6 pt-8 pb-3 text-center">
+                <div className="absolute inset-0 bg-black/50 backdrop-blur-md" />
+                <div className="relative w-full max-w-sm bg-white/95 backdrop-blur-xl rounded-[2.5rem] shadow-2xl border border-pink-200/50 overflow-hidden animate-slide-up">
+                    <div className="absolute top-0 right-0 w-32 h-32 bg-gradient-to-bl from-pink-100/60 to-transparent rounded-bl-full pointer-events-none" />
+                    <div className="absolute bottom-0 left-0 w-24 h-24 bg-gradient-to-tr from-rose-50/40 to-transparent rounded-tr-full pointer-events-none" />
+
+                    <div className="pt-8 pb-4 px-6 text-center relative">
+                        <div className="text-4xl mb-3">🌸</div>
                         <div className="text-[10px] tracking-[8px] text-[#C76182] mb-2">5 · 2 · 0</div>
-                        <h3 className="text-xl font-bold text-[#5C3A4A] mb-1">特别活动</h3>
-                        <p className="text-[12px] text-[#9D7585] leading-relaxed mt-3">
-                            ta 突然变得小小的——<br/>
-                            要不要去看看？
-                        </p>
+                        <h2 className="text-lg font-extrabold text-slate-800">{popupHeading}</h2>
+                        <p className="text-[11px] text-pink-400 mt-1.5 font-medium">2026 May 20 Special</p>
+                        <p className="text-[12px] text-slate-500 mt-3 leading-relaxed whitespace-pre-line">{popupBody}</p>
+                        {!isSullyDefault && defaultChar && (
+                            <p className="text-[10px] text-slate-400 mt-2 leading-relaxed">（想换个 ta？桌面「特别时光」里所有 ta 都在）</p>
+                        )}
                     </div>
-                    <div className="px-6 pb-6 pt-3 flex flex-col gap-2">
-                        <button onClick={() => setStage('select')} className="w-full py-3 rounded-2xl font-bold text-white shadow-lg bg-gradient-to-r from-[#FFB6C8] to-[#F18AAA] active:scale-95 transition-transform">
-                            进入活动 ♥
+
+                    <div className="px-6 pb-7 pt-2 space-y-3 relative">
+                        <button
+                            onClick={enterWithDefault}
+                            disabled={!defaultCharId}
+                            className="w-full py-3.5 bg-gradient-to-r from-[#FFB6C8] to-[#F18AAA] text-white font-bold rounded-2xl shadow-lg shadow-pink-200 active:scale-95 transition-transform text-sm flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                            <span>确&nbsp;定</span>
+                            <span>♥</span>
                         </button>
-                        <button onClick={dismiss} className="w-full py-2.5 text-[#9D7585] text-sm">
-                            以后再说
+
+                        {onCheckApi && (
+                            <button
+                                onClick={onCheckApi}
+                                className="w-full py-3 bg-pink-50 text-pink-500 font-semibold rounded-2xl text-sm active:scale-95 transition-transform"
+                            >
+                                API 配置
+                            </button>
+                        )}
+
+                        <button
+                            onClick={dismiss}
+                            className="w-full py-2 text-slate-400 text-xs"
+                        >
+                            不感兴趣
                         </button>
                     </div>
                 </div>
