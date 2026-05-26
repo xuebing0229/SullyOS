@@ -273,6 +273,19 @@ export const InstantPushSettingsModal: React.FC<InstantPushSettingsModalProps> =
     >
       <div className="space-y-5 text-sm">
 
+        {/* 顶部教程入口 — 打开面板第一眼就能看到，方便第一次自己配的用户 */}
+        <button
+          type="button"
+          onClick={handleOpenTutorial}
+          className="w-full flex items-center gap-3 rounded-2xl p-3 bg-gradient-to-r from-rose-50 to-amber-50 border border-rose-200 hover:from-rose-100 hover:to-amber-100 text-left transition-colors"
+        >
+          <span className="flex-1 min-w-0">
+            <span className="block text-[12px] font-bold text-rose-600">第一次配置？先看视频教程</span>
+            <span className="block text-[11px] text-slate-500">跟着视频一步步点，大概十分钟搞定</span>
+          </span>
+          <span className="shrink-0 text-rose-500 font-bold text-sm">看教程 →</span>
+        </button>
+
         {/* VAPID 状态横条 */}
         <div className={`rounded-2xl p-3 border ${vapidReady ? 'bg-emerald-50 border-emerald-200' : 'bg-rose-50 border-rose-200'}`}>
           <div className="flex items-center justify-between gap-3">
@@ -410,14 +423,6 @@ export const InstantPushSettingsModal: React.FC<InstantPushSettingsModalProps> =
             <code className="font-mono"> worker.bundle.js </code>全部内容粘贴覆盖，再 Deploy；
             VAPID 公钥/私钥到「推送凭据 (VAPID)」面板复制 env 清单，粘进 Worker 的 Variables。
           </p>
-
-          <button
-            type="button"
-            onClick={handleOpenTutorial}
-            className="w-full py-2 rounded-xl text-[11px] font-bold bg-rose-50 text-rose-600 border border-rose-200 hover:bg-rose-100"
-          >
-            不会配？看视频教程 →
-          </button>
 
           <div className="grid grid-cols-2 gap-2">
             <button
