@@ -1652,6 +1652,8 @@ export interface FullBackupData {
     version: number;
     theme?: OSTheme;
     apiConfig?: APIConfig;
+    instantPushConfig?: InstantPushConfig;
+    pushVapid?: { vapidPublicKey: string; vapidPrivateKey: string; vapidEmail?: string; updatedAt?: number; };
     apiPresets?: ApiPreset[];
     availableModels?: string[];
     realtimeConfig?: RealtimeConfig;  // 实时感知配置（天气/新闻/Notion）

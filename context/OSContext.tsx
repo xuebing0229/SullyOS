@@ -2355,6 +2355,11 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
               cloudBackupConfig: (mode === 'text_only' || mode === 'full') ? (() => { try { const s = localStorage.getItem('os_cloud_backup_config'); return s ? JSON.parse(s) : undefined; } catch { return undefined; } })() : undefined,
               remoteVectorConfig: (mode === 'text_only' || mode === 'full') ? (() => { try { const s = localStorage.getItem('os_remote_vector_config'); return s ? JSON.parse(s) : undefined; } catch { return undefined; } })() : undefined,
 
+              // Instant Push
+              instantPushConfig: (mode === 'text_only' || mode === 'full') ? (() => { try { const s = localStorage.getItem('instant_push_config_v1'); return s ? JSON.parse(s) : undefined; } catch { return undefined; } })() : undefined,
+              pushVapid: (mode === 'text_only' || mode === 'full') ? (() => { try { const s = localStorage.getItem('push_vapid_v1'); return s ? JSON.parse(s) : undefined; } catch { return undefined; } })() : undefined,
+
+
               // Memory Palace 水位线
               memoryPalaceHighWaterMarks: (mode === 'text_only' || mode === 'full') ? (() => {
                   const hwm: Record<string, number> = {};
@@ -2848,6 +2853,11 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
           // Restore 云端配置
           if (data.cloudBackupConfig) localStorage.setItem('os_cloud_backup_config', JSON.stringify(data.cloudBackupConfig));
           if (data.remoteVectorConfig) localStorage.setItem('os_remote_vector_config', JSON.stringify(data.remoteVectorConfig));
+
+          // Restore Instant Push
+          if (data.instantPushConfig) localStorage.setItem('instant_push_config_v1', JSON.stringify(data.instantPushConfig));
+          if (data.pushVapid) localStorage.setItem('push_vapid_v1', JSON.stringify(data.pushVapid));
+
 
           // Restore Memory Palace 水位线
           if (data.memoryPalaceHighWaterMarks) {
