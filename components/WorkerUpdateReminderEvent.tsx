@@ -17,7 +17,7 @@ import { loadInstantConfig } from '../utils/instantPushClient';
 import { FAQ_TARGET_SECTION_KEY, CHANGELOG_2026_05_27 } from './UpdateNotificationEvent';
 
 // 每次更新 worker 代码就 bump 这个值 (用日期最直观)。
-export const WORKER_BUILD_VERSION = '2026-05-26';
+export const WORKER_BUILD_VERSION = '2026-06-01';
 
 // 记录用户「已确认过的 worker 版本号」。
 const WORKER_UPDATE_SEEN_KEY = 'sullyos_worker_build_seen';
