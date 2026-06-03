@@ -8,7 +8,7 @@ import { CreatorIframe, type ChibiResult } from '../components/Like520Event';
 import { DB } from '../utils/db';
 import { VRScheduler } from '../utils/vrWorld/scheduler';
 import { VR_ROOMS, getRoom, VR_DEFAULT_INTERVAL_MIN } from '../utils/vrWorld/constants';
-import { buildNovel, groupAnnotationsBySeg, getBookmark } from '../utils/vrWorld/novel';
+import { buildNovelAsync, groupAnnotationsBySeg, getBookmark } from '../utils/vrWorld/novel';
 import type { CharacterProfile, VRWorldNovel, VRNovelAnnotation, VRCardMeta, VRRoomId } from '../types';
 
 // ============ chibi 形象解析（vrState.chibi → 立绘 → 头像） ============
@@ -179,12 +179,11 @@ const VRWorldApp: React.FC = () => {
             {readerNovel && <ReaderModal novel={readerNovel} characters={characters} onClose={() => setReaderNovel(null)} />}
             {showUpload && (
                 <UploadModal onClose={() => setShowUpload(false)}
-                    onSave={async (title, text, author, summary) => {
-                        const novel = buildNovel(title, text, { author, summary });
-                        if (novel.segments.length === 0) { addToast?.('正文是空的', 'error'); return; }
+                    onCommit={async (novel) => {
                         await DB.saveVRNovel(novel); await loadNovels(); setShowUpload(false);
                         addToast?.(`《${novel.title}》已上架（${novel.segments.length} 段）`, 'success');
-                    }} />
+                    }}
+                    onError={(msg) => addToast?.(msg, 'error')} />
             )}
             {chibiEditChar && (
                 <ChibiEditor char={chibiEditChar}
@@ -527,51 +526,124 @@ const ReaderModal: React.FC<{ novel: VRWorldNovel; characters: CharacterProfile[
     );
 };
 
-// ============ 上传弹窗（支持 .txt） ============
-const UploadModal: React.FC<{ onClose: () => void; onSave: (title: string, text: string, author?: string, summary?: string) => void; }> = ({ onClose, onSave }) => {
+// ============ 上传弹窗（支持大文件 .txt，内容不入 DOM） ============
+const UploadModal: React.FC<{
+    onClose: () => void;
+    onCommit: (novel: VRWorldNovel) => Promise<void> | void;
+    onError: (msg: string) => void;
+}> = ({ onClose, onCommit, onError }) => {
     const [title, setTitle] = useState('');
     const [author, setAuthor] = useState('');
     const [summary, setSummary] = useState('');
-    const [text, setText] = useState('');
+    // 手动粘贴的小段文本走 state；大文件内容只存 ref，不进 textarea（否则 12MB 会冻 UI）
+    const [pasteText, setPasteText] = useState('');
+    const [fileInfo, setFileInfo] = useState<{ name: string; chars: number; preview: string } | null>(null);
+    const fileContentRef = useRef<string>('');
     const fileRef = useRef<HTMLInputElement>(null);
+    const [busy, setBusy] = useState(false);
+    const [progress, setProgress] = useState(0);
 
     const onFile = (f: File | undefined) => {
         if (!f) return;
         const reader = new FileReader();
         reader.onload = () => {
             const content = String(reader.result || '');
-            setText(content);
+            fileContentRef.current = content;
+            setFileInfo({
+                name: f.name,
+                chars: content.length,
+                preview: content.slice(0, 300).replace(/\s+/g, ' ').trim(),
+            });
+            setPasteText(''); // 文件优先，清掉粘贴框
             if (!title.trim()) setTitle(f.name.replace(/\.(txt|text)$/i, ''));
         };
+        reader.onerror = () => onError('文件读取失败');
         reader.readAsText(f, 'utf-8');
     };
 
+    const clearFile = () => {
+        fileContentRef.current = '';
+        setFileInfo(null);
+        if (fileRef.current) fileRef.current.value = '';
+    };
+
+    const totalChars = fileInfo ? fileInfo.chars : pasteText.length;
+    const canSave = !!title.trim() && totalChars > 0 && !busy;
+
+    const handleSave = async () => {
+        const content = fileInfo ? fileContentRef.current : pasteText;
+        if (!title.trim() || !content) { onError('书名和正文都要填'); return; }
+        setBusy(true);
+        setProgress(0);
+        try {
+            // 让出一帧，先让"处理中"渲染出来
+            await new Promise<void>(r => setTimeout(r));
+            const novel = await buildNovelAsync(title, content, {
+                author, summary,
+                onProgress: (r) => setProgress(Math.round(r * 100)),
+            });
+            if (novel.segments.length === 0) { onError('正文是空的'); setBusy(false); return; }
+            await onCommit(novel);
+        } catch (e) {
+            console.error('[VRWorld] build novel failed', e);
+            onError('处理失败，文件可能太大或格式异常');
+            setBusy(false);
+        }
+    };
+
     return (
-        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/50" onClick={onClose}>
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/50" onClick={busy ? undefined : onClose}>
             <div className="w-full max-w-md rounded-t-2xl p-4 max-h-[88vh] overflow-y-auto" style={{ background: '#1b1838' }} onClick={e => e.stopPropagation()}>
                 <div className="flex items-center mb-3">
                     <span className="text-[15px] font-bold text-white">上传小说</span>
-                    <button onClick={onClose} className="ml-auto p-1 text-indigo-300/60"><X size={18} /></button>
+                    {!busy && <button onClick={onClose} className="ml-auto p-1 text-indigo-300/60"><X size={18} /></button>}
                 </div>
+
                 <input ref={fileRef} type="file" accept=".txt,text/plain" className="hidden" onChange={e => onFile(e.target.files?.[0])} />
-                <button onClick={() => fileRef.current?.click()}
-                    className="w-full rounded-xl border border-dashed border-indigo-300/40 py-3 mb-3 text-[12.5px] text-indigo-100/90 flex items-center justify-center gap-2 active:bg-white/5">
-                    <UploadSimple size={16} weight="bold" /> 选择 .txt 文件{text ? `（已载入 ${text.length.toLocaleString()} 字）` : ''}
-                </button>
-                <div className="text-[10px] text-indigo-300/50 text-center mb-2">或手动填写 ↓</div>
+                {fileInfo ? (
+                    <div className="rounded-xl border border-indigo-300/30 p-3 mb-3 bg-white/5">
+                        <div className="flex items-center gap-2">
+                            <BookOpen size={16} weight="fill" className="text-amber-200 shrink-0" />
+                            <span className="text-[12.5px] text-white font-semibold truncate flex-1">{fileInfo.name}</span>
+                            {!busy && <button onClick={clearFile} className="text-indigo-300/60 p-1"><X size={14} /></button>}
+                        </div>
+                        <div className="text-[10px] text-indigo-300/60 mt-1">{fileInfo.chars.toLocaleString()} 字 · 预计 ~{Math.ceil(fileInfo.chars / 400).toLocaleString()} 段</div>
+                        <p className="text-[10.5px] text-indigo-200/50 mt-1.5 leading-snug line-clamp-2">{fileInfo.preview}…</p>
+                    </div>
+                ) : (
+                    <button onClick={() => fileRef.current?.click()}
+                        className="w-full rounded-xl border border-dashed border-indigo-300/40 py-3 mb-3 text-[12.5px] text-indigo-100/90 flex items-center justify-center gap-2 active:bg-white/5">
+                        <UploadSimple size={16} weight="bold" /> 选择 .txt 文件（大文件也 OK）
+                    </button>
+                )}
+
                 <div className="space-y-2.5">
                     <input value={title} onChange={e => setTitle(e.target.value)} placeholder="书名（必填）" className="w-full rounded-lg bg-white/8 px-3 py-2 text-[13px] text-white placeholder-indigo-300/40 outline-none" />
-                    <div className="flex gap-2">
-                        <input value={author} onChange={e => setAuthor(e.target.value)} placeholder="作者（选填）" className="flex-1 min-w-0 rounded-lg bg-white/8 px-3 py-2 text-[13px] text-white placeholder-indigo-300/40 outline-none" />
-                    </div>
+                    <input value={author} onChange={e => setAuthor(e.target.value)} placeholder="作者（选填）" className="w-full rounded-lg bg-white/8 px-3 py-2 text-[13px] text-white placeholder-indigo-300/40 outline-none" />
                     <input value={summary} onChange={e => setSummary(e.target.value)} placeholder="一句话简介（选填，喂给角色当背景）" className="w-full rounded-lg bg-white/8 px-3 py-2 text-[13px] text-white placeholder-indigo-300/40 outline-none" />
-                    <textarea value={text} onChange={e => setText(e.target.value)} placeholder="正文（选了 txt 会自动填充，也可直接粘贴）" rows={8} className="w-full rounded-lg bg-white/8 px-3 py-2 text-[12.5px] text-white placeholder-indigo-300/40 outline-none leading-relaxed" />
-                    <div className="text-[10px] text-indigo-300/50">{text.length.toLocaleString()} 字</div>
+                    {!fileInfo && (
+                        <>
+                            <div className="text-[10px] text-indigo-300/50">或直接粘贴正文（小段文本用；大文件请走上面的文件选择）↓</div>
+                            <textarea value={pasteText} onChange={e => setPasteText(e.target.value)} placeholder="粘贴正文…" rows={6}
+                                className="w-full rounded-lg bg-white/8 px-3 py-2 text-[12.5px] text-white placeholder-indigo-300/40 outline-none leading-relaxed" />
+                        </>
+                    )}
+                    <div className="text-[10px] text-indigo-300/50">{totalChars.toLocaleString()} 字</div>
                 </div>
-                <button onClick={() => onSave(title, text, author, summary)} disabled={!title.trim() || !text.trim()}
-                    className="w-full mt-3 rounded-xl py-2.5 text-[13px] font-bold text-white disabled:opacity-40" style={{ background: 'linear-gradient(135deg,#8b7bf0,#b06ad6)' }}>
-                    上架到书库
-                </button>
+
+                {busy ? (
+                    <div className="mt-3">
+                        <div className="h-2 rounded-full bg-white/10 overflow-hidden">
+                            <div className="h-full rounded-full transition-all" style={{ width: `${progress}%`, background: 'linear-gradient(90deg,#8b7bf0,#b06ad6)' }} />
+                        </div>
+                        <div className="text-[11px] text-indigo-200/70 text-center mt-1.5">处理中… {progress}%（大文件需要点时间）</div>
+                    </div>
+                ) : (
+                    <button onClick={handleSave} disabled={!canSave}
+                        className="w-full mt-3 rounded-xl py-2.5 text-[13px] font-bold text-white disabled:opacity-40" style={{ background: 'linear-gradient(135deg,#8b7bf0,#b06ad6)' }}>
+                        上架到书库
+                    </button>
+                )}
             </div>
         </div>
     );

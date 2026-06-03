@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { chunkNovelText, getReadingWindow, buildNovel } from './novel';
+import { chunkNovelText, chunkNovelTextAsync, getReadingWindow, buildNovel } from './novel';
 import { parseVROutput } from './prompts';
 
 describe('chunkNovelText', () => {
@@ -21,6 +21,22 @@ describe('chunkNovelText', () => {
 
     it('returns empty for blank input', () => {
         expect(chunkNovelText('   \n\n  ')).toEqual([]);
+    });
+});
+
+describe('chunkNovelTextAsync', () => {
+    it('matches the sync chunker output', async () => {
+        const text = Array.from({ length: 50 }, (_, i) => `第${i}段` + '字'.repeat(120)).join('\n\n');
+        const sync = chunkNovelText(text, 300);
+        const async = await chunkNovelTextAsync(text, 300);
+        expect(async.map(s => s.text)).toEqual(sync.map(s => s.text));
+        expect(async.map(s => s.idx)).toEqual(sync.map(s => s.idx));
+    });
+
+    it('reports progress and finishes at 1', async () => {
+        const ratios: number[] = [];
+        await chunkNovelTextAsync('一'.repeat(20000), 400, r => ratios.push(r));
+        expect(ratios[ratios.length - 1]).toBe(1);
     });
 });
 

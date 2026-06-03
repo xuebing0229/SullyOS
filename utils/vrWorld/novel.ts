@@ -70,6 +70,74 @@ export function buildNovel(title: string, raw: string, opts?: { author?: string;
     };
 }
 
+/**
+ * 异步切块：大文件（数 MB 小说）专用。分批让出主线程，避免一次性同步切块冻 UI。
+ * onProgress 回调 0~1 进度。
+ */
+export async function chunkNovelTextAsync(
+    raw: string,
+    target = VR_SEGMENT_TARGET_CHARS,
+    onProgress?: (ratio: number) => void,
+): Promise<VRNovelSegment[]> {
+    const normalized = raw.replace(/\r\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+    if (!normalized) return [];
+    const paragraphs = normalized.split(/\n\s*\n|\n/);
+    const total = paragraphs.length;
+
+    const segments: VRNovelSegment[] = [];
+    let buffer = '';
+    const flush = () => {
+        const text = buffer.trim();
+        if (text) segments.push({ idx: segments.length, text, chars: text.length });
+        buffer = '';
+    };
+
+    for (let i = 0; i < total; i++) {
+        const para = paragraphs[i].trim();
+        if (para) {
+            if (para.length > target * 2) {
+                flush();
+                for (let j = 0; j < para.length; j += target) {
+                    const piece = para.slice(j, j + target);
+                    segments.push({ idx: segments.length, text: piece, chars: piece.length });
+                }
+            } else {
+                if ((buffer.length + para.length) > target && buffer.length > 0) flush();
+                buffer = buffer ? `${buffer}\n${para}` : para;
+            }
+        }
+        // 每 4000 段让出一次主线程并上报进度
+        if (i % 4000 === 0) {
+            onProgress?.(i / total);
+            await new Promise<void>(r => setTimeout(r));
+        }
+    }
+    flush();
+    onProgress?.(1);
+    return segments;
+}
+
+/** 异步版 buildNovel —— 大文件用，避免主线程卡顿。 */
+export async function buildNovelAsync(
+    title: string,
+    raw: string,
+    opts?: { author?: string; summary?: string; onProgress?: (ratio: number) => void },
+): Promise<VRWorldNovel> {
+    const segments = await chunkNovelTextAsync(raw, VR_SEGMENT_TARGET_CHARS, opts?.onProgress);
+    const totalChars = segments.reduce((s, seg) => s + seg.chars, 0);
+    const now = Date.now();
+    return {
+        id: genId('vrnovel'),
+        title: title.trim() || '无题',
+        author: opts?.author?.trim() || undefined,
+        summary: opts?.summary?.trim() || undefined,
+        segments,
+        totalChars,
+        createdAt: now,
+        updatedAt: now,
+    };
+}
+
 export interface ReadingWindow {
     /** 起始 segment 索引（含） */
     from: number;
