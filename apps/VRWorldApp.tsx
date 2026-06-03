@@ -42,13 +42,13 @@ const ROOM_SLOTS: Record<VRRoomId, { x: number; y: number }[]> = {
 
 const IDLE_QUIPS: Record<VRRoomId, string[]> = {
     library: ['翻着书页…', '这本还挺好看', '嘘，安静', '又是看书的一天'],
-    music: ['🎵～', '这首单曲循环', '戴上耳机', '调一下音量'],
+    music: ['随节奏轻晃', '这首单曲循环', '戴上耳机', '调一下音量'],
     guestbook: ['写点什么呢', '路过留个名', '看看墙上的话', '嗯…'],
     gym: ['活动一下', '再来一组！', '伸个懒腰', '热身中'],
 };
 
 const VRWorldApp: React.FC = () => {
-    const { closeApp, characters, updateCharacter, addToast } = useOS();
+    const { closeApp, characters, updateCharacter, addToast, registerBackHandler } = useOS();
     const [tab, setTab] = useState<Tab>('world');
     const [novels, setNovels] = useState<VRWorldNovel[]>([]);
     const [feed, setFeed] = useState<FeedItem[]>([]);
@@ -109,6 +109,16 @@ const VRWorldApp: React.FC = () => {
     }, [characters]);
 
     const enabledCount = characters.filter(c => c.vrState?.enabled).length;
+
+    // 返回键：有弹层先关弹层（阅读器/房间/上传/捏人），而不是直接退回桌面
+    useEffect(() => registerBackHandler(() => {
+        if (chibiEditChar) { setChibiEditChar(null); setPendingEnable(null); return true; }
+        if (showUpload) { setShowUpload(false); return true; }
+        if (readerJump) { setReaderJump(null); return true; }
+        if (readerNovel) { setReaderNovel(null); return true; }
+        if (enterRoom) { setEnterRoom(null); return true; }
+        return false; // 无弹层 → 交回默认（关闭 App）
+    }), [registerBackHandler, chibiEditChar, showUpload, readerJump, readerNovel, enterRoom]);
 
     // 从动态/批注点回原文：peek 模式打开阅读器跳到该段，不动用户书签
     const jumpToAnnotation = useCallback((novelId: string | undefined, segIdx: number) => {
@@ -267,7 +277,7 @@ const RoomBackground: React.FC<{ roomId: VRRoomId; className?: string }> = ({ ro
                 <div className="absolute left-0 right-0 top-[14%] bottom-[28%]" style={{ background: 'linear-gradient(180deg,rgba(120,200,255,.10),rgba(80,160,230,.04))', boxShadow: 'inset 0 0 60px rgba(120,200,255,.2)' }}>
                     {[[18, 22, -6], [44, 30, 5], [68, 20, -3], [30, 55, 4], [60, 60, -5], [80, 48, 6]].map(([l, t, r], i) => (
                         <div key={i} className="absolute w-10 h-10 rounded-sm shadow-lg text-[7px] p-1 text-stone-700"
-                            style={{ left: `${l}%`, top: `${t}%`, transform: `rotate(${r}deg)`, background: ['#fff7a8', '#ffd6e7', '#c8f7d4', '#cfe3ff'][i % 4] }}>♡</div>
+                            style={{ left: `${l}%`, top: `${t}%`, transform: `rotate(${r}deg)`, background: ['#fff7a8', '#ffd6e7', '#c8f7d4', '#cfe3ff'][i % 4] }} />
                     ))}
                 </div>
                 <div className="absolute left-0 right-0 bottom-0 h-[26%]" style={{ background: 'linear-gradient(180deg,#0c2236,#06121f)' }} />
@@ -337,8 +347,7 @@ const WorldView: React.FC<{
                         {/* 内描边光 */}
                         <div className="absolute inset-0 rounded-2xl pointer-events-none" style={{ boxShadow: 'inset 0 1px 0 rgba(255,255,255,.12)' }} />
                         <div className="absolute top-2.5 left-3 flex items-center gap-1.5">
-                            <span className="text-[15px] drop-shadow">{room.emoji}</span>
-                            <span className="text-[12.5px] tracking-[0.12em] text-white drop-shadow" style={{ fontFamily: `'Noto Serif SC',serif`, fontWeight: 500 }}>{room.name}</span>
+                            <span className="text-[12.5px] tracking-[0.14em] text-white drop-shadow" style={{ fontFamily: `'Noto Serif SC',serif`, fontWeight: 500 }}>{room.name}</span>
                             {!room.implemented && <span className="text-[7px] tracking-wider text-white/60 border border-white/25 rounded-full px-1.5 ml-0.5">待启</span>}
                         </div>
                         {/* 角色小头像缩影 */}
@@ -383,7 +392,7 @@ const WorldView: React.FC<{
                                 <div className="min-w-0 flex-1">
                                     <div className="flex items-center gap-1.5 text-[11px]">
                                         <span className="font-bold text-amber-200">{item.charName}</span>
-                                        <span className="text-indigo-300/50">{room.emoji} {room.name}</span>
+                                        <span className="text-indigo-300/50">{room.name}</span>
                                         <span className="ml-auto text-indigo-300/40 text-[9px]">{new Date(item.timestamp).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>
                                     </div>
                                     <p className="text-[11.5px] text-indigo-50/90 mt-0.5 leading-snug">{item.meta.activity}</p>
@@ -439,11 +448,22 @@ const RoomScene: React.FC<{
 
     const np = musicState?.nowPlaying;
     const npPlaying = !!np && music.current?.id === np.song.id && music.playing;
+    // 记录是否由听歌房起播 —— 离开房间时只暂停"我们放的"那首，不动用户自己的音乐
+    const startedRef = useRef(false);
+    const musicRef = useRef(music);
+    musicRef.current = music;
     const playNow = () => {
         if (!np) return;
         if (music.current?.id === np.song.id) music.togglePlay();
-        else music.playSong(toSong(np.song));
+        else { music.playSong(toSong(np.song)); startedRef.current = true; }
     };
+    // 音乐只在听歌房内播放：离开场景时若仍在放我们起播的歌，暂停它
+    useEffect(() => () => {
+        const m = musicRef.current;
+        if (startedRef.current && m.playing && m.current?.id === musicState?.nowPlaying?.song.id) {
+            m.togglePlay();
+        }
+    }, []);
 
     return (
         <div className="fixed inset-0 z-50 flex flex-col">
@@ -457,7 +477,7 @@ const RoomScene: React.FC<{
                 <div className="absolute top-0 left-0 right-0 flex items-center gap-2.5 px-4 pt-3.5 pb-3 z-20"
                     style={{ background: 'linear-gradient(180deg,rgba(5,6,14,.55),transparent)' }}>
                     <button onClick={onClose} className="p-1.5 -ml-1.5 rounded-full bg-white/10 backdrop-blur-md active:bg-white/20 text-white/90 border border-white/10"><CaretLeft size={19} weight="regular" /></button>
-                    <span className="text-[16px] text-white drop-shadow flex items-center gap-1.5 tracking-[0.12em]" style={{ fontFamily: `'Noto Serif SC',serif`, fontWeight: 500 }}>{room.emoji} {room.name}</span>
+                    <span className="text-[16px] text-white drop-shadow flex items-center gap-1.5 tracking-[0.14em]" style={{ fontFamily: `'Noto Serif SC',serif`, fontWeight: 500 }}>{room.name}</span>
                     <span className="ml-auto text-[10px] tracking-wider text-white/60">{occupants.length} 人在场</span>
                 </div>
 
@@ -529,7 +549,7 @@ const RoomScene: React.FC<{
                             return (
                                 <>
                                     <p className="text-[12.5px] text-indigo-50/90 leading-relaxed">{m.activity}</p>
-                                    {m.behavior && <p className="text-[11px] text-pink-200/80 mt-1.5">🎧 {m.behavior}</p>}
+                                    {m.behavior && <p className="text-[11px] text-pink-200/80 mt-1.5">{m.behavior}</p>}
                                     {m.annotationRefs && m.annotationRefs.length > 0
                                         ? m.annotationRefs.map((ref, i) => (
                                             <button key={i} onClick={() => { onJump(m.novelId, ref.segIdx); setDetail(null); }}
@@ -748,7 +768,7 @@ const ReaderModal: React.FC<{ novel: VRWorldNovel; characters: CharacterProfile[
 
             {peek && (
                 <div className="px-4 py-1.5 shrink-0 text-[11px] text-center" style={{ background: `${theme.accent}1a`, color: theme.accent }}>
-                    👀 正在查看批注位置 · 不会改动你的书签
+                    正在查看批注位置 · 不会改动你的书签
                 </div>
             )}
 

@@ -22,7 +22,7 @@ function annLabel(a: VRNovelAnnotation): string {
 export function buildVRSystemAddendum(room: VRRoomDef, charName: string): string {
     return [
         `\n\n=== 你现在登入了「彼方」 ===`,
-        `「彼方」是一处只属于你自己的虚拟空间。你用属于你的方式连入——戴上设备、闭眼入梦、按你的人设理解都行。这里随时可来可走，是你一个人独处、没有任何人看着的时间。`,
+        `「彼方」是一个类似 VRChat 的虚拟游玩空间——一个可以登入的线上世界，并不是现实里真实存在的地方。你以自己的方式连入（戴上设备、闭眼入梦、按你的人设理解都行），随时可来可走。这里发生的一切都在虚拟世界里，与现实分开，所以它不会和你跟用户的现实相处冲突，这是你独处、没人看着的时间。`,
         `此刻你在【${room.emoji} ${room.name}】。${room.blurb}`,
         `在这里，${room.affordance}`,
         ``,

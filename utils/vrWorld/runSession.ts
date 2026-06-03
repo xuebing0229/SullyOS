@@ -202,7 +202,7 @@ export async function runVRSession(deps: VRSessionDeps): Promise<VRSessionResult
                 vrState: { ...prevState, novelBookmarks: { ...(prevState.novelBookmarks || {}), [novel!.id]: nextBookmark }, currentRoom: 'library', lastActiveAt: Date.now() },
             });
             activity = parsed.activity || `读了《${novel!.title}》第 ${win!.from + 1}~${win!.to} 段${written ? `，留下了 ${written} 条批注` : '，安静读完没多说什么'}。`;
-            cardLines = [`「${room.emoji} 彼方·${room.name}」`, `${char.name}${activity}`];
+            cardLines = [`「彼方 · ${room.name}」`, `${char.name}${activity}`];
             if (savedExcerpts.length) { cardLines.push('批注：'); for (const ex of savedExcerpts) cardLines.push(`· ${ex}`); }
             meta = { vrCard: true, room: 'library', activity, novelId: novel!.id, novelTitle: novel!.title, segRange: [win!.from, win!.to], annotationExcerpts: savedExcerpts, annotationRefs: savedRefs };
         } else {
@@ -240,7 +240,7 @@ export async function runVRSession(deps: VRSessionDeps): Promise<VRSessionResult
 
             const songLabel = curSong ? `${curSong.song.name} - ${curSong.song.artists}` : undefined;
             activity = parsed.activity || (curSong ? `在听歌房听着《${curSong.song.name}》晃了一会儿。` : `进了听歌房，戴上耳机放空。`);
-            cardLines = [`「${room.emoji} 彼方·${room.name}」`, `${char.name}${activity}`];
+            cardLines = [`「彼方 · ${room.name}」`, `${char.name}${activity}`];
             if (parsed.review && songLabel) cardLines.push(`评《${songLabel}》：${parsed.review}`);
             if (queuedLabel) cardLines.push(`点了《${queuedLabel}》排进队列`);
             if (parsed.behavior) cardLines.push(`· ${parsed.behavior}`);
