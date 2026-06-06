@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useOS } from '../context/OSContext';
 import { DB } from '../utils/db';
-import { GameSession, GameTheme, CharacterProfile, GameLog, GameActionOption } from '../types';
+import { GameSession, GameTheme, CharacterProfile, GameLog, GameActionOption, GameSummary } from '../types';
 import { ContextBuilder } from '../utils/context';
 import { extractContent, extractJson } from '../utils/safeApi';
 import { injectMemoryPalace } from '../utils/memoryPalace/pipeline';
@@ -59,6 +59,24 @@ const GAME_THEMES: Record<GameTheme, { bg: string, text: string, accent: string,
         optionChaotic: 'bg-yellow-50 border-yellow-200 text-yellow-700',
         optionEvil: 'bg-red-50 border-red-200 text-red-700'
     }
+};
+
+// 每累积这么多条「未归档日志」就触发一次自动总结
+const AUTO_SUMMARY_THRESHOLD = 20;
+// 自动总结后保留最近这么多条日志不折叠，保证阅读与剧情连贯
+const KEEP_RECENT_AFTER_SUMMARY = 4;
+// AI 世界观生成的可选风格
+const WORLD_STYLES = ['高奇幻', '赛博朋克', '克苏鲁恐怖', '武侠江湖', '末世废土', '校园日常', '悬疑推理', '蒸汽朋克', '西部拓荒', '宫廷权谋'];
+
+// 投掷一颗 D20
+const rollD20 = () => Math.floor(Math.random() * 20) + 1;
+// 把骰点结果翻译成成功度描述，供 GM 判定
+const rollFlavor = (n: number) => {
+    if (n === 20) return '大成功(Critical Success)';
+    if (n === 1) return '大失败(Critical Failure)';
+    if (n >= 15) return '成功(Success)';
+    if (n >= 8) return '勉强(Partial)';
+    return '失败(Failure)';
 };
 
 // --- Markdown Renderer Component ---
@@ -138,12 +156,16 @@ const GameApp: React.FC = () => {
     const [newTheme, setNewTheme] = useState<GameTheme>('fantasy');
     const [selectedPlayers, setSelectedPlayers] = useState<Set<string>>(new Set());
     const [isCreating, setIsCreating] = useState(false);
+    // 世界观 AI 辅助生成
+    const [worldStyle, setWorldStyle] = useState<string>('高奇幻');
+    const [isGeneratingWorld, setIsGeneratingWorld] = useState(false);
 
     // Play State
     const [userInput, setUserInput] = useState('');
     const [isTyping, setIsTyping] = useState(false);
-    const [diceResult, setDiceResult] = useState<number | null>(null);
-    const [isRolling, setIsRolling] = useState(false);
+    const [isSummarizing, setIsSummarizing] = useState(false); // 自动总结全屏反馈
+    const [showArchived, setShowArchived] = useState(false);    // 已归档剧情折叠展开
+    const [lastRoll, setLastRoll] = useState<number | null>(null); // 最近一次自动骰点结果（瞬时展示）
     const [lastTokenUsage, setLastTokenUsage] = useState<{prompt?: number, completion?: number, total: number} | null>(null);
     const [totalTokensUsed, setTotalTokensUsed] = useState(0);
     
@@ -238,12 +260,33 @@ const GameApp: React.FC = () => {
     // --- Helper: Build Synchronized Context (Neural Link) ---
     const buildSyncContext = async (players: CharacterProfile[]) => {
         let fullContext = "";
-        
+
+        // [优化] 多人同场时，把"用户档案 / 共有世界观 / 被多名角色挂载的世界书"提取到顶部
+        // 只铺一次，避免每个角色块里重复贴同一份世界书（去重，省 token 也防串台）。
+        const sharedScene = ContextBuilder.buildGroupSharedScene(players, userProfile);
+        if (sharedScene.text) {
+            fullContext += `${sharedScene.text}\n`;
+        }
+
         for (const p of players) {
             // 1. Base Context (Identity & Worldview)
+            // [优化] 记忆读取：跑团多人同场，不再倾倒每个角色逐日的详细日记（极易让 LLM 把
+            //   A 的记忆安到 B 头上 = 串台）。改为 includeDetailedMemories=false（仅长期核心记忆）
+            //   + 下方按需注入的记忆宫殿向量召回（只取与当前情境相关的片段）。
+            //   同时跳过共享场景里已铺过的用户档案 / 世界书 / 世界观，彻底去重。
             await injectMemoryPalace(p);
-            fullContext += `\n<<< 角色档案: ${p.name} (ID: ${p.id}) >>>\n${ContextBuilder.buildCoreContext(p, userProfile, true)}\n`;
-            
+            const core = ContextBuilder.buildCoreContext(p, userProfile, false, undefined, {
+                skipUserProfile: true,
+                skipWorldview: sharedScene.worldviewIsShared,
+                skipWorldbookIds: sharedScene.sharedWorldbookIds,
+            });
+            fullContext += `\n<<< 角色档案: ${p.name} (ID: ${p.id}) >>>\n${core}\n`;
+
+            // 记忆宫殿召回（includeDetailedMemories=false 时 buildCoreContext 不会自动带，这里按需补回）
+            if (p.memoryPalaceEnabled && p.memoryPalaceInjection && p.memoryPalaceInjection.trim()) {
+                fullContext += `${p.memoryPalaceInjection}\n`;
+            }
+
             // 2. Neural Link: Private Chat Sync
             try {
                 const msgs = await DB.getMessagesByCharId(p.id, true);
@@ -298,6 +341,44 @@ ${recentLog}
         return fullContext;
     };
 
+    // --- AI 世界观生成 (帮想不出剧本的用户起一个设定) ---
+    const handleGenerateWorld = async () => {
+        if (!apiConfig.apiKey) {
+            addToast('请先配置 API Key', 'error');
+            return;
+        }
+        setIsGeneratingWorld(true);
+        try {
+            const prompt = `你是一位资深的 TRPG（桌面跑团）剧本设计师。请按照指定风格，原创一个适合开团的世界观设定。
+**风格基调**: ${worldStyle}
+${newWorld.trim() ? `**用户的灵感关键词（请围绕它发挥）**: ${newWorld.trim()}` : ''}
+
+要求：
+1. **title**: 一个有吸引力的剧本标题（不超过 15 字）。
+2. **worldSetting**: 200~400 字的世界观设定，需包含：① 时代/地点背景与基调氛围；② 当前世界的核心矛盾或危机；③ 玩家小队的处境/初始目标钩子；④ 一两个可探索的悬念或势力。语言生动，留足玩家发挥空间，不要写死结局。
+
+仅输出 JSON，不要任何额外说明或代码块：
+{ "title": "剧本标题", "worldSetting": "世界观设定正文..." }`;
+
+            const data = await fetchGameAPI(prompt, 2000);
+            const raw = extractContent(data);
+            if (!raw) throw new Error('AI 返回了空响应');
+            const res = extractJson(raw);
+            if (res && (res.worldSetting || res.title)) {
+                if (res.worldSetting) setNewWorld(res.worldSetting);
+                if (res.title && !newTitle.trim()) setNewTitle(res.title);
+            } else {
+                // JSON 失败，退化为把全文塞进世界观
+                setNewWorld(raw);
+            }
+            addToast('世界观已生成，可继续编辑', 'success');
+        } catch (e: any) {
+            addToast(`生成失败: ${e.message}`, 'error');
+        } finally {
+            setIsGeneratingWorld(false);
+        }
+    };
+
     // --- Creation Logic ---
     const handleCreateGame = async () => {
         if (!newTitle.trim() || !newWorld.trim() || selectedPlayers.size === 0) {
@@ -331,9 +412,12 @@ ${playerContext}
 
 ### 任务
 你现在是 **Game Master (GM)**。请为这个冒险故事生成一个**精彩的开场 (Prologue)**。
-1. **剧情描述**: 描述玩家和队友们现在的处境。
-2. **角色反应**: 简要描述队友们的初始状态或第一句话。请**务必**参考【神经链接】中的私聊状态来决定他们的态度。
-3. **初始选项**: 给出三个玩家可以采取的行动选项。
+1. **剧情描述**: 描述这个世界正在发生什么、小队所处的环境与正在逼近的事件。**先有世界，再有人**——开场不要围着玩家转，而是把舞台和危机铺开。
+2. **角色反应**: 简要描述队友们的初始状态或第一句台词。请**务必**参考【神经链接】中的私聊状态来决定他们的态度；同时让每个角色展现**自己的性格与目的**，而不是一上来就众星捧月地讨好玩家。
+3. **初始选项**: 给出三个玩家可以采取的行动选项（每个选项玩家执行时都会自动骰 D20 判定，因此选项应是"有成败风险的尝试"而非必然成功的动作）。
+
+### ⚠️ 一致性自检 (Consistency Check)
+输出前，请在心里核对：每个角色的台词/行为是否**只**来自 TA 自己的"角色档案"（性格、记忆、印象）？严禁把某个角色的记忆、口癖或人设安到另一个角色身上（防止"串台"）。
 
 ### 输出格式 (Strict JSON)
 {
@@ -441,53 +525,41 @@ ${playerContext}
     };
 
     // --- Gameplay Logic ---
-    const rollDice = () => {
-        if (isRolling || isTyping) return;
-        setIsRolling(true);
-        const duration = 1000;
-        const start = Date.now();
-        
-        const animate = () => {
-            const now = Date.now();
-            if (now - start > duration) {
-                const final = Math.floor(Math.random() * 20) + 1;
-                setDiceResult(final);
-                setIsRolling(false);
-                handleAction(`[System: 投掷了 D20 骰子，结果: ${final}]`);
-            } else {
-                setDiceResult(Math.floor(Math.random() * 20) + 1);
-                requestAnimationFrame(animate);
-            }
-        };
-        requestAnimationFrame(animate);
-    };
-
     const handleAction = async (actionText: string, isReroll: boolean = false) => {
         if (!activeGame || !apiConfig.apiKey) return;
-        
+
         let contextLogs = activeGame.logs;
         let updatedGame = activeGame;
+        let currentRoll: number | null = null;
 
         if (!isReroll) {
+            const isSystemAction = actionText.startsWith('[System');
+            // [优化] 每个玩家行动默认自动骰一颗 D20（不再需要主动点骰子）。
+            // 系统消息不骰点。
+            if (!isSystemAction && actionText.trim()) {
+                currentRoll = rollD20();
+                setLastRoll(currentRoll);
+                addToast(`🎲 D20 = ${currentRoll} · ${rollFlavor(currentRoll)}`, 'info');
+            }
+
             // Standard Action: Append user log
             const userLog: GameLog = {
                 id: `log-${Date.now()}`,
-                role: actionText.startsWith('[System') ? 'system' : 'player',
+                role: isSystemAction ? 'system' : 'player',
                 speakerName: userProfile.name,
                 content: actionText,
                 timestamp: Date.now(),
-                diceRoll: diceResult ? { result: diceResult, max: 20 } : undefined
+                diceRoll: currentRoll ? { result: currentRoll, max: 20 } : undefined
             };
-            
+
             const updatedLogs = [...activeGame.logs, userLog];
             updatedGame = { ...activeGame, logs: updatedLogs, lastPlayedAt: Date.now(), suggestedActions: [] }; // Clear options while thinking
             setActiveGame(updatedGame);
             await DB.saveGame(updatedGame);
             contextLogs = updatedLogs;
         }
-        
+
         setUserInput('');
-        setDiceResult(null);
         setIsTyping(true);
         setLastTokenUsage(null);
         addToast('GM 正在推演...', 'info'); // Feedback for Sync
@@ -506,6 +578,24 @@ ${playerContext}
             if (activeGame.status.health <= 0 || activeGame.status.sanity <= 0) {
                 gameOverTrigger = "\n[GAME OVER TRIGGER] 玩家的生命值或理智值已归零。请生成一个悲惨或疯狂的结局 (Bad Ending)，结束本次冒险。\n";
             }
+
+            // [优化] 历史记录：已归档的旧剧情用「前情提要」总结代替，未归档日志保留原文，
+            //   并把每条玩家行动的骰点结果一并喂给 GM 用于判定（之前 GM 根本看不到骰点）。
+            const serializeLog = (l: GameLog) => {
+                const who = l.role === 'gm' ? 'GM' : (l.speakerName || 'System');
+                const dice = l.diceRoll ? ` 〔🎲D20=${l.diceRoll.result}/${rollFlavor(l.diceRoll.result)}〕` : '';
+                return `[${who}]${dice}: ${l.content}`;
+            };
+            const summaries = activeGame.summaries || [];
+            const recapBlock = summaries.length > 0
+                ? `### 📚 前情提要 (Story So Far)\n${summaries.map((s, i) => `【第${i + 1}段】${s.content}`).join('\n\n')}\n\n`
+                : '';
+            const activeLogText = contextLogs.filter(l => !l.archived).map(serializeLog).join('\n');
+
+            // 当前这步行动的骰点提示
+            const rollInstruction = currentRoll
+                ? `\n### 🎲 本回合判定\n玩家这次行动掷出了 **D20 = ${currentRoll}（${rollFlavor(currentRoll)}）**。请据此裁定行动的成败与代价：20=出乎意料的大成功，1=灾难性大失败，高分顺利、低分受挫。让结果自然融入叙事，不要直接复述数字。\n`
+                : '';
 
             const prompt = `### 🎲 TRPG 跑团模式: ${activeGame.title}
 **当前剧本**: ${activeGame.worldSetting}
@@ -526,27 +616,37 @@ ${players.map(p => `2. **${p.name}** (ID: ${p.id}) - 你的队友`).join('\n')}
 ### 📜 角色档案 & 神经链接 (Character Sheets & Neural Links)
 ${playerContext}
 
-### 📝 冒险记录 (Log)
-${contextLogs.map(l => `[${l.role === 'gm' ? 'GM' : (l.speakerName || 'System')}]: ${l.content}`).join('\n')}
-
+${recapBlock}### 📝 冒险记录 (Recent Log)
+${activeLogText}
+${rollInstruction}
 ### 🎲 GM 指令 (Game Master Instructions)
 你现在是这场跑团游戏的 **主持人 (GM)**。
 **现在的状态**：这是一群真实的朋友（基于神经链接中的私聊关系）在一起玩跑团游戏。
 
 **请遵循以下法则**：
-1. **全员「入戏」 (Roleplay First)**: 
+1. **全员「入戏」 (Roleplay First)**:
    - 队友们是活生生的冒险者，但同时也带着私聊时的记忆和情感。
    - **拒绝机械感**: 他们应该主动观察环境、吐槽现状、互相开玩笑。
    - **私聊影响 (关键)**: 请根据【神经链接】中的“关系温度”和“最近话题”来调整每个角色的反应。
    - **队内互动**: 队友之间也可以有互动（比如A吐槽B的计划）。
 
-2. **硬核 GM 风格**: 
+2. **去玩家中心 · 让世界自己转 (关键)**:
+   - **拒绝修罗场**: 队友们不是来讨好/争抢玩家的 NPC。不要让所有人都把注意力黏在玩家身上、抢着对玩家示好。
+   - **各有所图**: 每个角色都带着**自己的目的、立场和情绪**行动，可以分歧、可以自顾自做事、可以暂时忽略玩家。
+   - **因地制宜**: 同一个角色在战斗、社交、独处、危机等不同环境下应表现出**不同侧面**，而非一套反应走到底。
+   - **剧情自驱**: 世界有自己的节奏——即使玩家什么都不做，也会有事件发生、势力推进、NPC 行动。主动推动主线。
+
+3. **硬核 GM 风格**:
    - **制造冲突**: 不要让旅途一帆风顺。安排陷阱、突发战斗、尴尬的社交场面、或者道德困境。
    - **环境描写**: 描述光影、气味、声音，营造沉浸感。
+   - **骰点判定**: 严格依据【本回合判定】的 D20 结果裁定成败，骰得低就要有真实代价。
    - **Markdown 排版**: 请在 \`gm_narrative\` 和 \`dialogue\` 中**积极使用 Markdown**。例如：使用 **加粗** 强调重点，使用 *斜体* 描述动作。
 
-3. **生成选项 (Action Options)**:
-   - 请根据当前局势，为玩家提供 3 个可选的行动建议。
+4. **生成选项 (Action Options)**:
+   - 请根据当前局势，为玩家提供 3 个可选的行动建议（玩家选择后都会自动骰 D20，因此选项应是有成败风险的尝试）。
+
+### ⚠️ 一致性自检 (Consistency Check)
+输出前请最后核对一遍：每个角色的台词、记忆、口癖、性格是否**严格来自 TA 各自的"角色档案"**？绝不能把一个角色的记忆/人设/经历安到另一个角色身上（防止"串台"）。如发现串台，请改正后再输出。
 
 ### 📤 输出格式 (Strict JSON)
 请仅输出 JSON，不要包含 Markdown 代码块。
@@ -635,10 +735,99 @@ ${contextLogs.map(l => `[${l.role === 'gm' ? 'GM' : (l.speakerName || 'System')}
             setActiveGame(finalGame);
             await DB.saveGame(finalGame);
 
+            // 回合结束后检查是否需要自动总结归档前文
+            setIsTyping(false);
+            await runAutoSummaryIfNeeded(finalGame);
+
         } catch (e: any) {
             addToast(`GM 掉线了: ${e.message}`, 'error');
         } finally {
             setIsTyping(false);
+        }
+    };
+
+    // --- 自动总结 (每累积 AUTO_SUMMARY_THRESHOLD 条未归档日志触发一次) ---
+    // 把旧剧情压缩成小说式「前情提要」，归档折叠原文（不删除），并把总结小卡片
+    // 发送到参与角色的记忆与聊天上下文里。
+    const runAutoSummaryIfNeeded = async (game: GameSession) => {
+        const nonArchived = game.logs.filter(l => !l.archived);
+        if (nonArchived.length < AUTO_SUMMARY_THRESHOLD) return;
+
+        // 保留最近 KEEP_RECENT_AFTER_SUMMARY 条不折叠，保证连贯
+        const toArchive = nonArchived.slice(0, nonArchived.length - KEEP_RECENT_AFTER_SUMMARY);
+        if (toArchive.length < 6) return; // 太少不值得总结
+
+        setIsSummarizing(true);
+        try {
+            const players = characters.filter(c => game.playerCharIds.includes(c.id));
+            const playerNames = players.map(p => p.name).join('、');
+            const prevRecap = (game.summaries || []).map((s, i) => `【第${i + 1}段】${s.content}`).join('\n');
+
+            const logText = toArchive.map(l => {
+                const who = l.role === 'gm' ? 'GM' : (l.speakerName || 'System');
+                return `[${who}]: ${l.content}`;
+            }).join('\n');
+
+            const prompt = `你是一位擅长写小说的记录者。请把下面这段 TRPG 跑团剧情，总结成一段**连贯、生动、像小说梗概一样**的前情提要。
+${prevRecap ? `\n【已有前情（仅供衔接，不要重复）】\n${prevRecap}\n` : ''}
+【本段需要总结的剧情记录】
+${logText}
+
+要求：
+1. 用第三人称叙述，包含【起因 → 经过 → 结果】的来龙去脉。
+2. 重点写清楚**人物之间的关系变化与各自的处境/情绪**（谁和谁更近了/起了冲突/暴露了什么）。
+3. 控制在 200~350 字，文笔流畅，不要分点罗列，不要写"总结如下"之类的开场白。
+
+直接输出总结正文：`;
+
+            const data = await fetchGameAPI(prompt, 1500);
+            let summaryText = (extractContent(data) || '').trim();
+            if (!summaryText) summaryText = '（这段冒险继续推进了剧情）';
+
+            const newSummary: GameSummary = {
+                id: `sum-${Date.now()}`,
+                content: summaryText,
+                logCount: toArchive.length,
+                createdAt: Date.now(),
+            };
+
+            // 折叠归档原文（标记 archived，不删除）
+            const archiveIds = new Set(toArchive.map(l => l.id));
+            const archivedLogs = game.logs.map(l => archiveIds.has(l.id) ? { ...l, archived: true } : l);
+
+            const updated: GameSession = {
+                ...game,
+                logs: archivedLogs,
+                summaries: [...(game.summaries || []), newSummary],
+            };
+            setActiveGame(updated);
+            await DB.saveGame(updated);
+
+            // 以小卡片形式发送到参与角色的记忆与聊天上下文
+            const now = new Date();
+            const dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+            const cardLine = `和【${playerNames}】一起玩《${game.title}》TRPG，${summaryText}`;
+            for (const p of players) {
+                const mem = {
+                    id: `mem-${Date.now()}-${Math.random()}`,
+                    date: dateStr,
+                    summary: cardLine,
+                    mood: 'fun'
+                };
+                updateCharacter(p.id, { memories: [...(p.memories || []), mem] });
+                await DB.saveMessage({
+                    charId: p.id,
+                    role: 'system',
+                    type: 'text',
+                    content: `[TRPG 进度卡: 你正和${playerNames}玩《${game.title}》。${summaryText}]`
+                });
+            }
+            addToast('已自动总结并归档前文', 'success');
+        } catch (e) {
+            console.error('[GameApp] auto summary failed', e);
+            // 总结失败不阻塞游戏，静默跳过
+        } finally {
+            setIsSummarizing(false);
         }
     };
 
@@ -880,7 +1069,30 @@ Output: A concise summary in Chinese (e.g. "探索了地牢并击败了史莱姆
                     </div>
                     <div>
                         <label className="text-xs font-bold text-slate-400 uppercase block mb-2">世界观设定 (Lore)</label>
-                        <textarea value={newWorld} onChange={e => setNewWorld(e.target.value)} className="w-full h-32 bg-white border border-slate-200 rounded-xl px-4 py-3 text-sm focus:border-orange-500 outline-none resize-none transition-colors" placeholder="这是一个魔法与科技共存的世界..." />
+                        <textarea value={newWorld} onChange={e => setNewWorld(e.target.value)} className="w-full h-32 bg-white border border-slate-200 rounded-xl px-4 py-3 text-sm focus:border-orange-500 outline-none resize-none transition-colors" placeholder="这是一个魔法与科技共存的世界... (没思路？选个风格让 AI 帮你写)" />
+                        {/* AI 世界观生成 (帮想不出剧本的用户) */}
+                        <div className="mt-3 bg-slate-100 rounded-xl p-3 border border-slate-200">
+                            <div className="flex items-center justify-between mb-2">
+                                <span className="text-[11px] font-bold text-slate-500">✨ 没思路？让 AI 帮你写</span>
+                                <button
+                                    onClick={handleGenerateWorld}
+                                    disabled={isGeneratingWorld}
+                                    className="text-[11px] font-bold px-3 py-1.5 rounded-lg bg-slate-800 text-white active:scale-95 transition-transform flex items-center gap-1.5 disabled:opacity-60"
+                                >
+                                    {isGeneratingWorld ? <><div className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin"></div> 生成中...</> : <>生成世界观</>}
+                                </button>
+                            </div>
+                            <div className="flex gap-1.5 flex-wrap">
+                                {WORLD_STYLES.map(s => (
+                                    <button
+                                        key={s}
+                                        onClick={() => setWorldStyle(s)}
+                                        className={`px-2.5 py-1 rounded-lg text-[10px] font-medium border transition-all active:scale-95 ${worldStyle === s ? 'bg-orange-500 text-white border-orange-500' : 'bg-white text-slate-500 border-slate-200'}`}
+                                    >{s}</button>
+                                ))}
+                            </div>
+                            <p className="text-[9px] text-slate-400 mt-2">提示：上方输入框留空会纯靠风格生成；写了关键词则 AI 会围绕它发挥。</p>
+                        </div>
                     </div>
                     <div>
                         <label className="text-xs font-bold text-slate-400 uppercase block mb-2">画风主题</label>
@@ -1008,7 +1220,40 @@ Output: A concise summary in Chinese (e.g. "探索了地牢并击败了史莱姆
                 ref={logsContainerRef} // [FIX] Attach Ref to scrollable container
                 className="flex-1 overflow-y-auto p-4 space-y-6 no-scrollbar relative animate-fade-in"
             >
+                {/* 已归档剧情 (自动总结后折叠灰显，不删除) */}
+                {(activeGame.logs.some(l => l.archived) || (activeGame.summaries && activeGame.summaries.length > 0)) && (
+                    <div className="my-2">
+                        <button
+                            onClick={() => setShowArchived(v => !v)}
+                            className={`w-full text-[11px] py-2 px-3 rounded-lg border border-dashed ${theme.border} opacity-60 hover:opacity-100 transition-opacity flex items-center justify-center gap-2 font-mono`}
+                        >
+                            📜 已归档 {activeGame.logs.filter(l => l.archived).length} 条剧情 · {(activeGame.summaries || []).length} 段前情提要 {showArchived ? '（点击折叠）' : '（点击展开）'}
+                        </button>
+                        {showArchived && (
+                            <div className="mt-3 space-y-4 opacity-50">
+                                {/* 前情提要小说式总结 */}
+                                {(activeGame.summaries || []).map((s, si) => (
+                                    <div key={s.id} className={`p-4 rounded-lg border ${theme.border} ${theme.cardBg} text-xs italic leading-relaxed`}>
+                                        <div className="text-[10px] font-bold uppercase tracking-widest mb-1 not-italic opacity-70">📖 前情提要 · 第 {si + 1} 段</div>
+                                        <GameMarkdown content={s.content} theme={theme} />
+                                    </div>
+                                ))}
+                                {/* 折叠的原始日志 (灰显) */}
+                                <div className={`pl-3 border-l-2 ${theme.border} space-y-2`}>
+                                    {activeGame.logs.filter(l => l.archived).map((log, li) => (
+                                        <div key={log.id || li} className="text-[11px] leading-snug">
+                                            <span className="font-bold opacity-70">{log.role === 'gm' ? 'GM' : (log.speakerName || 'System')}: </span>
+                                            <span className="opacity-70">{log.content.replace(/\n+/g, ' ').slice(0, 120)}{log.content.length > 120 ? '…' : ''}</span>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                )}
+
                 {activeGame.logs.map((log, i) => {
+                    if (log.archived) return null; // 归档日志在上方折叠区块渲染
                     const isGM = log.role === 'gm';
                     const isSystem = log.role === 'system';
                     const isCharacter = log.role === 'character';
@@ -1100,18 +1345,15 @@ Output: A concise summary in Chinese (e.g. "探索了地牢并击败了史莱姆
                     </div>
                 )}
 
-                {/* Collapsible Action Toolbar */}
+                {/* Collapsible Action Toolbar — 快捷动作 (执行时自动骰 D20) */}
                 {showTools && (
-                    <div className="flex gap-2 mb-3 animate-fade-in">
-                        <button 
-                            onClick={rollDice} 
-                            disabled={isRolling}
-                            className={`flex-1 py-2 rounded border ${theme.border} hover:bg-white/10 active:scale-95 transition-transform flex items-center justify-center gap-2 font-bold text-sm`}
-                        >
-                            <DiceFive size={24} weight="fill" /> {isRolling ? 'Rolling...' : (diceResult || 'Roll D20')}
-                        </button>
-                        {['调查', '攻击', '交涉'].map(action => (
-                            <button key={action} onClick={() => handleAction(action)} className={`px-4 py-2 rounded border ${theme.border} hover:bg-white/10 text-xs font-bold transition-colors active:scale-95`}>{action}</button>
+                    <div className="flex gap-2 mb-3 animate-fade-in items-center">
+                        <span className={`text-[10px] opacity-50 flex items-center gap-1 shrink-0 ${theme.accent}`}>
+                            <DiceFive size={16} weight="fill" /> 自动骰点
+                            {lastRoll !== null && <span className="font-mono font-bold">上次 {lastRoll}</span>}
+                        </span>
+                        {['调查', '攻击', '交涉', '潜行', '逃跑'].map(action => (
+                            <button key={action} disabled={isTyping} onClick={() => handleAction(action)} className={`flex-1 px-3 py-2 rounded border ${theme.border} hover:bg-white/10 text-xs font-bold transition-colors active:scale-95 disabled:opacity-40`}>{action}</button>
                         ))}
                     </div>
                 )}
@@ -1209,6 +1451,15 @@ Output: A concise summary in Chinese (e.g. "探索了地牢并击败了史莱姆
                 <div className="absolute inset-0 bg-black/80 z-50 flex items-center justify-center text-white flex-col gap-4 animate-fade-in">
                     <div className="w-8 h-8 border-4 border-orange-500 border-t-transparent rounded-full animate-spin"></div>
                     <span className="text-xs tracking-widest font-mono">正在传递记忆...</span>
+                </div>
+            )}
+
+            {/* Auto-Summary Overlay (每 20 条自动总结的全屏反馈) */}
+            {isSummarizing && (
+                <div className="absolute inset-0 bg-black/85 z-50 flex items-center justify-center text-white flex-col gap-5 animate-fade-in px-8 text-center">
+                    <div className="w-10 h-10 border-4 border-purple-400 border-t-transparent rounded-full animate-spin"></div>
+                    <span className="text-sm tracking-widest font-bold">正在总结前文内容…</span>
+                    <span className="text-[11px] opacity-50 font-mono leading-relaxed">归档剧情 · 提炼起因经过结果 · 记录人物关系变化</span>
                 </div>
             )}
         </div>
