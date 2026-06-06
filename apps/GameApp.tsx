@@ -188,6 +188,7 @@ const GameApp: React.FC = () => {
     const [view, setView] = useState<'lobby' | 'create' | 'play'>('lobby');
     const [games, setGames] = useState<GameSession[]>([]);
     const [activeGame, setActiveGame] = useState<GameSession | null>(null);
+    const [lobbyPage, setLobbyPage] = useState(0); // 存档大厅分页（每页 5 条）
     
     // Creation State
     const [newTitle, setNewTitle] = useState('');
@@ -212,6 +213,10 @@ const GameApp: React.FC = () => {
     // [FIX] Use Container Ref instead of Element Ref for safer scrolling
     const logsContainerRef = useRef<HTMLDivElement>(null);
 
+    // 长按删除存档卡片
+    const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const longPressFired = useRef(false);
+
     // UI Toggles
     const [showSystemMenu, setShowSystemMenu] = useState(false);
     const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
@@ -229,6 +234,13 @@ const GameApp: React.FC = () => {
     useEffect(() => {
         loadGames();
     }, []);
+
+    // 删除/新增存档后，把页码钳制在有效范围内
+    const LOBBY_PAGE_SIZE = 5;
+    useEffect(() => {
+        const maxPage = Math.max(0, Math.ceil(games.length / LOBBY_PAGE_SIZE) - 1);
+        if (lobbyPage > maxPage) setLobbyPage(maxPage);
+    }, [games.length, lobbyPage]);
 
     // [FIX] Updated Auto-scroll logic: Use scrollTop on container
     useEffect(() => {
@@ -1013,6 +1025,28 @@ Output: A concise summary in Chinese (e.g. "探索了地牢并击败了史莱姆
         setDeleteConfirmId(id);
     };
 
+    // 长按卡片删除：按住约 550ms 触发删除确认，并抑制随后的点击进入
+    const startLongPress = (id: string) => {
+        longPressFired.current = false;
+        cancelLongPress();
+        longPressTimer.current = setTimeout(() => {
+            longPressFired.current = true;
+            if (typeof navigator !== 'undefined' && navigator.vibrate) navigator.vibrate(30);
+            setDeleteConfirmId(id);
+        }, 550);
+    };
+    const cancelLongPress = () => {
+        if (longPressTimer.current) {
+            clearTimeout(longPressTimer.current);
+            longPressTimer.current = null;
+        }
+    };
+    const handleCardOpen = (g: GameSession) => {
+        if (longPressFired.current) { longPressFired.current = false; return; } // 长按已触发删除，忽略点击
+        setActiveGame(g);
+        setView('play');
+    };
+
     const confirmDeleteGame = async () => {
         if (!deleteConfirmId) return;
         await DB.deleteGame(deleteConfirmId);
@@ -1043,20 +1077,28 @@ Output: A concise summary in Chinese (e.g. "探索了地牢并击败了史莱姆
                 </div>
 
                 {/* Games Grid */}
-                <div className="p-6 flex-1 overflow-y-auto no-scrollbar z-10 space-y-4">
+                <div className="px-6 pt-6 pb-2 flex-1 overflow-y-auto no-scrollbar z-10 space-y-4">
                     {games.length === 0 && (
                         <div className="flex flex-col items-center justify-center h-64 text-slate-500 gap-4">
                             <div className="w-20 h-20 rounded-full bg-white/5 flex items-center justify-center border border-white/5 animate-pulse"><Planet size={48} className="text-indigo-400" /></div>
                             <p className="text-xs tracking-widest uppercase">No Active Adventures</p>
                         </div>
                     )}
-                    {games.map(g => {
+                    {games.length > 0 && (
+                        <p className="text-[10px] text-white/30 tracking-widest uppercase text-center -mt-2">长按卡片可删除</p>
+                    )}
+                    {games.slice(lobbyPage * LOBBY_PAGE_SIZE, lobbyPage * LOBBY_PAGE_SIZE + LOBBY_PAGE_SIZE).map(g => {
                         const themeStyle = GAME_THEMES[g.theme] || GAME_THEMES.fantasy;
                         return (
-                            <div 
-                                key={g.id} 
-                                onClick={() => { setActiveGame(g); setView('play'); }} 
-                                className={`relative overflow-hidden rounded-2xl p-5 cursor-pointer group active:scale-[0.98] transition-all border border-white/5 hover:border-white/20 shadow-lg`}
+                            <div
+                                key={g.id}
+                                onClick={() => handleCardOpen(g)}
+                                onPointerDown={() => startLongPress(g.id)}
+                                onPointerUp={cancelLongPress}
+                                onPointerLeave={cancelLongPress}
+                                onPointerCancel={cancelLongPress}
+                                onContextMenu={(e) => e.preventDefault()}
+                                className={`relative overflow-hidden rounded-2xl p-5 cursor-pointer group active:scale-[0.98] transition-all border border-white/5 hover:border-white/20 shadow-lg select-none`}
                             >
                                 {/* Card Background */}
                                 <div className={`absolute inset-0 bg-gradient-to-br ${themeStyle.gradient} opacity-80 group-hover:opacity-100 transition-opacity`}></div>
@@ -1092,6 +1134,48 @@ Output: A concise summary in Chinese (e.g. "探索了地牢并击败了史莱姆
                         );
                     })}
                 </div>
+
+                {/* Pager (每页 5 条) */}
+                {games.length > LOBBY_PAGE_SIZE && (() => {
+                    const totalPages = Math.ceil(games.length / LOBBY_PAGE_SIZE);
+                    return (
+                        <div className="flex items-center justify-center gap-4 px-6 pb-[calc(1rem+env(safe-area-inset-bottom))] pt-2 shrink-0 z-10">
+                            <button
+                                onClick={() => setLobbyPage(p => Math.max(0, p - 1))}
+                                disabled={lobbyPage === 0}
+                                className="w-9 h-9 rounded-full bg-white/5 border border-white/10 flex items-center justify-center text-white/70 active:scale-95 transition-all disabled:opacity-25 hover:bg-white/10"
+                            >
+                                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-4 h-4"><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" /></svg>
+                            </button>
+                            <div className="flex items-center gap-1.5">
+                                {Array.from({ length: totalPages }).map((_, i) => (
+                                    <button
+                                        key={i}
+                                        onClick={() => setLobbyPage(i)}
+                                        className={`rounded-full transition-all ${i === lobbyPage ? 'w-5 h-1.5 bg-purple-400' : 'w-1.5 h-1.5 bg-white/25 hover:bg-white/40'}`}
+                                    />
+                                ))}
+                            </div>
+                            <button
+                                onClick={() => setLobbyPage(p => Math.min(totalPages - 1, p + 1))}
+                                disabled={lobbyPage >= totalPages - 1}
+                                className="w-9 h-9 rounded-full bg-white/5 border border-white/10 flex items-center justify-center text-white/70 active:scale-95 transition-all disabled:opacity-25 hover:bg-white/10"
+                            >
+                                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-4 h-4"><path strokeLinecap="round" strokeLinejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5" /></svg>
+                            </button>
+                        </div>
+                    );
+                })()}
+
+                {/* Delete Save Confirm Modal (lobby) */}
+                <Modal isOpen={!!deleteConfirmId} title="删除存档" onClose={() => setDeleteConfirmId(null)} footer={
+                    <div className="flex gap-3 w-full">
+                        <button onClick={() => setDeleteConfirmId(null)} className="flex-1 py-3 bg-slate-100 text-slate-600 font-bold rounded-2xl">取消</button>
+                        <button onClick={confirmDeleteGame} className="flex-1 py-3 bg-red-500 text-white font-bold rounded-2xl shadow-lg shadow-red-200">删除</button>
+                    </div>
+                }>
+                    <p className="text-sm text-slate-600 text-center py-4">确定要删除这个存档吗？<br/><span className="text-xs text-red-400 mt-1 block">此操作不可恢复。</span></p>
+                </Modal>
             </div>
         );
     }
