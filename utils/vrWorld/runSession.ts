@@ -70,6 +70,25 @@ export interface VRSessionResult {
 const genId = (p: string) => `${p}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
 const running = new Set<string>();
 
+/**
+ * 串行化共享房间状态（留言墙等）的 read-modify-write。
+ *
+ * 背景：留言簿在 session 开头读一次全量 board，LLM 跑完（数秒）后再整体写回。
+ * 两个角色并发 session 时，后写的那次会基于"开头的旧快照"覆盖掉先写的角色刚
+ * 落墙的留言 —— 表现为"有一个人说的内容不显示"（lost update）。
+ *
+ * 所有 VR session 都跑在同一个主线程 JS 上下文里（scheduler 驱动），所以一个
+ * 内存级 async 锁就能完整消除竞态：LLM 调用照旧并发，只把"重新拉取最新 board
+ * → 追加本次新消息 → 落库"这段极短的临界区串起来。
+ */
+let sharedRoomWriteChain: Promise<unknown> = Promise.resolve();
+function withSharedRoomLock<T>(fn: () => Promise<T>): Promise<T> {
+    const result = sharedRoomWriteChain.then(fn, fn);
+    // 推进链条并吞掉错误，避免某次失败卡死后续所有写入
+    sharedRoomWriteChain = result.catch(() => {});
+    return result;
+}
+
 /** 选一本要读的书：优先续读未读完的，否则取最近更新的一本。 */
 function pickNovel(novels: VRWorldNovel[], char: CharacterProfile): VRWorldNovel | null {
     if (novels.length === 0) return null;
@@ -140,10 +159,14 @@ export async function runVRSession(deps: VRSessionDeps): Promise<VRSessionResult
         const contextLimit = char.contextLimit || 500;
         const historyMsgs = await DB.getRecentMessagesByCharId(char.id, contextLimit);
 
-        // 在某房间的在场玩家名（含自己）
+        // 在某房间的在场玩家名（含自己；用户本人接入彼方且挂在该房间时也算在场）
         const occupantsOf = (rid: VRRoomId) => {
             const ns = characters.filter(c => c.vrState?.enabled && c.vrState.currentRoom === rid).map(c => c.name);
             if (!ns.includes(char.name)) ns.push(char.name);
+            const uv = userProfile?.vrState;
+            if (uv?.enabled && uv.currentRoom === rid && userProfile.name && !ns.includes(userProfile.name)) {
+                ns.push(userProfile.name);
+            }
             return ns;
         };
 
@@ -219,6 +242,12 @@ export async function runVRSession(deps: VRSessionDeps): Promise<VRSessionResult
                 poTarget = targets.length > 0 ? targets[Math.floor(Math.random() * targets.length)] : null;
                 roomTurn = buildPostOfficeRoomTurn(poTarget ? { pen: poTarget.pen, content: poTarget.content } : null, char.name);
             }
+            // 把"眼前这封信聊的是什么"塞进召回 query —— 邮局没有在场玩家，
+            // 召回若只靠聊天历史就抓不到角色对信里话题的相关记忆/观点。
+            // 取要回的来信内容（forced > 随机来信）；只在读自己回信时取自己原信，
+            // 让角色召回"我当初为什么写这个"。截断到 200 字，够 embedding 抓语义即可。
+            const recallLetter = (forcedTarget || poTarget)?.content || poReadTarget?.content;
+            if (recallLetter) recallExtra.push(`一封信聊到：${recallLetter.slice(0, 200)}`);
         } else {
             // gym
             occupantsOf('gym').forEach(n => recallNames.add(n));
@@ -294,32 +323,39 @@ export async function runVRSession(deps: VRSessionDeps): Promise<VRSessionResult
         } else if (room.id === 'music') {
             // === 听歌房：点歌进队列 + 乐评 + 推进循环队列 ===
             const parsed = parseMusicOutput(aiContent);
-            const state: VRMusicRoomState = musicState || { id: 'state', queue: [], updatedAt: Date.now() };
-            const curSong = state.nowPlaying;
-
-            // 点歌进队列
-            state.queue = state.queue || [];
+            // 角色在 prompt 里听到 / 锐评的那首，绑定开头快照（乐评、卡片都针对它）
+            const curSong = musicState?.nowPlaying;
+            const pick = (parsed.pickIdx !== undefined && pickable[parsed.pickIdx]) ? pickable[parsed.pickIdx] : undefined;
             let queuedLabel: string | undefined;
-            if (parsed.pickIdx !== undefined && pickable[parsed.pickIdx]) {
-                const s = pickable[parsed.pickIdx];
-                state.queue = [...state.queue, { song: s, charId: char.id, charName: char.name }];
-                queuedLabel = `${s.name} - ${s.artists}`;
-            }
-            // 没点歌、队列也空，但角色有歌单 → 自动放一首自己的，
-            // 免得新到访的角色还停在上一个人（甚至已经离开的人）点的歌上。
-            if (state.queue.length === 0 && pickable.length > 0) {
-                const curId = state.nowPlaying?.song.id;
-                const fresh = pickable.filter(s => s.id !== curId);
-                const s = (fresh.length > 0 ? fresh : pickable)[Math.floor(Math.random() * (fresh.length > 0 ? fresh.length : pickable.length))];
-                state.queue = [{ song: s, charId: char.id, charName: char.name }];
-            }
-            // 推进：队列非空则把队首切为正在放（房间随每次到访"往前走"）
-            if (state.queue.length > 0) {
-                const next = state.queue.shift()!;
-                state.nowPlaying = { song: next.song, charId: next.charId, charName: next.charName, since: Date.now() };
-            }
-            state.updatedAt = Date.now();
-            await DB.saveVRMusicRoom(state);
+            let playingNow: VRMusicRoomState['nowPlaying'];
+
+            // 串行化写入：临界区内重新拉取最新房间态，再做点歌/自动放/推进队首，
+            // 杜绝并发 session 各拿旧快照整体写回而丢点歌、覆盖 nowPlaying。
+            await withSharedRoomLock(async () => {
+                const state: VRMusicRoomState = (await DB.getVRMusicRoom()) || { id: 'state', queue: [], updatedAt: Date.now() };
+                state.queue = state.queue || [];
+                // 点歌进队列
+                if (pick) {
+                    state.queue = [...state.queue, { song: pick, charId: char.id, charName: char.name }];
+                    queuedLabel = `${pick.name} - ${pick.artists}`;
+                }
+                // 没点歌、队列也空，但角色有歌单 → 自动放一首自己的，
+                // 免得新到访的角色还停在上一个人（甚至已经离开的人）点的歌上。
+                if (state.queue.length === 0 && pickable.length > 0) {
+                    const curId = state.nowPlaying?.song.id;
+                    const freshSongs = pickable.filter(s => s.id !== curId);
+                    const s = (freshSongs.length > 0 ? freshSongs : pickable)[Math.floor(Math.random() * (freshSongs.length > 0 ? freshSongs.length : pickable.length))];
+                    state.queue = [{ song: s, charId: char.id, charName: char.name }];
+                }
+                // 推进：队列非空则把队首切为正在放（房间随每次到访"往前走"）
+                if (state.queue.length > 0) {
+                    const next = state.queue.shift()!;
+                    state.nowPlaying = { song: next.song, charId: next.charId, charName: next.charName, since: Date.now() };
+                }
+                state.updatedAt = Date.now();
+                await DB.saveVRMusicRoom(state);
+                playingNow = state.nowPlaying;
+            });
 
             // 乐评落入角色音乐人格（continuity）
             if (parsed.review && curSong && char.musicProfile) {
@@ -334,7 +370,6 @@ export async function runVRSession(deps: VRSessionDeps): Promise<VRSessionResult
             await updateCharacter(char.id, { vrState: { ...prevState, currentRoom: 'music', lastActiveAt: Date.now() } });
 
             const songLabel = curSong ? `${curSong.song.name} - ${curSong.song.artists}` : undefined;
-            const playingNow = state.nowPlaying;
             activity = parsed.activity || (
                 curSong ? `在听歌房听着《${curSong.song.name}》晃了一会儿。`
                 : playingNow ? `进了听歌房，放上《${playingNow.song.name}》听了起来。`
@@ -347,25 +382,32 @@ export async function runVRSession(deps: VRSessionDeps): Promise<VRSessionResult
         } else if (room.id === 'guestbook') {
             // === 留言簿：发帖/回帖落墙 ===
             const parsed = parseGuestbookOutput(aiContent);
-            const board: VRGuestbookState = guestbook || { id: 'board', messages: [], updatedAt: Date.now() };
+            // 用开头那份快照解析"回复谁"的 #编号映射（被回复的旧消息仍在最新墙上）
             const id2 = new Map<string, string>();
             const id2name = new Map<string, string>();
-            for (const msg of board.messages) { id2.set(msg.id.slice(-4), msg.id); id2name.set(msg.id, msg.authorName); }
+            for (const msg of (guestbook?.messages || [])) { id2.set(msg.id.slice(-4), msg.id); id2name.set(msg.id, msg.authorName); }
             let firstPost: string | undefined;
             let firstReplyName: string | undefined;
             const mine: { content: string; replyToName?: string }[] = [];
+            const newMsgs: VRGuestbookMessage[] = [];
             for (const p of parsed.posts) {
                 const replyToId = p.replyLabel ? id2.get(p.replyLabel) : undefined;
                 const replyToName = replyToId ? id2name.get(replyToId) : undefined;
                 const msg: VRGuestbookMessage = { id: genId('gb'), authorId: char.id, authorName: char.name, content: p.content, replyToId, replyToName, createdAt: Date.now() };
-                board.messages.push(msg);
-                id2.set(msg.id.slice(-4), msg.id); id2name.set(msg.id, char.name);
+                newMsgs.push(msg);
+                id2.set(msg.id.slice(-4), msg.id); id2name.set(msg.id, char.name); // 同批后续留言可回复前面这条
                 mine.push({ content: p.content, replyToName });
                 if (firstPost === undefined) { firstPost = p.content; firstReplyName = replyToName; }
             }
-            board.messages = board.messages.slice(-200);
-            board.updatedAt = Date.now();
-            await DB.saveVRGuestbook(board);
+            // 串行化写入：临界区内重新拉取最新留言墙再追加本次新消息，杜绝并发覆盖
+            if (newMsgs.length > 0) {
+                await withSharedRoomLock(async () => {
+                    const fresh = (await DB.getVRGuestbook()) || { id: 'board', messages: [], updatedAt: Date.now() };
+                    fresh.messages = [...fresh.messages, ...newMsgs].slice(-200);
+                    fresh.updatedAt = Date.now();
+                    await DB.saveVRGuestbook(fresh);
+                });
+            }
             await updateCharacter(char.id, { vrState: { ...prevState, currentRoom: 'guestbook', lastActiveAt: Date.now() } });
 
             activity = parsed.activity || (firstPost
