@@ -14,7 +14,7 @@ import { useOS } from '../../context/OSContext';
 import { X, CaretLeft, CaretRight, Plus, Trash, Sparkle, Play, FilmSlate, UploadSimple, DownloadSimple } from '@phosphor-icons/react';
 import { DB } from '../../utils/db';
 import { SCRIPT_TEMPLATE } from '../../utils/vrWorld/constants';
-import { WRITING_PRESETS } from '../../utils/vrWorld/presets';
+import { WRITING_PRESETS, type WritingPreset } from '../../utils/vrWorld/presets';
 import { resolveTheaterApi, generateScript, polishScript, collectActorNotes, charActorCount, runDirector, type TheaterCtx } from '../../utils/vrWorld/theater';
 import { rollNpcChibi, randomNpcName } from '../../utils/vrWorld/npcRoll';
 import { getChibi } from '../../utils/vrWorld/chibi';
@@ -579,16 +579,63 @@ const PlaybackView: React.FC<{ play: VRStagedPlay; characters: CharacterProfile[
 };
 
 // ============ 风格 chips（润色 & 代写共用） ============
-// 写作风格预设选择器（像酒馆预设，选一个就给 LLM 灌一整套写作风格档案）
-const PresetChips: React.FC<{ value: string; onChange: (v: string) => void }> = ({ value, onChange }) => {
-    const sel = WRITING_PRESETS.find(p => p.key === value);
+// 写作风格预设选择器（像酒馆预设，选一个就给 LLM 灌一整套写作风格档案）。
+// 自带"自定义预设"的增删，自管理 customPresets，并通过 'vr-presets-changed' 事件互相同步。
+// onChange 同时把选中预设的完整 prompt 抛给父组件（含自定义的）。
+const PresetChips: React.FC<{ value: string; onChange: (key: string, prompt: string) => void }> = ({ value, onChange }) => {
+    const [custom, setCustom] = useState<WritingPreset[]>([]);
+    const [editing, setEditing] = useState(false);
+    const [name, setName] = useState(''); const [prompt, setPrompt] = useState('');
+    const load = useCallback(async () => setCustom(await DB.getVRPresets()), []);
+    useEffect(() => {
+        void load();
+        const h = () => { void load(); };
+        window.addEventListener('vr-presets-changed', h);
+        return () => window.removeEventListener('vr-presets-changed', h);
+    }, [load]);
+
+    const all = useMemo(() => [...WRITING_PRESETS, ...custom], [custom]);
+    const sel = all.find(p => p.key === value);
+
+    const save = async () => {
+        if (!name.trim() || !prompt.trim()) return;
+        await DB.saveVRPreset({ key: tid('preset'), name: name.trim(), prompt: prompt.trim() });
+        setEditing(false); setName(''); setPrompt('');
+        await load(); window.dispatchEvent(new CustomEvent('vr-presets-changed'));
+    };
+    const del = async (key: string) => {
+        await DB.deleteVRPreset(key);
+        if (value === key) onChange('', '');
+        await load(); window.dispatchEvent(new CustomEvent('vr-presets-changed'));
+    };
+
     return (
         <div style={{ marginBottom: 10 }}>
             <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 6, color: TH.text }}>写作风格预设 <span style={{ fontSize: 9.5, fontWeight: 400, color: TH.sub }}>选一个，灌一整套腔调/节拍/味道</span></div>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                {WRITING_PRESETS.map(p => { const on = value === p.key; return <span key={p.key} onClick={() => onChange(on ? '' : p.key)} style={{ padding: '4px 10px', borderRadius: 999, fontSize: 11, cursor: 'pointer', border: `1px solid ${on ? TH.gold : TH.line}`, background: on ? 'rgba(216,178,113,.16)' : TH.bg3, color: on ? TH.gold : TH.sub }}>{p.name}</span>; })}
+                {all.map(p => {
+                    const on = value === p.key;
+                    const isCustom = p.key.startsWith('preset_');
+                    return (
+                        <span key={p.key} onClick={() => onChange(on ? '' : p.key, on ? '' : p.prompt)} style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '4px 10px', borderRadius: 999, fontSize: 11, cursor: 'pointer', border: `1px solid ${on ? TH.gold : TH.line}`, background: on ? 'rgba(216,178,113,.16)' : TH.bg3, color: on ? TH.gold : TH.sub }}>
+                            {p.name}{isCustom && <span style={{ fontSize: 8.5, opacity: .6 }}>·我的</span>}
+                            {isCustom && <span onClick={(e) => { e.stopPropagation(); void del(p.key); }} style={{ marginLeft: 1, fontSize: 12, lineHeight: 1, color: TH.crimson }}>×</span>}
+                        </span>
+                    );
+                })}
+                <span onClick={() => setEditing(true)} style={{ padding: '4px 10px', borderRadius: 999, fontSize: 11, cursor: 'pointer', border: `1px dashed ${TH.line}`, background: 'transparent', color: TH.goldSoft }}>＋ 自定义</span>
             </div>
             {sel?.blurb && <div style={{ fontSize: 10, color: TH.sub, marginTop: 6, lineHeight: 1.5, fontStyle: 'italic', paddingLeft: 2, borderLeft: `2px solid ${TH.line}` }}> {sel.blurb}</div>}
+
+            {editing && (
+                <TModal open title="自定义预设" width={360} onClose={() => setEditing(false)}
+                    footer={<div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}><TButton onClick={() => setEditing(false)}>取消</TButton><TButton variant="primary" onClick={save}>保存</TButton></div>}>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                        <TInput value={name} onChange={e => setName(e.target.value)} placeholder="预设名（如：废土朋克、宫斗权谋…）" />
+                        <textarea value={prompt} onChange={e => setPrompt(e.target.value)} rows={8} placeholder={'整套写作风格档案，越具体越好：\n一句话坐标 / 味道 / 怎么写怎么说 / 对白引擎 / 道具意象 / 节拍…\n（可参考内置预设的写法）'} style={taStyle} />
+                    </div>
+                </TModal>
+            )}
         </div>
     );
 };
@@ -616,20 +663,19 @@ const WriteScriptModal: React.FC<{ open: boolean; onClose: () => void; onSave: (
 
 // ============ 弹窗：LLM 代写（可选风格） ============
 const LLMScriptModal: React.FC<{ open: boolean; onClose: () => void; apiConfig: any; addToast?: (m: string, t?: any) => void; onSaved: () => void }> = ({ open, onClose, apiConfig, addToast, onSaved }) => {
-    const [brief, setBrief] = useState(''); const [presetKey, setPresetKey] = useState(''); const [busy, setBusy] = useState(false);
+    const [brief, setBrief] = useState(''); const [presetKey, setPresetKey] = useState(''); const [presetPrompt, setPresetPrompt] = useState(''); const [busy, setBusy] = useState(false);
     const gen = async () => {
         const api = await resolveTheaterApi(apiConfig);
         if (!api) { addToast?.('没配 API', 'error'); return; }
-        const preset = WRITING_PRESETS.find(p => p.key === presetKey)?.prompt;
         setBusy(true);
-        try { const p = await generateScript(brief.trim() || '自由发挥，写一出有意思的短剧', api, preset); const s: VRScript = { id: tid('scr'), title: p.title, logline: p.logline, roles: p.roles, body: p.body, authorId: 'llm', authorName: 'LLM 编剧', source: 'llm', createdAt: Date.now() }; await DB.saveVRScript(s); addToast?.(`写好了《${s.title}》`, 'success'); setBrief(''); setPresetKey(''); onSaved(); }
+        try { const p = await generateScript(brief.trim() || '自由发挥，写一出有意思的短剧', api, presetPrompt || undefined); const s: VRScript = { id: tid('scr'), title: p.title, logline: p.logline, roles: p.roles, body: p.body, authorId: 'llm', authorName: 'LLM 编剧', source: 'llm', createdAt: Date.now() }; await DB.saveVRScript(s); addToast?.(`写好了《${s.title}》`, 'success'); setBrief(''); setPresetKey(''); setPresetPrompt(''); onSaved(); }
         catch (e: any) { addToast?.('代写失败：' + (e?.message || ''), 'error'); }
         finally { setBusy(false); }
     };
     return (
         <TModal open={open} title="LLM 代写" width={360} onClose={busy ? undefined : onClose} maskClosable={!busy} footer={<div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}><TButton onClick={onClose} disabled={busy}>取消</TButton><TButton variant="primary" disabled={busy} onClick={gen}>{busy ? '写作中…' : '写'}</TButton></div>}>
             <div style={{ maxHeight: '52vh', overflowY: 'auto' }}>
-                <PresetChips value={presetKey} onChange={setPresetKey} />
+                <PresetChips value={presetKey} onChange={(k, pr) => { setPresetKey(k); setPresetPrompt(pr); }} />
                 <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 6, color: TH.text }}>主题 / 脑洞（可空）</div>
                 <textarea value={brief} onChange={e => setBrief(e.target.value)} rows={3} placeholder="如：两个困在电梯里的陌生人" style={taStyle} />
             </div>
@@ -639,20 +685,19 @@ const LLMScriptModal: React.FC<{ open: boolean; onClose: () => void; apiConfig: 
 
 // ============ 弹窗：润色 ============
 const PolishModal: React.FC<{ open: boolean; onClose: () => void; apiConfig: any; body: string; addToast?: (m: string, t?: any) => void; onPolished: (body: string) => void }> = ({ open, onClose, apiConfig, body, addToast, onPolished }) => {
-    const [presetKey, setPresetKey] = useState(''); const [extra, setExtra] = useState(''); const [busy, setBusy] = useState(false);
+    const [presetKey, setPresetKey] = useState(''); const [presetPrompt, setPresetPrompt] = useState(''); const [extra, setExtra] = useState(''); const [busy, setBusy] = useState(false);
     const run = async () => {
         const api = await resolveTheaterApi(apiConfig);
         if (!api) { addToast?.('没配 API', 'error'); return; }
-        const preset = WRITING_PRESETS.find(p => p.key === presetKey)?.prompt || '';
         setBusy(true);
-        try { const p = await polishScript(body, preset, extra, api); onPolished(p.body); }
+        try { const p = await polishScript(body, presetPrompt, extra, api); onPolished(p.body); }
         catch (e: any) { addToast?.('润色失败：' + (e?.message || ''), 'error'); }
         finally { setBusy(false); }
     };
     return (
         <TModal open={open} title="润色剧本" width={360} onClose={busy ? undefined : onClose} maskClosable={!busy} footer={<div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}><TButton onClick={onClose} disabled={busy}>取消</TButton><TButton variant="primary" disabled={busy} onClick={run}>{busy ? '润色中…' : '润色'}</TButton></div>}>
             <div style={{ maxHeight: '52vh', overflowY: 'auto' }}>
-                <PresetChips value={presetKey} onChange={setPresetKey} />
+                <PresetChips value={presetKey} onChange={(k, pr) => { setPresetKey(k); setPresetPrompt(pr); }} />
                 <TInput value={extra} onChange={e => setExtra(e.target.value)} placeholder="额外要求（可空）" />
             </div>
         </TModal>

@@ -2072,6 +2072,7 @@ export interface FullBackupData {
     vrGuestbook?: VRGuestbookState;            // 留言簿共享状态
     vrScripts?: VRScript[];                     // 剧院·投稿剧本库
     vrStagedPlays?: VRStagedPlay[];             // 剧院·历史舞台剧
+    vrPresets?: { key: string; name: string; prompt: string; blurb?: string }[]; // 剧院·用户自定义写作风格预设
     vrLetters?: VRLetter[];                    // 邮局信件（本地存档+队列）
     vrSettings?: any[];                        // 彼方设置（独立 API + 调用记录）
     vrPostOffice?: Record<string, string>;     // 邮局本机配置：身份 deviceId / 后端地址（存 localStorage）
