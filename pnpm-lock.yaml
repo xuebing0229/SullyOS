@@ -45,8 +45,8 @@ importers:
         specifier: ^2.1.10
         version: 2.1.10(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
       '@rei-standard/amsg-client':
-        specifier: 2.4.0
-        version: 2.4.0
+        specifier: 2.5.0-next.0
+        version: 2.5.0-next.0
       '@rei-standard/amsg-instant':
         specifier: 0.9.0
         version: 0.9.0
@@ -851,8 +851,8 @@ packages:
       react: '>= 16.8'
       react-dom: '>= 16.8'
 
-  '@rei-standard/amsg-client@2.4.0':
-    resolution: {integrity: sha512-otWGkAM5PKKBST54Vlvf4YFuBkGjTcFQekApL9nKkXYMSbd6TiJqzduH4HnqenH6RUHpChKMqg4S45QER2gAvg==}
+  '@rei-standard/amsg-client@2.5.0-next.0':
+    resolution: {integrity: sha512-J8VExrRoX0fhRZ+jGCmgU/fTUtXrdwunadCMtLqTUEWiQvo1T1FKPnAHAfHsj+p2Oc5A3lUpTgGP0BR7Z45r7g==}
     engines: {node: '>=20'}
 
   '@rei-standard/amsg-instant@0.9.0':
@@ -2736,7 +2736,7 @@ snapshots:
       react: 18.3.1
       react-dom: 18.3.1(react@18.3.1)
 
-  '@rei-standard/amsg-client@2.4.0':
+  '@rei-standard/amsg-client@2.5.0-next.0':
     dependencies:
       '@rei-standard/amsg-shared': 0.2.0
 
