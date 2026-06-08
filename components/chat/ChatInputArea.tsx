@@ -264,7 +264,7 @@ const ChatInputArea: React.FC<ChatInputAreaProps> = ({
     const isDiscordStyle = inputStyle === 'discord';
     const isPixelStyle = inputStyle === 'pixel' || chromeStyle === 'pixel';
     const shellClass = acnh
-        ? 'bg-[#f3ecdc]/95 backdrop-blur-md border-t-[3px] border-[#e0d6c0] shadow-[0_-3px_0_rgba(159,146,125,0.16)]'
+        ? 'bg-[#54c2a2] border-t-[3px] border-[#3da88a] shadow-[0_-3px_0_rgba(45,140,110,0.2)]'
         : chromeStyle === 'pixel'
         ? 'bg-[#eadfce] border-t-[3px] border-[#8f674a] shadow-[0_-4px_0_rgba(123,90,64,0.15)]'
         : chromeStyle === 'flat'
@@ -272,14 +272,16 @@ const ChatInputArea: React.FC<ChatInputAreaProps> = ({
           : chromeStyle === 'floating'
             ? 'bg-white/80 backdrop-blur-2xl border-t border-white/60 shadow-[0_-12px_30px_rgba(148,163,184,0.18)]'
             : 'bg-white/90 backdrop-blur-2xl border-t border-slate-200/50 shadow-[0_-5px_15px_rgba(0,0,0,0.02)]';
-    const actionButtonClass = isPixelStyle
+    const actionButtonClass = acnh
+        ? 'w-11 h-11 shrink-0 rounded-full bg-white/25 flex items-center justify-center text-white hover:bg-white/35 transition-colors'
+        : isPixelStyle
         ? 'w-11 h-11 shrink-0 rounded-[4px] border-2 border-[#8f674a] bg-[#f8f0e0] flex items-center justify-center text-[#8f674a] hover:bg-[#fff7ed] transition-colors'
         : isDiscordStyle
           ? 'w-11 h-11 shrink-0 rounded-full bg-slate-800 flex items-center justify-center text-slate-200 hover:bg-slate-700 transition-colors'
           : 'w-11 h-11 shrink-0 rounded-full bg-slate-100 flex items-center justify-center text-slate-500 hover:bg-slate-200 transition-colors';
     const inputWrapClass =
         acnh
-            ? 'bg-white border-2 border-[#e0d6c0] rounded-full'
+            ? 'bg-white border-2 border-[#bfe6d8] rounded-full'
             :
         inputStyle === 'rounded'
             ? 'bg-slate-100 rounded-full'
@@ -296,7 +298,9 @@ const ChatInputArea: React.FC<ChatInputAreaProps> = ({
                       : inputStyle === 'pixel'
                         ? 'bg-[#f8f0e0] border-2 border-[#8f674a] rounded-[4px]'
                         : 'bg-slate-100 rounded-[24px]';
-    const sendButtonClass =
+    const sendButtonClass = acnh
+        ? 'w-11 h-11 shrink-0 rounded-full bg-white text-[#3da88a] flex items-center justify-center shadow-md'
+        :
         sendButtonStyle === 'pill'
             ? isPixelStyle
                 ? 'h-11 min-w-[72px] shrink-0 rounded-[4px] border-2 border-[#8f674a] bg-[#c99872] px-4 text-[11px] font-bold text-[#fff7ed]'

@@ -1967,14 +1967,15 @@ const Chat: React.FC = () => {
               : {
                   backgroundImage: 'none',
                 };
-    // 动森彩蛋：聊天背景用纯色（柔和草米色），简单稳。角色自带背景图时仍尊重角色设置。
+    // 动森彩蛋：浅色纯色中心（上下绿条由 header/输入栏负责），简单稳。
     const acnhRootClass = 'flex flex-col h-full overflow-hidden relative font-sans transition-[background-color] duration-500';
     const acnhRootStyle: React.CSSProperties = {
-        backgroundColor: '#E6EFD0',
+        backgroundColor: '#F3F0E1',
         backgroundImage: 'none',
     };
     const finalRootClass = acnh ? acnhRootClass : chatRootClass;
-    const finalRootStyle = acnh && !char.chatBackground ? acnhRootStyle : chatRootStyle;
+    // 动森下强制覆盖角色自定义聊天背景，保证整机一致的彩蛋观感
+    const finalRootStyle = acnh ? acnhRootStyle : chatRootStyle;
     const chatAvatarSizeClass = osTheme.chatAvatarSize === 'small' ? 'w-7 h-7' : osTheme.chatAvatarSize === 'large' ? 'w-12 h-12' : 'w-9 h-9';
     const chatAvatarRadiusClass = osTheme.chatAvatarShape === 'square' ? 'rounded-sm' : osTheme.chatAvatarShape === 'rounded' ? 'rounded-xl' : 'rounded-full';
     const chatPendingAvatarClass = `${chatAvatarSizeClass} ${chatAvatarRadiusClass} object-cover`;

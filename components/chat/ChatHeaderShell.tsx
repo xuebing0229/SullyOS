@@ -188,7 +188,7 @@ const ChatHeaderShell: React.FC<ChatHeaderShellProps> = ({
 
     const headerToneClass =
         acnh
-          ? 'bg-[#f3ecdc]/95 backdrop-blur-md border-b-[3px] border-[#e0d6c0] shadow-[0_3px_0_rgba(159,146,125,0.18)]'
+          ? 'bg-[#54c2a2] border-b-[3px] border-[#3da88a] shadow-[0_3px_0_rgba(45,140,110,0.25)]'
           :
         headerStyle === 'gradient'
             ? 'bg-gradient-to-r from-primary/20 via-primary/10 to-white/80 backdrop-blur-xl border-b border-slate-200/60 shadow-sm'
@@ -214,14 +214,18 @@ const ChatHeaderShell: React.FC<ChatHeaderShellProps> = ({
     const headerSafeStyle: React.CSSProperties = useCenteredLayout
         ? { minHeight: `calc(${headerBaseHeight} + var(--safe-top))`, paddingTop: `calc(var(--safe-top) + ${headerDensity === 'compact' ? '0.5rem' : headerDensity === 'airy' ? '1rem' : '0.75rem'})` }
         : { height: `calc(${headerBaseHeight} + var(--safe-top))` };
-    const primaryTextClass = isDarkHeader ? 'text-white' : isPixelHeader ? 'text-[#fff7ed]' : 'text-slate-800';
-    const secondaryTextClass = isDarkHeader ? 'text-slate-400' : isPixelHeader ? 'text-[#f3ddc7]' : 'text-slate-400';
-    const iconButtonClass = isDarkHeader
+    const primaryTextClass = acnh ? 'text-white' : isDarkHeader ? 'text-white' : isPixelHeader ? 'text-[#fff7ed]' : 'text-slate-800';
+    const secondaryTextClass = acnh ? 'text-white/85' : isDarkHeader ? 'text-slate-400' : isPixelHeader ? 'text-[#f3ddc7]' : 'text-slate-400';
+    const iconButtonClass = acnh
+        ? 'text-white hover:bg-white/25 rounded-full'
+        : isDarkHeader
         ? 'text-slate-200 hover:bg-white/10 rounded-full'
         : isPixelHeader
           ? 'text-[#fff7ed] hover:bg-[#f8f0e0]/20 rounded-[4px] border-2 border-[#8f674a] bg-[#f8f0e0]/10'
           : 'text-slate-500 hover:bg-slate-100 rounded-full';
-    const actionButtonClass = isDarkHeader
+    const actionButtonClass = acnh
+        ? 'text-white hover:bg-white/25 rounded-full'
+        : isDarkHeader
         ? 'text-sky-300 hover:bg-sky-400/10 rounded-full'
         : isPixelHeader
           ? 'text-[#fff7ed] hover:bg-[#f8f0e0]/20 rounded-[4px] border-2 border-[#8f674a] bg-[#f8f0e0]/10'
