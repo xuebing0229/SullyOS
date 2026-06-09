@@ -76,6 +76,7 @@ type Tab = 'world' | 'library' | 'settings' | 'api';
 interface FeedItem {
     msgId: number; charId: string; charName: string; avatar: string;
     timestamp: number; meta: VRCardMeta; content: string;
+    hidden: boolean; // 对 AI 上下文不可见（归档隐藏起点之前 / 记忆宫殿高水位之前）
 }
 
 // 每个房间的 chibi 站位（百分比坐标，底对齐）
@@ -161,11 +162,18 @@ const VRWorldApp: React.FC = () => {
             //   · 聊天攒多了把旧 vr_card 挤出最近窗口 → 不该因此从动态流消失。
             // （清空聊天会真删消息，删掉就没了——那是预期行为，逻辑不变。）
             const msgs = await DB.getVRCardsByCharId(c.id);
+            // 「对 AI 不可见」判定：归档隐藏起点（hideBeforeMessageId，m.id < 它即隐藏）
+            // 或记忆宫殿高水位（mp_lastMsgId，m.id <= 它即被向量记忆替代）。
+            // 两者都让 LLM 读不到原文——动态本身仍在，只是上下文看不到，UI 里暗显并标「已隐藏」。
+            const hideBefore = (c as any).hideBeforeMessageId || 0;
+            let mpHwm = 0;
+            try { mpHwm = parseInt(localStorage.getItem(`mp_lastMsgId_${c.id}`) || '0', 10) || 0; } catch { /* ignore */ }
+            const hiddenCut = Math.max(hideBefore - 1, mpHwm); // m.id <= hiddenCut ⇒ 对 AI 不可见
             for (const m of msgs) {
                 // 用户在留言簿的发言会广播进每个角色的 vr_card（供 LLM 上下文用），
                 // 但它不是"角色自己的动态"——不进动态流，也不当作 chibi 气泡。
                 if (!m.metadata?.userBoardPost) {
-                    items.push({ msgId: m.id, charId: c.id, charName: c.name, avatar: c.avatar, timestamp: m.timestamp, meta: m.metadata as VRCardMeta, content: m.content });
+                    items.push({ msgId: m.id, charId: c.id, charName: c.name, avatar: c.avatar, timestamp: m.timestamp, meta: m.metadata as VRCardMeta, content: m.content, hidden: m.id <= hiddenCut });
                 }
             }
         }
@@ -1032,14 +1040,14 @@ const WorldView: React.FC<{
     );
 };
 
-// 单条动态卡片：非管理态长按删除；管理态点击多选。
+// 单条动态卡片：非管理态长按删除；管理态点击多选。已隐藏（对 AI 不可见）的暗显并标「已隐藏」。
 const FeedCard: React.FC<{ item: FeedItem; onJump: (novelId: string | undefined, segIdx: number) => void; onRequestDelete: (item: FeedItem) => void; manageMode?: boolean; selected?: boolean; onToggleSelect?: (msgId: number) => void }> = ({ item, onJump, onRequestDelete, manageMode, selected, onToggleSelect }) => {
     const room = getRoom(item.meta.room);
     const { pressing, handlers } = useLongPress(() => onRequestDelete(item), 550);
     const cardHandlers = manageMode ? { onClick: () => onToggleSelect?.(item.msgId) } : handlers;
     return (
         <div {...cardHandlers}
-            className={`relative rounded-2xl p-3 flex gap-3 backdrop-blur-sm transition-transform ${pressing ? 'scale-[0.97]' : ''} ${manageMode ? 'cursor-pointer' : ''}`}
+            className={`relative rounded-2xl p-3 flex gap-3 backdrop-blur-sm transition-transform ${pressing ? 'scale-[0.97]' : ''} ${manageMode ? 'cursor-pointer' : ''} ${item.hidden && !selected ? 'opacity-55' : ''}`}
             style={{ background: selected ? 'rgba(99,102,241,0.20)' : pressing ? 'rgba(244,63,94,0.14)' : 'rgba(255,255,255,0.05)', border: `1px solid ${selected ? 'rgba(129,140,248,0.6)' : pressing ? 'rgba(244,63,94,0.4)' : 'rgba(255,255,255,0.07)'}`, boxShadow: '0 4px 18px rgba(0,0,0,.22)' }}>
             {manageMode && (
                 <div className="self-center shrink-0 h-5 w-5 rounded-full flex items-center justify-center" style={{ border: `1.5px solid ${selected ? '#818cf8' : 'rgba(255,255,255,.35)'}`, background: selected ? '#6366f1' : 'transparent' }}>
@@ -1051,6 +1059,7 @@ const FeedCard: React.FC<{ item: FeedItem; onJump: (novelId: string | undefined,
                 <div className="flex items-center gap-1.5 text-[11px]">
                     <span className="font-bold text-amber-200">{item.charName}</span>
                     <span className="text-indigo-300/50">{room.name}</span>
+                    {item.hidden && <span className="text-[8px] text-white/55 rounded-full px-1.5 py-[1px] leading-none shrink-0" style={{ border: '1px solid rgba(255,255,255,.2)', background: 'rgba(0,0,0,.28)' }}>已隐藏</span>}
                     <span className="ml-auto text-indigo-300/40 text-[9px] shrink-0">{new Date(item.timestamp).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>
                 </div>
                 <p className="text-[11.5px] text-indigo-50/90 mt-0.5 leading-snug">{stripSelfName(item.meta.activity, item.charName)}</p>
