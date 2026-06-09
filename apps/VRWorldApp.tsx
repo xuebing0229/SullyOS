@@ -3,7 +3,7 @@ import { useOS } from '../context/OSContext';
 import {
     ArrowLeft, Plus, Trash, BookOpen, Planet, Clock, Play, CaretRight, X,
     UploadSimple, PencilSimple, FlipHorizontal, CaretLeft, Sparkle,
-    CircleNotch, TextAa, Palette, Pause, MusicNotes, Queue, Question, Check,
+    CircleNotch, TextAa, Palette, Pause, MusicNotes, Queue, Question, Check, Gear,
 } from '@phosphor-icons/react';
 import TheaterPanel from './theater/TheaterPanel';
 import { CreatorIframe, type ChibiResult } from '../components/Like520Event';
@@ -987,14 +987,15 @@ const WorldView: React.FC<{
             <div className="flex items-center gap-2.5 mb-3 mt-1">
                 <span className="h-px flex-1" style={{ background: 'linear-gradient(90deg,transparent,rgba(255,255,255,.14))' }} />
                 <span className="text-[10.5px] tracking-[0.3em] text-white/50" style={{ fontFamily: `'Noto Serif SC',serif` }}>彼方动态</span>
+                <span className="h-px flex-1" style={{ background: 'linear-gradient(90deg,rgba(255,255,255,.14),transparent)' }} />
                 {feed.length > 0 && (
                     <button onClick={() => manageMode ? exitManage() : setManageMode(true)}
-                        className={`text-[10px] rounded-full px-2.5 py-0.5 transition-colors ${manageMode ? 'text-white/90' : 'text-white/55 hover:text-white/85'}`}
-                        style={{ border: `1px solid ${manageMode ? 'rgba(129,140,248,.55)' : 'rgba(255,255,255,.16)'}`, background: manageMode ? 'rgba(99,102,241,.18)' : 'rgba(255,255,255,.03)' }}>
-                        {manageMode ? '完成' : '管理'}
+                        aria-label={manageMode ? '退出管理' : '管理动态'}
+                        className="shrink-0 h-7 w-7 rounded-full flex items-center justify-center transition-colors"
+                        style={{ border: `1px solid ${manageMode ? 'rgba(129,140,248,.55)' : 'rgba(255,255,255,.14)'}`, background: manageMode ? 'rgba(99,102,241,.22)' : 'rgba(255,255,255,.03)', color: manageMode ? '#c7d2fe' : 'rgba(255,255,255,.55)' }}>
+                        {manageMode ? <X size={13} weight="bold" /> : <Gear size={14} weight="bold" />}
                     </button>
                 )}
-                <span className="h-px flex-1" style={{ background: 'linear-gradient(90deg,rgba(255,255,255,.14),transparent)' }} />
             </div>
             {feed.length === 0 ? (
                 <p className="text-[11px] text-white/40 py-5 text-center tracking-wide leading-relaxed">虚空尚无回响。<br />在「接入」里点亮角色，ta 们到点会独自登入这里。</p>
@@ -1034,7 +1035,7 @@ const WorldView: React.FC<{
         </div>
         <ConfirmDialog open={!!confirmDel} title="删除这条动态？" message={confirmDel ? `${confirmDel.charName} 在${getRoom(confirmDel.meta.room).name}的这条记录将被移除。` : ''}
             onConfirm={() => { if (confirmDel) onDeleteFeed(confirmDel.msgId); setConfirmDel(null); }} onCancel={() => setConfirmDel(null)} />
-        <ConfirmDialog open={confirmBatch} title={`删除选中的 ${selectedIds.size} 条动态？`} message="这些动态将从彼方永久移除（不影响聊天记录）。"
+        <ConfirmDialog open={confirmBatch} title={`删除选中的 ${selectedIds.size} 条动态？`} message="动态即聊天里的同一条卡片消息，删除后聊天记录里对应的卡片也会一并移除。"
             onConfirm={() => { onDeleteFeedMany(Array.from(selectedIds)); setSelectedIds(new Set()); setConfirmBatch(false); }} onCancel={() => setConfirmBatch(false)} />
     </div>
     );
