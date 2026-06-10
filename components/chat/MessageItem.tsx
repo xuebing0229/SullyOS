@@ -2059,6 +2059,9 @@ const MessageItem = React.memo(({
 
     const rawContent = m.content;
 
+    // 引用快照原样存着 %%BILINGUAL%% 等原始标记（双语消息），预览前先清洗
+    const replyPreview = m.replyTo ? stripJunk(m.replyTo.content) : '';
+
     // Parse %%BILINGUAL%% for bilingual display (langA = "选" language, langB = "译" language)
     const bilingualIdx = rawContent.toLowerCase().indexOf('%%bilingual%%');
     const hasBilingual = bilingualIdx !== -1;
@@ -2118,7 +2121,7 @@ const MessageItem = React.memo(({
             {m.replyTo && (
                 <div className="relative z-10 mb-1 text-[10px] bg-black/5 p-1.5 rounded-md border-l-2 border-current opacity-60 flex flex-col gap-0.5 max-w-full overflow-hidden">
                     <span className="font-bold opacity-90 truncate">{m.replyTo.name}</span>
-                    <span className="truncate italic">"{m.replyTo.content.length > 10 ? m.replyTo.content.slice(0, 10) + '...' : m.replyTo.content}"</span>
+                    <span className="truncate italic">"{replyPreview.length > 10 ? replyPreview.slice(0, 10) + '...' : replyPreview}"</span>
                 </div>
             )}
 

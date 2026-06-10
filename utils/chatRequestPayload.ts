@@ -122,13 +122,20 @@ function deriveListeningFromSnapshot(
     return { userListeningContext, isListeningTogether, musicCfg: cfg };
 }
 
-function cleanApiMessages(apiMessages: Array<{ role: string; content: any }>): Array<{ role: string; content: any }> {
+export function cleanApiMessages(apiMessages: Array<{ role: string; content: any }>): Array<{ role: string; content: any }> {
     return apiMessages.map((msg: any) => {
         if (typeof msg.content !== 'string') return msg;
         let c: string = msg.content;
         if (c.toLowerCase().includes('%%bilingual%%')) {
-            const idx = c.toLowerCase().indexOf('%%bilingual%%');
-            c = c.substring(0, idx).trim();
+            if (msg.role === 'assistant') {
+                // 双语历史「原文\n%%BILINGUAL%%\n译文」只把原文侧发给模型
+                const idx = c.toLowerCase().indexOf('%%bilingual%%');
+                c = c.substring(0, idx).trim();
+            } else {
+                // user 消息里的标记只可能是引用快照等夹带进来的，整段截断会把
+                // 标记之后用户的真实回复一起砍掉，这里只剥标记本身
+                c = c.replace(/%%bilingual%%/gi, '\n').trim();
+            }
         }
         if (c.includes('<翻译>')) {
             c = c.replace(/<翻译>\s*<原文>([\s\S]*?)<\/原文>\s*<译文>[\s\S]*?<\/译文>\s*<\/翻译>/g, '$1').trim();

@@ -765,7 +765,13 @@ ${xhsEnabled ? `${[notionEnabled, feishuEnabled, notionNotesEnabled].filter(Bool
                     // 旧格式 [回复 "引用前50字..."]: 回复 会把引用和回复挤在一行，引用往往比回复长得多，
                     // 模型注意力被引用淹没、只对引用做反应而忽略真正的新消息（即"对方只看到引用看不到回复"）。
                     const rawQuote = typeof m.replyTo.content === 'string' ? m.replyTo.content : '';
-                    const quoted = rawQuote.length > 60 ? rawQuote.slice(0, 60) + '…' : rawQuote;
+                    // 双语消息落库为「原文\n%%BILINGUAL%%\n译文」，replyTo 快照原样带着标记。
+                    // 引用框只取原文侧：标记若混进 user 消息，cleanApiMessages 剥双语时会从
+                    // 标记处砍掉整条消息，用户的新回复跟着消失（外语/粤语角色"只看到引用
+                    // 看不到回复"的根因）。
+                    const biIdx = rawQuote.toLowerCase().indexOf('%%bilingual%%');
+                    const quoteSource = (biIdx !== -1 ? rawQuote.slice(0, biIdx) : rawQuote).trim();
+                    const quoted = quoteSource.length > 60 ? quoteSource.slice(0, 60) + '…' : quoteSource;
                     // name 记的是被引用消息的说话人：char.name = 用户在回复 char 本人之前的话；'我' = 用户引用自己。
                     const whose = m.replyTo.name === char.name ? '你之前说的' : (m.replyTo.name === '我' ? '自己说的' : (m.replyTo.name || '对方') + '说的');
                     const speaker = m.role === 'user' ? '用户' : '你';
