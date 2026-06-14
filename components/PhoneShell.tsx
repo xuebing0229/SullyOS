@@ -475,6 +475,7 @@ const PhoneShell: React.FC = () => {
   // 逐个、空闲触发（requestIdleCallback），不与首屏交互抢主线程/带宽。
   useEffect(() => {
     if (!isDataLoaded) return;
+    if (useIOSStandaloneLayout) return;
     let cancelled = false;
     let idx = 0;
     const ric: (cb: () => void) => number = (window as any).requestIdleCallback
@@ -487,7 +488,7 @@ const PhoneShell: React.FC = () => {
     };
     const startId = window.setTimeout(() => ric(step), 150); // 让首帧先绘制一拍，随即开始（含开机动画期间）
     return () => { cancelled = true; window.clearTimeout(startId); };
-  }, [isDataLoaded]);
+  }, [isDataLoaded, useIOSStandaloneLayout]);
 
   // Disclaimer popup for first-time users
   const [showDisclaimer, setShowDisclaimer] = useState(() => {

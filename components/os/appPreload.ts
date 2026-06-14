@@ -1,4 +1,5 @@
 import { AppID } from '../../types';
+import { isIOSStandaloneWebApp } from '../../utils/iosStandalone';
 
 // AppID → 该 App 代码块的 import 工厂（路径相对本文件 components/os/）。
 // 与 PhoneShell 的 lazy 定义指向同一批模块；Vite 按模块 URL 去重，
@@ -58,6 +59,7 @@ export const setAppPayloadWarmer = (fn: (id: AppID) => void): void => { payloadW
  * 优先走负载预热（连 React.lazy 负载一起解析 → 无闪烁）；未注入时退化为仅预热 Vite 模块。
  */
 export const preloadApp = (id: AppID): void => {
+  if (isIOSStandaloneWebApp()) return;
   if (requested.has(id)) return;
   requested.add(id);
   if (payloadWarmer) { payloadWarmer(id); return; }
