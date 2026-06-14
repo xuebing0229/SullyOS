@@ -247,6 +247,34 @@ export async function runWorldEpisode(deps: WorldEpisodeDeps): Promise<WorldEpis
             }
         }
 
+        const memberNames = members.map(m => m.name);
+        // ⚡ 性能：每个角色的「读历史 + 记忆宫殿向量召回 + 拼 system prompt」是这一轮最慢的部分
+        //（召回含 embedding 网络请求 + 全量向量加载），过去在串行链里逐个角色现做，导致每条
+        // 角色消息发出前都要干等一次召回。这里把它们**全部并行预取**，并与 NPC 那次调用重叠——
+        // 链式聊天调用本身仍按顺序发（后者要看到前者的公开行为），但不再被召回卡住。
+        const payloadPrefetch = Promise.all(members.map(async (char) => {
+            try {
+                const others = memberNames.filter(n => n !== char.name);
+                const recallQueryHint = others.length > 0
+                    ? [
+                        `此刻在「${world.name}」共同生活的人：${others.join('、')}。`,
+                        `${others.join(' ')} ${others.join(' ')}`,
+                        `我对${others.join('、')}的印象、我和${others.join('、')}之间的关系与过往。`,
+                    ].join('\n')
+                    : undefined;
+                const contextLimit = Math.min(char.contextLimit || 80, 80);
+                const historyMsgs = await DB.getRecentMessagesByCharId(char.id, contextLimit);
+                const payload = await buildChatRequestPayload({
+                    char, userProfile, groups, emojis: [], categories: [],
+                    historyMsgs, contextLimit, realtimeConfig, recallQueryHint,
+                });
+                return { systemPrompt: payload.systemPrompt + buildWorldSystemAddendum(world, char, userProfile?.name || ''), cleanedApiMessages: payload.cleanedApiMessages };
+            } catch (e) {
+                console.error(`[WorldHome] payload prefetch failed for ${char.name}:`, e);
+                return null;
+            }
+        }));
+
         // ── 1. NPC 世界引擎（一次调用全搞定；没有 NPC 就跳过） ──
         let npcScene: string | undefined;
         let npcHooks: string[] = [];
@@ -280,7 +308,7 @@ export async function runWorldEpisode(deps: WorldEpisodeDeps): Promise<WorldEpis
         dispatch('world-beat-done', { worldId: world.id, stage: 'npc', done: 0, total: members.length });
 
         // ── 2. 链式角色演绎（每角色一次独立调用，后者能"看到"前者的公开行为） ──
-        const memberNames = members.map(m => m.name);
+        const charPayloads = await payloadPrefetch; // 召回/拼 prompt 已并行做完，链里直接取
         const lastBeats = lastEpisodes[0]?.beats || [];
         const beats: WorldCharBeat[] = [];
         const consumedDirectiveIds: string[] = [];
@@ -288,24 +316,9 @@ export async function runWorldEpisode(deps: WorldEpisodeDeps): Promise<WorldEpis
         for (let i = 0; i < members.length; i++) {
             const char = members[i];
             try {
-                const others = memberNames.filter(n => n !== char.name);
-                // 与彼方同款的名字加权召回：让向量记忆召回"我和这些人的关系"，
-                // 而不是被世界观情景词淹没。query = 当前世界的其他角色。
-                const recallQueryHint = others.length > 0
-                    ? [
-                        `此刻在「${world.name}」共同生活的人：${others.join('、')}。`,
-                        `${others.join(' ')} ${others.join(' ')}`,
-                        `我对${others.join('、')}的印象、我和${others.join('、')}之间的关系与过往。`,
-                    ].join('\n')
-                    : undefined;
-
-                const contextLimit = char.contextLimit || 500;
-                const historyMsgs = await DB.getRecentMessagesByCharId(char.id, contextLimit);
-                const payload = await buildChatRequestPayload({
-                    char, userProfile, groups, emojis: [], categories: [],
-                    historyMsgs, contextLimit, realtimeConfig, recallQueryHint,
-                });
-                const systemPrompt = payload.systemPrompt + buildWorldSystemAddendum(world, char, userProfile?.name || '');
+                const prep = charPayloads[i];
+                if (!prep) continue; // 该角色的上下文预取失败，这一段跳过
+                const systemPrompt = prep.systemPrompt;
                 const directive = (world.directives || []).find(d => d.charId === char.id);
                 // sim 模式：喂回这名角色自己的单视角总结 + 本卷氛围（绝不喂全知 synopsis）
                 const priorChapter = (world.timeMode === 'sim' && latestChapter)
@@ -330,7 +343,7 @@ export async function runWorldEpisode(deps: WorldEpisodeDeps): Promise<WorldEpis
                     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${api.apiKey || 'sk-none'}` },
                     body: JSON.stringify({
                         model: api.model,
-                        messages: [{ role: 'system', content: systemPrompt }, ...payload.cleanedApiMessages, { role: 'user', content: turn }],
+                        messages: [{ role: 'system', content: systemPrompt }, ...prep.cleanedApiMessages, { role: 'user', content: turn }],
                         temperature: 0.9, stream: false,
                     }),
                 }, 2, 0, { appName: '家园', charId: char.id, charName: char.name, purpose: `演绎 · ${world.name}` });
