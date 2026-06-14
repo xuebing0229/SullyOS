@@ -406,6 +406,37 @@ const Chat: React.FC = () => {
         }
     };
 
+    // 长按语音菜单里的「下载」：把已生成的语音音频存到本地。
+    // 优先用持久化的 blob；只有远端 URL（CORS 兜底）时先尝试拉回 blob，拉不到就直接开链接让用户自己存。
+    const handleDownloadVoice = async (msg: Message) => {
+        if (!msg?.id) return;
+        try {
+            const stored = await DB.getAssetRaw(voiceAssetKey(msg.id)) as StoredVoice | null;
+            let blob: Blob | null = stored?.blob instanceof Blob ? stored.blob : null;
+            if (!blob && stored?.remoteUrl) {
+                try { const r = await fetch(stored.remoteUrl); if (r.ok) blob = await r.blob(); } catch { /* CORS：走下面的兜底 */ }
+            }
+            const fname = `${(char?.name || '语音').replace(/[\\/:*?"<>|]/g, '_')}_语音_${msg.id}.mp3`;
+            const a = document.createElement('a');
+            a.download = fname;
+            if (blob) {
+                const u = URL.createObjectURL(blob);
+                a.href = u;
+                document.body.appendChild(a); a.click(); a.remove();
+                setTimeout(() => { try { URL.revokeObjectURL(u); } catch { /* ignore */ } }, 1000);
+            } else if (stored?.remoteUrl) {
+                a.href = stored.remoteUrl; a.target = '_blank'; a.rel = 'noopener';
+                document.body.appendChild(a); a.click(); a.remove();
+            } else {
+                addToast('这条还没有可下载的语音', 'error');
+                return;
+            }
+            addToast('语音已开始下载', 'success');
+        } catch {
+            addToast('语音下载失败', 'error');
+        }
+    };
+
     // --- Auto-TTS: when chatVoiceEnabled, auto-generate voice when AI uses <语音> tag ---
     // Scans ALL recent assistant messages (not just the last one) because chunkText
     // may split a single AI response into multiple messages, and the <语音> tag could
@@ -2410,6 +2441,8 @@ const Chat: React.FC = () => {
                 onSetChatVoiceLang={(lang: string) => updateCharacter(char.id, { chatVoiceLang: lang })}
                 voiceAvailable={!!(char.voiceProfile?.voiceId || char.voiceProfile?.timberWeights?.length)}
                 onGenerateVoice={selectedMessage ? () => handleManualTts(selectedMessage) : undefined}
+                voiceDownloadable={!!(selectedMessage?.id && voiceDataMap[selectedMessage.id])}
+                onDownloadVoice={selectedMessage ? () => handleDownloadVoice(selectedMessage) : undefined}
                 scheduleData={scheduleData}
                 isScheduleGenerating={isScheduleGenerating}
                 onScheduleEdit={handleScheduleEdit}
