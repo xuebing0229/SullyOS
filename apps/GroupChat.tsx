@@ -9,6 +9,7 @@ import { ContextBuilder } from '../utils/context';
 import { injectMemoryPalace } from '../utils/memoryPalace/pipeline';
 import { processGroupNewMessages, deleteGroupMemoriesByGroupId } from '../utils/memoryPalace/groupPipeline';
 import { processImage } from '../utils/file';
+import { stickerNameFromUrl } from '../utils/messageFormat';
 import { DEFAULT_ARCHIVE_PROMPTS } from '../components/chat/ChatConstants';
 import { UsersThree } from '@phosphor-icons/react';
 
@@ -763,7 +764,7 @@ ${recentPrivate || '(暂无私聊)'}
                         content = '[图片]';
                     }
                 } else if (m.type === 'emoji') {
-                    content = '[表情包]';
+                    content = `[表情包: ${stickerNameFromUrl(emojis, rawText.trim())}]`;
                 } else if (m.type === 'transfer') {
                     content = `[发红包: ${m.metadata?.amount}]`;
                 } else if (/^(data:|https?:\/\/)/i.test(rawText.trim())) {
@@ -924,7 +925,9 @@ ${attachedImagesNote}
                 jsonStr = jsonStr.substring(firstBracket, lastBracket + 1);
             }
 
-            let actions = [];
+            // director 解析出的行动数组（形状由 LLM 输出决定，逐字段读取时再各自判型）。
+            // 显式标 any[]：不假装它有精确类型，同时避免 evolving-any 在严格检查下漏报。
+            let actions: any[] = [];
             try {
                 actions = JSON.parse(jsonStr);
                 if (!Array.isArray(actions)) actions = [];
