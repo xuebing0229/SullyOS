@@ -217,9 +217,11 @@ const ChatHeaderShell: React.FC<ChatHeaderShellProps> = ({
     const headerBaseHeight = headerDensity === 'compact' ? '5rem' : headerDensity === 'airy' ? '7rem' : '6rem';
     // 两种对齐都用对称 py，让内容垂直居中（原标准布局只给 pb → 底贴、上方留白、整体不居中）。
     const headerDensityClass = headerDensity === 'compact' ? 'px-4 py-2' : headerDensity === 'airy' ? 'px-6 py-4' : 'px-5 py-3';
-    // safe-top 已由外层 spacer 单独让位（见 return：透明 + backdrop-blur 的状态栏占位条），
-    // header 主体不再把 --safe-top 算进高度（否则会让两次）；内容在 headerBaseHeight 内垂直居中。
-    const headerSafeStyle: React.CSSProperties = { minHeight: headerBaseHeight };
+    // 顶栏背景自己铺到刘海下：paddingTop 让出 safe-top，背景随 .sully-chat-header 一起从 y=0 延伸，
+    // 刘海段就是顶栏自己的颜色，和其余 App 统一无缝（取代旧的「透明 spacer」方案）。
+    // minHeight 是地板不是固定高度——border-box 下 padding 在它之上叠加把元素撑高、不挤压内容（区别于固定 h-NN 会劈开）。
+    // Chat 在 SELF_SAFE_AREA_APPS 名单里，外壳不再加 safe-top，这里加一次不会重复。
+    const headerSafeStyle: React.CSSProperties = { minHeight: headerBaseHeight, paddingTop: 'var(--safe-top)' };
     const primaryTextClass = acnh ? 'text-[#6b5a3e]' : isDarkHeader ? 'text-white' : isPixelHeader ? 'text-[#fff7ed]' : 'text-slate-800';
     const secondaryTextClass = acnh ? 'text-[#5a9e7a]' : isDarkHeader ? 'text-slate-400' : isPixelHeader ? 'text-[#f3ddc7]' : 'text-slate-400';
     const iconButtonClass = acnh
@@ -379,9 +381,7 @@ const ChatHeaderShell: React.FC<ChatHeaderShellProps> = ({
 
     return (
         <div className="shrink-0 z-30 sticky top-0">
-        {/* safe-top spacer：透明 + backdrop-blur 跟 iOS status bar 一致自适应容器色，刘海下不再铺白带 */}
-        <div className="bg-transparent backdrop-blur-xl" style={{ height: 'var(--safe-top)' }} />
-        {/* header 主体：sully-chat-header 钩子 + 内容垂直居中（items-center）；safe-top 已由上面 spacer 让位 */}
+        {/* header 主体：sully-chat-header 钩子背景从 y=0 铺起、paddingTop 让出 safe-top，刘海段即顶栏自己的背景（无缝，和其余 App 统一）；内容垂直居中 */}
         <div className={`sully-chat-header ${headerDensityClass} flex items-center relative ${headerToneClass}`} style={headerSafeStyle}>
             {/* 动森彩蛋：顶栏右下角纯色松树剪影（z-[-1] 在内容之下，不挡按钮）。塞在 header 主体内而非外层 spacer，否则会飘到刘海上 */}
             {acnh && !selectionMode && (
