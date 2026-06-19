@@ -113,6 +113,18 @@ const PersonaSim: React.FC<Props> = ({ targetChar, onExit, openLifeLog }) => {
     const beats = script?.beats || [];
     const beat = beats[idx];
 
+    // 图层化：找出「当前可见的屏幕」(lock/app/flashback)，通知/独白叠在它上面弹出，
+    // 背景屏幕只在真正切屏时才重新进场 —— 这是去掉「PPT 翻页感」的关键。
+    const screenIdx = (() => {
+        for (let i = idx; i >= 0; i--) {
+            const k = beats[i]?.kind;
+            if (k === 'lock' || k === 'app' || k === 'flashback') return i;
+        }
+        return -1;
+    })();
+    const screenBeat = screenIdx >= 0 ? beats[screenIdx] : undefined;
+    const isOverlay = beat?.kind === 'notification' || beat?.kind === 'thought';
+
     // ----- generation -----
     const start = async (selectedTheme: string) => {
         const t = selectedTheme.trim();
@@ -399,9 +411,18 @@ const PersonaSim: React.FC<Props> = ({ targetChar, onExit, openLifeLog }) => {
                 onPointerUp={e => { clearTimeout((e.currentTarget as any)._ff); stopFF(); }}
                 onPointerLeave={e => { clearTimeout((e.currentTarget as any)._ff); stopFF(); }}
             >
-                <div key={idx} className="absolute inset-0 animate-fade-in">
-                    {beat && <BeatStage beat={beat} char={targetChar} />}
-                </div>
+                {/* background screen — re-enters ONLY when the underlying screen changes */}
+                {screenBeat && (
+                    <div key={`s${screenIdx}`} className={`absolute inset-0 ${screenEntrance(screenBeat.kind)}`}>
+                        <ScreenContent beat={screenBeat} char={targetChar} showMono={!isOverlay} dimmed={isOverlay} />
+                    </div>
+                )}
+                {/* overlay — notification drops / thought fades, on top of the live screen */}
+                {beat && isOverlay && (
+                    <div key={`o${idx}`} className="absolute inset-0">
+                        <Overlay beat={beat} />
+                    </div>
+                )}
             </div>
 
             {/* progress + controls */}
@@ -424,101 +445,115 @@ const PersonaSim: React.FC<Props> = ({ targetChar, onExit, openLifeLog }) => {
 };
 
 // ============================================================
-//  BEAT STAGE — renders one beat
+//  ENTRANCE + MONOLOGUE
 // ============================================================
-const BeatStage: React.FC<{ beat: Beat; char: CharacterProfile }> = ({ beat, char }) => {
-    const mono = beat.monologue ? (
-        <div className="absolute left-0 right-0 bottom-6 px-8 text-center pointer-events-none">
-            <p className="text-[15px] text-white/85 leading-relaxed inline" style={{ fontFamily: "'Shippori Mincho','Noto Sans SC',serif", textShadow: '0 2px 12px rgba(0,0,0,0.6)' }}>
-                {beat.monologue}
-            </p>
-        </div>
-    ) : null;
+// 每种屏幕的进场动作 —— App 从底部弹起(像真的启动)、锁屏淡入、闪回淡入
+const screenEntrance = (kind: BeatKind): string =>
+    kind === 'app' ? 'animate-app-open' : 'animate-fade-in';
 
+// 逐字敲出的内心独白（底部）
+const MonoLine: React.FC<{ text: string }> = ({ text }) => (
+    <div className="absolute left-0 right-0 bottom-6 px-8 text-center pointer-events-none z-20">
+        <span className="inline-block px-3 py-1 rounded-2xl bg-black/30 backdrop-blur-sm">
+            <Typewriter drafts={[]} sent={text} placeholder=""
+                className="text-[15px] text-white/90 leading-relaxed" />
+        </span>
+    </div>
+);
+
+// ============================================================
+//  SCREEN CONTENT — lock / app / flashback (the persistent layer)
+// ============================================================
+const ScreenContent: React.FC<{ beat: Beat; char: CharacterProfile; showMono: boolean; dimmed?: boolean }> =
+    ({ beat, char, showMono, dimmed }) => {
+        const mono = showMono && beat.monologue ? <MonoLine text={beat.monologue} /> : null;
+        const dim = dimmed ? <div className="absolute inset-0 bg-black/25 backdrop-blur-[1px] z-10 pointer-events-none" /> : null;
+
+        if (beat.kind === 'lock') {
+            return (
+                <div className="absolute inset-0 flex flex-col items-center justify-center">
+                    <div className="text-[64px] font-extralight text-white tracking-tight tabular-nums leading-none animate-fade-in" style={{ textShadow: '0 4px 24px rgba(0,0,0,0.5)' }}>{beat.time || ''}</div>
+                    {beat.notif && (
+                        <div className="mt-10 w-[78%] rounded-2xl px-4 py-3 bg-white/[0.1] backdrop-blur-xl border border-white/[0.12] animate-slide-up">
+                            <div className="text-[10px] text-white/50 uppercase tracking-wide mb-0.5">{beat.notif.app}</div>
+                            <div className="text-[12.5px] text-white/90 font-medium">{beat.notif.title}</div>
+                            <div className="text-[11px] text-white/55 mt-0.5">{beat.notif.body}</div>
+                        </div>
+                    )}
+                    {dim}{mono}
+                </div>
+            );
+        }
+
+        if (beat.kind === 'flashback') {
+            const f = beat.flashback;
+            return (
+                <div className="absolute inset-0 flex flex-col items-center justify-center"
+                    style={{ background: `radial-gradient(circle at 50% 45%, ${f?.tint || '#3a2a4a'} 0%, #07080c 78%)` }}>
+                    <div className="absolute top-4 left-4 right-4 rounded-2xl px-4 py-2.5 bg-black/50 backdrop-blur-xl border border-white/[0.12] flex items-center gap-2 animate-slide-down">
+                        <ImageSquare size={16} className="text-pink-300" />
+                        <span className="text-[12px] text-white/85 font-medium">{f?.label || f?.date || '过去的某天'}</span>
+                    </div>
+                    <div className="w-[68%] aspect-[4/5] rounded-2xl overflow-hidden border border-white/[0.1] shadow-2xl relative grayscale-[35%] animate-fade-in"
+                        style={{ background: `linear-gradient(160deg, ${f?.tint || '#5a4a6a'}, #1a1520)`, animationDuration: '1.4s' }}>
+                        <div className="absolute inset-0 flex items-center justify-center opacity-40">
+                            <ImageSquare size={48} weight="thin" className="text-white" />
+                        </div>
+                        <div className="absolute bottom-0 left-0 right-0 p-3 bg-gradient-to-t from-black/70 to-transparent">
+                            {f?.date && <div className="text-[9px] text-white/50 tabular-nums">{f.date}</div>}
+                            {f?.caption && <div className="text-[12px] text-white/85">{f.caption}</div>}
+                        </div>
+                    </div>
+                    {beat.monologue
+                        ? <div className="mt-6 px-10 text-center"><Typewriter drafts={[]} sent={beat.monologue} placeholder="" className="text-[14px] text-white/80" /></div>
+                        : <p className="mt-6 text-[12px] text-white/30 tracking-[0.3em]">· · ·</p>}
+                </div>
+            );
+        }
+
+        // kind === 'app'
+        const a = beat.app;
+        if (!a) return <>{dim}{mono}</>;
+        return (
+            <div className="absolute inset-0 flex flex-col">
+                <div className="h-11 flex items-center gap-2 px-5 shrink-0 text-white/70 border-b border-white/[0.06]">
+                    {appIcon(a.view)}
+                    <span className="text-[12.5px] font-medium">{a.name}</span>
+                </div>
+                <div className="flex-1 overflow-hidden relative">
+                    <AppView app={a} char={char} />
+                </div>
+                {dim}{mono}
+            </div>
+        );
+    };
+
+// ============================================================
+//  OVERLAY — notification (drops) / thought (fades over the live screen)
+// ============================================================
+const Overlay: React.FC<{ beat: Beat }> = ({ beat }) => {
     if (beat.kind === 'thought') {
         return (
-            <div className="absolute inset-0 flex items-center justify-center px-10">
-                <p className="text-[19px] text-white/90 text-center leading-relaxed animate-fade-in" style={{ fontFamily: "'Shippori Mincho','Noto Sans SC',serif" }}>
-                    {beat.monologue || '……'}
-                </p>
+            <div className="absolute inset-0 flex items-center justify-center px-10 bg-black/45 backdrop-blur-sm">
+                <div className="text-center"><Typewriter drafts={[]} sent={beat.monologue || '……'} placeholder=""
+                    className="text-[19px] text-white/90 leading-relaxed" /></div>
             </div>
         );
     }
-
-    if (beat.kind === 'lock') {
-        return (
-            <div className="absolute inset-0 flex flex-col items-center justify-center">
-                <div className="text-[64px] font-extralight text-white tracking-tight tabular-nums leading-none" style={{ textShadow: '0 4px 24px rgba(0,0,0,0.5)' }}>{beat.time || ''}</div>
-                {beat.notif && (
-                    <div className="mt-10 w-[78%] rounded-2xl px-4 py-3 bg-white/[0.1] backdrop-blur-xl border border-white/[0.12]">
-                        <div className="text-[10px] text-white/50 uppercase tracking-wide mb-0.5">{beat.notif.app}</div>
-                        <div className="text-[12.5px] text-white/90 font-medium">{beat.notif.title}</div>
-                        <div className="text-[11px] text-white/55 mt-0.5">{beat.notif.body}</div>
-                    </div>
-                )}
-                {mono}
-            </div>
-        );
-    }
-
-    if (beat.kind === 'notification') {
-        const n = beat.notif;
-        const toneColor = n?.tone === 'sms' ? '#4ade80' : n?.tone === 'flashback' ? '#f0a' : ACCENT;
-        return (
-            <div className="absolute inset-0">
-                <div className="absolute top-4 left-4 right-4 rounded-2xl px-4 py-3 bg-black/55 backdrop-blur-2xl border border-white/[0.12] animate-slide-down shadow-2xl">
-                    <div className="flex items-center gap-2 mb-1">
-                        <span className="w-2 h-2 rounded-full" style={{ background: toneColor }} />
-                        <span className="text-[10px] text-white/55 uppercase tracking-wide">{n?.app}</span>
-                    </div>
-                    <div className="text-[13px] text-white font-semibold">{n?.title}</div>
-                    <div className="text-[11.5px] text-white/65 mt-0.5">{n?.body}</div>
-                </div>
-                {mono}
-            </div>
-        );
-    }
-
-    if (beat.kind === 'flashback') {
-        const f = beat.flashback;
-        return (
-            <div className="absolute inset-0 flex flex-col items-center justify-center animate-fade-in"
-                style={{ background: `radial-gradient(circle at 50% 45%, ${f?.tint || '#3a2a4a'} 0%, #07080c 78%)` }}>
-                <div className="absolute top-4 left-4 right-4 rounded-2xl px-4 py-2.5 bg-black/50 backdrop-blur-xl border border-white/[0.12] flex items-center gap-2 animate-slide-down">
-                    <ImageSquare size={16} className="text-pink-300" />
-                    <span className="text-[12px] text-white/85 font-medium">{f?.label || f?.date || '过去的某天'}</span>
-                </div>
-                <div className="w-[68%] aspect-[4/5] rounded-2xl overflow-hidden border border-white/[0.1] shadow-2xl relative grayscale-[35%]"
-                    style={{ background: `linear-gradient(160deg, ${f?.tint || '#5a4a6a'}, #1a1520)` }}>
-                    <div className="absolute inset-0 flex items-center justify-center opacity-40">
-                        <ImageSquare size={48} weight="thin" className="text-white" />
-                    </div>
-                    <div className="absolute bottom-0 left-0 right-0 p-3 bg-gradient-to-t from-black/70 to-transparent">
-                        {f?.date && <div className="text-[9px] text-white/50 tabular-nums">{f.date}</div>}
-                        {f?.caption && <div className="text-[12px] text-white/85">{f.caption}</div>}
-                    </div>
-                </div>
-                {beat.monologue
-                    ? <p className="mt-6 text-[14px] text-white/80 px-10 text-center" style={{ fontFamily: "'Shippori Mincho','Noto Sans SC',serif" }}>{beat.monologue}</p>
-                    : <p className="mt-6 text-[12px] text-white/30 tracking-[0.3em]">· · ·</p>}
-            </div>
-        );
-    }
-
-    // kind === 'app'
-    const a = beat.app;
-    if (!a) return mono;
+    // notification
+    const n = beat.notif;
+    const toneColor = n?.tone === 'sms' ? '#4ade80' : n?.tone === 'flashback' ? '#ff5fb0' : ACCENT;
     return (
-        <div className="absolute inset-0 flex flex-col">
-            {/* app chrome */}
-            <div className="h-11 flex items-center gap-2 px-5 shrink-0 text-white/70 border-b border-white/[0.06]">
-                {appIcon(a.view)}
-                <span className="text-[12.5px] font-medium">{a.name}</span>
+        <div className="absolute inset-0">
+            <div className="absolute top-4 left-4 right-4 rounded-2xl px-4 py-3 bg-black/60 backdrop-blur-2xl border border-white/[0.14] animate-notif-pop shadow-2xl">
+                <div className="flex items-center gap-2 mb-1">
+                    <span className="w-2 h-2 rounded-full" style={{ background: toneColor, boxShadow: `0 0 8px ${toneColor}` }} />
+                    <span className="text-[10px] text-white/55 uppercase tracking-wide">{n?.app}</span>
+                </div>
+                <div className="text-[13px] text-white font-semibold">{n?.title}</div>
+                <div className="text-[11.5px] text-white/65 mt-0.5">{n?.body}</div>
             </div>
-            <div className="flex-1 overflow-hidden relative">
-                <AppView app={a} char={char} />
-            </div>
-            {mono}
+            {beat.monologue && <MonoLine text={beat.monologue} />}
         </div>
     );
 };
@@ -546,7 +581,8 @@ const AppView: React.FC<{ app: NonNullable<Beat['app']>; char: CharacterProfile 
             <div className="h-full overflow-y-auto no-scrollbar px-4 py-4 space-y-2.5">
                 <div className="text-center text-[10px] text-white/30 mb-2">{app.chat.name}</div>
                 {app.chat.lines.map((l, i) => (
-                    <div key={i} className={`flex ${l.me ? 'justify-end' : 'justify-start'}`}>
+                    <div key={i} className={`flex ${l.me ? 'justify-end' : 'justify-start'} animate-fade-in`}
+                        style={{ animationDelay: `${i * 320}ms`, animationFillMode: 'backwards' }}>
                         <div className={`px-3.5 py-2 rounded-2xl max-w-[74%] text-[13px] leading-relaxed ${l.me ? 'text-[#1a1530] rounded-br-md' : 'bg-white/[0.08] text-white/90 border border-white/[0.06] rounded-bl-md'}`}
                             style={l.me ? { background: ACCENT } : undefined}>
                             {l.text}
