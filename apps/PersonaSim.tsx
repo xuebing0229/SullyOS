@@ -117,7 +117,7 @@ export async function generatePersonaScript(opts: {
     await injectMemoryPalace(char, undefined, theme, userProfile.name);
     const context = ContextBuilder.buildCoreContext(char, userProfile, true, char.memoryPalaceInjection);
     const msgs = await DB.getMessagesByCharId(char.id);
-    const recent = msgs.slice(-50).map(m => {
+    const recent = msgs.slice(-200).map(m => {
         const who = m.role === 'user' ? userProfile.name : char.name;
         const c = m.type === 'text' ? m.content : `[${m.type}]`;
         return `${who}: ${c}`;
@@ -132,11 +132,12 @@ export async function generatePersonaScript(opts: {
     });
     if (!res.ok) throw new Error('API');
     const data = await safeResponseJson(res);
+    // 截断直接报错，不兜底：模型输出被 token 上限截断时 finish_reason 为 'length'
+    if (data.choices?.[0]?.finish_reason === 'length') throw new Error('演出生成被截断');
     const parsed = parseScript(data.choices[0].message.content);
     if (!parsed || !parsed.beats?.length) throw new Error('parse');
-    if (parsed.beats[parsed.beats.length - 1].kind !== 'end') {
-        parsed.beats.push({ kind: 'end', time: parsed.beats[parsed.beats.length - 1].time });
-    }
+    // 不兜底：结尾必须是模型自己收束好的 end，否则视为不完整/被截断，报错让用户重试
+    if (parsed.beats[parsed.beats.length - 1].kind !== 'end') throw new Error('演出结尾不完整');
     return parsed;
 }
 
