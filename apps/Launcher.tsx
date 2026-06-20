@@ -7,6 +7,7 @@ import { DB } from '../utils/db';
 import { CharacterProfile, Anniversary, AppID, DailySchedule } from '../types';
 import { ScheduleHomeWidget, ScheduleFullscreenViewer } from '../components/schedule/ScheduleHomeWidget';
 import NowPlayingSquareWidget from '../components/os/NowPlayingSquareWidget';
+import MobileGameHome from '../components/os/MobileGameHome';
 
 // --- Isolated Components to prevent full re-renders ---
 
@@ -631,6 +632,11 @@ const Launcher: React.FC = () => {
   
   const totalUnread = Object.values(unreadMessages).reduce((a, b) => a + b, 0);
   const widgetUnread = widgetChar && unreadMessages[widgetChar.id] ? unreadMessages[widgetChar.id] : 0;
+
+  // 手游主题：整页换成二次元手游首页布局（独立组件自渲染），不走下面的默认/动森启动器。
+  if (theme.skin === 'mobilegame') {
+    return <MobileGameHome />;
+  }
 
   return (
     <div className="h-full w-full flex flex-col relative z-10 overflow-hidden font-sans select-none">
