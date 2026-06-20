@@ -585,6 +585,7 @@ export interface PhoneSimLog {
     ending?: string;      // 多结局版本标签
     beatsCount: number;
     buff?: { label: string; emoji?: string; color?: string };
+    memoryText?: string;  // 演出可读梗概，作为回忆发给角色时用（让角色真的"知道"发生了什么）
     timestamp: number;
 }
 

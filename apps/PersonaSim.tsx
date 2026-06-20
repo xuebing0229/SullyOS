@@ -201,6 +201,7 @@ const PersonaSim: React.FC<Props> = ({ targetChar, onExit, openLifeLog, sim, onS
             summary: script.summary || '',
             ending: script.ending,
             beatsCount: beats.length,
+            memoryText: buildMemoryText(script),
             timestamp: Date.now(),
         };
 
@@ -286,7 +287,8 @@ const PersonaSim: React.FC<Props> = ({ targetChar, onExit, openLifeLog, sim, onS
         if (!script || memorySent) return;
         const title = script.title || theme;
         const summary = script.summary || '';
-        const content = `${title}｜${theme}${summary ? '\n' + summary : ''}`;
+        const digest = buildMemoryText(script);
+        const content = `【一段亲身经历 · ${title}（${theme}）】\n${digest}${summary ? `\n\n回过头想：${summary}` : ''}`;
         try {
             await DB.saveMessage({
                 charId: targetChar.id, role: 'assistant', type: 'sim_card', content,
@@ -902,9 +904,10 @@ export const LifeLog: React.FC<{ targetChar: CharacterProfile; onBack: () => voi
     const sendLog = async (log: PhoneSimLog) => {
         if (sent[log.id]) return;
         try {
+            const digest = log.memoryText ? `\n${log.memoryText}` : '';
             await DB.saveMessage({
                 charId: targetChar.id, role: 'assistant', type: 'sim_card',
-                content: `${log.title}｜${log.theme}${log.summary ? '\n' + log.summary : ''}`,
+                content: `【一段亲身经历 · ${log.title}（${log.theme}）】${digest}${log.summary ? `\n\n回过头想：${log.summary}` : ''}`,
                 metadata: { simCard: { mode: log.mode, theme: log.theme, title: log.title, summary: log.summary, ending: log.ending } },
             } as any);
             setSent(s => ({ ...s, [log.id]: true }));
@@ -971,6 +974,94 @@ function describeAcquaintance(firstTs: number | undefined, userName: string, cha
     return `${charName} 与 ${userName} 自首次接触至今${span}（${days} 天）。`;
 }
 
+// 把演出脚本压成「可读梗概」——作为回忆发给角色时用这个（让角色真的知道发生了什么，
+// 而不是只收到一句留白的收尾）。
+function buildMemoryText(s: SimScript): string {
+    const lines: string[] = [];
+    for (const b of s.beats) {
+        if (b.kind === 'end') continue;
+        const t = b.time ? b.time + ' ' : '';
+        const mono = b.monologue ? `（${b.monologue}）` : '';
+        if (b.kind === 'thought') { if (b.monologue) lines.push(`${t}心里：${b.monologue}`); continue; }
+        if (b.kind === 'notification' && b.notif) { lines.push(`${t}${b.notif.app}通知：${b.notif.title}${b.notif.body ? ' ' + b.notif.body : ''}${mono}`); continue; }
+        if (b.kind === 'flashback') { lines.push(`${t}相册突然翻出${b.flashback?.label || '一张旧照片'}${b.flashback?.caption ? '：' + b.flashback.caption : ''}${mono}`); continue; }
+        if (b.kind === 'lock') { lines.push(`${t}${b.notif ? `锁屏，${b.notif.app}：${b.notif.title}` : '看了眼锁屏'}${mono}`); continue; }
+        if (b.kind === 'app' && b.app) {
+            const a = b.app; let act = `打开${a.name}`;
+            if (a.view === 'search' && a.search) act += `，搜：${a.search.queries.map(q => q.q).join(' → ')}`;
+            else if (a.view === 'compose' && a.compose) act += a.compose.sent ? `，给${a.compose.to || '对方'}发了「${a.compose.sent}」` : `，打了字又删了（${(a.compose.drafts || []).join('；')}）`;
+            else if (a.view === 'chat' && a.chat) act += `，和${a.chat.name}：${a.chat.lines.map(l => (l.me ? '我:' : '对方:') + l.text).join(' ')}`;
+            else if (a.view === 'photo' && a.photo) act += `，看一张照片${a.photo.caption ? '：' + a.photo.caption : ''}`;
+            else if (a.view === 'music' && a.music) act += `，听《${a.music.song}》${a.music.artist ? ' - ' + a.music.artist : ''}`;
+            else if (a.view === 'notes' && a.notes) act += `，备忘录：${(a.notes.items || []).join('；')}`;
+            else if (a.view === 'browser' && a.browser) act += `，标签页：${(a.browser.tabs || []).join('；')}`;
+            else if (a.view === 'weather' && a.weather) act += `，看天气（${a.weather.temp}° ${a.weather.desc}）`;
+            else if (a.text) act += `：${a.text}`;
+            lines.push(`${t}${act}${mono}`);
+        }
+    }
+    let text = lines.join('\n');
+    if (text.length > 1800) text = text.slice(0, 1800) + '…';
+    return text;
+}
+
+// 「本场变奏」——每次随机抽几根轴当硬约束，打破固定的起床→刷手机→睡觉流水账
+const vPick = <T,>(arr: T[]): T => arr[Math.floor(Math.random() * arr.length)];
+function buildVariation(): string {
+    const entry = vPick([
+        '从一个不起眼的中间时刻切入（绝不要从「起床/醒来/关闹钟」开始）',
+        '从午后犯困、注意力涣散的那一刻切入',
+        '从黄昏、天快黑了还没开灯的那一刻切入',
+        '从深夜睡不着、第无数次点亮屏幕切入',
+        '从通勤/在路上、单手划手机切入',
+        '从被一条通知突然打断的瞬间切入',
+        '从一件正做到一半的事中途切入',
+    ]);
+    const span = vPick([
+        '整场只覆盖十几分钟的一个片段，密度高、范围小',
+        '只覆盖某半天里零散的几个空隙',
+        '在同一个时刻反复回返（时间几乎没走，心思在原地打转）',
+        '跨越深夜到天亮前的一小段',
+        '一天里互不相连的三四个碎片，跳着来',
+    ]);
+    const structure = vPick([
+        '整场几乎围绕「一个 App」展开，很少离开它',
+        '整场围绕「一件小物 / 一条未读 / 一张旧图」打转',
+        '在两件不相干的事之间反复横跳',
+        '大量留白，几乎什么都没发生，靠空气感和零碎动作撑',
+        '被一个突发（来电/通知/没电）打断后，再也没回到原来的事',
+        '线性但克制，靠细节而非情节推进',
+    ]);
+    const medium = vPick([
+        '以「搜了又删、删了又搜」为主要表达',
+        '以「翻看相册」为主要表达',
+        '以「打字→删除→再打字」的反复为主要表达',
+        '以「一首歌单曲循环 + 走神」为主要表达',
+        '以「和某一个联系人有一搭没一搭的聊天」为主要表达',
+        '以「一堆与主线无关的环境碎片（通知/待办/标签页/购物车）」为主要表达',
+    ]);
+    const mood = vPick([
+        '平静钝感，情绪几乎贴着地面', '隐隐的烦躁，说不清为什么',
+        '一闪而过的开心，自己都没太当回事', '麻木、抽离，像隔着一层玻璃',
+        '怀念某个具体的人或时刻', '低度焦虑，反复确认某件小事',
+        '自我欺骗，嘴上一套、行为一套',
+    ]);
+    const anchor = vPick([
+        '一杯早就凉掉的咖啡/茶', '一条打好了却没发出去的消息', '一张忘了删的截图',
+        '一个挂了半年的待办', '一首单曲循环的歌', '一个一直没人回的群',
+        '一条快递的物流页', '一个总点开又退出的页面', '一张存了很久没再看的照片',
+        '一个删到一半的草稿',
+    ]);
+    return `### [本场变奏 · 必须严格遵守，让这一场和上一场截然不同]
+- 切入：${entry}
+- 跨度：${span}
+- 结构：${structure}
+- 主导表达：${medium}
+- 情绪底色：${mood}
+- 具体锚点：让这一场反复回到「${anchor}」上（可改写成更贴合人设的同类小物）
+※ 严禁套路化：不要从「起床/关闹钟/看天气」开场，也不要默认以「睡觉/锁屏」收尾，更不要走「醒来→刷一圈微信微博→睡觉」的流水账。下方字段示例只演示 JSON 格式，时间和内容一律按本场变奏来。`;
+}
+
 function buildDirectorPrompt(context: string, recent: string, mode: 'daily' | 'event', theme: string, name: string, acquaintance: string): string {
     return `${context}
 
@@ -984,6 +1075,8 @@ ${recent || '（暂无最近对话）'}
 关系时间线（重要护栏）：${acquaintance}
 
 观众（用户）将**成为 ${name}**，通过 TA 使用手机的行为，亲身经历这段时间。
+
+${buildVariation()}
 
 【铁律】
 1. 不要把故事讲出来，不要解释人物，不要分析情绪，不要总结意义。一切通过**手机行为 / 数字痕迹 / 内心独白 / 环境碎片**自然呈现。
@@ -1031,7 +1124,7 @@ kind 取值与字段：
 - {"kind":"flashback","time":"15:00","flashback":{"label":"三个月前的今天","caption":"...","date":"...","tint":"#4a3a5a"},"monologue":""}  // 记忆闪回(可选)，label=自洽的时间口径，monologue留空=沉默
 - {"kind":"end","time":"23:40"}  // 最后一个 beat 必须是 end
 
-请确保 beats 有清晰的时间推进、节奏起伏、至少一处 compose 或 search 的“打字/删除”行为、至少一处环境碎片、一处情绪高潮(pace=3 的连续 beats)。直接输出 JSON 对象。`;
+请严格贴合上面的【本场变奏】（切入/跨度/结构/主导表达/情绪/锚点都要落地），并确保 beats 有节奏起伏、至少一处 compose 或 search 的“打字/删除”行为、至少一处环境碎片、一处情绪高潮(pace=3 的连续 beats)。直接输出 JSON 对象。`;
 }
 
 function parseScript(raw: string): SimScript | null {
