@@ -337,8 +337,8 @@ const MobileGameHome: React.FC = () => {
                     ))}
                 </div>
 
-                {/* ===== 最新公告 ===== */}
-                <button onClick={() => openApp(AppID.HotNews)}
+                {/* ===== 最新公告（点进去 = 当前聊天）===== */}
+                <button onClick={() => openApp(AppID.Chat)}
                     className="relative w-full text-left mt-4 rounded-2xl p-3.5 flex items-center gap-3 active:scale-[0.99] transition-transform animate-fade-in overflow-hidden"
                     style={CARD}>
                     <Sparkles items={[[8, 24, 9, PAL.pink, 0.7], [4, 70, 8, PAL.peri, 0.6]]} />
