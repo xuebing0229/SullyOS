@@ -328,9 +328,9 @@ const MobileGameHome: React.FC = () => {
                         </div>
                     ) : (
                         <img src={chibi.img} alt="" loading="lazy"
-                            className="absolute right-1 bottom-0 object-contain pointer-events-none"
+                            className="absolute right-0 bottom-0 object-contain pointer-events-none"
                             style={{
-                                height: `${11 * (chibi.scale || 1)}rem`,
+                                height: `${7.5 * (chibi.scale || 1)}rem`,
                                 transform: `scaleX(${chibi.flip ? -1 : 1}) translateY(${chibi.offsetY || 0}px)`,
                                 filter: 'drop-shadow(0 5px 10px rgba(120,90,170,0.45))',
                             }} />
