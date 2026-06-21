@@ -1568,6 +1568,19 @@ const MessageItem = React.memo(({
             <div
                 onClick={openPage}
                 className="w-64 bg-white rounded-2xl overflow-hidden border border-slate-200/80 shadow-[0_2px_10px_rgba(0,0,0,0.05)] cursor-pointer active:opacity-90 transition-opacity">
+                {/* 封面图（og:image / 正文首图），加载失败自动隐藏 */}
+                {wp.image && (
+                    <div className="w-full h-32 bg-slate-100 overflow-hidden">
+                        <img
+                            src={wp.image}
+                            alt=""
+                            className="w-full h-full object-cover"
+                            loading="lazy"
+                            referrerPolicy="no-referrer"
+                            onError={(e: any) => { const c = e.target?.parentElement; if (c) c.style.display = 'none'; }}
+                        />
+                    </div>
+                )}
                 <div className="p-3.5">
                     {/* 域名行 */}
                     <div className="flex items-center gap-1.5 mb-2">

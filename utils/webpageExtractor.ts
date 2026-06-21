@@ -30,6 +30,8 @@ export interface ExtractedWebpage {
   content: string;
   /** 短摘要（meta description / 正文开头）。 */
   excerpt: string;
+  /** 封面图 URL（og:image / 正文首图），卡片显示用。 */
+  image?: string;
   /** 正文是否因超长被截断。 */
   truncated: boolean;
   /** 抓取时间戳。 */
@@ -123,11 +125,13 @@ export function parseWebpageHtml(html: string, url: string): {
   siteName?: string;
   content: string;
   excerpt: string;
+  image?: string;
 } {
   let title = '';
   let siteName: string | undefined;
   let metaDesc = '';
   let content = '';
+  let image: string | undefined;
 
   try {
     const doc = new DOMParser().parseFromString(html, 'text/html');
@@ -142,6 +146,12 @@ export function parseWebpageHtml(html: string, url: string): {
       doc.querySelector('meta[property="og:description"]')?.getAttribute('content') ||
       ''
     ).trim();
+    // 封面图：og:image / twitter:image。
+    image = (
+      doc.querySelector('meta[property="og:image"]')?.getAttribute('content') ||
+      doc.querySelector('meta[name="twitter:image"]')?.getAttribute('content') ||
+      ''
+    ).trim() || undefined;
 
     // 干掉明显的非正文噪音节点。
     doc.querySelectorAll(
@@ -174,7 +184,14 @@ export function parseWebpageHtml(html: string, url: string): {
     siteName,
     content: truncatedContent,
     excerpt,
+    image,
   };
+}
+
+/** 从 Jina Reader 的 markdown 正文里揪出第一张图片 URL（![alt](url)）作封面。 */
+function firstImageFromMarkdown(md: string): string | undefined {
+  const m = md.match(/!\[[^\]]*\]\((https?:\/\/[^\s)]+)\)/);
+  return m ? m[1] : undefined;
 }
 
 /**
@@ -201,6 +218,7 @@ export async function extractWebpageContent(url: string): Promise<ExtractedWebpa
       siteName,
       content,
       excerpt: makeExcerpt(content),
+      image: firstImageFromMarkdown(rawContent),
       truncated: rawContent.length > MAX_CONTENT_CHARS,
       fetchedAt: Date.now(),
     };
@@ -226,6 +244,7 @@ export async function extractWebpageContent(url: string): Promise<ExtractedWebpa
     siteName: parsed.siteName,
     content: parsed.content,
     excerpt: parsed.excerpt,
+    image: parsed.image,
     truncated: rawContent.length > MAX_CONTENT_CHARS,
     fetchedAt: Date.now(),
   };

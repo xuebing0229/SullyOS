@@ -6,10 +6,11 @@ import { Message, MessageType, MemoryFragment, Emoji, EmojiCategory, DailySchedu
 import { processImage } from '../utils/file';
 import { safeResponseJson, extractContent } from '../utils/safeApi';
 import { generateDailyScheduleForChar, isScheduleFeatureOn } from '../utils/scheduleGenerator';
-import { formatMessageWithTime } from '../utils/messageFormat';
+import { formatMessageWithTime, normalizeMessageContent } from '../utils/messageFormat';
 import { getRoomLabel } from '../utils/memoryPalace/types';
 import { XhsMcpClient, extractNotesFromMcpData, normalizeNote } from '../utils/xhsMcpClient';
 import { extractWebpageContent, detectFirstUrl, isXhsUrl } from '../utils/webpageExtractor';
+import { isDevDebugAvailable } from '../utils/devDebug';
 import { isMcdConfigured } from '../utils/mcdMcpClient';
 import { isMcdActivatedInMessages, MCD_ACTIVATE_TRIGGER, MCD_DEACTIVATE_TRIGGER } from '../utils/mcdToolBridge';
 import { isLuckinConfigured } from '../utils/luckinMcpClient';
@@ -876,6 +877,14 @@ const Chat: React.FC = () => {
                     content: note.title || '小红书笔记',
                     metadata: { xhsNote: note }
                 });
+                // F12 调试（仅开发分支）：打印卡片存了啥 + 角色实际会读到的文本。
+                if (isDevDebugAvailable()) {
+                    console.log('[卡片调试] 小红书卡片·metadata =', note);
+                    console.log('[卡片调试] 小红书卡片·角色将读到 =\n' + normalizeMessageContent(
+                        { type: 'xhs_card', role: 'user', content: note.title || '小红书笔记', metadata: { xhsNote: note } } as any,
+                        char.name, userProfile.name,
+                    ));
+                }
             }
 
             // 通用网页分享：检测到普通 http(s) 链接 → 抓取正文存成 webpage_card，
@@ -892,6 +901,14 @@ const Chat: React.FC = () => {
                         content: webpage.title,
                         metadata: { webpage },
                     });
+                    // F12 调试（仅开发分支）：打印卡片存了啥 + 角色实际会读到的文本。
+                    if (isDevDebugAvailable()) {
+                        console.log('[卡片调试] 网页卡片·metadata =', webpage);
+                        console.log('[卡片调试] 网页卡片·角色将读到 =\n' + normalizeMessageContent(
+                            { type: 'webpage_card', role: 'user', content: webpage.title, metadata: { webpage } } as any,
+                            char.name, userProfile.name,
+                        ));
+                    }
                 } catch (e: any) {
                     console.warn('Webpage fetch failed:', e);
                     addToast(`网页抓取失败：${e?.message || '可能被站点拦截，建议在设置里配置 instant worker 作代理'}`, 'error');
