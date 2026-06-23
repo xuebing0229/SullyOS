@@ -101,6 +101,12 @@ const APP_PRELOAD_ORDER: PreloadableLazy[] = [
   SpecialMomentsApp, CharCreatorDevApp,
 ];
 
+const ROLE_ENTRY_PRELOAD_ORDER: PreloadableLazy[] = [
+  Character,
+  CallApp,
+  RoomApp,
+];
+
 // AppID → 懒加载组件，供「按下即预取」连 React.lazy 负载一起解析（消除切换瞬间露底色的闪烁）。
 // AppID 由下方 import 引入，ES 模块提升后全模块可用。
 const APP_BY_ID: Partial<Record<AppID, PreloadableLazy>> = {
@@ -485,6 +491,11 @@ const PhoneShell: React.FC = () => {
   // 关键：不等开机动画（bootDone）结束就开始 —— 否则用户在开机那 ~2 秒内点开 Chat 时 chunk 还没热，
   // 会现下载+解析 300KB+，首次进聊天卡好几秒。预热与开机动画并行（只下载/解析负载、不挂载、无副作用）。
   // 逐个、空闲触发（requestIdleCallback），不与首屏交互抢主线程/带宽。
+  useEffect(() => {
+    if (!isDataLoaded) return;
+    ROLE_ENTRY_PRELOAD_ORDER.forEach(warmLazy);
+  }, [isDataLoaded]);
+
   useEffect(() => {
     if (!isDataLoaded) return;
     if (useIOSStandaloneLayout) return;
