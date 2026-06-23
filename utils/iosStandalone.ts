@@ -77,24 +77,34 @@ const setViewportVars = () => {
     const safeInsets = shouldStabilizeHeight ? readSafeAreaInsets() : { top: 0, bottom: 0 };
     const bottomSafeInset = safeInsets.bottom;
     const topSafeInset = shouldStabilizeHeight ? (safeInsets.top > 0 ? safeInsets.top : 44) : 0;
-    const obscuredHeight = Math.max(0, innerHeight - viewportHeight - viewportOffsetTop);
-    const keyboardInset = obscuredHeight > 120 ? obscuredHeight : 0;
-    const nextViewportHeight = Math.max(innerHeight, viewportHeight + viewportOffsetTop);
+
+    let fullAppHeight: number;
+    let keyboardInset: number;
 
     if (shouldStabilizeHeight) {
-        if (!keyboardInset || !stableStandaloneHeight) {
-            stableStandaloneHeight = nextViewportHeight;
+        // 全屏 PWA 没有地址栏，可视高度只在软键盘弹出时变矮。基线取「见过的最大可视高度」。
+        if (!stableStandaloneHeight || viewportHeight > stableStandaloneHeight) {
+            stableStandaloneHeight = viewportHeight;
+        }
+        // 键盘态判据用「可视高度变矮」而非 obscuredHeight：iOS 26 起 standalone 会把 layout viewport 也一起缩，
+        // innerHeight 跟着变矮，obscuredHeight 算出来是 0 而失效。viewportHeight > 150 是对 iOS 偶发脏值的护栏——
+        // 键盘动画期 visualViewport 偶尔报错值，此时退化成「无键盘态」，宁可不避让也不要把布局撑崩成满屏白。
+        const keyboardOpen = viewportHeight > 150 && viewportHeight < stableStandaloneHeight - 100;
+        // 键盘态：app 高度收到当前可视区（home 条已被键盘盖，不再叠加 safe）；无键盘态：基线 + safe（底部给 home 条留位）。
+        fullAppHeight = keyboardOpen ? viewportHeight : stableStandaloneHeight + bottomSafeInset;
+        // standalone 下键盘避让改由「app 高度跟随可视区」统一处理，keyboard-inset 置 0，避免 CallApp 等再叠一层 padding。
+        keyboardInset = 0;
+        // iOS 26 键盘弹出会把整页顶上去（visualViewport.offsetTop > 0），拉回顶部对齐可视区；
+        // 配合 ios-keyboard-open 下的 touchmove 拦截（见 installIOSStandaloneWorkaround），把外层滚动彻底锁死。
+        if (keyboardOpen && viewportOffsetTop > 0) {
+            window.scrollTo(0, 0);
         }
     } else {
         stableStandaloneHeight = 0;
+        const obscuredHeight = Math.max(0, innerHeight - viewportHeight - viewportOffsetTop);
+        keyboardInset = obscuredHeight > 120 ? obscuredHeight : 0;
+        fullAppHeight = Math.max(innerHeight, viewportHeight + viewportOffsetTop);
     }
-
-    const appHeight = shouldStabilizeHeight
-        ? (stableStandaloneHeight || nextViewportHeight)
-        : nextViewportHeight;
-    const fullAppHeight = shouldStabilizeHeight
-        ? appHeight + bottomSafeInset
-        : appHeight;
 
     document.documentElement.style.setProperty('--app-height', `${fullAppHeight}px`);
     document.documentElement.style.setProperty('--visual-viewport-height', `${viewportHeight}px`);
@@ -152,6 +162,15 @@ export const installIOSStandaloneWorkaround = () => {
         }, 180);
     };
 
+    // 键盘弹出时锁死外层滚动：只放行可滚区（消息列表等 .overflow-y-auto）内部滚动，其余 touchmove 一律拦掉。
+    // 不锁的话 iOS 会在输入框聚焦时随手势把整页顶飞（visualViewport.offsetTop 漂移、露出底层色块、闪烁）。
+    const handleTouchMove = (event: TouchEvent) => {
+        if (!document.body.classList.contains('ios-keyboard-open')) return;
+        const target = event.target as Element | null;
+        if (target?.closest?.('.overflow-y-auto')) return;
+        event.preventDefault();
+    };
+
     window.addEventListener('resize', handleSafeAreaChange);
     window.addEventListener('orientationchange', handleSafeAreaChange);
     window.visualViewport?.addEventListener('resize', handleViewportChange);
@@ -159,6 +178,7 @@ export const installIOSStandaloneWorkaround = () => {
     if (useStandaloneFixes) {
         document.addEventListener('focusin', handleFocusIn);
         document.addEventListener('focusout', handleFocusOut);
+        document.addEventListener('touchmove', handleTouchMove, { passive: false });
     }
     setViewportVars();
 
