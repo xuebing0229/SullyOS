@@ -297,6 +297,8 @@ const Chat: React.FC = () => {
         const isFishTts = resolveTtsProvider(apiConfig) === 'fishaudio';
         const voiceTagContent = parsedVoice.hasVoiceTag ? (isFishTts ? parsedVoice.rawSpeech : parsedVoice.speech) : '';
         const voiceEmotion = parsedVoice.emotion;
+        // F12 调试：打印 LLM 这条消息的带标签原文，方便核对语音标签写法是否正确。
+        console.log('[voice] LLM 原文(带标签):', { provider: isFishTts ? 'fishaudio' : 'minimax', content: msg.content, voiceTagContent, emotion: voiceEmotion });
 
         // Auto-TTS: only generate voice when AI explicitly used <语音> tag
         if (autoTriggered && !parsedVoice.hasVoiceTag) return;

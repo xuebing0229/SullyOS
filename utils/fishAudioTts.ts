@@ -40,6 +40,7 @@ export const FISH_VOICE_ACTING_GUIDE = `### 让它听起来像活人在说话（
 - 真实声响：\`[laughing]\`\`[chuckling]\`\`[sighing]\`\`[sobbing]\`\`[gasping]\` —— 后面最好补一点拟声字，如 "[laughing] 哈哈哈"。
 - 停顿：\`[break]\`（短停）\`[long-break]\`（长停）。
 这些方括号 cue 只是演出指令，**不会被念出来**，也不会显示给用户。
+**⚠️ 格式硬性要求（写错会被原样念出来）：cue 一律用半角英文方括号 \`[like this]\`，括号里只写英文。** 绝对不要用：圆括号 \`(sighs)\`/\`(laughs)\`（那是别的引擎的写法，鱼声会把"sighs"念出来）、中文方括号 \`[轻声]\`/全角【】、或 \`<语音 emotion="…">\` 这种属性——鱼声只认上面的英文方括号 cue。
 
 **2. cue 要克制、按情绪点放，别堆——尤其短句（堆多了会鬼畜）。**
 鱼声官方明确建议：**一句话最多 3 个 cue、一句一个主情绪、情绪变化之间要拉开、短文本别堆标签**。在"喂？""好啦""嗯"这种短句上塞一堆 cue / \`[break]\`，声音会发飘、发抖、变鬼畜。
@@ -88,9 +89,12 @@ const FISH_VOICE_TAG_RE = /<[语語]音[^>]*>([\s\S]*?)<\/[语語]音>/;
 
 /**
  * 鱼声专用文本清洗（区别于 MiniMax 的 cleanTextForTts）：
- * 关键差异 —— **保留**方括号 cue（[happy]/[whispering]…）和鱼声圆括号特效（(break)…），
- * 因为这些是鱼声的原生演出指令，要原样送进 API。只清掉不该念的：
- * 系统标记 [[..]]、双语分隔、中文舞台指示（…）、以及混进来的 MiniMax <#秒#> 标记。
+ * 关键差异 —— **保留**英文方括号 cue（[happy]/[whispering]…）原样送进 API。
+ * 但要清掉「会被鱼声念出来」的脏东西：
+ *  - 系统标记 [[..]]、双语分隔、中文舞台指示（…）、MiniMax <#秒#>；
+ *  - MiniMax 的圆括号声音标签 (laughs)/(sighs)/(chuckle)…（鱼声不认会念出来），
+ *    只放行少数鱼声 paralanguage 特效（break/laugh/sigh 等）；
+ *  - 含中文字符的方括号 cue（如 [开心]/[轻声]）—— 鱼声只认英文 cue，中文会被念出来。
  */
 export const cleanTextForTtsFish = (raw: string): string => {
   if (!raw) return '';
@@ -101,6 +105,11 @@ export const cleanTextForTtsFish = (raw: string): string => {
     .replace(/%%BILINGUAL%%[\s\S]*/i, '')        // 双语分隔及之后
     .replace(/（[^）]{0,48}）/g, '')              // 中文舞台指示，一律删
     .replace(/<#\s*[\d.]+\s*#>/g, '')            // MiniMax 停顿标记，鱼声不认
+    // 含中文的方括号 cue：鱼声只认英文 cue，中文写进去会被原样念出来 → 删
+    .replace(/\[[^\[\]]*[一-鿿][^\[\]]*\]/g, '')
+    // MiniMax 圆括号声音标签 / 西文舞台指示：仅放行鱼声 paralanguage 特效，其余删（否则被念出来）
+    .replace(/\(([^)]{1,40})\)/g, (m, inner: string) =>
+      FISH_PAREN_FX.has(inner.trim().toLowerCase()) ? m : '')
     .replace(/\s+/g, ' ')
     .trim();
   return text;
@@ -246,6 +255,15 @@ export async function synthesizeSpeechFishDetailed(
   const fishEmotion = options?.emotion ? FISH_EMOTION_MAP[options.emotion.toLowerCase()] : undefined;
   if (fishEmotion && !hasInlineCue) spoken = `[${fishEmotion}] ${spoken}`;
   if (!spoken) throw new Error('鱼声 TTS 文本为空');
+
+  // F12 调试：打印 LLM 带标签原文 + 实际送鱼声的文本，方便排查「标签被念出来」之类问题。
+  console.log('[fishaudio] TTS', {
+    model,
+    reference_id: referenceId,
+    emotion_attr: options?.emotion || '',
+    raw_llm_text: text,        // LLM 输出的带标签原文
+    sent_to_fish: spoken,      // 清洗后真正发给鱼声的文本
+  });
 
   const payload: any = {
     text: spoken,
