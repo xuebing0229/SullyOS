@@ -450,40 +450,46 @@ const Settings: React.FC = () => {
     if (!localUrl) { setStatusMsg('请先填写 URL'); return; }
     setIsLoadingModels(true);
     setStatusMsg('正在连接...');
-    try {
-        const baseUrl = localUrl.replace(/\/+$/, '');
-        // GET /models 不带请求体：别加 Content-Type，否则只会让 CORS 预检多一个非简单头。
-        const response = await fetch(`${baseUrl}/models`, {
-            method: 'GET',
-            headers: { 'Authorization': `Bearer ${localKey}` }
-        });
-        if (!response.ok) throw new Error(`Status ${response.status}`);
-        const data = await safeResponseJson(response);
-        // Support various API response formats
-        const list = data.data || data.models || [];
-        if (Array.isArray(list) && list.length > 0) {
-            const models = list.map((m: any) => m.id || m);
-            setAvailableModels(models);
-            if (!models.includes(localModel)) setLocalModel(models[0]);
-            setStatusMsg(`获取到 ${models.length} 个模型`);
-            setShowModelModal(true); // Open selector immediately
-        } else {
-            // 接口通了但没返回模型列表（部分服务商 /models 返回空）——直接进手动输入。
-            setStatusMsg('该服务商未返回模型列表，请手动填写');
-            setShowModelModal(true);
+    const baseUrl = localUrl.replace(/\/+$/, '');
+    // 不同服务商鉴权头不一样：多数 OpenAI 兼容用 `Authorization: Bearer`，但有些（如 Pioneer）
+    // 用 `X-API-Key`。浏览器跨域时，请求头要在对方 CORS 预检的 Access-Control-Allow-Headers
+    // 白名单里才放行——发了对方不认的头（比如对方只允许 x-api-key 却发了 authorization）会被
+    // 预检直接挡掉，fetch 抛 TypeError「Failed to fetch」。所以这里两种鉴权头各试一次。
+    // GET 不带 body，别加 Content-Type，省掉一个非简单头、少一道预检门槛。
+    const authVariants: Record<string, string>[] = [
+        { 'Authorization': `Bearer ${localKey}` },
+        { 'X-API-Key': localKey },
+    ];
+    let lastError: any = null;
+    for (const headers of authVariants) {
+        try {
+            const response = await fetch(`${baseUrl}/models`, { method: 'GET', headers });
+            if (!response.ok) { lastError = new Error(`Status ${response.status}`); continue; }
+            const data = await safeResponseJson(response);
+            // Support various API response formats
+            const list = data.data || data.models || [];
+            if (Array.isArray(list) && list.length > 0) {
+                const models = list.map((m: any) => m.id || m);
+                setAvailableModels(models);
+                if (!models.includes(localModel)) setLocalModel(models[0]);
+                setStatusMsg(`获取到 ${models.length} 个模型`);
+                setShowModelModal(true); // Open selector immediately
+                setIsLoadingModels(false);
+                return;
+            }
+            lastError = new Error('空列表');
+        } catch (error: any) {
+            lastError = error;
         }
-    } catch (error: any) {
-        // 微调类服务商（如截图里的 Pioneer）model 传的是「训练作业 ID」，根本没有可列举的
-        // 模型目录，/models 经常不存在或不允许浏览器跨域 → fetch 直接抛 TypeError「Failed to
-        // fetch」。这不是崩溃，别用 console.error（会被全局拦截器记成吓人的 Application 错误），
-        // 给一句能照做的提示，并打开弹窗让用户手动填模型名 / 训练作业 ID。
-        const isNetworkError = error?.name === 'TypeError' || /failed to fetch|load failed/i.test(error?.message || '');
-        console.warn('[fetchModels] 拉取模型列表失败：', error?.message || error);
-        setStatusMsg(isNetworkError ? '无法获取列表（接口不存在或跨域），请手动填写' : `获取失败：${error?.message || '未知错误'}`);
-        setShowModelModal(true);
-    } finally {
-        setIsLoadingModels(false);
     }
+    // 两种鉴权头都没拿到列表。最常见是浏览器跨域（CORS）被挡：服务端 curl/SDK 能拉到，但
+    // 浏览器 fetch 受同源策略限制，对方没放行本站来源就会「Failed to fetch」。不用 console.error
+    // （会被全局拦截器记成吓人的 Application 错误），给条能照做的提示并打开弹窗让用户手动填。
+    const isNetworkError = lastError?.name === 'TypeError' || /failed to fetch|load failed/i.test(lastError?.message || '');
+    console.warn('[fetchModels] 拉取模型列表失败：', lastError?.message || lastError);
+    setStatusMsg(isNetworkError ? '拉取失败（多为浏览器跨域 CORS），可手动填写' : `获取失败：${lastError?.message || '未知错误'}`);
+    setShowModelModal(true);
+    setIsLoadingModels(false);
   };
 
   const handleExport = async (mode: 'text_only' | 'media_only' | 'full') => {
@@ -1222,7 +1228,7 @@ const Settings: React.FC = () => {
                         </span>
                         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4 text-slate-400 flex-shrink-0"><path fillRule="evenodd" d="M5.22 8.22a.75.75 0 0 1 1.06 0L10 11.94l3.72-3.72a.75.75 0 1 1 1.06 1.06l-4.25 4.25a.75.75 0 0 1-1.06 0L5.22 9.28a.75.75 0 0 1 0-1.06Z" clipRule="evenodd" /></svg>
                     </button>
-                    <p className="text-[11px] text-slate-400 mt-1 pl-1">部分服务商（如微调接口）没有模型列表或不允许跨域，「刷新模型列表」可能失败——这时点上方直接手动填模型名 / 训练作业 ID 即可。</p>
+                    <p className="text-[11px] text-slate-400 mt-1 pl-1">「刷新模型列表」失败多为浏览器跨域（CORS）所致——服务端能拉到、浏览器拉不到。这时点上方直接手动填模型名 / 训练作业 ID 即可。</p>
                 </div>
                 
                 <button onClick={handleSaveApi} className="w-full py-3 rounded-2xl font-bold text-white shadow-lg shadow-primary/20 bg-primary active:scale-95 transition-all mt-2">
