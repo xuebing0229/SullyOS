@@ -15,6 +15,7 @@ import { CharacterProfile, APIConfig } from '../types';
 import { Capacitor, CapacitorHttp } from '@capacitor/core';
 import { hashTtsParams, getCachedTts, saveCachedTts } from './ttsCache';
 import { normalizeApiKey } from './minimaxApiKey';
+import { getProxyWorkerUrl } from './proxyWorker';
 import type { TtsResult } from './minimaxTts';
 
 const FISH_PROXY_PATH = '/api/fishaudio/tts';
@@ -319,10 +320,21 @@ const fishFetchAudio = async (
     return base64ToBlob(String(response.data || ''));
   }
 
-  const url = shouldBypassWebProxy() ? FISH_UPSTREAM : FISH_PROXY_PATH;
+  // 静态部署（github.io / file:）没有 /api serverless 代理，直连 api.fish.audio 会被浏览器
+  // CORS 挡（Fish 不发 ACAO 头）。走项目通用 sfworker 代理 /fishaudio/tts（带 CORS 头）。
+  // model 放 query，避免自定义 model 头触发预检失败；只留 Authorization（worker 已允许）。
+  let url: string;
+  let headers: Record<string, string>;
+  if (shouldBypassWebProxy()) {
+    url = `${getProxyWorkerUrl()}/fishaudio/tts?model=${encodeURIComponent(model)}`;
+    headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` };
+  } else {
+    url = FISH_PROXY_PATH;
+    headers = jsonHeaders;
+  }
   const res = await fetch(url, {
     method: 'POST',
-    headers: jsonHeaders,
+    headers,
     body: JSON.stringify(payload),
   });
   if (!res.ok) {

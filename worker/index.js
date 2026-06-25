@@ -2709,6 +2709,39 @@ export default {
       }
     }
 
+    // ========== 鱼声 Fish Audio TTS 代理 (静态部署绕 CORS, 纯透传) ==========
+    // 前端 POST /fishaudio/tts?model=s2.1-pro  + Authorization: Bearer <fish key>
+    // body = { text, reference_id, format, ... }；返回二进制音频(mp3)。
+    // model 走 query：避免自定义 'model' header 触发 CORS 预检失败。
+    // Worker 不读不存 key，只做 CORS + 转发 https://api.fish.audio/v1/tts。
+    if (url.pathname === '/fishaudio/tts') {
+      if (request.method !== 'POST') {
+        return jsonResponse({ error: 'Method not allowed' }, { status: 405, origin });
+      }
+      const auth = request.headers.get('Authorization');
+      if (!auth) {
+        return jsonResponse({ error: 'Missing Authorization header (Fish API key)' }, { status: 401, origin });
+      }
+      const model = (url.searchParams.get('model') || 's2.1-pro').trim();
+      try {
+        const upstream = await fetch('https://api.fish.audio/v1/tts', {
+          method: 'POST',
+          headers: {
+            'Authorization': auth,
+            'Content-Type': request.headers.get('Content-Type') || 'application/json',
+            'model': model,
+          },
+          body: await request.text(),
+        });
+        const respHeaders = new Headers(corsHeaders(origin));
+        respHeaders.set('Content-Type', upstream.headers.get('Content-Type') || 'audio/mpeg');
+        respHeaders.set('Access-Control-Expose-Headers', 'Content-Length, Content-Type');
+        return new Response(upstream.body, { status: upstream.status, headers: respHeaders });
+      } catch (e) {
+        return jsonResponse({ error: 'Fish Audio upstream fetch failed', detail: String(e && e.message || e) }, { status: 502, origin });
+      }
+    }
+
     // ========== 麦当劳 MCP 代理 (浏览器 CORS 兜底, 纯透传) ==========
     // 前端 POST /mcp/mcd  + Authorization: Bearer <user_mcp_token>
     // body 即 MCP JSON-RPC 报文 (initialize / tools/list / tools/call ...)
