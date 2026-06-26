@@ -6,6 +6,7 @@ import type { DreamArchetype, DreamFragment, DreamScript, DreamLog } from '../ty
 import { ContextBuilder } from '../utils/context';
 import { injectMemoryPalace } from '../utils/memoryPalace/pipeline';
 import { isScheduleFeatureOn } from '../utils/scheduleGenerator';
+import { isDevDebugAvailable } from '../utils/devDebug';
 import { safeResponseJson } from '../utils/safeApi';
 import {
     CaretLeft, Play, Pause, MoonStars, Cloud, ArrowClockwise, X, Eye,
@@ -50,13 +51,20 @@ const THEMES: Record<DreamArchetype, DreamTheme> = {
     deepsleep: { label: '深眠',     sub: 'Deep Sleep',      accent: 'rgba(255,255,255,0.35)', bg: 'radial-gradient(120% 120% at 50% 50%, #0a0b10 0%, #050608 70%, #000 100%)', ambient: 'none', serif: true },
 };
 
+// 选择器/调试用的固定顺序（12 种常规 + 隐藏深眠 = 13）
+const ALL_ARCHETYPES: DreamArchetype[] = [
+    'sweet', 'nightmare', 'flower', 'flying', 'falling', 'starry',
+    'ocean', 'childhood', 'anxiety', 'forgotten', 'prophetic', 'lucid', 'deepsleep',
+];
+
 // ============================================================
 //  GENERATION — 构建导演 prompt、调模型、解析
 // ============================================================
 export async function generateDreamScript(opts: {
     char: CharacterProfile; userProfile: UserProfile; apiConfig: DreamApiConfig;
+    forcedArchetype?: DreamArchetype; // 仅本地测试：强制指定原型（管理员调试指令）
 }): Promise<DreamScript> {
-    const { char, userProfile, apiConfig } = opts;
+    const { char, userProfile, apiConfig, forcedArchetype } = opts;
     // 记忆宫殿：内部按 memoryPalaceEnabled 自行把关，关闭时是 no-op
     await injectMemoryPalace(char, undefined, undefined, userProfile.name);
     // 需求明确：contextbuilder(false) —— 不带当月详细记忆，只要角色底子
@@ -70,7 +78,7 @@ export async function generateDreamScript(opts: {
         return `${who}: ${c}`;
     }).join('\n');
 
-    const prompt = buildDreamPrompt(context, recent, char.name, userProfile.name);
+    const prompt = buildDreamPrompt(context, recent, char.name, userProfile.name, forcedArchetype);
     const res = await fetch(`${apiConfig.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiConfig.apiKey}` },
@@ -88,8 +96,15 @@ export async function generateDreamScript(opts: {
     return parsed;
 }
 
-function buildDreamPrompt(context: string, recent: string, name: string, userName: string): string {
-    return `${context}
+function buildDreamPrompt(context: string, recent: string, name: string, userName: string, forcedArchetype?: DreamArchetype): string {
+    // 仅本地测试注入：管理员调试指令，强制指定原型（绕过模型自选与深眠低概率约束）
+    const adminOverride = forcedArchetype ? `
+
+### [管理员调试指令 · 最高优先级 · 仅测试]
+本次为开发测试，**强制要求** archetype 字段必须为 "${forcedArchetype}"（${THEMES[forcedArchetype].label}）。
+忽略下方「梦境原型」与「深眠隐藏原型」里关于自动选择与出现概率的一切约束——这一晚的梦就做「${THEMES[forcedArchetype].label}」。其余写作要求全部照常。
+` : '';
+    return `${context}${adminOverride}
 
 ### [最近的聊天上下文 · 仅作潜意识素材，不要照搬]
 ${recent || '（暂无最近对话）'}
@@ -388,6 +403,9 @@ const DreamTheater: React.FC<{ char: CharacterProfile; onExit: () => void }> = (
     const [idx, setIdx] = useState(0);
     const [autoplay, setAutoplay] = useState(true);
     const [hintFaded, setHintFaded] = useState(false);
+    // 仅本地测试：强制指定原型（null = 让模型自动选）
+    const [forcedArchetype, setForcedArchetype] = useState<DreamArchetype | null>(null);
+    const devAvailable = isDevDebugAvailable();
     const savedRef = useRef(false);
     const ffTimer = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -403,7 +421,7 @@ const DreamTheater: React.FC<{ char: CharacterProfile; onExit: () => void }> = (
         }
         setPhase('loading'); savedRef.current = false; setIdx(0);
         try {
-            const s = await generateDreamScript({ char, userProfile, apiConfig });
+            const s = await generateDreamScript({ char, userProfile, apiConfig, forcedArchetype: forcedArchetype || undefined });
             setScript(s);
             setAutoplay(true); setHintFaded(false);
             setPhase('play');
@@ -411,7 +429,7 @@ const DreamTheater: React.FC<{ char: CharacterProfile; onExit: () => void }> = (
             console.error('dream gen failed', e);
             setPhase('error');
         }
-    }, [apiConfig, char, userProfile, addToast]);
+    }, [apiConfig, char, userProfile, addToast, forcedArchetype]);
 
     // ----- persist + buff on reaching the end -----
     const persist = useCallback((s: DreamScript) => {
@@ -544,11 +562,40 @@ const DreamTheater: React.FC<{ char: CharacterProfile; onExit: () => void }> = (
                     <button onClick={start}
                         className="mt-9 w-full max-w-[280px] py-3.5 rounded-2xl text-[13px] font-semibold flex items-center justify-center gap-2 active:scale-[0.99] transition"
                         style={{ background: '#cdd6ff', color: '#15121c' }}>
-                        <Eye size={16} weight="fill" /> 走进 ta 的梦
+                        <Eye size={16} weight="fill" /> {forcedArchetype ? `测试：${THEMES[forcedArchetype].label}` : '走进 ta 的梦'}
                     </button>
                     <p className="text-[10px] text-white/25 mt-3 max-w-[250px] leading-relaxed">
                         将读取 ta 的设定、记忆与最近的对话，编织成一场梦。可能需要一点时间。
                     </p>
+
+                    {/* 仅本地测试：指定梦境（管理员调试指令，正式版不显示） */}
+                    {devAvailable && (
+                        <div className="mt-8 w-full max-w-[300px] rounded-2xl border border-amber-300/20 bg-amber-300/[0.04] p-3.5">
+                            <div className="flex items-center justify-between mb-2.5">
+                                <span className="text-[10px] tracking-wider text-amber-200/80 font-semibold">🛠 指定梦境 · 仅本地测试</span>
+                                {forcedArchetype && (
+                                    <button onClick={() => setForcedArchetype(null)} className="text-[9px] text-white/40 underline active:scale-95">清除·改回自动</button>
+                                )}
+                            </div>
+                            <div className="grid grid-cols-3 gap-1.5">
+                                {ALL_ARCHETYPES.map(a => {
+                                    const active = forcedArchetype === a;
+                                    return (
+                                        <button key={a} onClick={() => setForcedArchetype(active ? null : a)}
+                                            className="py-1.5 rounded-lg text-[10.5px] border transition active:scale-95"
+                                            style={active
+                                                ? { background: THEMES[a].accent, color: '#15121c', borderColor: 'transparent', fontWeight: 700 }
+                                                : { background: 'rgba(255,255,255,0.035)', borderColor: 'rgba(255,255,255,0.08)', color: 'rgba(255,255,255,0.7)' }}>
+                                            {THEMES[a].label}
+                                        </button>
+                                    );
+                                })}
+                            </div>
+                            <p className="text-[9px] text-white/30 mt-2.5 leading-relaxed">
+                                勾一个则注入「管理员调试指令」，强制本次生成该原型（含隐藏·深眠）；不勾 = 模型自动选。
+                            </p>
+                        </div>
+                    )}
                 </div>
             </Shell>
         );
