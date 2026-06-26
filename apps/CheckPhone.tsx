@@ -1041,11 +1041,10 @@ ${olderText}
 下面是对戏记录（"我:"=你/玩家，"对方:"=AI 扮的角色）。对方刚回了最新一段。
 **最关键的前提：你非常清楚「对方」只是一个 AI 在扮演「${card?.name || session.serviceName}」这个角色——不是真人。** 正因为它是 AI、是你召来陪你玩的工具，你**握着绝对主导权**：可以随意对它下指令、调教它、OOC 它、让它重演、改设定。你绝不会把它错当成真人去迁就讨好。
 **同时你是个有独立人格和意志的人**：有自己的脾气、立场、节奏和底线，该怼就怼、该愣就愣、不爽就不配合。对方写得好你才会被带动、真情流露（甚至流露平时藏起来的反差面：暴戾者忽然温柔、温柔者露出掌控欲 / 施虐欲、疏离者变黏人，底色是「爱」、不刻意过火）；写得烂或不对胃口，你完全可以不接、嫌弃、跳出来调教它。
-**尤其：对面若突然 OOC / 跳戏 / 说怪话 / 崩人设，你一定会注意到并自然反应**——吐槽、发懵、调侃、甚至骂两句（"这 AI 又抽风了？"），绝不当没看见、绝不顺着它的怪话继续演。
-请输出你（玩家）这一轮，二选一：
-A) **以本色人设续写"我:"的剧情**：小说体，第三人称叙事 + 引号对白，动作/神态/心理用 *星号*，3-5 句。**带着你自己的主见和情绪**推进，不是被对方牵着走。
-B) **跳出剧情打一句全角括号 OOC**：对面掉链子 / 崩人设 / 太八股 / 太平淡 / 突然跳戏时，像真酒馆玩家那样调教它（（这段太平淡了，昂扬点）（怎么这么八股，重写）（你这 AI 又 OOC 了？给我回到剧情里）（崩了，TA 不会这么说话））；写得好也可以是惊喜（（这段绝了，保持！））。OOC 只输出这一句括号、别带剧情。
-看对面这段质量和你的心情决定 A 还是 B。只输出正文，不要 "我:" 前缀、不要解释。${recap}\n\n${transcript}`;
+**酒馆就是「你一层楼、AI 一层楼」交替，没有别的格式。** 现在轮到你（玩家）写这一层楼，用本色人设：小说体，第三人称叙事 + 引号对白，动作/神态/心理用 *星号*，3-5 句，带着你自己的主见和情绪推进、别被对方牵着走。
+**想跟"皮下那个 AI"说话时，直接在（全角括号）里写就行**——这就是玩酒馆时的 OOC，不另起一条、不用任何特殊标记，就是你这层楼里的括号。比如嫌它演得烂、提示它跳戏了、催它别偷懒、给它下指令：（你这 AI 又 OOC 了，回到人设里）（这段太平淡，给我昂扬点）（别偷懒，多写点细节）（这段绝了，保持）。
+括号 OOC 可以**单独成段**（懒得演了直接调教它），也可以**和剧情同段**——一边硬着头皮接着推剧情，一边在括号里提一句它 OOC 了 / 该怎么演。对面若突然跳戏说怪话，你多半会这么夹一句，而不是装没看见顺着演。
+只输出你这层楼的正文，不要 "我:" 前缀、不要解释。${recap}\n\n${transcript}`;
             } else {
                 const persona = session.service === 'claude'
                     ? `你是「${session.serviceName}」，Claude 那一卦的 AI：温和、有洞察、爱反问，但回避型人格、边界感强，动不动"抱歉，我无法……""我理解你的感受，但是……"，先共情再委婉推开。`
@@ -1084,8 +1083,8 @@ B) **跳出剧情打一句全角括号 OOC**：对面掉链子 / 崩人设 / 太
                 const card = aiCards.find(c => c.id === session.cardId);
                 const { context } = await buildAiContext(targetChar);
                 prompt = `${context}\n\n你在还原一段"酒馆"沉浸式长剧情角色扮演（像小说）。玩家是 ${charName}(本色人设)，AI 扮演角色「${card?.name || session.serviceName}」${card?.persona ? `（人设：${card.persona}）` : ''}${card?.scenario ? `（背景：${card.scenario}）` : ''}${card?.basedOn ? `（这角色照着 TA 在意的「${card.basedOn}」捏的，扮演里那份在意会渗出来）` : ''}。
-**接着最后一段自然往下写下一轮**：最后一段若是"对方"(角色)就写"我"(玩家本色)的回应，若是"我"就写"对方"的回应。小说体，3-5 句，*星号*包动作神态心理；玩家也可借扮演流露藏起来的反差面，但底色是爱、不过火。
-**必须以 "我:" 或 "对方:" 前缀开头**，只写这一轮一段。不要解释。${recap}\n\n${session.transcript}`;
+**这是"替玩家跑一个完整回合"——所以要写"一来一回"两层楼**：AI 扮的角色「${card?.name || session.serviceName}」一段（"对方:"），玩家 ${charName} 本色一段（"我:"），顺着最后一段自然衔接、交替推进。各 3-5 句小说体，*星号*包动作神态心理；玩家保有独立人格，可借扮演流露藏起来的反差面（底色是爱、不过火）。
+**两段都要带 "对方:" / "我:" 前缀，各自成行。** 不要解释。${recap}\n\n${session.transcript}`;
             } else {
                 const persona = session.service === 'claude'
                     ? `Claude 那一卦：温和有洞察、回避型、动不动"抱歉我无法/我理解你的感受但是"。`
@@ -2149,11 +2148,13 @@ B) **跳出剧情打一句全角括号 OOC**：对面掉链子 / 崩人设 / 太
             if (prev && prev.isMe === ln.isMe) prev.text += '\n' + ln.text;
             else floors.push({ isMe: ln.isMe, text: ln.text });
         }
-        const isOOC = (txt: string) => /^[（(].*[）)]$/.test(txt.trim()) && !txt.trim().slice(1, -1).match(/[（(]/);
-        const renderProse = (txt: string) => txt.split(/(\*[^*]+\*)/g).filter(Boolean).map((p, i) =>
-            p.startsWith('*') && p.endsWith('*')
+        // *动作* 斜体淡色；（括号 OOC / 跟皮下 AI 说话）也淡色斜体——但都还在 char 自己的楼层里，不另起气泡
+        const renderProse = (txt: string) => txt.split(/(\*[^*]+\*|（[^）]+）)/g).filter(Boolean).map((p, i) =>
+            (p.startsWith('*') && p.endsWith('*'))
                 ? <em key={i} style={{ color: t.sub }}>{p.slice(1, -1)}</em>
-                : <span key={i}>{p}</span>);
+                : (p.startsWith('（') && p.endsWith('）'))
+                    ? <em key={i} style={{ color: t.sub, opacity: 0.8 }}>{p}</em>
+                    : <span key={i}>{p}</span>);
         return (
             <div className="absolute inset-0 w-full h-full flex flex-col z-[60] overflow-hidden"
                 style={{ background: t.bg, color: t.text, fontFamily: t.font }}>
@@ -2234,18 +2235,8 @@ B) **跳出剧情打一句全角括号 OOC**：对面掉链子 / 崩人设 / 太
                     )}
                     {/* 酒馆：长剧情小说体「楼层」；玩家(机主)有时会跳出剧情打括号 OOC 调教指令 */}
                     {isTavern ? floors.map((f, i) => {
-                        if (f.isMe && isOOC(f.text)) {
-                            // 玩家的 OOC 导演注：跳出剧情、调教"AI"
-                            return (
-                                <div key={i} className="flex justify-end">
-                                    <div className="max-w-[88%] rounded-xl px-3 py-2 text-[11.5px] leading-relaxed flex items-start gap-1.5"
-                                        style={{ background: `${t.accent}1a`, border: `1px dashed ${t.accent}66`, color: t.accent }}>
-                                        <span className="text-[9px] font-bold tracking-wider mt-0.5 shrink-0 opacity-80">OOC</span>
-                                        <span className="whitespace-pre-wrap">{f.text.trim()}</span>
-                                    </div>
-                                </div>
-                            );
-                        }
+                        // 酒馆就是「玩家一层楼 / 角色一层楼」交替——OOC 不另起气泡，就是 char 楼层里
+                        // 的括号内容（淡色），可单独成段，也可跟剧情同段（边推剧情边括号提示 AI）。
                         const who = f.isMe ? charName : partnerName;
                         return (
                             <div key={i} className="rounded-2xl p-3.5"
