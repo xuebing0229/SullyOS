@@ -7,6 +7,7 @@ import { ContextBuilder } from '../utils/context';
 import { injectMemoryPalace } from '../utils/memoryPalace/pipeline';
 import { isScheduleFeatureOn } from '../utils/scheduleGenerator';
 import { isDevDebugAvailable } from '../utils/devDebug';
+import { useDreamSim, dreamSimStore } from '../utils/dreamSimStore';
 import { safeResponseJson } from '../utils/safeApi';
 import {
     CaretLeft, Play, Pause, MoonStars, ArrowClockwise, X, Eye, Sparkle, Lock,
@@ -436,22 +437,42 @@ const DreamTheater: React.FC<{ char: CharacterProfile; onExit: () => void }> = (
     const theme = THEMES[script?.archetype || 'starry'];
     const isDeepSleep = script?.archetype === 'deepsleep';
 
-    // ----- generate -----
+    const dreamSim = useDreamSim();
+
+    // ----- generate（后台进行：生成期间用户可离开小屋，好了全局提示 + 深链回来）-----
     const start = useCallback(async () => {
         if (!apiConfig?.baseUrl || !apiConfig?.apiKey || !apiConfig?.model) {
             addToast('请先在设置里配置 API', 'error'); return;
         }
-        setPhase('loading'); savedRef.current = false; setRevealed(1); setBoxReveal(null);
+        const cid = char.id, cname = char.name;
+        savedRef.current = false; setRevealed(1); setBoxReveal(null);
+        setPhase('loading');
+        dreamSimStore.set({ status: 'loading', charId: cid, charName: cname });
         try {
+            // 注意：不在 await 后直接 setState 播放，交给下方 consume effect 统一消费
+            // （这样即使用户已离开、组件卸载，生成照常完成、全局指示条接管）
             const s = await generateDreamScript({ char, userProfile, apiConfig, forcedArchetype: forcedArchetype || undefined });
-            setScript(s);
-            setRevealed(1); setAutoplay(true);
-            setPhase('play');
+            dreamSimStore.set({ status: 'ready', charId: cid, charName: cname, script: s });
+            addToast('梦已成形', 'success');
         } catch (e) {
             console.error('dream gen failed', e);
-            setPhase('error');
+            dreamSimStore.set({ status: 'error', charId: cid, charName: cname });
+            addToast('梦没能成形，请重试', 'error');
         }
     }, [apiConfig, char, userProfile, addToast, forcedArchetype]);
+
+    // ----- consume：把全局生成结果落到本地播放（含深链回来后的首次消费）-----
+    useEffect(() => {
+        if (dreamSim.status === 'ready' && dreamSim.charId === char.id && dreamSim.script) {
+            savedRef.current = false; setBoxReveal(null);
+            setScript(dreamSim.script); setRevealed(1); setAutoplay(true); setPhase('play');
+            dreamSimStore.reset();
+        } else if (dreamSim.status === 'error' && dreamSim.charId === char.id) {
+            setPhase('error'); dreamSimStore.reset();
+        } else if (dreamSim.status === 'loading' && dreamSim.charId === char.id) {
+            setPhase(p => (p === 'idle' || p === 'error') ? 'loading' : p);
+        }
+    }, [dreamSim, char.id]);
 
     // ----- persist + buff on reaching the end -----
     const persist = useCallback((s: DreamScript) => {
@@ -773,8 +794,9 @@ const DreamTheater: React.FC<{ char: CharacterProfile; onExit: () => void }> = (
                         把记忆、对话与情绪揉成一场<br />说不清的梦，可能需要一点时间。
                     </div>
                     <button onClick={onExit} className="mt-2 px-5 py-2.5 rounded-xl text-[12px] text-white/70 bg-white/[0.06] border border-white/[0.08] active:scale-95 transition">
-                        先离开 · 好了再来
+                        先离开 · 好了通知我
                     </button>
+                    <p className="text-[10px] text-white/30 leading-relaxed">梦在后台继续编织，<br />成形后顶部会出现提示，点一下就能回来。</p>
                 </div>
             </Shell>
         );

@@ -14,6 +14,7 @@ import { FURNITURE_ICONS } from '../utils/furnitureIcons';
 import PixelHomeView from './pixelHome/PixelHomeView';
 import WorldHomeApp from './WorldHomeApp';
 import DreamTheater from './DreamTheater';
+import { useDreamSim, dreamSimStore } from '../utils/dreamSimStore';
 
 const TWEMOJI_BASE = 'https://cdnjs.cloudflare.com/ajax/libs/twemoji/14.0.2/72x72';
 const twemojiUrl = (codepoint: string) => `${TWEMOJI_BASE}/${codepoint}.png`;
@@ -459,6 +460,20 @@ const RoomApp: React.FC = () => {
     const handleGenerateToday = () => {
         if (char) initializeRoomState(char, items, true);
     };
+
+    // 梦境全局指示条深链：点一下 → 直接进入对应角色的房间并打开梦境演出
+    const dreamSim = useDreamSim();
+    const dreamSimCharId = dreamSim.status === 'idle' ? undefined : dreamSim.charId;
+    useEffect(() => {
+        if (!dreamSim.deepLink || !dreamSimCharId) return;
+        const c = characters.find(x => x.id === dreamSimCharId);
+        if (c) {
+            setHomeTab('room');
+            handleEnterRoom(c);   // 设激活角色 + 进房间 + 载入家具（不阻塞生成）
+            setShowDream(true);
+        }
+        dreamSimStore.clearDeepLink();
+    }, [dreamSim.deepLink, dreamSimCharId, characters]);
 
     // Fallback Initialization: Used when main generation fails due to Safety Block
     const initializeFallback = async (c: CharacterProfile) => {
