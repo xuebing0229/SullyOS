@@ -167,6 +167,61 @@ ${OBSERVE_CLOSE}`;
         expect(hasObservation({})).toBe(false);
         expect(hasObservation(null)).toBe(false);
     });
+
+    // ── 鲁棒性：模型掉格式时的各种降级路径 ──
+    describe('掉格式容错', () => {
+        it('换括号风格【】/<>/[] 仍能严格提取', () => {
+            for (const [open, close] of [['【OBSERVE】', '【/OBSERVE】'], ['<观测>', '</观测>'], ['[OBSERVE]', '[/OBSERVE]']]) {
+                const t = `${open}\n时间｜清晨\n地点｜阳台\n状态｜没睡醒\n细节｜揉眼睛\n${close}\n[normal] 早。`;
+                const { observation, rest } = extractObservation(t, { lenient: true });
+                expect(observation, `${open} 应被识别`).not.toBeNull();
+                expect(observation!.place).toBe('阳台');
+                expect(rest).toBe('[normal] 早。');
+            }
+        });
+
+        it('丢了闭合定界符：靠回退层从开头连续字段行还原', () => {
+            const t = `${OBSERVE_OPEN}\n时间｜午后\n地点｜旧书店\n状态｜慵懒\n细节｜指尖划过书脊\n[normal] 你也来了。\n[happy] "找什么书？"`;
+            const { observation, rest } = extractObservation(t, { lenient: true });
+            expect(observation).not.toBeNull();
+            expect(observation!.time).toBe('午后');
+            expect(observation!.detail).toBe('指尖划过书脊');
+            expect(rest.startsWith('[normal] 你也来了。')).toBe(true);
+            expect(rest).not.toContain('时间｜');
+            expect(rest).not.toContain(OBSERVE_OPEN);
+        });
+
+        it('完全没定界符 + markdown 加粗 / 列表符 / 半角冒号：回退层照样吃', () => {
+            const t = `**时间**：黄昏\n- 地点: 天台\n状态｜风很大\n细节｜头发被吹乱\n\n[normal] 抓住栏杆。`;
+            const { observation, rest } = extractObservation(t, { lenient: true });
+            expect(observation).not.toBeNull();
+            expect(observation!.time).toBe('黄昏');
+            expect(observation!.place).toBe('天台');
+            expect(observation!.state).toBe('风很大');
+            expect(rest).toBe('[normal] 抓住栏杆。');
+        });
+
+        it('回退层未开启（lenient=false）时不强行解析，避免误伤', () => {
+            const t = `时间｜午后\n地点｜旧书店\n[normal] 正文。`;
+            const { observation, rest } = extractObservation(t);
+            expect(observation).toBeNull();
+            expect(rest).toBe(t);
+        });
+
+        it('只有 1 个字段不触发回退（防止正文里偶发的"状态：…"被误吞）', () => {
+            const t = `状态：他看起来在想事情\n[normal] 走神了。`;
+            const { observation, rest } = extractObservation(t, { lenient: true });
+            expect(observation).toBeNull();
+            expect(rest).toBe(t);
+        });
+
+        it('正文中部出现 field 样式的旁白不被回退层吞掉（只扫开头连续段）', () => {
+            const t = `[normal] 她开口。\n时间｜其实没人知道现在几点\n地点｜也无所谓`;
+            const { observation, rest } = extractObservation(t, { lenient: true });
+            expect(observation).toBeNull();
+            expect(rest).toBe(t);
+        });
+    });
 });
 
 describe('DatePrompts.buildPeekPayload', () => {

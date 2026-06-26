@@ -254,8 +254,41 @@ const pickFocusHint = (): string =>
 export const OBSERVE_OPEN = '⟦OBSERVE⟧';
 export const OBSERVE_CLOSE = '⟦/OBSERVE⟧';
 
-/** 整块（含定界符）的提取正则：宽松匹配大小写、定界符内空格、闭合斜杠两侧空格 */
-const OBSERVE_BLOCK_RE = /⟦\s*OBSERVE\s*⟧([\s\S]*?)⟦\s*\/\s*OBSERVE\s*⟧/i;
+// ── 容错正则：模型掉格式时尽量还原，分两层（严格定界 + 宽松回退）─────────
+// 各种括号风格：⟦⟧ 【】〔〕「」『』 [] () <> ，都收。关键字接受 OBSERVE / 观测 / 观测协议。
+const BRA = '[\\[\\(<⟦【〔「『]';
+const KET = '[\\]\\)>⟧】〕」』]';
+const OBSERVE_KW = '(?:OBSERVE|观测协议|观测)';
+
+/** 严格：成对定界块（含 ⟦OBSERVE⟧ … ⟦/OBSERVE⟧，容忍括号风格/空格/大小写）。有定界符即视为明确意图。 */
+const OBSERVE_BLOCK_RE = new RegExp(`${BRA}\\s*${OBSERVE_KW}\\s*${KET}([\\s\\S]*?)${BRA}\\s*/\\s*${OBSERVE_KW}\\s*${KET}`, 'i');
+
+/** 整行只是一个定界标记（开/闭都算）——回退扫描时用来跳过孤立的标记行 */
+const OBSERVE_MARKER_LINE_RE = new RegExp(`^\\s*${BRA}?\\s*/?\\s*${OBSERVE_KW}\\s*/?\\s*${KET}?\\s*$`, 'i');
+const isObserveMarkerLine = (line: string): boolean => OBSERVE_MARKER_LINE_RE.test(line.trim());
+
+/** 单条字段行：容忍 markdown 列表符 / 加粗 / 中英 key / 全半角竖线 / 中英冒号 */
+const OBSERVE_FIELD_RE = /^\s*(?:[-*>•·]\s*)?\*{0,2}\s*(时间|地点|地区|场所|位置|状态|心境|情绪|细节|动作|举动|time|place|location|site|position|status|state|mood|detail|trace|action)\s*\*{0,2}\s*[｜|:：]\s*(.+?)\s*$/i;
+
+/** 把 key 归一到四个维度之一 */
+const mapObserveKey = (key: string): keyof DateObservation | null => {
+    const k = key.toLowerCase();
+    if (/时间|time/.test(k)) return 'time';
+    if (/地点|地区|场所|位置|place|location|site|position/.test(k)) return 'place';
+    if (/状态|心境|情绪|status|state|mood/.test(k)) return 'state';
+    if (/细节|动作|举动|detail|trace|action/.test(k)) return 'detail';
+    return null;
+};
+
+/** 清洗字段值：去掉残留的定界标记、外层括号、加粗星号 */
+const cleanObserveValue = (raw: string): string => {
+    let v = raw.trim();
+    v = v.replace(new RegExp(`${BRA}\\s*/?\\s*${OBSERVE_KW}\\s*/?\\s*${KET}`, 'gi'), ''); // 内联残留标记
+    v = v.replace(/^\*{1,2}|\*{1,2}$/g, '').trim();   // 外层加粗
+    v = v.replace(/^（\s*|\s*）$/g, '').trim();        // 全角括号包裹
+    v = v.replace(/^\(\s*|\s*\)$/g, '').trim();        // 半角括号包裹
+    return v.trim();
+};
 
 const isObserveOn = (char: CharacterProfile): boolean => char.dateObserve?.enabled === true;
 
@@ -265,7 +298,7 @@ const buildObserveBlock = (charName: string): string => `
 在你**整段回复的最前面**，先输出一段「观测块」，用来让用户全方位观察${charName}此刻的状态。
 观测块**不受**上面「一行一念 / 每行 [emotion] 开头」规则约束——它是独立的元信息，紧接着才是正常的 VN 正文。
 
-格式**必须**逐字如下（四个字段都要给，简洁有画面，每项一句话即可，别写成大段）：
+格式**必须**逐字如下（四个字段都要给，每项一句话、简洁有画面，别写成大段）：
 ${OBSERVE_OPEN}
 时间｜（结合场景的当下时刻，可比系统时间更具体，如"傍晚六点过，天刚擦黑"）
 地点｜（${charName}此刻所在的具体地点与环境）
@@ -273,43 +306,99 @@ ${OBSERVE_OPEN}
 细节｜（此刻最值得被注意的一个动作 / 微小细节）
 ${OBSERVE_CLOSE}
 
-输出完观测块后**另起一行**，开始正常的 VN 正文（每行 [emotion] 开头）。不要重复观测块，整段回复只在开头出现一次。`;
+硬性要求：
+- 开头那行 \`${OBSERVE_OPEN}\` 和结尾那行 \`${OBSERVE_CLOSE}\` **两行定界符都必须原样保留**，各自单独占一行，哪怕你不确定也别省略。
+- 四个字段各占一行，用全角竖线 \`｜\` 分隔标签和内容；不要加序号、不要用 markdown 加粗。
+- 观测块只在整段回复的最开头出现一次，输出完**另起一行**再写 VN 正文（每行 [emotion] 开头）。`;
 
 /**
  * 从模型输出里剥出观测块。返回结构化数据 + 去掉观测块后的正文。
- * 没有匹配到完整定界块时不强行解析（避免误伤正文），observation 返回 null。
+ *
+ * 鲁棒性分两层（针对模型掉格式）：
+ *  1) 严格层：成对定界块（含各种括号风格 / OBSERVE|观测 关键字）。有定界符 = 明确意图，
+ *     哪怕只有一个字段也认。这一层永远开，不会误伤普通正文。
+ *  2) 回退层（lenient）：模型丢了闭合标记、换了标记、甚至完全没标记，只在开头堆了
+ *     "时间｜… 地点｜…" 这种字段行——就从开头连续扫字段行，**至少命中 2 个不同维度**
+ *     才认（避免把正文里偶发的"状态：…"误当观测）。仅在开关打开时传 lenient=true。
  */
-export const extractObservation = (text: string): { observation: DateObservation | null; rest: string } => {
+export const extractObservation = (
+    text: string,
+    opts: { lenient?: boolean } = {},
+): { observation: DateObservation | null; rest: string } => {
     if (!text) return { observation: null, rest: text };
+
+    // ── 严格层：成对定界块 ──
     const m = text.match(OBSERVE_BLOCK_RE);
-    if (!m || m.index === undefined) return { observation: null, rest: text };
-    const observation = parseObserveFields(m[1]);
-    const rest = (text.slice(0, m.index) + text.slice(m.index + m[0].length)).replace(/^\s*\n/, '').trim();
-    // 整块都是观测、没有正文时，rest 为空也照常返回（调用方会处理）
-    return { observation, rest };
+    if (m && m.index !== undefined) {
+        const observation = parseObserveBody(m[1]);
+        if (hasObservation(observation)) {
+            const rest = stripStrayMarkers(text.slice(0, m.index) + text.slice(m.index + m[0].length));
+            return { observation, rest };
+        }
+    }
+
+    // ── 回退层：仅在开关开时启用，扫开头的连续字段行 ──
+    if (opts.lenient) {
+        const fallback = scanLeadingFields(text);
+        if (fallback) return fallback;
+    }
+
+    return { observation: null, rest: text };
 };
 
-/** 只去观测块、不要结构化数据时用（novel 模式渲染历史正文） */
-export const stripObservation = (text: string): string => extractObservation(text).rest || (text || '');
-
-/** 块内逐行解析：按关键词归类，兼容全/半角竖线与中英冒号 */
-const parseObserveFields = (body: string): DateObservation => {
+/** 块体逐行解析（严格层用，块内字段无歧义，不设 2 个门槛） */
+const parseObserveBody = (body: string): DateObservation => {
     const obs: DateObservation = {};
     for (const raw of body.split('\n')) {
-        const line = raw.trim();
-        if (!line) continue;
-        const sep = line.search(/[｜|:：]/);
-        if (sep < 0) continue;
-        const key = line.slice(0, sep).trim().toLowerCase();
-        const val = line.slice(sep + 1).trim().replace(/^（|）$/g, '').trim();
-        if (!val) continue;
-        if (/时间|time/.test(key)) obs.time = val;
-        else if (/地点|地区|场所|place|location|site/.test(key)) obs.place = val;
-        else if (/状态|心境|status|state/.test(key)) obs.state = val;
-        else if (/细节|动作|detail|trace|action/.test(key)) obs.detail = val;
+        const mm = raw.match(OBSERVE_FIELD_RE);
+        if (!mm) continue;
+        const key = mapObserveKey(mm[1]);
+        const val = cleanObserveValue(mm[2]);
+        if (key && val && !obs[key]) obs[key] = val;
     }
     return obs;
 };
+
+/**
+ * 回退扫描：跳过开头的空行/孤立标记行，连续吃字段行，遇到第一行"非字段非标记非空"的
+ * 内容（正文/台词/[emotion] 行）即停。命中 ≥2 个不同维度才算数。
+ */
+const scanLeadingFields = (text: string): { observation: DateObservation; rest: string } | null => {
+    const lines = text.split('\n');
+    let i = 0;
+    while (i < lines.length && !lines[i].trim()) i++;          // 跳开头空行
+    if (i < lines.length && isObserveMarkerLine(lines[i])) i++; // 跳一行孤立开标记
+    const obs: DateObservation = {};
+    let lastConsumed = i - 1;
+    const maxScan = i + 12; // 只看开头一小段，绝不深入正文
+    for (let j = i; j < lines.length && j < maxScan; j++) {
+        const t = lines[j].trim();
+        if (!t) { continue; }                       // 字段间空行：跳过但不推进 lastConsumed
+        if (isObserveMarkerLine(lines[j])) { lastConsumed = j; continue; } // 闭合/重复标记
+        const mm = t.match(OBSERVE_FIELD_RE);
+        if (!mm) break;                             // 正文开始
+        const key = mapObserveKey(mm[1]);
+        const val = cleanObserveValue(mm[2]);
+        if (key && val && !obs[key]) obs[key] = val;
+        lastConsumed = j;
+    }
+    const count = (obs.time ? 1 : 0) + (obs.place ? 1 : 0) + (obs.state ? 1 : 0) + (obs.detail ? 1 : 0);
+    if (count < 2) return null;
+    const rest = lines.slice(lastConsumed + 1).join('\n').trim();
+    return { observation: obs, rest };
+};
+
+/** 去掉正文里残留的孤立定界标记行（严格层剥块后可能留下空标记/代码围栏） */
+const stripStrayMarkers = (text: string): string =>
+    text
+        .split('\n')
+        .filter(line => !isObserveMarkerLine(line) && !/^\s*```/.test(line))
+        .join('\n')
+        .trim();
+
+/** 只去观测块、不要结构化数据时用（novel 模式渲染历史正文） */
+export const stripObservation = (text: string, opts?: { lenient?: boolean }): string =>
+    extractObservation(text, opts).rest || (text || '');
 
 /** HUD / 持久化判定：四个字段至少有一个非空才算有效观测 */
 export const hasObservation = (obs: DateObservation | null | undefined): obs is DateObservation =>
