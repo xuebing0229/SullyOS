@@ -23,6 +23,44 @@ export function stickerNameFromUrl(emojis: Emoji[], url: string): string {
     return emojis.find(e => e.url === url)?.name || '未知表情';
 }
 
+/**
+ * 把「窥视的是哪个具体时间」组成一句人话：日期相对词 + 时段词 + 时刻。
+ * 例：今天上午08:00 / 昨天晚上21:30 / 6月25日下午14:00。
+ * 用于小剧场卡片注入——晚上看上午的内容时，不能含糊说"刚刚/刚才"，要落到具体时间。
+ * @param dateStr  卡片记录的日期 "YYYY-MM-DD"（缺失则只给时段+时刻）
+ * @param slotTime 时段起始 "HH:MM"
+ */
+export function theaterWhenPhrase(dateStr?: string, slotTime?: string): string {
+    const time = (slotTime || '').trim();
+    const hour = parseInt(time.split(':')[0], 10);
+    const period = !Number.isFinite(hour) ? ''
+        : hour < 5 ? '凌晨'
+        : hour < 8 ? '早上'
+        : hour < 11 ? '上午'
+        : hour < 13 ? '中午'
+        : hour < 17 ? '下午'
+        : hour < 19 ? '傍晚'
+        : hour < 23 ? '晚上'
+        : '深夜';
+
+    let dayWord = '今天';
+    const ymd = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    if (dateStr && /^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+        const now = new Date();
+        const today = ymd(now);
+        if (dateStr !== today) {
+            const yest = new Date(now); yest.setDate(now.getDate() - 1);
+            if (dateStr === ymd(yest)) {
+                dayWord = '昨天';
+            } else {
+                const [, mo, da] = dateStr.split('-');
+                dayWord = `${parseInt(mo, 10)}月${parseInt(da, 10)}日`;
+            }
+        }
+    }
+    return `${dayWord}${period}${time}`;
+}
+
 /** 仅返回内容体（不加 sender / timestamp）。调用方自行拼外层。 */
 export function normalizeMessageContent(
     msg: Message,
@@ -194,7 +232,7 @@ export function normalizeMessageContent(
         const beat = Array.isArray(t.lines)
             ? t.lines.map((l: any) => `· ${typeof l?.text === 'string' ? l.text : ''}`).filter((s: string) => s.length > 2).join('\n')
             : '';
-        const head = `[小剧场·窥视] ${userName}悄悄看了${charName}在 ${meta.slotTime || ''}「${meta.activity || '某个时段'}」时的样子`;
+        const head = `[小剧场·窥视] ${userName}悄悄看了${charName}在 ${theaterWhenPhrase(meta.date, meta.slotTime)}「${meta.activity || '某个时段'}」时的样子`;
         const tail = exposed
             ? `（${charName}意识到自己被${userName}看到了。）`
             : `（这是${charName}当时真实在做的事，${charName}自己记得；但${charName}并不知道被${userName}看到。）`;

@@ -3,7 +3,7 @@ import { CharacterProfile, UserProfile, Message, Emoji, EmojiCategory, GroupProf
 import { ContextBuilder } from './context';
 import { DB } from './db';
 import { formatLifeSimResetCardForContext } from './lifeSimChatCard';
-import { normalizeMessageContent, stickerNameFromUrl } from './messageFormat';
+import { normalizeMessageContent, stickerNameFromUrl, theaterWhenPhrase } from './messageFormat';
 import { computeCurrentListening, getCurrentSlot } from './charMusicSchedule';
 import { getCharLyricSnippet } from './charLyricCache';
 import { MusicCfg, loadMusicCfgStandalone } from '../context/MusicContext';
@@ -948,9 +948,11 @@ ${userProfile.name} 给你反馈时，别当成约束，当成信任——ta 在
                     const beat = Array.isArray(t.lines)
                         ? t.lines.map((l: any) => `· ${typeof l?.text === 'string' ? l.text : ''}`).filter((s: string) => s.length > 2).join('\n')
                         : '';
+                    // 窥视的是「哪个具体时间」——晚上看上午时不能说成"刚刚/刚才"，要落到具体日期+时段+时刻。
+                    const whenPhrase = theaterWhenPhrase(tMeta.date, tMeta.slotTime);
                     content = exposed
-                        ? `${timeStr}（${uName} 刚刚悄悄"窥视"了你今天 ${tMeta.slotTime || ''}「${tMeta.activity || '某个时段'}」时的样子，并把 ta 看到的画面发给了你——也就是说，你这才发现刚才那段时间 ${uName} 一直在旁边观察你。下面就是 ta 看到的、你当时真实在做的事：）\n${beat}\n（你意识到自己被看到了。可以在接下来的对话里自然地有所反应——害羞、好奇、嗔怪、或装作不在意都行，但别逐字复述上面的内容；也不必非得立刻提起。）`
-                        : `${timeStr}（这是你今天 ${tMeta.slotTime || ''}「${tMeta.activity || '某个时段'}」时真实在做的事，你自己当然记得——下面是当时的画面：）\n${beat}\n（注意：你**并不知道** ${uName} 看到过这一幕，别表现得像被人观察或偷看。这只是你自己那段时间的记忆，聊到相关话题时能自然对得上即可，不必主动提起。）`;
+                        ? `${timeStr}（${uName} 把 ta 偷偷"窥视"到的、你${whenPhrase}「${tMeta.activity || '某个时段'}」时的样子发给了你——也就是说，${whenPhrase}那会儿，${uName} 一直在旁边悄悄观察你。下面就是 ta 看到的、你当时真实在做的事：）\n${beat}\n（你这下知道自己${whenPhrase}那会儿被看到了。可以在对话里自然地有所反应——害羞、好奇、嗔怪、或装作不在意都行，但别逐字复述上面的内容；也不必非得立刻提起。）`
+                        : `${timeStr}（这是你${whenPhrase}「${tMeta.activity || '某个时段'}」时真实在做的事，你自己当然记得——下面是当时的画面：）\n${beat}\n（注意：你**并不知道** ${uName} 看到过这一幕，别表现得像被人观察或偷看。这只是你自己那段时间的记忆，聊到相关话题时能自然对得上即可，不必主动提起。）`;
                 }
                 else if ((m.type as string) === 'html_card') {
                     // html_card：上下文里只塞纯文字摘要，剥离掉所有 HTML，省 token、不污染 LLM 思考
