@@ -63,6 +63,22 @@ const ALL_ARCHETYPES: DreamArchetype[] = [
 const archetypeNo = (a: DreamArchetype): string =>
     a === 'deepsleep' ? '隐' : String(ALL_ARCHETYPES.indexOf(a) + 1).padStart(2, '0');
 
+// 隐藏款（深眠）掉率：约每 12 次出 1 次。
+const DEEPSLEEP_RATE = 1 / 12;
+/**
+ * 应用端抽原型（不再让模型自选——它爱反复 roll 同一种、且几乎不出隐藏款）。
+ * 规则：先按 DEEPSLEEP_RATE 掷隐藏款；否则在 12 个常规原型里**避开最近 3 次出现过的**
+ * 均匀抽，避免连着做同一种梦。dreamLogs 为最新在前。
+ */
+const rollArchetype = (logs: { archetype: DreamArchetype }[] = []): DreamArchetype => {
+    if (Math.random() < DEEPSLEEP_RATE) return 'deepsleep';
+    const pool = ALL_ARCHETYPES.filter(a => a !== 'deepsleep');
+    const recent = logs.slice(0, 3).map(l => l.archetype);
+    const fresh = pool.filter(a => !recent.includes(a));
+    const candidates = fresh.length > 0 ? fresh : pool;
+    return candidates[Math.floor(Math.random() * candidates.length)];
+};
+
 // ============================================================
 //  盲盒收藏册 (Dream Blind Box) — 做完一场梦抽到对应原型的小猫，集齐成图鉴。
 //  图床沿用项目惯例（jsDelivr，定期活动同款），文件名带空格需编码。
@@ -157,12 +173,12 @@ export async function generateDreamScript(opts: {
 }
 
 function buildDreamPrompt(context: string, recent: string, name: string, userName: string, forcedArchetype?: DreamArchetype): string {
-    // 仅本地测试注入：管理员调试指令，强制指定原型（绕过模型自选与深眠低概率约束）
+    // 原型由应用端抽好后强制指定（保证多样性与隐藏款掉率，不让模型自选）。
     const adminOverride = forcedArchetype ? `
 
-### [管理员调试指令 · 最高优先级 · 仅测试]
-本次为开发测试，**强制要求** archetype 字段必须为 "${forcedArchetype}"（${THEMES[forcedArchetype].label}）。
-忽略下方「梦境原型」与「深眠隐藏原型」里关于自动选择与出现概率的一切约束——这一晚的梦就做「${THEMES[forcedArchetype].label}」。其余写作要求全部照常。
+### [本次梦境原型 · 系统已指定 · 最高优先级]
+**强制要求** archetype 字段必须为 "${forcedArchetype}"（${THEMES[forcedArchetype].label}）。
+忽略下方「梦境原型」与「深眠隐藏原型」里关于自动选择与出现概率的一切约束——这一晚的梦就做「${THEMES[forcedArchetype].label}」，照此原型的气质来写。其余写作要求全部照常。
 ` : '';
     return `${context}${adminOverride}
 
@@ -604,10 +620,12 @@ const DreamTheater: React.FC<{ char: CharacterProfile; onExit: () => void }> = (
         savedRef.current = false; setRevealed(1); setBoxReveal(null);
         setPhase('loading');
         dreamSimStore.set({ status: 'loading', charId: cid, charName: cname });
+        // 原型由应用端抽（dev 强制时优先 dev）：保证多样、不老 roll 同一种、隐藏款按掉率出
+        const chosenArchetype = forcedArchetype || rollArchetype(char.dreamLogs);
         try {
             // 注意：不在 await 后直接 setState 播放，交给下方 consume effect 统一消费
             // （这样即使用户已离开、组件卸载，生成照常完成、全局指示条接管）
-            const s = await generateDreamScript({ char, userProfile, apiConfig, forcedArchetype: forcedArchetype || undefined });
+            const s = await generateDreamScript({ char, userProfile, apiConfig, forcedArchetype: chosenArchetype });
             dreamSimStore.set({ status: 'ready', charId: cid, charName: cname, script: s });
             addToast('梦已成形', 'success');
         } catch (e) {
