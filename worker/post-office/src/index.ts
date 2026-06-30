@@ -37,9 +37,11 @@
  *   POST  …/poem/append   { device, pen, poemId, content }                  接龙续一句（满篇幅自动封存）
  *   GET   …/poem/feed?limit=&booklet=&device=&mine=1                        翻阅已封存的诗集（mine=1 只看本机参与过的）
  *   POST  …/poem/booklet  { title,subtitle,theme,poemsTarget,linesMin,linesMax,charsPerLine } (+ token)  [管理] 发新册子
- *   GET   …/poem/admin/list (+ token)                                       [管理] 列全部诗 + 当前暂停态
- *   POST  …/poem/admin/delete { poemId } | { poemId, seq } (+ token)        [管理] 删整首 / 删单句
- *   POST  …/poem/admin/pause  { paused: true|false } (+ token)              [管理] 暂停 / 恢复诗歌推入
+ *   GET   …/poem/admin-list (+ token)                                       [管理] 列全部诗 + 当前暂停态
+ *   POST  …/poem/admin-delete { poemId } | { poemId, seq } (+ token)        [管理] 删整首 / 删单句
+ *   POST  …/poem/admin-pause  { paused: true|false } (+ token)              [管理] 暂停 / 恢复诗歌推入
+ *   注：用连字符（非 /poem/admin/list）是**故意**的——后端按 path 结尾匹配，
+ *       /poem/admin/list 会先撞上漂流瓶的 /admin/list 被截走，故避开该后缀。
  *
  * 表结构由 Worker 自动建（加性、不破坏老数据）。也可手动跑 schema.sql。
  */
@@ -577,7 +579,7 @@ export default {
             }
 
             // ── [管理] 列出全部诗（open 在前，再按时间倒序）+ 当前暂停态 ──
-            if (req.method === 'GET' && ends('/poem/admin/list')) {
+            if (req.method === 'GET' && ends('/poem/admin-list')) {
                 if (!isAdmin(req, url, env)) return json({ ok: false, error: 'unauthorized' }, 401);
                 const limit = Math.min(Math.max(num(url.searchParams.get('limit') || '', 100), 1), 300);
                 const rows = await env.DB.prepare(
@@ -590,7 +592,7 @@ export default {
             }
 
             // ── [管理] 删一整首诗 或 删单句 ──
-            if (req.method === 'POST' && ends('/poem/admin/delete')) {
+            if (req.method === 'POST' && ends('/poem/admin-delete')) {
                 if (!isAdmin(req, url, env)) return json({ ok: false, error: 'unauthorized' }, 401);
                 const body: any = await req.json().catch(() => ({}));
                 const poemId = String(body.poemId || '');
@@ -616,7 +618,7 @@ export default {
             }
 
             // ── [管理] 暂停 / 恢复「诗歌推入」（暂停后 start/append 一律 423）──
-            if (req.method === 'POST' && ends('/poem/admin/pause')) {
+            if (req.method === 'POST' && ends('/poem/admin-pause')) {
                 if (!isAdmin(req, url, env)) return json({ ok: false, error: 'unauthorized' }, 401);
                 const body: any = await req.json().catch(() => ({}));
                 await setFlag(env.DB, PAUSE_KEY, body.paused ? '1' : '0');

@@ -429,7 +429,7 @@ var src_default = {
         ).run();
         return json({ ok: true, booklet: bookletView(await env.DB.prepare(`SELECT * FROM po_booklets WHERE id = ?`).bind(id).first()) });
       }
-      if (req.method === "GET" && ends("/poem/admin/list")) {
+      if (req.method === "GET" && ends("/poem/admin-list")) {
         if (!isAdmin(req, url, env)) return json({ ok: false, error: "unauthorized" }, 401);
         const limit = Math.min(Math.max(num(url.searchParams.get("limit") || "", 100), 1), 300);
         const rows = await env.DB.prepare(
@@ -440,7 +440,7 @@ var src_default = {
         const paused = await getFlag(env.DB, PAUSE_KEY) === "1";
         return json({ ok: true, poems, paused });
       }
-      if (req.method === "POST" && ends("/poem/admin/delete")) {
+      if (req.method === "POST" && ends("/poem/admin-delete")) {
         if (!isAdmin(req, url, env)) return json({ ok: false, error: "unauthorized" }, 401);
         const body = await req.json().catch(() => ({}));
         const poemId = String(body.poemId || "");
@@ -462,7 +462,7 @@ var src_default = {
         }
         return json({ ok: false, error: "bad request" }, 400);
       }
-      if (req.method === "POST" && ends("/poem/admin/pause")) {
+      if (req.method === "POST" && ends("/poem/admin-pause")) {
         if (!isAdmin(req, url, env)) return json({ ok: false, error: "unauthorized" }, 401);
         const body = await req.json().catch(() => ({}));
         await setFlag(env.DB, PAUSE_KEY, body.paused ? "1" : "0");

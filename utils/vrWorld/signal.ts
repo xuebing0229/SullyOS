@@ -104,16 +104,16 @@ export const Signal = {
     // ── 管理（凭 ADMIN_TOKEN，与漂流瓶同一个 token）──
     /** [管理] 列出后端全部诗（open 在前）+ 当前暂停态。 */
     async adminList(token: string): Promise<{ poems: SignalPoem[]; paused: boolean }> {
-        const r = await call<{ poems: SignalPoem[]; paused: boolean }>('/poem/admin/list', { headers: { Authorization: `Bearer ${token}` } });
+        const r = await call<{ poems: SignalPoem[]; paused: boolean }>('/poem/admin-list', { headers: { Authorization: `Bearer ${token}` } });
         return { poems: r.poems || [], paused: !!r.paused };
     },
     /** [管理] 删一整首诗（只给 poemId）或删单句（poemId + seq）。 */
     async adminDelete(token: string, target: { poemId: string; seq?: number }): Promise<void> {
-        await call('/poem/admin/delete', { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: JSON.stringify(target) });
+        await call('/poem/admin-delete', { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: JSON.stringify(target) });
     },
     /** [管理] 暂停 / 恢复「诗歌推入」。 */
     async adminPause(token: string, paused: boolean): Promise<boolean> {
-        const r = await call<{ paused: boolean }>('/poem/admin/pause', { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: JSON.stringify({ paused }) });
+        const r = await call<{ paused: boolean }>('/poem/admin-pause', { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: JSON.stringify({ paused }) });
         return !!r.paused;
     },
 };
