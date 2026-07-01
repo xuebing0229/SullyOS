@@ -1366,8 +1366,9 @@ const CallApp: React.FC = () => {
           <div className="mt-1.5 text-lg tabular-nums font-extralight tracking-[0.2em]" style={{ color: accentColor }}>{formatDuration(elapsedSeconds)}</div>
         </div>
       </div>
-      {/* portrait + aura */}
-      <div className="pt-3 pb-1 flex flex-col items-center justify-center">
+      {/* portrait + aura —— 键盘弹起时（body.ios-keyboard-open）整块收起，把可视区让给消息+输入框，
+          避免大头像把输入框顶出键盘上方的可视区（见 index.html 的 .sully-call-hero 规则）。 */}
+      <div className="sully-call-hero pt-3 pb-1 flex flex-col items-center justify-center">
         <div className="relative w-40 h-40">
           <div className={`absolute -inset-3 rounded-full blur-xl ${waveActive ? 'animate-pulse' : ''}`} style={{ background: `radial-gradient(closest-side, ${accentColor}, transparent)`, opacity: waveActive ? 0.8 : 0.4 }} />
           <div className="absolute -inset-1 rounded-full" style={{ boxShadow: `0 0 0 1px ${accentColor}55, inset 0 0 24px ${accentColor}33` }} />
@@ -1481,14 +1482,6 @@ const CallApp: React.FC = () => {
               ref={draftInputRef}
               value={draftInput}
               onChange={(e) => setDraftInput(e.target.value)}
-              onFocus={(e) => {
-                // 和聊天一致：只做一次轻量的「就近滚入可视」，不再手动 scrollTo / 改 padding。
-                const el = e.currentTarget;
-                window.requestAnimationFrame(() => {
-                  if (document.activeElement !== el) return;
-                  try { el.scrollIntoView({ block: 'nearest', inline: 'nearest' }); } catch {}
-                });
-              }}
               className="flex-1 bg-transparent px-2 text-sm outline-none placeholder:text-white/35"
               placeholder={isListening ? '在听你说……' : sendingBusy ? `${selectedChar?.name || '对方'}正在想……` : `想对${selectedChar?.name || '对方'}说什么？`}
             />

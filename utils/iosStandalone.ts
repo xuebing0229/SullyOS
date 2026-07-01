@@ -52,6 +52,14 @@ export const isStandaloneDisplayMode = (): boolean => {
 
 export const isIOSStandaloneWebApp = (): boolean => isIOSDevice() && isStandaloneDisplayMode();
 
+// 安卓机（Chrome / Edge 等）。安卓普通浏览器弹软键盘时经常不按 interactive-widget=resizes-content
+// 回流，而是缩小可视区、把整页往上顶（顶栏被切、退出重进才恢复）。需要和 iOS 全屏 PWA 一样，
+// 让 app 高度跟随可视区并锁死外层滚动。
+export const isAndroidDevice = (): boolean => {
+    if (typeof navigator === 'undefined') return false;
+    return /Android/i.test(navigator.userAgent || '');
+};
+
 // 顶部时钟/电量条是否隐藏：外观「隐藏顶部时间栏」开关显式设过就听用户的；没设过(undefined)按平台默认——
 // iOS 全屏 PWA 系统状态栏(真实时间/电量)删不掉，默认隐藏 SullyOS 这条避免双显。
 // 必须用 ?? 而非 ||：显式 false（用户主动要显示）不能被平台默认 true 盖掉。
@@ -101,9 +109,22 @@ const setViewportVars = () => {
         }
     } else {
         stableStandaloneHeight = 0;
+        // obscuredHeight = 被软键盘盖住的高度。安卓浏览器若按 resizes-content 回流，
+        // innerHeight 会跟着缩，obscuredHeight ≈ 0（走无键盘分支，布局自行回流，什么都不用做）；
+        // 若不回流而是缩小可视区/顶起整页，obscuredHeight > 120，进入键盘分支统一避让。
         const obscuredHeight = Math.max(0, innerHeight - viewportHeight - viewportOffsetTop);
-        keyboardInset = obscuredHeight > 120 ? obscuredHeight : 0;
-        fullAppHeight = Math.max(innerHeight, viewportHeight + viewportOffsetTop);
+        const keyboardOpen = obscuredHeight > 120;
+        // 键盘避让统一用「app 高度跟随可视区」，不再靠 keyboard-inset 让各 App 自己叠 padding。
+        keyboardInset = 0;
+        if (keyboardOpen) {
+            // 安卓 Chrome/Edge：app 高度收到键盘上方的可视区，输入框自然落在可视区内；
+            // 再把被浏览器顶起的外层滚动拉回顶部（配合 body.ios-keyboard-open 的 touchmove 锁定），
+            // 界面不再整体上移、退出重进才恢复。
+            fullAppHeight = viewportHeight;
+            if (viewportOffsetTop > 0) window.scrollTo(0, 0);
+        } else {
+            fullAppHeight = Math.max(innerHeight, viewportHeight + viewportOffsetTop);
+        }
     }
 
     document.documentElement.style.setProperty('--app-height', `${fullAppHeight}px`);
@@ -119,6 +140,9 @@ export const installIOSStandaloneWorkaround = () => {
 
     hasInstalledIOSStandaloneWorkaround = true;
     const useStandaloneFixes = isIOSStandaloneWebApp();
+    // iOS 全屏 PWA 与安卓浏览器都需要「聚焦挂 keyboard 类 + 锁外层滚动」这套键盘避让。
+    // 安卓 Chrome/Edge 弹键盘时会把整页顶起，同样靠这套压回去。
+    const useKeyboardFixes = useStandaloneFixes || isAndroidDevice();
     if (useStandaloneFixes) {
         document.documentElement.classList.add('ios-standalone');
         document.body.classList.add('ios-standalone');
@@ -175,7 +199,7 @@ export const installIOSStandaloneWorkaround = () => {
     window.addEventListener('orientationchange', handleSafeAreaChange);
     window.visualViewport?.addEventListener('resize', handleViewportChange);
     window.visualViewport?.addEventListener('scroll', handleViewportChange);
-    if (useStandaloneFixes) {
+    if (useKeyboardFixes) {
         document.addEventListener('focusin', handleFocusIn);
         document.addEventListener('focusout', handleFocusOut);
         document.addEventListener('touchmove', handleTouchMove, { passive: false });

@@ -246,6 +246,20 @@
       body.ios-keyboard-open .sully-chat-inputbar {
         padding-bottom: 0;
       }
+      /* 通话页：键盘弹起时收起大头像英雄区（约 300px），把可视区让给消息列表 + 输入框。
+         可视区收到键盘上方后若不收起大头像，会把输入框顶出可视区。用 max-height 过渡平滑收起。 */
+      .sully-call-hero {
+        transition: max-height 0.2s ease-out, opacity 0.2s ease-out, padding 0.2s ease-out;
+        max-height: 420px;
+      }
+      body.ios-keyboard-open .sully-call-hero {
+        max-height: 0;
+        opacity: 0;
+        padding-top: 0;
+        padding-bottom: 0;
+        overflow: hidden;
+        pointer-events: none;
+      }
     </style>
   <script type="importmap">
 {
