@@ -91,12 +91,11 @@ const Chat: React.FC = () => {
     const visibleCountRef = useRef(30);
     const activeCharIdRef = useRef(activeCharacterId);
     const charRef = useRef<typeof char>(null as any);
-    // 白框提示音：记录当前角色"见过的最大消息 ID"，配合尾部防抖，让 ta 一轮回复只在最后一条气泡落地后响一次。
+    // 白框提示音：记录当前角色"见过的最大消息 ID" + "上一条气泡到达时刻"，一轮回复只在首条气泡响一次。
     // 用 max-id 基线天然免疫：切角色/进入(先记基线不播)、翻旧历史(末尾 ID 变小不响)、自己发消息(role≠assistant 不响)。
-    const soundSyncRef = useRef<{ charId: string | null; maxId: number | null }>({ charId: null, maxId: null });
-    // 尾部防抖定时器：ta 一轮回复拆成多条气泡逐条下发（间隔 ≤2s），每来一条就重置计时；
-    // 直到 >阈值 没有新气泡（=最后一条已落地）才响一次。取 3s 安全高于 2s 的最大气泡间隔。
-    const soundTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    // lastAt 做回合去重：ta 一轮回复拆成多条气泡逐条下发（间隔 ≤2s），距上一条气泡 >3s 才算新回合、才响。
+    const soundSyncRef = useRef<{ charId: string | null; maxId: number | null; lastAt: number | null }>({ charId: null, maxId: null, lastAt: null });
+    // 回合去重阈值：气泡间最大间隔 = clamp(字数×50,500,2000)=2s，取 3s 安全合并同一轮，跨轮(LLM 延迟)一般远大于此。
     const SOUND_ROUND_GAP_MS = 3000;
 
     // Reply Logic
@@ -802,11 +801,11 @@ const Chat: React.FC = () => {
         const sync = soundSyncRef.current;
         const last = messages.length > 0 ? messages[messages.length - 1] : null;
         const lastId = last ? last.id : null;
-        // 切角色 / 首次进入：只记录基线，不播（避免一打开聊天就响）；取消上一个角色未落地的回合计时。
+        // 切角色 / 首次进入：只记录基线，不播（避免一打开聊天就响）；回合计时清零。
         if (sync.charId !== activeCharacterId) {
             sync.charId = activeCharacterId ?? null;
             sync.maxId = lastId;
-            if (soundTimerRef.current) { clearTimeout(soundTimerRef.current); soundTimerRef.current = null; }
+            sync.lastAt = null;
             return;
         }
         if (lastId == null) return;
@@ -815,22 +814,17 @@ const Chat: React.FC = () => {
             // 仅"char 发送的、落到底部的最新一条"才触发：assistant 且非见面/通话等旁路消息。
             const src = last?.metadata?.source;
             if (last?.role === 'assistant' && src !== 'date' && src !== 'call') {
-                const soundNow = resolveActiveSound(char?.chromeCustomCss, char?.chatSound, osTheme.chatChromeCustomCss, osTheme.chatSound);
-                if (soundNow) {
-                    // 尾部防抖：每来一条新气泡就重置计时；直到 >阈值 没有新气泡（=最后一条已落地）才响一次。
-                    if (soundTimerRef.current) clearTimeout(soundTimerRef.current);
-                    soundTimerRef.current = setTimeout(() => {
-                        soundTimerRef.current = null;
-                        playWhiteboxSound(soundNow);
-                    }, SOUND_ROUND_GAP_MS);
+                // 回合首条即响：距上一条气泡 >3s 视为新回合，立刻响一次；同一轮后续气泡只刷新计时、不再响。
+                const now = Date.now();
+                if (sync.lastAt == null || now - sync.lastAt > SOUND_ROUND_GAP_MS) {
+                    playWhiteboxSound(resolveActiveSound(char?.chromeCustomCss, char?.chatSound, osTheme.chatChromeCustomCss, osTheme.chatSound));
                 }
+                sync.lastAt = now;
             }
         }
         // 基线只增不减：翻旧历史让末尾 ID 变小时不下调，返回底部也不会重复触发。
         sync.maxId = sync.maxId == null ? lastId : Math.max(sync.maxId, lastId);
     }, [messages, activeCharacterId, osTheme.chatChromeCustomCss, osTheme.chatSound, char?.chromeCustomCss, char?.chatSound]);
-    // 卸载时清掉未落地的回合计时（单独放这里，避免每次 messages 变化都取消防抖）。
-    useEffect(() => () => { if (soundTimerRef.current) clearTimeout(soundTimerRef.current); }, []);
 
     const formatTime = (ts: number) => {
         return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
