@@ -636,7 +636,7 @@ ${layoutHint[layout || 'generic']}`;
                 logPrefix = customApp ? customApp.name : type;
             } else {
                 if (type === 'chat') {
-                    promptInstruction = `生成 3 个该角色手机聊天软件(Message/Line)中的**对话片段**。
+                    promptInstruction = `生成 3 个**你（${targetChar.name}）自己**手机聊天软件(Message/Line)里的**对话片段**（你和你自己联系人的对话，第一人称视角，不是用户的社交）。
 
 ${realCharRule}
 
@@ -648,7 +648,7 @@ ${realCharRule}
 格式JSON数组: [{ "title": "真实角色填原名/虚构填名字", "kind": "real|npc", "linkedName": "若 real 填真实角色原名否则留空", "identity": "机主对 TA 的称呼/关系备注", "affinity": 30, "detail": "对方: 最近怎么样？\\n我: 还活着。\\n对方: 那就好。" }, ...]`;
                     logPrefix = "聊天软件";
                 } else if (type === 'contacts') {
-                    promptInstruction = `扫描并生成该角色手机通讯录里的 4-6 个**联系人**（不要对话，只要联系人本身）。
+                    promptInstruction = `扫描并生成**你（${targetChar.name}）自己**手机通讯录里的 4-6 个**联系人**（你自己的社交圈，第一人称，不是用户的人脉；不要对话，只要联系人本身）。
 
 ${realCharRule}
 
@@ -674,7 +674,13 @@ ${realCharRule}
                 }
             }
 
-            const fullPrompt = `${context}\n\n### [Recent Chat Context]\n${recentMsgs}\n\n### [Task]\n${promptInstruction}\n请结合上面的「当前时间 / 距离上次联系」和人设调整生成内容的时间戳和情绪。如果很久没联系，记录可能是近期的独处状态；如果刚聊过，记录可能与聊天内容相关。`;
+            const perspectiveLock = `### [视角锁定 · 极重要]
+接下来要生成的是**你（${targetChar.name}）自己手机里的东西**——你自己的生活、社交、记录。
+- 完全用**你（${targetChar.name}）的第一人称视角**：这些是**你的**联系人、**你自己的**社交圈、**你对他们的**印象和备注。
+- **绝不是用户「${userProfile.name}」的社交关系**：不要生成用户的人脉圈，也不要从用户的角度/口吻写备注。
+- 用户「${userProfile.name}」只是在偷看你的手机，TA **不是**你的联系人、**不进**你的通讯录（下面「和用户的最近聊天」只是背景参考，不是要生成的对象，也别把用户的熟人搬进来）。`;
+
+            const fullPrompt = `${context}\n\n### [你和用户「${userProfile.name}」的最近聊天（仅背景参考）]\n${recentMsgs}\n\n${perspectiveLock}\n\n### [Task]\n${promptInstruction}\n请结合上面的「当前时间 / 距离上次联系」和人设调整生成内容的时间戳和情绪。如果很久没联系，记录可能是近期的独处状态；如果刚聊过，记录可能与聊天内容相关。`;
 
             const response = await fetch(`${apiConfig.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
                 method: 'POST',
