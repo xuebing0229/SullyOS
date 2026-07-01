@@ -972,7 +972,7 @@ const Chat: React.FC = () => {
                     webpageCardCreated = true;
                 } catch (e: any) {
                     console.warn('Webpage fetch failed:', e);
-                    addToast(`网页抓取失败：${e?.message || '可能被站点拦截，建议在设置里配置 instant worker 作代理'}`, 'error');
+                    addToast(`网页抓取失败：${e?.message || '可能被这个站点拦截了，换个链接或稍后再试。'}`, 'error');
                 }
             }
 
