@@ -38,6 +38,8 @@ import { resolveMiniMaxApiKey } from '../utils/minimaxApiKey';
 import { resolveFishAudioApiKey, stripFishMarkupForDisplay, cleanTextForTtsFish } from '../utils/fishAudioTts';
 import { resolveTtsProvider } from '../utils/ttsProvider';
 import { isInstantConfigReady, loadInstantConfig } from '../utils/instantPushClient';
+import { resolveActiveSound, playWhiteboxSound, unlockWhiteboxAudio, parseWhiteboxSound, upsertWhiteboxSound, stripWhiteboxSoundDirective, WhiteboxSound } from '../utils/whiteboxSound';
+import WhiteboxSoundEditor from '../components/chat/WhiteboxSoundEditor';
 
 const VOICE_LANG_LABELS: Record<string, string> = { en: 'English', ja: '日本語', ko: '한국어', fr: 'Français', es: 'Español' };
 type InstantToolUiStatus = {
@@ -89,11 +91,14 @@ const Chat: React.FC = () => {
     const visibleCountRef = useRef(30);
     const activeCharIdRef = useRef(activeCharacterId);
     const charRef = useRef<typeof char>(null as any);
+    // 白框提示音：记录当前角色"见过的最大消息 ID"，只在 char 新发的消息成为最后一条时响一次。
+    // 用 max-id 基线天然免疫：切角色/进入(先记基线不播)、翻旧历史(末尾 ID 变小不响)、自己发消息(role≠assistant 不响)。
+    const soundSyncRef = useRef<{ charId: string | null; maxId: number | null }>({ charId: null, maxId: null });
 
     // Reply Logic
     const [replyTarget, setReplyTarget] = useState<Message | null>(null);
 
-    const [modalType, setModalType] = useState<'none' | 'transfer' | 'emoji-import' | 'chat-settings' | 'message-options' | 'edit-message' | 'delete-emoji' | 'delete-category' | 'add-category' | 'history-manager' | 'archive-settings' | 'prompt-editor' | 'category-options' | 'category-visibility' | 'emoji-options' | 'rename-emoji' | 'schedule' | 'chrome-css'>('none');
+    const [modalType, setModalType] = useState<'none' | 'transfer' | 'emoji-import' | 'chat-settings' | 'message-options' | 'edit-message' | 'delete-emoji' | 'delete-category' | 'add-category' | 'history-manager' | 'archive-settings' | 'prompt-editor' | 'category-options' | 'category-visibility' | 'emoji-options' | 'rename-emoji' | 'schedule' | 'chrome-css' | 'chrome-sound'>('none');
     const [scheduleData, setScheduleData] = useState<DailySchedule | null>(null);
     // 小剧场（窥视演出）：正在播放的时段索引（null = 未打开），以及生成中标志
     const [theaterSlotIdx, setTheaterSlotIdx] = useState<number | null>(null);
@@ -787,6 +792,31 @@ const Chat: React.FC = () => {
         }
     }, [messages, isTyping, recallStatus, searchStatus, diaryStatus, selectionMode, windowedFocusMsgId]);
 
+    // 白框提示音：当 char 新发的消息成为会话最后一条时播放一次（用户自己/历史/翻旧消息都不响）。
+    // 声音配置编码在白框 CSS 注释里（角色 chromeCustomCss 覆盖全局 chatChromeCustomCss），随白框分享一起走。
+    useEffect(() => {
+        const sync = soundSyncRef.current;
+        const last = messages.length > 0 ? messages[messages.length - 1] : null;
+        const lastId = last ? last.id : null;
+        // 切角色 / 首次进入：只记录基线，不播（避免一打开聊天就响）。
+        if (sync.charId !== activeCharacterId) {
+            sync.charId = activeCharacterId ?? null;
+            sync.maxId = lastId;
+            return;
+        }
+        if (lastId == null) return;
+        const isNew = sync.maxId == null || lastId > sync.maxId;
+        if (isNew) {
+            // 仅"char 发送的、落到底部的最新一条"才触发：assistant 且非见面/通话等旁路消息。
+            const src = last?.metadata?.source;
+            if (last?.role === 'assistant' && src !== 'date' && src !== 'call') {
+                playWhiteboxSound(resolveActiveSound(char?.chromeCustomCss, char?.chatSound, osTheme.chatChromeCustomCss));
+            }
+        }
+        // 基线只增不减：翻旧历史让末尾 ID 变小时不下调，返回底部也不会重复触发。
+        sync.maxId = sync.maxId == null ? lastId : Math.max(sync.maxId, lastId);
+    }, [messages, activeCharacterId, osTheme.chatChromeCustomCss, char?.chromeCustomCss, char?.chatSound]);
+
     const formatTime = (ts: number) => {
         return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
     };
@@ -795,6 +825,8 @@ const Chat: React.FC = () => {
 
     const handleSendText = async (customContent?: string, customType?: MessageType, metadata?: any) => {
         if (!char || (!input.trim() && !customContent)) return;
+        // 借用户"发送"这个手势解锁音频上下文，好让稍后 AI 回复时的白框提示音能顺利播放（移动端自动播放策略）。
+        unlockWhiteboxAudio();
         const text = customContent || input.trim();
         const type = customType || 'text';
 
@@ -1075,6 +1107,7 @@ const Chat: React.FC = () => {
             case 'archive': setModalType('archive-settings'); break;
             case 'settings': setModalType('chat-settings'); break;
             case 'chrome-css': setModalType('chrome-css'); break;
+            case 'chrome-sound': setModalType('chrome-sound'); break;
             case 'emoji-import': setModalType('emoji-import'); break;
             case 'send-emoji': if (payload) handleSendText(payload.url, 'emoji'); break;
             case 'delete-emoji-req': setSelectedEmoji(payload); setModalType('delete-emoji'); break;
@@ -3123,6 +3156,48 @@ const Chat: React.FC = () => {
                     )}
                 </div>
             )}
+
+            {/* 白框「提示音」Modal —— 从加号面板「提示音」进入。默认独立存于 char.chatSound；
+                打开「绑定到白框」则改存进 char.chromeCustomCss 的 @sully-sound 指令、随白框分享一起走。 */}
+            {char && modalType === 'chrome-sound' && (() => {
+                const boundSound = parseWhiteboxSound(char.chromeCustomCss);
+                const isBound = !!char.chatSoundBound || !!boundSound;
+                const curSound: WhiteboxSound | null = isBound ? boundSound : (char.chatSound || null);
+                const changeSound = (s: WhiteboxSound | null) => {
+                    if (isBound) {
+                        updateCharacter(char.id, { chromeCustomCss: upsertWhiteboxSound(char.chromeCustomCss || '', s), chatSound: undefined } as any);
+                    } else {
+                        updateCharacter(char.id, { chatSound: s || undefined } as any);
+                    }
+                };
+                const changeBound = (b: boolean) => {
+                    if (b) {
+                        // 绑定：把当前提示音写进白框 CSS 指令，清掉独立字段。
+                        updateCharacter(char.id, { chromeCustomCss: upsertWhiteboxSound(char.chromeCustomCss || '', curSound), chatSound: undefined, chatSoundBound: true } as any);
+                    } else {
+                        // 解绑：从白框 CSS 指令里取出提示音，落回独立字段。
+                        updateCharacter(char.id, { chromeCustomCss: stripWhiteboxSoundDirective(char.chromeCustomCss || ''), chatSound: curSound || undefined, chatSoundBound: false } as any);
+                    }
+                };
+                return (
+                    <div className="fixed inset-0 z-[110] flex items-end justify-center bg-black/5" onClick={() => setModalType('none')}>
+                        <div
+                            className="w-full max-h-[68vh] overflow-y-auto rounded-t-3xl border-t border-white/60 bg-white/95 p-5 shadow-[0_-12px_40px_rgba(15,23,42,0.18)] backdrop-blur-xl [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+                            style={{ paddingBottom: 'calc(1.25rem + var(--safe-bottom))' }}
+                            onClick={(e) => e.stopPropagation()}
+                        >
+                            <div className="mb-3 flex items-start justify-between">
+                                <div>
+                                    <div className="text-sm font-bold text-slate-800">提示音 · {char.name}</div>
+                                    <div className="mt-0.5 text-[10px] text-slate-400">ta 新发的消息成为最新一条时响一次。默认独立于白框，可选绑定一起分享。</div>
+                                </div>
+                                <button onClick={() => setModalType('none')} className="px-2 text-xl leading-none text-slate-400 hover:text-slate-600">{'×'}</button>
+                            </div>
+                            <WhiteboxSoundEditor sound={curSound} bound={isBound} onChangeSound={changeSound} onChangeBound={changeBound} />
+                        </div>
+                    </div>
+                );
+            })()}
 
             {/* 情绪设置已嵌入日程 Modal（与日程强制同步开/关），不再单独渲染 */}
 
