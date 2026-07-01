@@ -45,7 +45,11 @@ async function ensureSchema(db) {
   await db.exec(`CREATE TABLE IF NOT EXISTS po_ratelimit (bucket TEXT PRIMARY KEY, count INTEGER NOT NULL, reset_at INTEGER NOT NULL);`);
   await db.exec(`CREATE TABLE IF NOT EXISTS po_booklets (id TEXT PRIMARY KEY, title TEXT NOT NULL, subtitle TEXT, theme TEXT, poems_target INTEGER NOT NULL, poem_count INTEGER NOT NULL DEFAULT 0, lines_min INTEGER NOT NULL, lines_max INTEGER NOT NULL, chars_per_line INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'open', created_at INTEGER NOT NULL);`);
   await db.exec(`CREATE INDEX IF NOT EXISTS idx_po_booklets_open ON po_booklets(status, created_at);`);
-  await db.exec(`CREATE TABLE IF NOT EXISTS po_poems (id TEXT PRIMARY KEY, booklet_id TEXT NOT NULL, title TEXT NOT NULL, target_lines INTEGER NOT NULL, line_count INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'open', starter_pen TEXT, created_at INTEGER NOT NULL, sealed_at INTEGER);`);
+  await db.exec(`CREATE TABLE IF NOT EXISTS po_poems (id TEXT PRIMARY KEY, booklet_id TEXT NOT NULL, title TEXT NOT NULL, brief TEXT, target_lines INTEGER NOT NULL, line_count INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'open', starter_pen TEXT, created_at INTEGER NOT NULL, sealed_at INTEGER);`);
+  try {
+    await db.exec(`ALTER TABLE po_poems ADD COLUMN brief TEXT;`);
+  } catch {
+  }
   await db.exec(`CREATE INDEX IF NOT EXISTS idx_po_poems_booklet ON po_poems(booklet_id, status);`);
   await db.exec(`CREATE INDEX IF NOT EXISTS idx_po_poems_sealed ON po_poems(status, sealed_at);`);
   await db.exec(`CREATE TABLE IF NOT EXISTS po_poem_lines (id TEXT PRIMARY KEY, poem_id TEXT NOT NULL, booklet_id TEXT NOT NULL, seq INTEGER NOT NULL, device TEXT NOT NULL, pen TEXT NOT NULL, content TEXT NOT NULL, created_at INTEGER NOT NULL);`);
@@ -76,6 +80,16 @@ var SIG_LMIN = 4;
 var SIG_LMAX = 12;
 var SIG_CPL = 24;
 var clipLine = (s, cap) => [...String(s ?? "").replace(/\s*\n+\s*/g, " ")].slice(0, cap).join("").trim();
+function takeLines(input, single, cap, max = 2) {
+  const arr = Array.isArray(input) ? input : single != null ? [single] : [];
+  const out = [];
+  for (const x of arr) {
+    const c = clipLine(x, cap);
+    if (c) out.push(c);
+    if (out.length >= max) break;
+  }
+  return out;
+}
 async function ensureBooklet(db) {
   const hit = await db.prepare(`SELECT * FROM po_booklets WHERE status = 'open' ORDER BY created_at ASC LIMIT 1`).first();
   if (hit) return hit;
@@ -97,6 +111,7 @@ var poemView = (p, lines, myDevice) => ({
   id: p.id,
   bookletId: p.booklet_id,
   title: p.title,
+  brief: p.brief || "",
   targetLines: p.target_lines,
   lineCount: lines.length,
   status: p.status,
@@ -383,13 +398,18 @@ var src_default = {
           return json({ ok: false, error: "poem-open", booklet: bookletView(booklet), poem: poemView(existing, await loadLines(env.DB, existing.id), device) }, 409);
         }
         const title = clipLine(body.title, 40) || "\u65E0\u9898";
-        const firstLine = clipLine(body.firstLine, booklet.chars_per_line);
-        if (!device || !firstLine) return json({ ok: false, error: "bad request" }, 400);
+        const brief = clipLine(body.brief, 200) || null;
         const target = Math.min(Math.max(parseInt(String(body.targetLines), 10) || booklet.lines_min, booklet.lines_min), booklet.lines_max);
+        const firstLines = takeLines(body.lines, body.firstLine, booklet.chars_per_line, Math.min(2, target));
+        if (!device || firstLines.length === 0) return json({ ok: false, error: "bad request" }, 400);
         const now = Date.now();
         const poemId = uuid();
-        await env.DB.prepare(`INSERT INTO po_poems (id, booklet_id, title, target_lines, line_count, status, starter_pen, created_at) VALUES (?,?,?,?,0,'open',?,?)`).bind(poemId, booklet.id, title, target, pen, now).run();
-        await env.DB.prepare(`INSERT INTO po_poem_lines (id, poem_id, booklet_id, seq, device, pen, content, created_at) VALUES (?,?,?,?,?,?,?,?)`).bind(uuid(), poemId, booklet.id, 1, device, pen, firstLine, now).run();
+        await env.DB.prepare(`INSERT INTO po_poems (id, booklet_id, title, brief, target_lines, line_count, status, starter_pen, created_at) VALUES (?,?,?,?,?,0,'open',?,?)`).bind(poemId, booklet.id, title, brief, target, pen, now).run();
+        let seq = 0;
+        for (const ln of firstLines) {
+          seq += 1;
+          await env.DB.prepare(`INSERT INTO po_poem_lines (id, poem_id, booklet_id, seq, device, pen, content, created_at) VALUES (?,?,?,?,?,?,?,?)`).bind(uuid(), poemId, booklet.id, seq, device, pen, ln, now).run();
+        }
         const poemRow = await env.DB.prepare(`SELECT * FROM po_poems WHERE id = ?`).bind(poemId).first();
         const synced = await syncPoem(env.DB, poemRow);
         return json({ ok: true, booklet: bookletView(await ensureBooklet(env.DB)), poem: poemView(synced, await loadLines(env.DB, poemId), device) });
@@ -406,8 +426,10 @@ var src_default = {
         if (!poem) return json({ ok: true, gone: true });
         if (poem.status !== "open") return json({ ok: true, sealed: true, poem: poemView(poem, await loadLines(env.DB, poemId), device) });
         const bkRow = await env.DB.prepare(`SELECT chars_per_line FROM po_booklets WHERE id = ?`).bind(poem.booklet_id).first();
-        const content = clipLine(body.content, bkRow?.chars_per_line ?? SIG_CPL);
-        if (content) {
+        const curCnt = (await env.DB.prepare(`SELECT COUNT(*) AS n FROM po_poem_lines WHERE poem_id = ?`).bind(poemId).first())?.n ?? 0;
+        const roomLeft = Math.max(0, poem.target_lines - curCnt);
+        const contents = takeLines(body.lines, body.content, bkRow?.chars_per_line ?? SIG_CPL, Math.max(1, Math.min(2, roomLeft || 1)));
+        for (const content of contents) {
           try {
             await env.DB.prepare(
               `INSERT INTO po_poem_lines (id, poem_id, booklet_id, seq, device, pen, content, created_at)

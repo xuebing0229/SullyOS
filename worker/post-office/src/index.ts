@@ -35,8 +35,8 @@
  *                                     带 device → 每句打 mine 标记（只对请求者，不暴露别人 device）
  *   POST  …/poem/lock   { device }  →  抢写诗会话锁；{acquired:true,token,...当前态} 或 {acquired:false}
  *   POST  …/poem/unlock { token }   →  放锁（写完/出错都调；TTL 兜底）
- *   POST  …/poem/start    { device, pen, title, firstLine, targetLines }    起新篇（仅无 open 诗时）
- *   POST  …/poem/append   { device, pen, poemId, content }                  接龙续一句（满篇幅自动封存）
+ *   POST  …/poem/start    { device, pen, title, brief, lines:[1~2], targetLines }  起新篇（仅无 open 诗时；brief=主题/方向）
+ *   POST  …/poem/append   { device, pen, poemId, lines:[1~2] }              接龙续 1~2 句（满篇幅自动封存）
  *   GET   …/poem/feed?limit=&booklet=&device=&mine=1                        翻阅已封存的诗集（mine=1 只看本机参与过的）
  *   POST  …/poem/booklet  { title,subtitle,theme,poemsTarget,linesMin,linesMax,charsPerLine } (+ token)  [管理] 发新册子
  *   GET   …/poem/admin-list (+ token)                                       [管理] 列全部诗 + 当前暂停态
@@ -125,7 +125,8 @@ async function ensureSchema(db: D1Database) {
     await db.exec(`CREATE TABLE IF NOT EXISTS po_booklets (id TEXT PRIMARY KEY, title TEXT NOT NULL, subtitle TEXT, theme TEXT, poems_target INTEGER NOT NULL, poem_count INTEGER NOT NULL DEFAULT 0, lines_min INTEGER NOT NULL, lines_max INTEGER NOT NULL, chars_per_line INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'open', created_at INTEGER NOT NULL);`);
     await db.exec(`CREATE INDEX IF NOT EXISTS idx_po_booklets_open ON po_booklets(status, created_at);`);
     // 诗：一首接龙诗（line_count 由 po_poem_lines 实算回填，避免并发自增漂移）。
-    await db.exec(`CREATE TABLE IF NOT EXISTS po_poems (id TEXT PRIMARY KEY, booklet_id TEXT NOT NULL, title TEXT NOT NULL, target_lines INTEGER NOT NULL, line_count INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'open', starter_pen TEXT, created_at INTEGER NOT NULL, sealed_at INTEGER);`);
+    await db.exec(`CREATE TABLE IF NOT EXISTS po_poems (id TEXT PRIMARY KEY, booklet_id TEXT NOT NULL, title TEXT NOT NULL, brief TEXT, target_lines INTEGER NOT NULL, line_count INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'open', starter_pen TEXT, created_at INTEGER NOT NULL, sealed_at INTEGER);`);
+    try { await db.exec(`ALTER TABLE po_poems ADD COLUMN brief TEXT;`); } catch { /* 老库补列，已存在则忽略 */ }
     await db.exec(`CREATE INDEX IF NOT EXISTS idx_po_poems_booklet ON po_poems(booklet_id, status);`);
     await db.exec(`CREATE INDEX IF NOT EXISTS idx_po_poems_sealed ON po_poems(status, sealed_at);`);
     // 句：(poem_id, seq) 唯一 —— 并发追加抢同一 seq 时第二条 INSERT 失败，天然防错位。
@@ -168,11 +169,19 @@ const SIG_LMAX = 12;      // 上限
 const SIG_CPL = 24;       // 每句字数上限
 
 interface BookletRow { id: string; title: string; subtitle: string | null; theme: string | null; poems_target: number; poem_count: number; lines_min: number; lines_max: number; chars_per_line: number; status: string; created_at: number; }
-interface PoemRow { id: string; booklet_id: string; title: string; target_lines: number; line_count: number; status: string; starter_pen: string | null; created_at: number; sealed_at: number | null; }
+interface PoemRow { id: string; booklet_id: string; title: string; brief: string | null; target_lines: number; line_count: number; status: string; starter_pen: string | null; created_at: number; sealed_at: number | null; }
 interface LineRow { seq: number; pen: string; content: string; created_at: number; device: string; }
 
 /** 按字符截断一句到上限，并把内部换行压成一行（一句就是一行）。 */
 const clipLine = (s: unknown, cap: number) => [...String(s ?? '').replace(/\s*\n+\s*/g, ' ')].slice(0, cap).join('').trim();
+
+/** 收 1~max 行：接受 lines:[] 数组，或单个 single 字段（兼容旧客户端）；每行 clip、去空。 */
+function takeLines(input: unknown, single: unknown, cap: number, max = 2): string[] {
+    const arr = Array.isArray(input) ? input : (single != null ? [single] : []);
+    const out: string[] = [];
+    for (const x of arr) { const c = clipLine(x, cap); if (c) out.push(c); if (out.length >= max) break; }
+    return out;
+}
 
 /** 取当前 open 的册子；没有就自动续一本默认册子。 */
 async function ensureBooklet(db: D1Database): Promise<BookletRow> {
@@ -199,7 +208,7 @@ async function loadLines(db: D1Database, poemId: string): Promise<LineRow[]> {
 // myDevice 给定时：每句打 mine 标记、整首给 mineCount —— 只为「认领自己的句子」，
 // 绝不把别人的 device 返回给客户端（匿名前提不破）。
 const poemView = (p: PoemRow, lines: LineRow[], myDevice?: string) => ({
-    id: p.id, bookletId: p.booklet_id, title: p.title, targetLines: p.target_lines,
+    id: p.id, bookletId: p.booklet_id, title: p.title, brief: p.brief || '', targetLines: p.target_lines,
     lineCount: lines.length, status: p.status, createdAt: p.created_at, sealedAt: p.sealed_at,
     ...(myDevice ? { mineCount: lines.filter(l => l.device === myDevice).length } : {}),
     lines: lines.map(l => ({ seq: l.seq, pen: l.pen, content: l.content, createdAt: l.created_at, ...(myDevice ? { mine: l.device === myDevice } : {}) })),
@@ -544,15 +553,20 @@ export default {
                     return json({ ok: false, error: 'poem-open', booklet: bookletView(booklet), poem: poemView(existing, await loadLines(env.DB, existing.id), device) }, 409);
                 }
                 const title = clipLine(body.title, 40) || '无题';
-                const firstLine = clipLine(body.firstLine, booklet.chars_per_line);
-                if (!device || !firstLine) return json({ ok: false, error: 'bad request' }, 400);
+                const brief = clipLine(body.brief, 200) || null;                       // 发起者定的主题/方向，给后来者做参考
                 const target = Math.min(Math.max(parseInt(String(body.targetLines), 10) || booklet.lines_min, booklet.lines_min), booklet.lines_max);
+                const firstLines = takeLines(body.lines, body.firstLine, booklet.chars_per_line, Math.min(2, target)); // 开头 1~2 行
+                if (!device || firstLines.length === 0) return json({ ok: false, error: 'bad request' }, 400);
                 const now = Date.now();
                 const poemId = uuid();
-                await env.DB.prepare(`INSERT INTO po_poems (id, booklet_id, title, target_lines, line_count, status, starter_pen, created_at) VALUES (?,?,?,?,0,'open',?,?)`)
-                    .bind(poemId, booklet.id, title, target, pen, now).run();
-                await env.DB.prepare(`INSERT INTO po_poem_lines (id, poem_id, booklet_id, seq, device, pen, content, created_at) VALUES (?,?,?,?,?,?,?,?)`)
-                    .bind(uuid(), poemId, booklet.id, 1, device, pen, firstLine, now).run();
+                await env.DB.prepare(`INSERT INTO po_poems (id, booklet_id, title, brief, target_lines, line_count, status, starter_pen, created_at) VALUES (?,?,?,?,?,0,'open',?,?)`)
+                    .bind(poemId, booklet.id, title, brief, target, pen, now).run();
+                let seq = 0;
+                for (const ln of firstLines) {
+                    seq += 1;
+                    await env.DB.prepare(`INSERT INTO po_poem_lines (id, poem_id, booklet_id, seq, device, pen, content, created_at) VALUES (?,?,?,?,?,?,?,?)`)
+                        .bind(uuid(), poemId, booklet.id, seq, device, pen, ln, now).run();
+                }
                 const poemRow = (await env.DB.prepare(`SELECT * FROM po_poems WHERE id = ?`).bind(poemId).first<PoemRow>())!;
                 const synced = await syncPoem(env.DB, poemRow);
                 return json({ ok: true, booklet: bookletView(await ensureBooklet(env.DB)), poem: poemView(synced, await loadLines(env.DB, poemId), device) });
@@ -574,8 +588,11 @@ export default {
                 // 扔掉。接龙撞车罕见、且现代诗松，宁可把这句接到末尾（偶尔接的是一步前的诗，
                 // 下一个人会自然缝合），也不浪费用户 token。seq=MAX+1，UNIQUE 只兜底真正同刻并发。
                 const bkRow = await env.DB.prepare(`SELECT chars_per_line FROM po_booklets WHERE id = ?`).bind(poem.booklet_id).first<{ chars_per_line: number }>();
-                const content = clipLine(body.content, bkRow?.chars_per_line ?? SIG_CPL);
-                if (content) {
+                // 收 1~2 行；再按「离篇幅还差几句」夹一下，别一下写超封笔线
+                const curCnt = (await env.DB.prepare(`SELECT COUNT(*) AS n FROM po_poem_lines WHERE poem_id = ?`).bind(poemId).first<{ n: number }>())?.n ?? 0;
+                const roomLeft = Math.max(0, poem.target_lines - curCnt);
+                const contents = takeLines(body.lines, body.content, bkRow?.chars_per_line ?? SIG_CPL, Math.max(1, Math.min(2, roomLeft || 1)));
+                for (const content of contents) {
                     // seq = 当前最大 + 1；(poem_id,seq) 唯一，并发抢同号时第二条抛错 → 吞掉本句
                     try {
                         await env.DB.prepare(

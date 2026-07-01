@@ -1077,6 +1077,8 @@ export interface SignalPoem {
     id: string;
     bookletId: string;
     title: string;
+    /** 发起者拟的主题/方向（给后来者接龙做参考的一段引导） */
+    brief?: string;
     /** roll 到的篇幅（总句数） */
     targetLines: number;
     /** 已有句数 */

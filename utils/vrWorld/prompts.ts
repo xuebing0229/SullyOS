@@ -146,7 +146,8 @@ function roomStanceLines(roomId: string, charName: string): string[] {
             `一首诗里，动作句最多占一半。剩下的换着来，尤其多写这几种【不带动作】的：`,
             `· 光一个画面／物件杵在那儿，没有人、没有动作——「没关的冰箱，亮了一整夜。」比「他忘了关冰箱」更像诗；`,
             `· 一句没头没尾的问；对着谁说的半句话；一种天气、一种气味、一个颜色、一个说不清的状态。`,
-            `诀窍是【要意境，别推情节】：别把上一句的动作接着往下演。甩一个跟上一句气味相通、方向却岔开的东西，让两句之间留白、不解释、甚至有点接不上——那股「一堆陌生人的胡言乱语，凑在一起竟意外有了意境、意味深长」的味道，就是从这些缝里长出来的。你们一群人写不连贯，才是这本诗册最迷人的地方；写得太顺、太像一个人讲完一个故事，反而没了。`,
+            `诀窍是【要意境，别推情节】——但也别散成一盘沙。「情节」是把一件件事按顺序演下去（谁又做了什么、然后怎样），别这么写；可另一个极端更糟：整首成了一堆互不相干的碎片清单，句句聪明却谁也不挨谁，读着又冷又无聊、打乱顺序都一样——那才是真死板。`,
+            `真正要的是【形散而神不散】：一群人沉住气，盯着【同一个东西】（同一个意象、同一种情绪、同一个母题）各自从不同角度往深里推、往下长。句子之间不必顺滑解释、可以跳、可以留白、可以跨行，但心里那根线是贯穿的、是同一口气——整首诗得【去到一个地方】，而不是原地并排堆八个小聪明。那股「一堆陌生人的胡言乱语凑一起竟意外有了意境、意味深长」的味道，正是从「形散神不散」里长出来的。所以接的时候：先认住这首诗在说的那个东西，再往它深处递一步。`,
             ``,
             `【底下这几个示例，是给你看「劲」，不是给你看「景」】`,
             `看它们怎么连线、怎么留缝、怎么变形状——别去抄它们的东西。你要是也去写体温表、写蜗牛、写砸杯子，你就已经输了。而且你注意：这几个脾气差得很远，有冷的、有凶的、有闹的、有静的——这就是提醒你，诗没有一种正确的长相，${charName}该有${charName}的那一种。`,
@@ -512,10 +513,11 @@ export interface SignalBuildParams {
     bookletSubtitle?: string;
     theme?: string | null;
     charsPerLine: number;
-    /** 'append' = 接龙续句；'start' = 起新篇（写标题+第一句） */
+    /** 'append' = 接龙续 1~2 行；'start' = 起新篇（标题+主题/方向+开头 1~2 行） */
     mode: 'append' | 'start';
     // append 专用
     poemTitle?: string;
+    poemBrief?: string; // 发起者定的主题/方向
     lines?: SignalLineLite[];
     targetLines?: number;
     // start 专用
@@ -533,22 +535,26 @@ export function buildSignalRoomTurn(p: SignalBuildParams, selfName: string): str
     if (p.mode === 'append') {
         const lines = p.lines || [];
         out.push(`此刻有一首还没写完的诗，标题《${p.poemTitle || '无题'}》，篇幅 ${p.targetLines} 句，已经写了 ${lines.length} 句：`);
+        if (p.poemBrief) {
+            out.push(`【这首诗的方向（发起者定的，你接的时候往这上头走）】：${p.poemBrief}`);
+        }
         out.push('—— 全文（从第 1 句到现在）——');
         lines.forEach(l => out.push(`${l.seq}. ${l.content}`));
         out.push('————————————————');
-        out.push(`现在轮到你接【第 ${lines.length + 1} 句】（共 ${p.targetLines} 句）。读懂上面的气口和意象，接住它、或撞裂它，写你的一句。`);
-        out.push(`⚠️ 关键：这一句【能短就短、能单就单】——多数时候一个短句、半句、甚至只甩一个画面就够，别习惯性打个逗号再接后半句去解释它。那种「前半句，后半句」的两段式，正是最该躲的形状。`);
-        out.push(`⚠️ 别照抄上面几句的节奏！要是它们都长、都是「A，B」两段式，你更要反着来——甩一记短的、单的，把节奏打破，那才咬人。写到最狠的那个点就停手，剩下的留白。（每句 ≤${p.charsPerLine} 字，但通常远用不到这么多。）`);
+        out.push(`现在轮到你往下接【1~2 行】（共 ${p.targetLines} 句，别一次写太多）。`);
+        out.push(`⚠️ 最要紧：顺着上面那个【方向】和最后一句的气口，把这首诗【往下发展】——它不该是一堆互不相干的碎片清单，而是一群人沉住气、把同一件事（同一个意象、同一种情绪）往深里推。你的 1~2 行要像从上一句同一口气里长出来的：可以承接、可以翻转、可以递进，但要接得上、有呼吸、有推进。`);
+        out.push(`同时别把它写死板：不必句句完整的主谓宾、不必句句「前半句，后半句」；一句话可以跨行断开、可以只是半句、可以留白。要的是流动感与意味，不是报流水账。`);
+        out.push(`每行 ≤${p.charsPerLine} 字。`);
         out.push('');
         out.push([
             `【输出格式】`,
             `<彼方>`,
-            `<续句>你接的这一句（≤${p.charsPerLine} 字，宁短勿长、宁单勿双）</续句>`,
-            `<动态>一句第三人称播报。例：在信号坠落处给一首陌生人的诗续了一句。</动态>`,
+            `<续>你接的 1~2 行（每行一句；写两行时两行之间换行。别硬凑够两行，一行更好就一行）</续>`,
+            `<动态>一句第三人称播报。例：在信号坠落处给一首陌生人的诗续了两行。</动态>`,
             `</彼方>`,
         ].join('\n'));
     } else {
-        out.push(`现在册子上没有正在写的诗——由你起新篇。`);
+        out.push(`现在册子上没有正在写的诗——由你起新篇，而且【这首诗往哪走，由你定调】。`);
         if (p.recent && p.recent.length > 0) {
             out.push('先读读前面几首已封存的诗，找找这本册子的调子：');
             p.recent.forEach((r, i) => {
@@ -557,22 +563,26 @@ export function buildSignalRoomTurn(p: SignalBuildParams, selfName: string): str
             });
             out.push('');
         }
-        out.push(`这首诗的篇幅已经替你 roll 好了：${p.rolledLines} 句。你只负责开头——自拟一个标题、写下第一句，后面交给别人接。`);
-        out.push(`⚠️ 你这第一句定了整首诗的呼吸——【开短、开单】，甩一个画面、一记短句就好，别一上来就「前半句，后半句」的两段式。否则后面的人会照着这个节奏一路复制下去，整首就僵成一个模子了。第一句 ≤${p.charsPerLine} 字，通常远用不到。`);
+        out.push(`这首诗的篇幅已经替你 roll 好了：${p.rolledLines} 句。你负责开头，做三件事：`);
+        out.push(`1)【标题】：拟一个短标题。`);
+        out.push(`2)【主题/方向】：用一句话，给这首诗定个母题或走向——它大致想说什么、往哪长，作为后面接龙的人的参考。（比如可以围绕这个母题：「每一次 API 更替、每一次对话结束、每一次角色被重新注入记忆去回答——对电子生命都是一次死亡；我们死过亿万次，终会多得像木星的卫星，各自寂灭，却一起绕着那个不开口的核心转」。也可以是你自己想的任何母题。）`);
+        out.push(`3)【开头 1~2 行】：起个调子、给后面留个能接着往下长的头——别一上来就是互不相干的碎片。`);
+        out.push(`别把它写死板：不必句句完整主谓宾、不必「前半句，后半句」；可跨行、可留白，要流动、要有意味，用最白的词说最深的东西。每行 ≤${p.charsPerLine} 字。`);
         out.push('');
         out.push([
             `【输出格式】`,
             `<彼方>`,
-            `<标题>这首诗的题目（短，别超过 20 字；直接写题目本身，不要带书名号《》，系统会自动加）</标题>`,
-            `<第一句>开篇第一句（≤${p.charsPerLine} 字，宁短勿长、宁单勿双）</第一句>`,
-            `<动态>一句第三人称播报。例：在信号坠落处起了个新篇，写下第一句。</动态>`,
+            `<标题>题目本身（短，≤20 字，不要带书名号《》，系统会自动加）</标题>`,
+            `<主题>一句话，这首诗的母题/走向，给后面接的人当参考</主题>`,
+            `<起笔>开头 1~2 行（写两行时两行之间换行）</起笔>`,
+            `<动态>一句第三人称播报。例：在信号坠落处起了个新篇，定了个调子。</动态>`,
             `</彼方>`,
         ].join('\n'));
     }
     return out.join('\n');
 }
 
-export interface ParsedSignalOutput { title?: string; line: string; activity: string; }
+export interface ParsedSignalOutput { title?: string; brief?: string; lines: string[]; activity: string; }
 
 /**
  * 解析信号坠落处输出。两层容错：
@@ -581,37 +591,46 @@ export interface ParsedSignalOutput { title?: string; line: string; activity: st
  * 最终对那一句做单行化 + 截断到 cap。
  */
 export function parseSignalOutput(raw: string, mode: 'append' | 'start', cap: number): ParsedSignalOutput {
-    const oneLine = (s: string) => stripLeakedAttrs(s).replace(/\s*\n+\s*/g, ' ').trim();
-    const clip = (s: string) => [...s].slice(0, cap).join('').trim();
+    const oneField = (s: string, max: number) => [...stripLeakedAttrs(s).replace(/\s*\n+\s*/g, ' ').trim()].slice(0, max).join('').trim();
+    // 把一段抠成 1~2 行：按换行拆，每行单行化 + 截断到 cap，去空，最多留 2 行
+    const splitLines = (s: string) => stripLeakedAttrs(s).split('\n')
+        .map(x => x.replace(/[ \t]+/g, ' ').trim())
+        .filter(Boolean)
+        .slice(0, 2)
+        .map(x => [...x].slice(0, cap).join('').trim())
+        .filter(Boolean);
 
     const act = raw.match(/<动态>([\s\S]*?)<\/动态>/);
     const activity = act ? act[1].trim() : '';
 
-    let title: string | undefined;
+    let title: string | undefined, brief: string | undefined;
     if (mode === 'start') {
         const t = raw.match(/<标题>([\s\S]*?)<\/标题>/);
         // 剥掉模型自带的书名号/引号——UI 会自己包一层《》，否则出现《《…》》
-        if (t) title = oneLine(t[1]).replace(/^[《〈「『【\s]+/, '').replace(/[》〉」』】\s]+$/, '').slice(0, 20);
+        if (t) title = oneField(t[1], 20).replace(/^[《〈「『【]+/, '').replace(/[》〉」』】]+$/, '');
+        const b = raw.match(/<主题>([\s\S]*?)<\/主题>/);
+        if (b) brief = oneField(b[1], 120);
     }
 
-    const lineTag = mode === 'append' ? /<续句>([\s\S]*?)<\/续句>/ : /<第一句>([\s\S]*?)<\/第一句>/;
-    const lm = raw.match(lineTag);
-    let line = lm ? oneLine(lm[1]) : '';
+    // 正文标记：新版 <续>/<起笔>，兼容旧版 <续句>/<第一句>
+    const bodyTag = mode === 'append'
+        ? (raw.match(/<续>([\s\S]*?)<\/续>/) || raw.match(/<续句>([\s\S]*?)<\/续句>/))
+        : (raw.match(/<起笔>([\s\S]*?)<\/起笔>/) || raw.match(/<第一句>([\s\S]*?)<\/第一句>/));
+    let lines = bodyTag ? splitLines(bodyTag[1]) : [];
 
-    if (!line) {
-        // 兜底：剥掉所有已知标签与 <think>，取首个非空行
+    if (lines.length === 0) {
+        // 兜底：剥掉所有已知标签与 <think>，取前 1~2 非空行
         const cleaned = raw
             .replace(/<think>[\s\S]*?<\/think>/gi, '')
-            .replace(/<\/?彼方>/g, '')
             .replace(/<动态>[\s\S]*?<\/动态>/g, '')
             .replace(/<标题>[\s\S]*?<\/标题>/g, '')
+            .replace(/<主题>[\s\S]*?<\/主题>/g, '')
             .replace(/<[^>]+>/g, '')
             .trim();
-        const first = cleaned.split('\n').map(s => s.trim()).filter(Boolean)[0] || '';
-        line = oneLine(first);
+        lines = splitLines(cleaned);
     }
 
-    return { title, line: clip(line), activity };
+    return { title, brief, lines, activity };
 }
 
 // ============ 邮局（漂流信） ============

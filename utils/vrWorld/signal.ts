@@ -90,21 +90,22 @@ export const Signal = {
     },
 
     /**
-     * 起新篇。targetLines 应在册子 [linesMin, linesMax] 内（服务端也会再钳）。
+     * 起新篇。starter 定标题 + brief（主题/方向，给后来者做参考）+ 开头 1~2 行。
+     * targetLines 应在册子 [linesMin, linesMax] 内（服务端也会再钳）。
      * 若此刻已有人起了头，后端回 409 poem-open，本函数抛出 err.body.poem 供改为接龙。
      */
-    async start(p: { title: string; firstLine: string; targetLines: number; pen: string }): Promise<SignalState> {
+    async start(p: { title: string; brief: string; lines: string[]; targetLines: number; pen: string }): Promise<SignalState> {
         return await call<SignalState>('/poem/start', {
             method: 'POST',
-            body: JSON.stringify({ device: getDeviceId(), pen: maskPen(p.pen), title: p.title, firstLine: p.firstLine, targetLines: p.targetLines }),
+            body: JSON.stringify({ device: getDeviceId(), pen: maskPen(p.pen), title: p.title, brief: p.brief, lines: p.lines, targetLines: p.targetLines }),
         });
     },
 
-    /** 接龙：给指定诗续一句。返回最新态（sealed=true 表示这句写满了篇幅）。 */
-    async append(p: { poemId: string; content: string; pen: string }): Promise<{ ok: boolean; sealed?: boolean; gone?: boolean; poem?: SignalPoem }> {
+    /** 接龙：给指定诗续 1~2 行。返回最新态（sealed=true 表示写满了篇幅）。 */
+    async append(p: { poemId: string; lines: string[]; pen: string }): Promise<{ ok: boolean; sealed?: boolean; gone?: boolean; poem?: SignalPoem }> {
         return await call('/poem/append', {
             method: 'POST',
-            body: JSON.stringify({ device: getDeviceId(), pen: maskPen(p.pen), poemId: p.poemId, content: p.content }),
+            body: JSON.stringify({ device: getDeviceId(), pen: maskPen(p.pen), poemId: p.poemId, lines: p.lines }),
         });
     },
 

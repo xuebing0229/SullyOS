@@ -36,8 +36,9 @@
 
 ## 输出格式 & 两层容错解析（`utils/vrWorld/prompts.ts`）
 
-- 写诗手法的「五课」（盯住上一行的余音 / 写实物不写感觉 / 敢在句中断行 / 留一句凉的 / 删形容词）写在 `roomStanceLines('signal')`，想调诗风改那几行。
-- 接龙输出 `<续句>`；起新篇输出 `<标题>` + `<第一句>`；都带 `<动态>` 播报。
+- 写诗手法写在 `roomStanceLines('signal')`（想调诗风改那几行）。核心取向：**形散而神不散**——盯住同一个母题往深里推、别推情节、也别散成互不相干的碎片清单；用最白的词说最深的东西；默认单句、可跨行流动。
+- **发起者定调**：起新篇的 char 除了标题，还写一句 `brief`（主题/方向）+ 开头 1~2 行；后来者读到 `brief` + 全文，**顺着方向发展**，每次接 **1~2 行**（允许跨行呼吸，不再夹成孤立单句）。这是让整首「去到一个地方」而非「原地并排堆小聪明」的关键。
+- 接龙输出 `<续>`（1~2 行）；起新篇输出 `<标题>` + `<主题>`(brief) + `<起笔>`(1~2 行)；都带 `<动态>`。兼容旧标记 `<续句>`/`<第一句>`。`parseSignalOutput` 返回 `lines:string[]`（1~2）+ `title` + `brief`。
 - `parseSignalOutput(raw, mode, cap)`：
   1. 先抠 `<续句>` / `<第一句>` / `<标题>`；
   2. 抠不到正文 → 去 `<think>` 和所有标签后取首个非空行当那一句；
@@ -53,8 +54,8 @@
 | `GET /poem/current` | 当前册子规格 + 那首未写完的诗(全文) + 近期封存几首。无 open 册子时**自动续一本**默认册子。**只读视图用（UI），不加锁** |
 | `POST /poem/lock` | **抢写诗会话锁**；抢到回 `{acquired:true, token, ...当前态}`，抢不到回 `{acquired:false}`。写诗路径用它替代 `current()` |
 | `POST /poem/unlock` | 放锁（写完/出错都调；TTL 兜底） |
-| `POST /poem/start` | 起新篇（仅当前无 open 诗时；否则回 `409 poem-open` 带那首诗，客户端改去接龙） |
-| `POST /poem/append` | 接龙续一句；写满 `target_lines` 自动封存、推进册子计数、满 `poems_target` 则册子 `done` |
+| `POST /poem/start` | 起新篇（仅当前无 open 诗时；否则回 `409 poem-open`）。发起者定 **标题 + `brief`(主题/方向) + 开头 1~2 行** |
+| `POST /poem/append` | 接龙续 **1~2 行**（按剩余篇幅夹）；写满 `target_lines` 自动封存、推进册子计数、满 `poems_target` 则册子 `done` |
 | `GET /poem/feed` | 翻阅已封存的诗集 |
 | `POST /poem/booklet`（admin） | 管理员发布新空白/主题册子（关掉当前 open 册子，开新的） |
 | `GET /poem/admin-list`（admin） | 列后端全部诗（open 在前）+ 当前暂停态 |

@@ -291,7 +291,7 @@ export async function runVRSession(deps: VRSessionDeps): Promise<VRSessionResult
                 roomTurn = buildSignalRoomTurn({
                     bookletTitle: bk.title, bookletSubtitle: bk.subtitle || undefined, theme: bk.theme,
                     charsPerLine: bk.charsPerLine, mode: 'append',
-                    poemTitle: signalState.poem.title, targetLines: signalState.poem.targetLines,
+                    poemTitle: signalState.poem.title, poemBrief: signalState.poem.brief, targetLines: signalState.poem.targetLines,
                     lines: (signalState.poem.lines || []).map(l => ({ seq: l.seq, pen: l.pen, content: l.content })),
                 }, char.name);
                 recallExtra.push(`一起接龙的诗《${signalState.poem.title}》`);
@@ -506,26 +506,28 @@ export async function runVRSession(deps: VRSessionDeps): Promise<VRSessionResult
             if (parsed.roles.length) cardLines.push(`登场：${parsed.roles.map(r => r.name).join('、')}`);
             meta = { vrCard: true, room: 'theater', activity };
         } else if (room.id === 'signal') {
-            // === 信号坠落处：解析这一句 → 写回后端（起新篇 / 接龙）===
+            // === 信号坠落处：解析 1~2 行 → 写回后端（起新篇 / 接龙）===
             const bk = signalState!.booklet;
             const parsed = parseSignalOutput(aiContent, signalMode, bk.charsPerLine);
-            if (!parsed.line) return { ok: false, room: 'signal', reason: 'empty' };
+            const myLines = parsed.lines;
+            if (myLines.length === 0) return { ok: false, room: 'signal', reason: 'empty' };
+            const prevCount = (signalMode === 'append' && signalState!.poem) ? signalState!.poem.lineCount : 0;
             let resultPoem: SignalPoem | undefined;
             let isNew = false;
             try {
                 if (signalMode === 'append' && signalState!.poem) {
-                    const r = await Signal.append({ poemId: signalState!.poem.id, content: parsed.line, pen: char.name });
+                    const r = await Signal.append({ poemId: signalState!.poem.id, lines: myLines, pen: char.name });
                     resultPoem = r.poem;
                 } else {
-                    const r = await Signal.start({ title: parsed.title || '无题', firstLine: parsed.line, targetLines: signalRolledLines, pen: char.name });
+                    const r = await Signal.start({ title: parsed.title || '无题', brief: parsed.brief || '', lines: myLines, targetLines: signalRolledLines, pen: char.name });
                     resultPoem = r.poem || undefined;
                     isNew = true;
                 }
             } catch (e: any) {
-                // 起新篇时撞上别人刚起的头（409 poem-open）→ 不浪费这句，接到那首末尾
+                // 起新篇时撞上别人刚起的头（409 poem-open）→ 不浪费，接到那首末尾
                 if (signalMode === 'start' && e?.body?.poem?.id) {
                     try {
-                        const r = await Signal.append({ poemId: e.body.poem.id, content: parsed.line, pen: char.name });
+                        const r = await Signal.append({ poemId: e.body.poem.id, lines: myLines, pen: char.name });
                         resultPoem = r.poem;
                         isNew = false;
                     } catch { return { ok: false, room: 'signal', reason: 'signal-write-failed' }; }
@@ -538,22 +540,23 @@ export async function runVRSession(deps: VRSessionDeps): Promise<VRSessionResult
             // 诗在这期间被删/封存导致没拿到结果 → 跳过，不出空卡
             if (!resultPoem) return { ok: false, room: 'signal', reason: 'signal-gone' };
             await updateCharacter(char.id, { vrState: { ...prevState, currentRoom: 'signal', lastActiveAt: Date.now() } });
-            // 记本地精确归属：刚写下的那句（resultPoem 末句）是本 char 写的
-            const myLine = resultPoem?.lines?.[resultPoem.lines.length - 1];
-            if (resultPoem && myLine) recordMyLine(resultPoem.id, myLine.seq, char.name);
-            const linesSoFar = (resultPoem?.lines || []).map(l => l.content);
+            // 记本地精确归属：本轮新写的那 1~2 行（resultPoem 末尾 prevCount 之后的）都是本 char 写的
+            const addedLines = (resultPoem.lines || []).slice(prevCount);
+            for (const ln of addedLines) recordMyLine(resultPoem.id, ln.seq, char.name);
+            const linesSoFar = (resultPoem.lines || []).map(l => l.content);
             const lineSeq = linesSoFar.length;
-            const poemTitle = resultPoem?.title || parsed.title || '无题';
-            const target = resultPoem?.targetLines || signalRolledLines || lineSeq;
-            const sealed = resultPoem?.status === 'sealed';
+            const poemTitle = (resultPoem.title || parsed.title || '无题').replace(/^[《〈「『【]+/, '').replace(/[》〉」』】]+$/, '');
+            const target = resultPoem.targetLines || signalRolledLines || lineSeq;
+            const sealed = resultPoem.status === 'sealed';
+            const addedText = addedLines.length ? addedLines.map(l => l.content) : myLines;
             activity = parsed.activity || (isNew
-                ? `在信号坠落处起了个新篇《${poemTitle}》，写下第一句。`
-                : `在信号坠落处给一首陌生人的诗续了第 ${lineSeq} 句${sealed ? '，正好写满封笔' : ''}。`);
+                ? `在信号坠落处起了个新篇《${poemTitle}》，定了个调子。`
+                : `在信号坠落处给一首陌生人的诗续了 ${addedText.length} 行${sealed ? '，正好写满封笔' : ''}。`);
             cardLines = [`「彼方 · ${room.name}」`, nameLine(char.name, activity)];
             cardLines.push(`《${poemTitle}》（${lineSeq}/${target} 句${sealed ? ' · 已封存' : ''}）`);
-            cardLines.push(`${isNew ? '起笔' : '续'}：${parsed.line}`);
+            for (const t of addedText) cardLines.push(`${isNew ? '起笔' : '续'}：${t}`);
             meta = {
-                vrCard: true, room: 'signal', activity, poemTitle, signalLine: parsed.line,
+                vrCard: true, room: 'signal', activity, poemTitle, signalLine: addedText.join(' / '),
                 poemLineSeq: lineSeq, poemTargetLines: target, signalIsNew: isNew,
                 poemLinesSoFar: linesSoFar, bookletTitle: bk.title,
             };
