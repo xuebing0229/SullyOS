@@ -348,6 +348,11 @@ interface OSContextType {
   suspendCall: (info: { charId: string; charName: string; charAvatar?: string; startedAt: number; bubbles?: any[]; sessionId?: string; elapsedSeconds?: number; voiceLang?: string }) => void;
   resumeCall: () => void;
   clearSuspendedCall: () => void;
+
+  // 从聊天「见面」按钮跳进见面：携带目标角色，DateApp 挂载时自动进入该角色的见面流程
+  dateAutoStartCharId: string | null;
+  openDateWithChar: (charId: string) => void;
+  consumeDateAutoStart: () => void;
 }
 
 export const DEFAULT_WALLPAPER = 'linear-gradient(135deg, #FFDEE9 0%, #B5FFFC 100%)';
@@ -675,6 +680,8 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
 
   // Call Suspend
   const [suspendedCall, setSuspendedCall] = useState<{ charId: string; charName: string; charAvatar?: string; startedAt: number; bubbles?: any[]; sessionId?: string; elapsedSeconds?: number; voiceLang?: string } | null>(null);
+  // 聊天「见面」按钮 → 见面：记录目标角色，DateApp 挂载后消费一次并自动进入见面
+  const [dateAutoStartCharId, setDateAutoStartCharId] = useState<string | null>(null);
 
   const sendProactiveNativeNotification = useCallback(async (charId: string, charName: string, body: string) => {
       if (!Capacitor.isNativePlatform()) return;
@@ -3537,6 +3544,13 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
   const resetSystem = async () => { try { await DB.deleteDB(); localStorage.clear(); window.location.reload(); } catch (e) { console.error(e); addToast('重置失败，请手动清除浏览器数据', 'error'); } };
   const openApp = (appId: AppID) => setActiveApp(appId);
   const closeApp = () => setActiveApp(AppID.Launcher);
+  // 从聊天直接进入某角色的见面：切换当前角色 + 标记自动进入 + 打开见面 App
+  const openDateWithChar = (charId: string) => {
+    setActiveCharacterId(charId);
+    setDateAutoStartCharId(charId);
+    setActiveApp(AppID.Date);
+  };
+  const consumeDateAutoStart = () => setDateAutoStartCharId(null);
   const unlock = () => setIsLocked(false);
 
   const suspendCall = (info: { charId: string; charName: string; charAvatar?: string; startedAt: number; bubbles?: any[]; sessionId?: string; elapsedSeconds?: number; voiceLang?: string }) => {
@@ -3659,7 +3673,10 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
     suspendedCall,
     suspendCall,
     resumeCall,
-    clearSuspendedCall
+    clearSuspendedCall,
+    dateAutoStartCharId,
+    openDateWithChar,
+    consumeDateAutoStart
   };
 
   return (

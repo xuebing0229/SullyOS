@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useOS } from '../context/OSContext';
 import { DB } from '../utils/db';
-import { CharacterProfile, Message, DateState } from '../types';
+import { CharacterProfile, Message, DateState, AppID } from '../types';
 import { DatePrompts, ApiMessage } from '../utils/datePrompts';
 import { processNewMessages, mergePalaceFragmentsIntoMemories, getMemoryPalaceHighWaterMark } from '../utils/memoryPalace/pipeline';
 import type { PipelineResult } from '../utils/memoryPalace/pipeline';
@@ -16,7 +16,12 @@ import { armDateResumeAttempt, clearDateResumeAttempt, takeCrashedDateResume } f
 import { BookOpen, Sparkle, CaretLeft, GearSix } from '@phosphor-icons/react';
 
 const DateApp: React.FC = () => {
-    const { closeApp, characters, activeCharacterId, setActiveCharacterId, apiConfig, addToast, updateCharacter, virtualTime, userProfile, memoryPalaceConfig } = useOS();
+    const { closeApp, openApp, characters, activeCharacterId, setActiveCharacterId, apiConfig, addToast, updateCharacter, virtualTime, userProfile, memoryPalaceConfig, dateAutoStartCharId, consumeDateAutoStart } = useOS();
+
+    // 是否由聊天「见面」按钮进入：为真时，退出见面流程回到聊天而非见面选择页/桌面。
+    // 用本地 state（而非 context）承载：DateApp 切走即卸载，标记随之消失，不会泄漏到
+    // 之后从桌面直接打开的见面会话里。
+    const [cameFromChat, setCameFromChat] = useState(false);
 
     // 记忆宫殿（与聊天侧共用同一套上下文：同 charId、同高水位线）
     // 见面流也需要在 AI 回复后跑一次缓冲区检查 + 自动归档，否则只有"读"没有"写"。
@@ -118,6 +123,8 @@ const DateApp: React.FC = () => {
     // --- Navigation Helpers ---
     const handleBack = () => {
         if (mode === 'peek') {
+            // 来自聊天：从感知页退出直接回聊天，不落在见面选择页
+            if (cameFromChat) { returnToChat(); return; }
             setMode('select');
             setPeekStatus('');
         } else if (mode === 'history') {
@@ -155,6 +162,23 @@ const DateApp: React.FC = () => {
         } else {
             startPeek(c);
         }
+    };
+
+    // 从聊天「见面」按钮跳进来：等同于在选择页点击该角色（有存档则弹继续/新开，否则直接感知）
+    // 并记住「来自聊天」，退出见面时回到聊天。
+    useEffect(() => {
+        if (!dateAutoStartCharId) return;
+        const target = characters.find(c => c.id === dateAutoStartCharId);
+        consumeDateAutoStart();
+        setCameFromChat(true);
+        if (target) handleCharClick(target);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [dateAutoStartCharId]);
+
+    // 退出见面流程：来自聊天则回聊天，否则回见面选择页/桌面（由调用方决定）
+    const returnToChat = () => {
+        setCameFromChat(false);
+        openApp(AppID.Chat);
     };
 
     const handleResumeSession = () => {
@@ -473,6 +497,8 @@ const DateApp: React.FC = () => {
             updateCharacter(char.id, { savedDateState: finalState });
             addToast('进度已保存', 'success');
         }
+        // 来自聊天：退出见面回聊天
+        if (cameFromChat) { returnToChat(); return; }
         setMode('select');
         setPeekStatus('');
         setHasSavedOpening(false);
@@ -572,7 +598,7 @@ const DateApp: React.FC = () => {
                 {/* 顶栏 + 标题 */}
                 <div className="relative z-10 shrink-0" style={{ paddingTop: 'var(--safe-top)' }}>
                     <div className="flex items-center justify-between px-5 pt-3">
-                        <button onClick={closeApp} className="w-10 h-10 rounded-full bg-white/12 backdrop-blur-md border border-white/25 flex items-center justify-center text-white active:scale-90 transition-transform shadow-lg">
+                        <button onClick={() => { if (cameFromChat) { returnToChat(); } else { closeApp(); } }} className="w-10 h-10 rounded-full bg-white/12 backdrop-blur-md border border-white/25 flex items-center justify-center text-white active:scale-90 transition-transform shadow-lg">
                             <CaretLeft size={20} weight="bold" />
                         </button>
                         <div className="w-10" />
@@ -664,7 +690,7 @@ const DateApp: React.FC = () => {
                     </div>
                 )}
 
-                <Modal isOpen={!!pendingSessionChar} title="发现进度" onClose={() => setPendingSessionChar(null)} footer={<div className="flex gap-3 w-full"><button onClick={handleStartNewSession} className="flex-1 py-3 bg-slate-100 rounded-2xl text-slate-600 font-bold">新的见面</button><button onClick={handleResumeSession} className="flex-1 py-3 bg-green-500 text-white rounded-2xl font-bold shadow-lg shadow-green-200">继续上次</button></div>}>
+                <Modal isOpen={!!pendingSessionChar} title="发现进度" onClose={() => { setPendingSessionChar(null); if (cameFromChat) returnToChat(); }} footer={<div className="flex gap-3 w-full"><button onClick={handleStartNewSession} className="flex-1 py-3 bg-slate-100 rounded-2xl text-slate-600 font-bold">新的见面</button><button onClick={handleResumeSession} className="flex-1 py-3 bg-green-500 text-white rounded-2xl font-bold shadow-lg shadow-green-200">继续上次</button></div>}>
                     <div className="text-center text-slate-500 text-sm py-4">检测到 {pendingSessionChar?.name} 有未结束的见面。<br/><span className="text-xs text-slate-400 mt-2 block">(存档时间: {pendingSessionChar?.savedDateState?.timestamp ? new Date(pendingSessionChar.savedDateState.timestamp).toLocaleString() : 'Unknown'})</span></div>
                 </Modal>
             </div>
