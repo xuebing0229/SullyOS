@@ -237,6 +237,28 @@ export function buildWorldCardMeta(world: WorldProfile, beat: WorldCharBeat, rou
 }
 
 /**
+ * 演绎某角色时补注 ta 今天的**全天**日程（防行为冲突）。
+ * 聊天主链路（buildChatRequestPayload）注入的日程只有「当前时段 + 下一个」，
+ * 家园一拍演的是半天，只看当前时段不够——这里把整天蓝图给足。
+ * 软参考：世界里的突发事件可以合理打断日程，但不许"没看见"就硬撞。
+ * sim（虚拟时间）番外与真实日程无关，跳过。
+ */
+async function buildFullDayScheduleBlock(world: WorldProfile, charId: string): Promise<string> {
+    if ((world.timeMode ?? 'real') === 'sim') return '';
+    try {
+        const today = new Date().toISOString().split('T')[0];
+        const s = await DB.getDailySchedule(charId, today);
+        if (!s?.slots?.length) return '';
+        const lines = s.slots
+            .map(x => `- ${x.startTime} ${x.activity}${x.location ? `（${x.location}）` : ''}`)
+            .join('\n');
+        return `\n\n## 你今天的日程表（既定安排）\n${lines}\n（演绎这半天时以此为参照，行为别和既定安排无故冲突；世界里的事件可以合理打断日程，但要有交代。）`;
+    } catch {
+        return '';
+    }
+}
+
+/**
  * 把某一拍作为 world_card 注入这名角色的 1v1 聊天（进上下文与记忆）。
  * 自动演绎、单拍补发都走这里——保证格式一致，也方便 UI 做「手动发送保底」。
  */
@@ -326,7 +348,9 @@ export async function runWorldEpisode(deps: WorldEpisodeDeps): Promise<WorldEpis
                     char, userProfile, groups, emojis: [], categories: [],
                     historyMsgs, contextLimit, realtimeConfig, recallQueryHint,
                 });
-                const systemPrompt = payload.systemPrompt + buildWorldSystemAddendum(world, char, userProfile?.name || '');
+                const systemPrompt = payload.systemPrompt
+                    + buildWorldSystemAddendum(world, char, userProfile?.name || '')
+                    + await buildFullDayScheduleBlock(world, char.id);
                 const directive = (world.directives || []).find(d => d.charId === char.id);
                 // sim 模式：喂回这名角色自己的单视角总结 + 本卷氛围（绝不喂全知 synopsis）
                 const priorChapter = (world.timeMode === 'sim' && latestChapter)
@@ -560,7 +584,9 @@ export async function rerollWorldCharBeat(
             char, userProfile, groups, emojis: [], categories: [],
             historyMsgs, contextLimit, realtimeConfig, recallQueryHint,
         });
-        const systemPrompt = payload.systemPrompt + buildWorldSystemAddendum(world, char, userProfile?.name || '');
+        const systemPrompt = payload.systemPrompt
+            + buildWorldSystemAddendum(world, char, userProfile?.name || '')
+            + await buildFullDayScheduleBlock(world, char.id);
         const latestChapter = (world.chapters || [])[(world.chapters?.length || 0) - 1];
         const priorChapter = (world.timeMode === 'sim' && latestChapter)
             ? { atmosphere: latestChapter.atmosphere, charPerspective: latestChapter.perspectives.find(p => p.charId === char.id)?.text }

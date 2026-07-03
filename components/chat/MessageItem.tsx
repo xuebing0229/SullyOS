@@ -2076,6 +2076,34 @@ const MessageItem = React.memo(({
         return commonLayout(card);
     }
 
+    if (m.type === 'room_card') {
+        // 小屋「生活动态」轻量卡片：情绪评估顺风车偶尔捎带的一句小变化（utils/roomAmbient.ts）。
+        // content 进上下文，角色自然记得自己干过啥——不额外建 feed，卡片即记录。
+        const md: any = m.metadata || {};
+        const timeStr = new Date(m.timestamp).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+        const card = (
+            <div className="w-56">
+                <div
+                    className="relative rounded-2xl overflow-hidden border border-amber-200/70 shadow-[0_4px_14px_rgba(200,160,90,0.18)]"
+                    style={{ background: 'linear-gradient(160deg,#fffcf5 0%,#fdf6e8 60%,#faf0dc 100%)' }}
+                >
+                    <div className="relative px-3 pt-2 pb-1.5 flex items-center gap-2 border-b border-amber-200/50">
+                        <span className="text-sm leading-none">{md.emoji || '🏠'}</span>
+                        <span className="flex-1 text-[9px] tracking-[0.25em] text-amber-500/90 font-bold uppercase">小屋 · 生活动态</span>
+                        <span className="text-[9px] text-amber-400/70">{timeStr}</span>
+                    </div>
+                    <div className="relative px-3 py-2">
+                        <p className="text-[12px] leading-[1.6] text-[#6b5636]">
+                            <span className="font-bold text-amber-600">{charName || 'Ta'}</span>
+                            {md.text || String(m.content || '').replace(/^\[小屋动态\]\s*/, '')}
+                        </p>
+                    </div>
+                </div>
+            </div>
+        );
+        return commonLayout(card);
+    }
+
     if (m.type === 'world_card') {
         const md: any = m.metadata || {};
         const timeStr = new Date(m.timestamp).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
