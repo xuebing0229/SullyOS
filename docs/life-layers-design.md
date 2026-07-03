@@ -1,7 +1,7 @@
 # 生活三层 · 家园/日程/小屋统一设计
 
-> **状态：设计稿（design-only）。本文只定方向、不含实现改动。** 目标：把目前三套各自为政的「角色生活」系统——日程 / 家园 / 小屋——收敛成一条 **上游约束下游** 的派生链，让角色有一致、连贯、不自相矛盾的社会与生活。
-> 动这三块（`scheduleGenerator.ts` / `utils/worldHome/*` / `RoomApp.tsx`）任意一处前，先读本文对齐心智模型。
+> **状态：阶段 A–E 已落地实现**（A/D 家园→日程喂料+同住人咬合 `utils/worldHome/homeFacts.ts`；B 小屋去全刷 `RoomApp.tsx`；C 主家园选择器 `ChatModals.tsx`；E ambient 涓流 `utils/roomAmbient.ts` + `room_card`）。本文是设计与实现的对照事实源。
+> 动这三块（`scheduleGenerator.ts` / `utils/worldHome/*` / `RoomApp.tsx` / `utils/roomAmbient.ts`）任意一处前，先读本文对齐心智模型。
 
 ## 一句话
 

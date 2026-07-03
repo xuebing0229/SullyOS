@@ -276,7 +276,13 @@ const RoomApp: React.FC = () => {
     const [todaysTodo, setTodaysTodo] = useState<RoomTodo | null>(null);
     const [notebookEntries, setNotebookEntries] = useState<RoomNote[]>([]);
     const [showSidebar, setShowSidebar] = useState(false);
-    const [activePanel, setActivePanel] = useState<'todo' | 'notebook' | 'schedule'>('todo');
+    const [activePanel, setActivePanel] = useState<'todo' | 'notebook' | 'schedule' | 'feed'>('todo');
+    // 生活动态已读水位（localStorage），用于「养成式触发点」的未读气泡
+    const [ambientSeenAt, setAmbientSeenAt] = useState<number>(0);
+    useEffect(() => {
+        if (!activeCharacterId) return;
+        try { setAmbientSeenAt(Number(localStorage.getItem(`room_ambient_seen_${activeCharacterId}`) || 0)); } catch { setAmbientSeenAt(0); }
+    }, [activeCharacterId]);
     const [roomSchedule, setRoomSchedule] = useState<DailySchedule | null>(null);
     const [notebookPage, setNotebookPage] = useState(0);
 
@@ -1376,6 +1382,16 @@ ${item.descriptionPrompt ? `这件物品的背景设定：${item.descriptionProm
     // 今天的房间是否已生成（lastRoomDate 命中今日即视为已生成）——决定是否提示「更新这一天」
     const todayGenerated = !!char && char.lastRoomDate === getVirtualDay();
 
+    // 生活动态 feed（情绪评估顺风车涓流产出，见 utils/roomAmbient.ts）
+    const ambientFeed = char?.roomAmbientFeed || [];
+    const hasUnreadAmbient = !!char && ambientFeed.length > 0 && ambientFeed[0].timestamp > ambientSeenAt;
+    const markAmbientSeen = () => {
+        if (!char) return;
+        const ts = Date.now();
+        setAmbientSeenAt(ts);
+        try { localStorage.setItem(`room_ambient_seen_${char.id}`, String(ts)); } catch {}
+    };
+
     return (
         <div className="h-full w-full bg-[#f8fafc] flex flex-col relative overflow-hidden font-sans select-none">
 
@@ -1444,6 +1460,17 @@ ${item.descriptionPrompt ? `这件物品的背景设定：${item.descriptionProm
             {/* 梦境演出 · 全屏覆盖（角色不记得梦，但用户偷看到了） */}
             {showDream && char && <DreamTheater char={char} onExit={() => setShowDream(false)} />}
 
+            {/* 生活动态 · 养成式触发点：有未读时画布上冒一个引导点击的气泡（点开看最新动态） */}
+            {mode === 'view' && hasUnreadAmbient && (
+                <button
+                    onClick={() => { setShowSidebar(true); setActivePanel('feed'); markAmbientSeen(); }}
+                    className="absolute right-4 bottom-32 z-[200] flex items-center gap-1.5 pl-2.5 pr-3 py-2 rounded-full bg-white/95 border border-amber-200 shadow-lg animate-bounce active:scale-95 transition-transform"
+                >
+                    <span className="text-base">{ambientFeed[0]?.emoji || '✨'}</span>
+                    <span className="text-[10px] font-bold text-amber-600">有新动态</span>
+                </button>
+            )}
+
             {/* Sidebar Toggle Button */}
             <button onClick={() => setShowSidebar(true)} className={`absolute right-0 top-1/2 -translate-y-1/2 bg-white/90 p-3 rounded-l-2xl shadow-lg border border-r-0 border-slate-200 transition-transform duration-300 z-[300] ${showSidebar ? 'translate-x-full' : 'translate-x-0'}`}>
                 <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-5 h-5 text-slate-500"><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" /></svg>
@@ -1457,6 +1484,10 @@ ${item.descriptionPrompt ? `这件物品的背景设定：${item.descriptionProm
                 <div className="flex p-2 bg-slate-50 border-b border-slate-100">
                     <button onClick={() => setActivePanel('todo')} className={`flex-1 py-2 text-xs font-bold rounded-lg transition-colors ${activePanel === 'todo' ? 'bg-white shadow text-primary' : 'text-slate-400 hover:bg-white/50'}`}>今日计划</button>
                     <button onClick={() => setActivePanel('schedule')} className={`flex-1 py-2 text-xs font-bold rounded-lg transition-colors ${activePanel === 'schedule' ? 'bg-white shadow text-primary' : 'text-slate-400 hover:bg-white/50'}`}>日程</button>
+                    <button onClick={() => { setActivePanel('feed'); markAmbientSeen(); }} className={`relative flex-1 py-2 text-xs font-bold rounded-lg transition-colors ${activePanel === 'feed' ? 'bg-white shadow text-primary' : 'text-slate-400 hover:bg-white/50'}`}>
+                        动态
+                        {hasUnreadAmbient && <span className="absolute top-1.5 right-2 w-1.5 h-1.5 rounded-full bg-amber-400"></span>}
+                    </button>
                     <button onClick={() => setActivePanel('notebook')} className={`flex-1 py-2 text-xs font-bold rounded-lg transition-colors ${activePanel === 'notebook' ? 'bg-white shadow text-primary' : 'text-slate-400 hover:bg-white/50'}`}>私密记事</button>
                 </div>
                 
@@ -1486,6 +1517,31 @@ ${item.descriptionPrompt ? `这件物品的背景设定：${item.descriptionProm
                             />
                             {!roomSchedule && (
                                 <p className="text-center text-xs text-slate-400 py-4">日程将在首次聊天时自动生成</p>
+                            )}
+                        </div>
+                    )}
+                    {activePanel === 'feed' && (
+                        <div className="space-y-3">
+                            <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">生活动态</span>
+                            {ambientFeed.length > 0 ? (
+                                <ul className="space-y-3">
+                                    {ambientFeed.map(ev => (
+                                        <li key={ev.id} className="flex items-start gap-2.5">
+                                            <span className="text-base leading-none mt-0.5">{ev.emoji || '🏠'}</span>
+                                            <div className="flex-1 min-w-0">
+                                                <p className="text-sm text-slate-700 leading-relaxed">{ev.text}</p>
+                                                <p className="text-[10px] text-slate-400 mt-0.5">
+                                                    {new Date(ev.timestamp).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}
+                                                    {ev.targetItemId && items.find(i => i.id === ev.targetItemId) ? ` · ${items.find(i => i.id === ev.targetItemId)!.name}` : ''}
+                                                </p>
+                                            </div>
+                                        </li>
+                                    ))}
+                                </ul>
+                            ) : (
+                                <div className="text-center py-10 text-slate-400 text-xs leading-relaxed">
+                                    还没有动态。<br />ta 的生活会在你们聊天的间隙悄悄发生一些小变化，攒到这里。
+                                </div>
                             )}
                         </div>
                     )}
@@ -1703,6 +1759,12 @@ ${item.descriptionPrompt ? `这件物品的背景设定：${item.descriptionProm
                         <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1">物品描述</label>
                         <input value={customItemDescription} onChange={e => setCustomItemDescription(e.target.value)} placeholder="例如: 一个很软的沙发，坐上去就陷进去了。" className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs focus:outline-purple-500" />
                         <p className="text-[9px] text-slate-400 mt-1">这段描述会告诉 AI 这是什么，以及如何互动。</p>
+                    </div>
+                    <div className="bg-purple-50 border border-purple-100 rounded-xl p-3">
+                        <p className="text-[10px] font-bold text-purple-600 mb-1">💡 进阶玩法：拼贴画布</p>
+                        <p className="text-[9px] text-purple-500/90 leading-relaxed">
+                            在「装修设置」里上传一整张场景图当背景（比如家园/房间的完整立绘），再在这里上传<b>透明 PNG</b> 当「感应点」，摆到画面里的窗、画、床上——点它就会按此刻的日程和心情给出反应。整间屋子都能变成可交互的场景。
+                        </p>
                     </div>
                 </div>
             </Modal>

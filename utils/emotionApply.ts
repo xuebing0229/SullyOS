@@ -1,5 +1,6 @@
 import { DB } from './db';
 import type { CharacterProfile, CharacterBuff } from '../types';
+import { parseAmbientEvent, mergeAmbientIntoFeed, injectRoomAmbientCard } from './roomAmbient';
 
 // 角色「最后一次内心独白(InnerState)」的轻量缓存（localStorage）。
 // innerState 是瞬时产物，这里在情绪评估落地的共用点顺手缓存一份，供别处（如查手机首页）读取，
@@ -107,9 +108,31 @@ export async function applyEmotionEvalRaw(
             try { localStorage.setItem(lastInnerStateKey(charData.id), innerStateOut); } catch { /* ignore */ }
         }
 
+        // 小屋生活动态（可选顺风车产出，见 utils/roomAmbient.ts）——
+        // 与情绪主链路解耦：解析/落地失败只丢这条动态，不影响 buff。
+        // 在这里落是因为本函数是在线 / instant(worker) 两条路径的共用落点。
+        let ambientFeed: import('../types').RoomAmbientEvent[] | null = null;
+        try {
+            const ambient = parseAmbientEvent(result, charData);
+            if (ambient) {
+                ambientFeed = mergeAmbientIntoFeed(charData, ambient);
+                await injectRoomAmbientCard(charData, ambient);
+                window.dispatchEvent(new CustomEvent('room-ambient-added', {
+                    detail: { charId: charData.id, event: ambient, feed: ambientFeed },
+                }));
+                console.log(`🏠 [RoomAmbient] ${charData.name}: ${ambient.text}`);
+            }
+        } catch (e: any) {
+            console.warn('🏠 [RoomAmbient] land failed (non-fatal):', e?.message);
+            ambientFeed = null;
+        }
+
         if (!result.changed) {
             console.log('🎭 [Emotion] No change detected, skipping buff update');
             if (innerStateOut) console.log(`🌊 [InnerState] ${charData.name}: ${innerStateOut}`);
+            if (ambientFeed) {
+                await DB.saveCharacter({ ...charData, roomAmbientFeed: ambientFeed });
+            }
             return innerStateOut;
         }
 
@@ -118,6 +141,7 @@ export async function applyEmotionEvalRaw(
             ...charData,
             activeBuffs: sanitizedBuffs,
             buffInjection: result.injection || '',
+            ...(ambientFeed ? { roomAmbientFeed: ambientFeed } : {}),
         };
         await DB.saveCharacter(updated);
 

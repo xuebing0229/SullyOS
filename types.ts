@@ -519,6 +519,20 @@ export interface DailySchedule {
     flowNarrative?: Record<string, string>;
 }
 
+/**
+ * 小屋「生活动态」一条（ambient delta，生活三层派生链 · 阶段E）。
+ * 由情绪评估顺风车偶尔捎带产出（见 utils/roomAmbient.ts），涓流替代旧的每日全量刷新。
+ */
+export interface RoomAmbientEvent {
+    id: string;
+    /** 一句话的小变化（"把飘窗那本书换成了新的一本"） */
+    text: string;
+    emoji?: string;
+    /** 指向某件家具（RoomItem.id）时，小屋里可高亮它 */
+    targetItemId?: string;
+    timestamp: number;
+}
+
 export interface RoomGeneratedState {
     actorStatus: string;
     welcomeMessage: string;
@@ -2198,6 +2212,9 @@ export interface CharacterProfile {
    */
   primaryHomeId?: string;
 
+  /** 小屋「生活动态」feed（新在前，封顶 30 条）。由情绪评估顺风车涓流产出，见 utils/roomAmbient.ts */
+  roomAmbientFeed?: RoomAmbientEvent[];
+
   /**
    * HTML 模块模式（per-character）。
    * - htmlModeEnabled：开启后，给 LLM 注入"用 [html]...[/html] 包裹的富 HTML 卡片"提示词，
@@ -2782,7 +2799,7 @@ export interface GameSession {
     lastPlayedAt: number;
 }
 
-export type MessageType = 'text' | 'image' | 'emoji' | 'interaction' | 'transfer' | 'system' | 'social_card' | 'chat_forward' | 'xhs_card' | 'score_card' | 'music_card' | 'mcd_card' | 'luckin_card' | 'html_card' | 'news_card' | 'vr_card' | 'trpg_card' | 'world_card' | 'sim_card' | 'phone_card' | 'webpage_card' | 'theater_card';
+export type MessageType = 'text' | 'image' | 'emoji' | 'interaction' | 'transfer' | 'system' | 'social_card' | 'chat_forward' | 'xhs_card' | 'score_card' | 'music_card' | 'mcd_card' | 'luckin_card' | 'html_card' | 'news_card' | 'vr_card' | 'trpg_card' | 'world_card' | 'sim_card' | 'phone_card' | 'webpage_card' | 'theater_card' | 'room_card';
 
 export interface Message {
     id: number;

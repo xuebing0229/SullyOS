@@ -1417,16 +1417,28 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
           }).catch(() => {});
       };
 
+      // 小屋生活动态 feed 同步：与 buffSyncHandler 同因——DB 已由 applyEmotionEvalRaw 写好，
+      // 内存不更新的话，之后任一 updateCharacter 会拿旧内存合并写回、把 feed 抹掉。
+      const ambientSyncHandler = (e: Event) => {
+          const detail = (e as CustomEvent).detail as { charId?: string; feed?: unknown };
+          const charId = detail?.charId;
+          if (!charId || !Array.isArray(detail.feed)) return;
+          const nextFeed = detail.feed as CharacterProfile['roomAmbientFeed'];
+          setCharacters(prev => prev.map(c => c.id === charId ? { ...c, roomAmbientFeed: nextFeed } : c));
+      };
+
       window.addEventListener('active-msg-received', handler);
       window.addEventListener('active-msg-progress', progressHandler);
       window.addEventListener('active-msg-open', openHandler);
       window.addEventListener('emotion-updated', buffSyncHandler);
+      window.addEventListener('room-ambient-added', ambientSyncHandler);
       document.addEventListener('visibilitychange', onVisible);
       return () => {
           window.removeEventListener('active-msg-received', handler);
           window.removeEventListener('active-msg-progress', progressHandler);
           window.removeEventListener('active-msg-open', openHandler);
           window.removeEventListener('emotion-updated', buffSyncHandler);
+          window.removeEventListener('room-ambient-added', ambientSyncHandler);
           document.removeEventListener('visibilitychange', onVisible);
       };
   }, [sendProactiveNativeNotification]);
