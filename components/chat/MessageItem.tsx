@@ -905,6 +905,13 @@ const MessageItem = React.memo(({
     const avatarRadiusClass = avatarShape === 'square' ? 'rounded-sm' : avatarShape === 'rounded' ? 'rounded-xl' : 'rounded-full';
     const avatarSizePx = avatarSize === 'small' ? 28 : avatarSize === 'large' ? 48 : 36;
     const shouldShowAvatar = avatarMode === 'every_message' || isLastInGroup;
+    // 头像绝对定位在气泡底部尖角处。只有 isLastInGroup 才会在气泡下方渲染时间戳，
+    // 时间戳预留了约 1.25rem 的竖向空间——头像的 bottom 偏移正是为对齐那种情况。
+    // 但 every_message 模式下每条都有头像，非组末条没有时间戳，气泡底就落在行底，
+    // 此时仍用 1.25rem 会让头像浮在气泡尖角上方（就是用户反馈的没对齐）。
+    // 所以：有时间戳 → 抬高 1.25rem 对齐气泡底；没时间戳 → 贴到行底与气泡尖角平齐。
+    const hasTimestampBelow = isLastInGroup && showTimestamp !== 'never';
+    const avatarBottomClass = hasTimestampBelow ? 'bottom-[1.25rem]' : 'bottom-0';
     const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
     const startPos = useRef({ x: 0, y: 0 });
     const activePointerId = useRef<number | null>(null);
@@ -1314,7 +1321,7 @@ const MessageItem = React.memo(({
 
                 {/* Avatar - Absolute Positioned */}
                 {!isUser && (
-                    <div className={`absolute bottom-[1.25rem] z-0 ${selectionMode ? 'left-14' : 'left-3'} transition-all duration-300`}>
+                    <div className={`absolute ${avatarBottomClass} z-0 ${selectionMode ? 'left-14' : 'left-3'} transition-all duration-300`}>
                         {renderAvatar(charAvatar)}
                     </div>
                 )}
@@ -1395,7 +1402,7 @@ const MessageItem = React.memo(({
 
                 {/* User Avatar - Absolute Positioned */}
                 {isUser && (
-                    <div className="absolute right-3 bottom-[1.25rem] z-0">
+                    <div className={`absolute right-3 ${avatarBottomClass} z-0 transition-all duration-300`}>
                         {renderAvatar(userAvatar)}
                     </div>
                 )}
