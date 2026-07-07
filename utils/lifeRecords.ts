@@ -76,11 +76,12 @@ export interface PeriodStatus {
     daysUntilNext?: number;
     /**
      * 排卵期预测（标准日历法：排卵日 ≈ 下次经期开始日 − 14 天；
-     * 易孕窗 = 排卵日前 5 天 ~ 排卵日后 1 天）。仅供参考，注入与 UI 都要注明。
+     * 排卵期窗口 = 排卵日前 5 天 ~ 排卵日后 1 天）。
+     * 仅作为身体周期信息呈现（状态感知用），措辞不做任何生育导向；估算仅供参考。
      */
     ovulationDate?: string;
-    fertileStart?: string;
-    fertileEnd?: string;
+    ovulationStart?: string;
+    ovulationEnd?: string;
 }
 
 export const computePeriodStatus = (
@@ -109,8 +110,8 @@ export const computePeriodStatus = (
         nextPredicted,
         daysUntilNext: diffDays(today, nextPredicted),
         ovulationDate,
-        fertileStart: addDays(ovulationDate, -5),
-        fertileEnd: addDays(ovulationDate, 1),
+        ovulationStart: addDays(ovulationDate, -5),
+        ovulationEnd: addDays(ovulationDate, 1),
     };
 };
 
@@ -196,8 +197,8 @@ const buildPeriodSummary = (records: LifeRecord[], settings: LifeRecordSettings 
             ? `；预测下次约在 ${fmtCN(st.nextPredicted)}（还有约 ${st.daysUntilNext} 天）`
             : `；按周期预测已推迟约 ${-st.daysUntilNext} 天`;
         // 排卵期只在预测窗口还有意义时给（日历法估算，注明仅供参考）
-        if (st.ovulationDate && st.fertileEnd && st.fertileEnd >= today) {
-            s += `；估算排卵日约 ${fmtCN(st.ovulationDate)}（易孕窗 ${fmtCN(st.fertileStart!)}~${fmtCN(st.fertileEnd)}）`;
+        if (st.ovulationDate && st.ovulationEnd && st.ovulationEnd >= today) {
+            s += `；估算排卵期约 ${fmtCN(st.ovulationStart!)}~${fmtCN(st.ovulationEnd)}（这只是 TA 身体周期的背景信息，通常伴随激素波动，可能影响状态与情绪）`;
         }
         s += '。以上为日历法估算，仅供参考。';
     } else s += '。';

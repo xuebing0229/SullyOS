@@ -304,10 +304,10 @@ const LifeRecordPanel: React.FC = () => {
         return set;
     }, [periodStatus, settings]);
 
-    const fertileDaySet = useMemo(() => {
+    const ovulationDaySet = useMemo(() => {
         const set = new Set<string>();
-        if (periodStatus.fertileStart && periodStatus.fertileEnd) {
-            for (let d = periodStatus.fertileStart; d <= periodStatus.fertileEnd; d = lifeAddDays(d, 1)) set.add(d);
+        if (periodStatus.ovulationStart && periodStatus.ovulationEnd) {
+            for (let d = periodStatus.ovulationStart; d <= periodStatus.ovulationEnd; d = lifeAddDays(d, 1)) set.add(d);
         }
         return set;
     }, [periodStatus]);
@@ -545,7 +545,7 @@ const LifeRecordPanel: React.FC = () => {
                                 </>
                             )}
 
-                            {/* 预测徽章：下次生理期 / 排卵日 / 易孕窗（日历法估算） */}
+                            {/* 预测徽章：下次生理期 / 排卵期（日历法估算，只作身体周期信息） */}
                             {periodStatus.lastStart && !periodStatus.inPeriod && periodStatus.daysUntilNext !== undefined && (
                                 <div className="flex flex-wrap justify-center gap-1.5 mt-3">
                                     {periodStatus.daysUntilNext >= 0 ? (
@@ -557,9 +557,9 @@ const LifeRecordPanel: React.FC = () => {
                                             比预测晚了 {-periodStatus.daysUntilNext} 天
                                         </span>
                                     )}
-                                    {periodStatus.ovulationDate && periodStatus.fertileEnd! >= today && (
+                                    {periodStatus.ovulationDate && periodStatus.ovulationEnd! >= today && (
                                         <span className="text-[9px] px-2.5 py-1 rounded-full" style={{ fontFamily: SERIF, color: '#8a6a2f', background: '#f4e9d2aa', border: '1px solid #e2d0a8' }}>
-                                            排卵日约 {fmtCN(periodStatus.ovulationDate)} · 易孕 {fmtMD(periodStatus.fertileStart!)}~{fmtMD(periodStatus.fertileEnd!)}
+                                            排卵期约 {fmtMD(periodStatus.ovulationStart!)}~{fmtMD(periodStatus.ovulationEnd!)}
                                         </span>
                                     )}
                                 </div>
@@ -618,7 +618,7 @@ const LifeRecordPanel: React.FC = () => {
                                         const isPeriod = periodDaySet.has(d);
                                         const isPred = predictedDaySet.has(d);
                                         const isOvu = d === periodStatus.ovulationDate;
-                                        const isFertile = fertileDaySet.has(d) && !isPeriod;
+                                        const isOvuWindow = ovulationDaySet.has(d) && !isPeriod;
                                         const isToday = d === today;
                                         const clickable = d <= today;
                                         return (
@@ -630,12 +630,12 @@ const LifeRecordPanel: React.FC = () => {
                                                 style={{
                                                     fontFamily: SERIF,
                                                     color: isPeriod ? '#fdfbf7' : isOvu ? '#8a6a2f' : clickable ? INK : FAINT,
-                                                    background: isPeriod ? THEMES.period.accent : isFertile ? '#f4e9d2aa' : 'transparent',
+                                                    background: isPeriod ? THEMES.period.accent : isOvuWindow ? '#f4e9d2aa' : 'transparent',
                                                     border: isPred ? `1.5px dashed ${THEMES.period.accent}88`
                                                         : isOvu ? '1.5px solid #cfa75f'
                                                         : isToday ? `1.5px solid ${THEMES.period.soft}` : '1.5px solid transparent',
                                                     fontWeight: isToday || isPeriod ? 700 : 400,
-                                                    opacity: clickable || isPred || isOvu || isFertile ? 1 : 0.45,
+                                                    opacity: clickable || isPred || isOvu || isOvuWindow ? 1 : 0.45,
                                                 }}
                                             >
                                                 {parseInt(d.split('-')[2], 10)}
@@ -647,10 +647,10 @@ const LifeRecordPanel: React.FC = () => {
                                     <span><span className="inline-block w-2 h-2 rounded-full align-[-1px] mr-1" style={{ background: THEMES.period.accent }} />生理期</span>
                                     <span><span className="inline-block w-2 h-2 rounded-full align-[-1px] mr-1" style={{ border: `1.5px dashed ${THEMES.period.accent}88` }} />预测</span>
                                     <span><span className="inline-block w-2 h-2 rounded-full align-[-1px] mr-1" style={{ border: '1.5px solid #cfa75f' }} />排卵日</span>
-                                    <span><span className="inline-block w-2 h-2 rounded-full align-[-1px] mr-1" style={{ background: '#f4e9d2' }} />易孕窗</span>
+                                    <span><span className="inline-block w-2 h-2 rounded-full align-[-1px] mr-1" style={{ background: '#f4e9d2' }} />排卵期</span>
                                     <span>点过去的日期可补记</span>
                                 </div>
-                                <p className="text-[8px] text-center mt-1.5" style={{ color: FAINT, fontFamily: SERIF }}>预测为日历法估算，仅供参考，不作为避孕/备孕依据</p>
+                                <p className="text-[8px] text-center mt-1.5" style={{ color: FAINT, fontFamily: SERIF }}>预测为日历法估算，仅供参考</p>
                             </div>
                         )}
                     </SoftCard>

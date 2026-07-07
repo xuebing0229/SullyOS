@@ -64,12 +64,12 @@ describe('computePeriodStatus 生理期状态机', () => {
         expect(st.nextPredicted).toBe('2026-07-31');
     });
 
-    it('排卵期预测：排卵日 = 下次经期 − 14 天，易孕窗 −5 ~ +1', () => {
+    it('排卵期预测：排卵日 = 下次经期 − 14 天，排卵期窗口 −5 ~ +1', () => {
         const st = computePeriodStatus([mkPeriod('start', '2026-07-01')], null, '2026-07-08');
         expect(st.nextPredicted).toBe('2026-07-29');
         expect(st.ovulationDate).toBe('2026-07-15');
-        expect(st.fertileStart).toBe('2026-07-10');
-        expect(st.fertileEnd).toBe('2026-07-16');
+        expect(st.ovulationStart).toBe('2026-07-10');
+        expect(st.ovulationEnd).toBe('2026-07-16');
     });
 });
 
