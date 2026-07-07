@@ -308,28 +308,6 @@ const Sparkles = React.memo<{ items: Sp[] }>(({ items }) => (
     </>
 ));
 
-// 手绘蓬蓬云：多泡泡剪影 + 主色底影（group opacity 整体合成，重叠处不会加深起缝）
-const Cloud = React.memo<{ style?: React.CSSProperties; className?: string; alpha?: number }>(({ style, className, alpha = 0.95 }) => (
-    <svg viewBox="0 0 120 64" className={className} style={style} aria-hidden>
-        {/* 底影（主色浅调，整体下移一点，画出手绘的厚度） */}
-        <g fill="var(--tg-cloud-shadow)" opacity={alpha * 0.4} transform="translate(0 3.5)">
-            <ellipse cx="34" cy="46" rx="26" ry="14" />
-            <circle cx="52" cy="30" r="20" />
-            <circle cx="78" cy="36" r="16" />
-            <ellipse cx="88" cy="47" rx="21" ry="12" />
-            <circle cx="24" cy="35" r="13" />
-        </g>
-        {/* 云本体（白，泡泡拼出蓬蓬轮廓） */}
-        <g fill="#ffffff" opacity={alpha}>
-            <ellipse cx="34" cy="46" rx="26" ry="14" />
-            <circle cx="52" cy="30" r="20" />
-            <circle cx="78" cy="36" r="16" />
-            <ellipse cx="88" cy="47" rx="21" ry="12" />
-            <circle cx="24" cy="35" r="13" />
-        </g>
-    </svg>
-));
-
 // 四角宝石（rotate-45 小方块，华丽卡片标配）
 const GemCorners = React.memo<{ color?: string; inset?: number }>(({ color = 'var(--tg-gem)', inset = 8 }) => (
     <>
@@ -371,53 +349,64 @@ const StageItem = React.memo<{ item: RoomItem; onTap: (item: RoomItem) => void }
     </div>
 ));
 
-// ─── 天窗挂饰（舞台顶部小窗 + 流星 + 悬星，纯静态 CSS；随昼夜换天）────
-const StageWindow = React.memo<{ night: boolean }>(({ night }) => (
-    <div className="absolute top-[4%] left-[5%] right-[5%] h-[13%] pointer-events-none" style={{ zIndex: 0 }}>
-        <div className="absolute inset-0 rounded-xl overflow-hidden" style={{
-            border: '3px solid rgba(255,255,255,0.9)',
-            background: night
-                ? 'linear-gradient(180deg, #2c2851 0%, #453e73 60%, #57508a 100%)'
-                : 'linear-gradient(180deg, #bfe0f7 0%, #dff0fc 70%, #f0f8fe 100%)',
-            boxShadow: '0 3px 10px var(--tg-glow25)',
-        }}>
-            {/* 手绘蓬蓬云（SVG 泡泡剪影 + 底影），慢速飘移；夜里变成淡淡的夜云 */}
-            <Cloud className="absolute" alpha={night ? 0.16 : 0.95}
-                style={{ left: '6%', top: '16%', width: '36%', animation: 'tama-drift 9s ease-in-out infinite alternate' }} />
-            <Cloud className="absolute" alpha={night ? 0.12 : 0.8}
-                style={{ right: '8%', top: '34%', width: '30%', animation: 'tama-drift 13s ease-in-out infinite alternate-reverse' }} />
-            <Cloud className="absolute" alpha={night ? 0.1 : 0.6}
-                style={{ left: '38%', top: '52%', width: '20%', animation: 'tama-drift 11s ease-in-out 1.5s infinite alternate' }} />
-            {/* 夜空专属：一轮弯月（SVG）+ 满窗星芒 */}
-            {night && (
-                <>
-                    <svg viewBox="0 0 24 24" className="absolute top-[12%] left-[9%] w-[14px] h-[14px]" fill="#f7d180" style={{ filter: 'drop-shadow(0 0 8px rgba(247,209,128,0.8))' }}>
-                        <path d="M20 13.5A8 8 0 1 1 10.5 4a6.3 6.3 0 0 0 9.5 9.5Z" />
-                    </svg>
-                    <span className="absolute top-[52%] left-[30%] text-[6px]" style={{ color: '#efe8b8', animation: 'tama-twinkle 3.1s ease-in-out 0.8s infinite' }}>✦</span>
-                    <span className="absolute top-[26%] left-[58%] text-[7px]" style={{ color: '#fff', animation: 'tama-twinkle 2.4s ease-in-out 1.4s infinite' }}>✦</span>
-                    <span className="absolute top-[60%] right-[10%] text-[6px]" style={{ color: '#cdc6f0' }}>✦</span>
-                </>
-            )}
-            {/* 流星 */}
-            <div className="absolute top-[24%] left-[42%] w-[18%] h-[2px] rotate-[24deg] origin-left rounded-full" style={{ background: 'linear-gradient(90deg, transparent, rgba(255,255,255,0.95))' }} />
-            <span className="absolute top-[12%] right-[36%] text-[9px]" style={{ color: '#fff', animation: 'tama-twinkle 2.8s ease-in-out infinite' }}>✦</span>
-            <span className="absolute bottom-[16%] left-[38%] text-[7px]" style={{ color: 'rgba(255,255,255,0.9)' }}>✦</span>
+// ─── 挂在横幅下的小电子钟（时钟功能为主，天色只是表盘氛围）────────────
+// 表盘小屏按时段换底：清晨/白天/黄昏/夜晚/夜深啦；SVG 太阳/弯月，无 emoji 无大云窗。
+const CLOCK_PHASES = {
+    dawn: { label: '清晨', bg: 'linear-gradient(160deg, #ffe9d6, #ffd9e8)', fg: '#9a6f4d', sub: 'rgba(154,111,77,0.75)' },
+    day: { label: '白天', bg: 'linear-gradient(160deg, #bfe0f7, #e8f5fd)', fg: '#3f6f9e', sub: 'rgba(63,111,158,0.75)' },
+    dusk: { label: '黄昏', bg: 'linear-gradient(160deg, #ffc9a3, #e8a7c8)', fg: '#7d4458', sub: 'rgba(125,68,88,0.8)' },
+    night: { label: '夜晚', bg: 'linear-gradient(160deg, #3a3560, #575083)', fg: '#f0edff', sub: 'rgba(240,237,255,0.75)' },
+    late: { label: '夜深啦', bg: 'linear-gradient(160deg, #232045, #3a3560)', fg: '#e4defc', sub: 'rgba(228,222,252,0.78)' },
+} as const;
+type ClockPhase = keyof typeof CLOCK_PHASES;
+const clockPhaseOf = (h: number): ClockPhase => (h >= 23 || h < 5) ? 'late' : h < 8 ? 'dawn' : h < 17 ? 'day' : h < 20 ? 'dusk' : 'night';
+
+const HangingClock = React.memo<{ hh: string; mm: string; phase: ClockPhase; onTap: () => void }>(({ hh, mm, phase, onTap }) => {
+    const p = CLOCK_PHASES[phase];
+    const darkFace = phase === 'night' || phase === 'late';
+    return (
+        <div className="absolute z-[30] flex flex-col items-center pointer-events-none"
+            style={{ left: '60%', transform: 'translateX(-50%)', top: 'calc(var(--safe-top, 0px) + 4.7rem)' }}>
+            {/* 两根吊绳：挂在顶部横幅正下方 */}
+            <div className="flex gap-8">
+                <span style={{ width: 1.5, height: 24, background: PAL.frameSoft }} />
+                <span style={{ width: 1.5, height: 24, background: PAL.frameSoft }} />
+            </div>
+            <button onClick={onTap} className="pointer-events-auto active:scale-95 relative rounded-xl p-[3px] -mt-px transition-transform"
+                style={{ background: PAL.card, border: `1.5px solid ${PAL.frameSoft}`, boxShadow: '0 4px 12px var(--tg-glow25)' }}>
+                <div className="relative rounded-[0.55rem] px-3 py-1.5 overflow-hidden flex items-center gap-2" style={{ background: p.bg }}>
+                    {darkFace && (
+                        <>
+                            <span className="absolute top-[3px] right-[8px] text-[6px]" style={{ color: '#efe8b8', animation: 'tama-twinkle 2.6s ease-in-out infinite' }}>✦</span>
+                            <span className="absolute bottom-[4px] right-[22px] text-[5px]" style={{ color: '#cdc6f0' }}>✦</span>
+                        </>
+                    )}
+                    {/* 相位图标：白天太阳 / 夜里弯月（SVG，无 emoji） */}
+                    <span className="w-4 h-4 shrink-0" style={{ color: p.fg }}>
+                        {darkFace ? ICON.moon : (
+                            <svg viewBox="0 0 24 24" className="w-full h-full" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><circle cx="12" cy="12" r="4.2" /><path d="M12 2.5v2.2M12 19.3v2.2M2.5 12h2.2M19.3 12h2.2M5.3 5.3l1.6 1.6M17.1 17.1l1.6 1.6M18.7 5.3l-1.6 1.6M6.9 17.1l-1.6 1.6" /></svg>
+                        )}
+                    </span>
+                    <div className="leading-none text-left">
+                        <div className="text-[17px] font-bold tabular-nums tracking-[0.05em]" style={{ fontFamily: FONT_PX, color: p.fg }}>{hh}:{mm}</div>
+                        <div className="text-[7.5px] mt-[3px] tracking-[0.2em]" style={{ fontFamily: FONT_CN, color: p.sub }}>{p.label}</div>
+                    </div>
+                </div>
+            </button>
         </div>
-        {/* 窗下悬挂的小挂饰：星芒 ✦（纯字形，非 emoji）+ SVG 小弯月，垂线各不等长 */}
+    );
+});
+
+// ─── 天花板小挂饰：从横幅下垂两颗 ✦，轻轻摇（transform-only）────────────
+const CeilingCharms = React.memo(() => (
+    <div className="absolute inset-x-0 z-[28] pointer-events-none" style={{ top: 'calc(var(--safe-top, 0px) + 4.7rem)' }}>
         {[
-            { x: '18%', drop: 14, kind: 'star', size: 11, color: PAL.gold },
-            { x: '46%', drop: 22, kind: 'star', size: 10, color: PAL.fade },
-            { x: '64%', drop: 12, kind: 'star', size: 10, color: PAL.pink },
-            { x: '86%', drop: 26, kind: 'moon', size: 13, color: PAL.gold },
-        ].map((s, i) => (
-            <div key={i} className="absolute top-full flex flex-col items-center" style={{ left: s.x }}>
-                <span style={{ width: 1, height: s.drop, background: PAL.frameSoft }} />
-                {s.kind === 'moon' ? (
-                    <svg viewBox="0 0 24 24" style={{ width: s.size, height: s.size }} fill={s.color}><path d="M20 13.5A8 8 0 1 1 10.5 4a6.3 6.3 0 0 0 9.5 9.5Z" /></svg>
-                ) : (
-                    <span className="leading-none select-none" style={{ fontSize: s.size, color: s.color }}>✦</span>
-                )}
+            { x: '41%', drop: 15, size: 9, color: PAL.gold },
+            { x: '77%', drop: 24, size: 8, color: PAL.frame },
+        ].map((c, i) => (
+            <div key={i} className="absolute flex flex-col items-center origin-top" style={{ left: c.x, animation: `tama-sway ${6 + i * 1.5}s ease-in-out ${i * 0.8}s infinite alternate` }}>
+                <span style={{ width: 1, height: c.drop, background: PAL.frameSoft }} />
+                <span className="leading-none select-none" style={{ fontSize: c.size, color: c.color, opacity: 0.9 }}>✦</span>
             </div>
         ))}
     </div>
@@ -603,7 +592,6 @@ const FullStage = React.memo<{
                     <div className="absolute top-0 left-0 w-full h-[65%] z-0" style={{ background: wallStyle }} />
                     <div className="absolute bottom-0 left-0 w-full h-[35%] z-0" style={{ background: floorStyle }} />
                     <div className="absolute top-[65%] w-full h-6 bg-gradient-to-b from-black/10 to-transparent pointer-events-none z-0" />
-                    <StageWindow night={night} />
 
                     {items.map(item => <StageItem key={item.id} item={item} onTap={onItemTap} />)}
 
@@ -619,11 +607,11 @@ const FullStage = React.memo<{
 // 跟随界面风格（细线半透卡 + 内描边），端端正正不摇晃。
 const HangingSign = React.memo<{ text: string; onTap: () => void }>(({ text, onTap }) => (
     <div className="absolute left-[6%] z-[30] flex flex-col items-center pointer-events-none"
-        style={{ top: 'calc(var(--safe-top, 0px) + 5.3rem)' }}>
-        {/* 两根吊绳 */}
+        style={{ top: 'calc(var(--safe-top, 0px) + 4.7rem)' }}>
+        {/* 两根吊绳（挂在顶部横幅正下方，不悬空） */}
         <div className="flex gap-6">
-            <span style={{ width: 1.5, height: 22, background: PAL.frameSoft }} />
-            <span style={{ width: 1.5, height: 22, background: PAL.frameSoft }} />
+            <span style={{ width: 1.5, height: 24, background: PAL.frameSoft }} />
+            <span style={{ width: 1.5, height: 24, background: PAL.frameSoft }} />
         </div>
         <button onClick={onTap}
             className="pointer-events-auto active:scale-95 relative px-3.5 py-2 rounded-xl -mt-px transition-transform"
@@ -1037,7 +1025,7 @@ const TamagotchiHome: React.FC = () => {
                 @keyframes tama-bounce { 0% { transform: scale(1); } 35% { transform: scale(1.12, 0.9); } 70% { transform: scale(0.95, 1.06); } 100% { transform: scale(1); } }
                 @keyframes tama-zzz { 0%,100% { opacity: 0.35; transform: translateY(0); } 50% { opacity: 1; transform: translateY(-4px); } }
                 @keyframes tama-twinkle { 0%,100% { opacity: 0.25; transform: scale(0.8); } 50% { opacity: 1; transform: scale(1.1); } }
-                @keyframes tama-drift { 0% { transform: translateX(-4%); } 100% { transform: translateX(5%); } }
+                @keyframes tama-sway { 0% { transform: rotate(-3deg); } 100% { transform: rotate(3deg); } }
                 @keyframes tama-heart { 0% { opacity: 0; transform: translate(-50%, 0) scale(0.5); } 25% { opacity: 1; } 100% { opacity: 0; transform: translate(calc(-50% + var(--dx, 0px)), -46px) scale(1.1); } }
             `}</style>
 
@@ -1142,8 +1130,10 @@ const TamagotchiHome: React.FC = () => {
                         nudge={nudge} say={say} onItemTap={onItemTap} onChat={openChat}
                     />
 
-                    {/* 墙上的日程木牌（点开垂下当日纸卷，每段可「偷看」演一段小剧场） */}
+                    {/* 挂在横幅下的一排：日程挂牌（左）· 小电子钟（中右）· 天花板 ✦ 挂饰 */}
+                    <CeilingCharms />
                     <HangingSign text={signText} onTap={() => setScrollOpen(true)} />
+                    <HangingClock hh={hh} mm={mm} phase={clockPhaseOf(virtualTime.hours)} onTap={() => openApp(AppID.Schedule)} />
                     {scrollOpen && <DayScroll slots={scrollSlots} onPeek={runTheater} onClose={() => setScrollOpen(false)} />}
 
                     {/* 右侧世界之门：家园 / 像素家园 / 梦境 */}
