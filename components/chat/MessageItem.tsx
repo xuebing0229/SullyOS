@@ -3129,6 +3129,12 @@ const MessageItem = React.memo(({
 }, (prev, next) => {
     return prev.msg.id === next.msg.id &&
            prev.msg.content === next.msg.content &&
+           // 可交互卡片的状态活在 metadata 里（生活记录卡确认/否决、转账卡收退款）。
+           // 这里不深比整个 metadata（可能含大对象），只盯这几个会改变渲染的状态位——
+           // 否则用户点了「确认」，DB 已更新、消息已重载，卡片却因 memo 判等而纹丝不动。
+           prev.msg.metadata?.reviewStatus === next.msg.metadata?.reviewStatus &&
+           prev.msg.metadata?.status === next.msg.metadata?.status &&
+           prev.msg.metadata?.receipt === next.msg.metadata?.receipt &&
            prev.isFirstInGroup === next.isFirstInGroup &&
            prev.isLastInGroup === next.isLastInGroup &&
            prev.activeTheme === next.activeTheme &&
