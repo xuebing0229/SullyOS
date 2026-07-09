@@ -87,8 +87,9 @@ const CreatorPartsUploader: React.FC<{ onClose: () => void }> = ({ onClose }) =>
 
     return (
         <div className="fixed inset-0 z-[65] flex flex-col" style={{ background: 'linear-gradient(180deg, #241b3f 0%, #171130 55%, #120d24 100%)' }}>
-            {/* 顶栏（顶部避开 iOS 刘海/灵动岛安全区，非刘海机也留一点呼吸） */}
-            <div className="shrink-0 px-4 pb-3 flex items-center gap-2 text-white" style={{ paddingTop: 'calc(var(--safe-top) + 0.5rem)' }}>
+            {/* 顶栏：全屏浮层统一用 --chrome-top（安全区 + SullyOS 状态栏；状态栏隐藏时自动塌回 --safe-top），
+                与 ChibiStudio / 彼方 ChibiEditor 同一套约定，避免怼进状态栏时钟/电量条 */}
+            <div className="shrink-0 px-4 pb-3 flex items-center gap-2 text-white" style={{ paddingTop: 'var(--chrome-top)' }}>
                 <button onClick={onClose} className="p-2 -ml-2 rounded-full text-indigo-100 active:bg-white/10"><CaretLeft size={20} weight="bold" /></button>
                 <div>
                     <h2 className="font-serif text-lg font-bold tracking-wide leading-tight">自定义素材工坊</h2>
@@ -96,7 +97,7 @@ const CreatorPartsUploader: React.FC<{ onClose: () => void }> = ({ onClose }) =>
                 </div>
             </div>
 
-            <div className="flex-1 overflow-y-auto no-scrollbar px-4 space-y-4" style={{ paddingBottom: 'calc(2.5rem + env(safe-area-inset-bottom))' }}>
+            <div className="flex-1 overflow-y-auto no-scrollbar px-4 space-y-4" style={{ paddingBottom: 'calc(2rem + var(--safe-bottom))' }}>
                 {/* PSD 导入卡 */}
                 <div className="rounded-2xl p-3.5 border border-white/10 space-y-2.5" style={{ background: 'rgba(255,255,255,0.04)' }}>
                     <div className="text-[13px] font-bold text-white flex items-center gap-1.5">
