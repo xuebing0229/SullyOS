@@ -161,7 +161,8 @@ const CharCreatorDevApp: React.FC = () => {
                 <span className="ml-auto text-[10px] text-white/40">{parts.length} 个自定义</span>
             </div>
 
-            <div className="flex-1 overflow-y-auto px-4 py-3 space-y-4">
+            {/* CharCreatorDev 在 SELF_SAFE_AREA_APPS 名单里（外壳不兜底），底部自己让位 home 条 */}
+            <div className="flex-1 overflow-y-auto px-4 py-3 space-y-4" style={{ paddingBottom: 'calc(0.75rem + var(--safe-bottom, 0px))' }}>
                 {/* 提示 */}
                 <div className="rounded-xl p-3 border border-amber-400/30 bg-amber-400/10 flex gap-2">
                     <Warning size={16} weight="fill" className="text-amber-300 mt-0.5 shrink-0" />

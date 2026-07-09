@@ -2954,7 +2954,9 @@ export const DB = {
           data.vrAnnotations = undefined as any;
       }, data.vrAnnotations?.length || 0);
       await runSection('捏脸自定义部件', data.customCreatorParts !== undefined, async () => {
-          await clearAndAdd(STORE_CC_PARTS, data.customCreatorParts, '捏脸自定义部件', false);
+          // restoreAssets=true：部件 src/shadowSrc 是 data:image，media/full 导出时被抽进 zip，
+          // 导入必须经 beforeWrite 把 assets/*.png 路径还原回 base64，否则部件图裂成死链。
+          await clearAndAdd(STORE_CC_PARTS, data.customCreatorParts, '捏脸自定义部件', true);
           data.customCreatorParts = undefined as any;
       }, data.customCreatorParts?.length || 0);
       await runSection('听歌房', data.vrMusicRoom !== undefined, async () => {
