@@ -194,7 +194,7 @@ async function callCompressionLLM(
                     stream: false,
                 }),
             },
-            2, 0, { appName: '记忆宫殿', purpose: '事件压缩' }
+            2, 120_000, { appName: '记忆宫殿', purpose: '事件压缩' }
         );
 
         const reply = data.choices?.[0]?.message?.content || '';
@@ -277,7 +277,7 @@ async function recompressSummary(
                     stream: false,
                 }),
             },
-            2, 0, { appName: '记忆宫殿', purpose: '事件压缩-二次压缩' }
+            2, 90_000, { appName: '记忆宫殿', purpose: '事件压缩-二次压缩' }
         );
         const reply = (data.choices?.[0]?.message?.content || '').trim();
         // 模型偶尔仍会裹 ``` 代码块，剥掉常见包裹

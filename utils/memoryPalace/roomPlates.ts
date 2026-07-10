@@ -254,7 +254,7 @@ ${roomBlocks}
                 stream: false,
             }),
         },
-        2, 0, { appName: '记忆宫殿', purpose: '门牌整理' }
+        2, 120_000, { appName: '记忆宫殿', purpose: '门牌整理' }
     );
 
     const reply = data.choices?.[0]?.message?.content || '';
@@ -566,6 +566,9 @@ export async function bootstrapPlatesFromHistory(
             lines: byRoom.get(room)!.slice(i * BOOTSTRAP_LINES_PER_BATCH, (i + 1) * BOOTSTRAP_LINES_PER_BATCH),
         }));
         if (materials.every(m => m.lines.length === 0)) { nextBatch = i + 1; continue; }
+        // 进度在批次**开始**时上报：慢批次跑着的时候用户看到的是"正在第 N 批"，
+        // 而不是上一批的旧数字挂着像死机（LLM 调用已有 120s/次硬超时兜底）
+        options.onProgress?.(i + 1, neededBatches);
         try {
             const { updated } = await consolidatePlates(charId, charName, userName || '用户', materials, llmConfig);
             updated.forEach(r => updatedSet.add(r));
@@ -574,7 +577,6 @@ export async function bootstrapPlatesFromHistory(
         }
         ran++;
         nextBatch = i + 1;
-        options.onProgress?.(i + 1, neededBatches);
     }
     const complete = nextBatch >= neededBatches;
     console.log(`🚪 [Bootstrap] 本次 ${ran} 批 / 进度 ${nextBatch}/${neededBatches}${complete ? '（已还清）' : ''} → 更新 ${[...updatedSet].length} 块门牌`);
