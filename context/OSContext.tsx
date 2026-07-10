@@ -5,6 +5,7 @@ import { DB } from '../utils/db';
 import { modelRejectsSamplingParams, stripSamplingParams, isSamplingParamError } from '../utils/samplingParamCompat';
 import { extractImagesInPlace, deepCloneForExport } from '../utils/backupExport';
 import { isBlobRef, getBlobForRef, migrateDataUrlToRef, resolveBlobRefsDeep, BLOBREF_PREFIX } from '../utils/blobRef';
+import { migrateSharkpanAssets } from '../utils/sharkpanAssetMigration';
 import { writeV2Backup, assembleV2Backup, type BackupManifest, type ZipFileWriter, type ZipFileReader } from '../utils/backupFormat';
 import { encodeVectorsForBackup } from '../utils/memoryPalace/db';
 import { ProactiveChat } from '../utils/proactiveChat';
@@ -493,12 +494,12 @@ Sully是小手机的内置AI。
 `,
 
   sprites: {
-      'normal': 'https://sharkpan.xyz/f/w3QQFq/01.png',
-      'happy': 'https://sharkpan.xyz/f/MKg7ta/02.png',
-      'sad': 'https://sharkpan.xyz/f/3WnMce/03.png',
-      'angry': 'https://sharkpan.xyz/f/5n1xSj/04.png',
-      'shy': 'https://sharkpan.xyz/f/kdwet6/05.png',
-      'chibi': 'https://sharkpan.xyz/f/oWZQF4/S2.png' // Default Room Sprite (家园 Sully chibi)
+      'normal': 'https://cdn.jsdelivr.net/gh/qegj567-cloud/SullyOS-assets@main/bgm/SULLY/01.png',
+      'happy': 'https://cdn.jsdelivr.net/gh/qegj567-cloud/SullyOS-assets@main/bgm/SULLY/02.png',
+      'sad': 'https://cdn.jsdelivr.net/gh/qegj567-cloud/SullyOS-assets@main/bgm/SULLY/03.png',
+      'angry': 'https://cdn.jsdelivr.net/gh/qegj567-cloud/SullyOS-assets@main/bgm/SULLY/04.png',
+      'shy': 'https://cdn.jsdelivr.net/gh/qegj567-cloud/SullyOS-assets@main/bgm/SULLY/05.png',
+      'chibi': 'https://cdn.jsdelivr.net/gh/qegj567-cloud/SullyOS-assets@main/bgm/SULLY/S2.png' // Default Room Sprite (家园 Sully chibi)
   },
   
   spriteConfig: {
@@ -512,12 +513,12 @@ Sully是小手机的内置AI。
           id: 'skin_sully_valentine',
           name: 'Valentine',
           sprites: {
-              'normal': 'https://sharkpan.xyz/f/4rzdtj/VNormal.png',
-              'happy':  'https://sharkpan.xyz/f/m3adhW/Vha.png',
-              'sad':    'https://sharkpan.xyz/f/BZgDfa/Vsad.png',
-              'angry':  'https://sharkpan.xyz/f/NdlVfv/VAn.png',
-              'shy':    'https://sharkpan.xyz/f/VyontY/Vshy.png',
-              'love':   'https://sharkpan.xyz/f/xl8muX/VBl.png',
+              'normal': 'https://cdn.jsdelivr.net/gh/qegj567-cloud/SullyOS-assets@main/bgm/SULLY/VNormal.png',
+              'happy':  'https://cdn.jsdelivr.net/gh/qegj567-cloud/SullyOS-assets@main/bgm/SULLY/Vha.png',
+              'sad':    'https://cdn.jsdelivr.net/gh/qegj567-cloud/SullyOS-assets@main/bgm/SULLY/Vsad.png',
+              'angry':  'https://cdn.jsdelivr.net/gh/qegj567-cloud/SullyOS-assets@main/bgm/SULLY/VAn.png',
+              'shy':    'https://cdn.jsdelivr.net/gh/qegj567-cloud/SullyOS-assets@main/bgm/SULLY/Vshy.png',
+              'love':   'https://cdn.jsdelivr.net/gh/qegj567-cloud/SullyOS-assets@main/bgm/SULLY/VBl.png',
           }
       }
   ],
@@ -528,14 +529,14 @@ Sully是小手机的内置AI。
   
   // Default Room Config
   roomConfig: {
-      wallImage: 'https://sharkpan.xyz/f/NdJyhv/b.png', // Updated Background
+      wallImage: 'https://cdn.jsdelivr.net/gh/qegj567-cloud/SullyOS-assets@main/bgm/SULLY/b.png', // Updated Background
       floorImage: 'repeating-linear-gradient(90deg, #e7e5e4 0px, #e7e5e4 20px, #d6d3d1 21px)',
       items: [
         {
             id: "item-1768927221380",
             name: "Sully床",
             type: "furniture",
-            image: "https://sharkpan.xyz/f/A3XeUZ/BED.png",
+            image: "https://cdn.jsdelivr.net/gh/qegj567-cloud/SullyOS-assets@main/bgm/SULLY/BED.png",
             x: 78.45852578067732,
             y: 97.38889754570907,
             scale: 2.4,
@@ -547,7 +548,7 @@ Sully是小手机的内置AI。
             id: "item-1768927255102",
             name: "Sully电脑桌",
             type: "furniture",
-            image: "https://sharkpan.xyz/f/G5n3Ul/DNZ.png",
+            image: "https://cdn.jsdelivr.net/gh/qegj567-cloud/SullyOS-assets@main/bgm/SULLY/DNZ.png",
             x: 28.853756791175588,
             y: 69.9444485439727,
             scale: 2.4,
@@ -559,7 +560,7 @@ Sully是小手机的内置AI。
             id: "item-1768927271632",
             name: "Sully垃圾桶",
             type: "furniture",
-            image: "https://sharkpan.xyz/f/75Nvsj/LJT.png",
+            image: "https://cdn.jsdelivr.net/gh/qegj567-cloud/SullyOS-assets@main/bgm/SULLY/LJT.png",
             x: 10.276680026943646,
             y: 80.49999880981437,
             scale: 0.9,
@@ -571,7 +572,7 @@ Sully是小手机的内置AI。
             id: "item-1768927286526",
             name: "Sully洞洞板",
             type: "furniture",
-            image: "https://sharkpan.xyz/f/85K5ij/DDB.png",
+            image: "https://cdn.jsdelivr.net/gh/qegj567-cloud/SullyOS-assets@main/bgm/SULLY/DDB.png",
             x: 32.608697687684455,
             y: 48.72222587415929,
             scale: 2.6,
@@ -583,7 +584,7 @@ Sully是小手机的内置AI。
             id: "item-1768927303472",
             name: "Sully书柜",
             type: "furniture",
-            image: "https://sharkpan.xyz/f/zlpWS5/SG.png",
+            image: "https://cdn.jsdelivr.net/gh/qegj567-cloud/SullyOS-assets@main/bgm/SULLY/SG.png",
             x: 79.84189945375853,
             y: 68.94444543117953,
             scale: 2,
@@ -1092,6 +1093,10 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
         }
 
         await loadSettings();
+
+        // 老用户库存的鲨盘图链接就地改写成 jsDelivr（幂等、跑一次）。放在读 characters 之前，
+        // 让下面 getAllCharacters 拿到的就是改好的数据。见 utils/sharkpanAssetMigration.ts。
+        await migrateSharkpanAssets();
 
         // 用 allSettled 而非 all：早期 Promise.all 只要任意一个 store 读取 reject，
         // 整批加载就全挂 → setCharacters / setWorldbooks 都不执行 → 角色和世界书"凭空消失"

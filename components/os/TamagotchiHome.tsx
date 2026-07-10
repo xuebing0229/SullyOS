@@ -170,11 +170,11 @@ const FALLBACK_DEFAULT: RoomItem[] = [
     { id: 'plant', name: '盆栽', type: 'decor', image: FURNITURE_ICONS.plant, x: 85, y: 40, scale: 0.8, rotation: 0, isInteractive: true },
 ];
 const FALLBACK_SULLY: RoomItem[] = [
-    { id: 'item-1768927221380', name: 'Sully床', type: 'furniture', image: 'https://sharkpan.xyz/f/A3XeUZ/BED.png', x: 78.46, y: 97.39, scale: 2.4, rotation: 0, isInteractive: true },
-    { id: 'item-1768927255102', name: 'Sully电脑桌', type: 'furniture', image: 'https://sharkpan.xyz/f/G5n3Ul/DNZ.png', x: 28.85, y: 69.94, scale: 2.4, rotation: 0, isInteractive: true },
-    { id: 'item-1768927271632', name: 'Sully垃圾桶', type: 'furniture', image: 'https://sharkpan.xyz/f/75Nvsj/LJT.png', x: 10.28, y: 80.5, scale: 0.9, rotation: 0, isInteractive: true },
-    { id: 'item-1768927286526', name: 'Sully洞洞板', type: 'furniture', image: 'https://sharkpan.xyz/f/85K5ij/DDB.png', x: 32.61, y: 48.72, scale: 2.6, rotation: 0, isInteractive: true },
-    { id: 'item-1768927303472', name: 'Sully书柜', type: 'furniture', image: 'https://sharkpan.xyz/f/zlpWS5/SG.png', x: 79.84, y: 68.94, scale: 2, rotation: 0, isInteractive: true },
+    { id: 'item-1768927221380', name: 'Sully床', type: 'furniture', image: 'https://cdn.jsdelivr.net/gh/qegj567-cloud/SullyOS-assets@main/bgm/SULLY/BED.png', x: 78.46, y: 97.39, scale: 2.4, rotation: 0, isInteractive: true },
+    { id: 'item-1768927255102', name: 'Sully电脑桌', type: 'furniture', image: 'https://cdn.jsdelivr.net/gh/qegj567-cloud/SullyOS-assets@main/bgm/SULLY/DNZ.png', x: 28.85, y: 69.94, scale: 2.4, rotation: 0, isInteractive: true },
+    { id: 'item-1768927271632', name: 'Sully垃圾桶', type: 'furniture', image: 'https://cdn.jsdelivr.net/gh/qegj567-cloud/SullyOS-assets@main/bgm/SULLY/LJT.png', x: 10.28, y: 80.5, scale: 0.9, rotation: 0, isInteractive: true },
+    { id: 'item-1768927286526', name: 'Sully洞洞板', type: 'furniture', image: 'https://cdn.jsdelivr.net/gh/qegj567-cloud/SullyOS-assets@main/bgm/SULLY/DDB.png', x: 32.61, y: 48.72, scale: 2.6, rotation: 0, isInteractive: true },
+    { id: 'item-1768927303472', name: 'Sully书柜', type: 'furniture', image: 'https://cdn.jsdelivr.net/gh/qegj567-cloud/SullyOS-assets@main/bgm/SULLY/SG.png', x: 79.84, y: 68.94, scale: 2, rotation: 0, isInteractive: true },
 ];
 const FALLBACK_WALL = 'radial-gradient(circle at 50% 50%, #fdfbf7 0%, #e2e8f0 100%)';
 const FALLBACK_FLOOR = 'repeating-linear-gradient(90deg, #e7e5e4 0px, #e7e5e4 20px, #d6d3d1 21px)';
