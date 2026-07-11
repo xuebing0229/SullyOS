@@ -12,6 +12,7 @@ import { processImage } from '../utils/file';
 import { stickerNameFromUrl } from '../utils/messageFormat';
 import { DEFAULT_ARCHIVE_PROMPTS } from '../components/chat/ChatConstants';
 import { CharacterGroupFilterBar, filterCharactersByGroup, GROUP_FILTER_ALL } from '../components/character/CharacterGroupFilter';
+import { useIncrementalReveal } from '../hooks/useIncrementalReveal';
 import { UsersThree } from '@phosphor-icons/react';
 
 const TWEMOJI_BASE = 'https://cdnjs.cloudflare.com/ajax/libs/twemoji/14.0.2/72x72';
@@ -223,6 +224,8 @@ const GroupChat: React.FC = () => {
 
     // Data State
     const [emojis, setEmojis] = useState<{name: string, url: string, categoryId?: string}[]>([]);
+    // 表情抽屉增量渲染：表情多时一次性挂载几百张 base64 图会卡爆
+    const { count: visibleEmojiCount, hasMore: hasMoreEmojis, sentinelRef: emojiSentinelRef } = useIncrementalReveal(emojis.length, 60, showEmojiPicker);
     const [categories, setCategories] = useState<EmojiCategory[]>([]); // New
     
     // Create/Edit Group State
@@ -1401,12 +1404,17 @@ ${attachedImagesNote}
                 {showEmojiPicker && (
                     <div className="h-64 bg-[#f0f2f5] border-t border-slate-200 p-4 animate-slide-up overflow-y-auto no-scrollbar">
                         <div className="grid grid-cols-5 gap-3">
-                            {emojis.map((e, i) => (
+                            {emojis.slice(0, visibleEmojiCount).map((e, i) => (
                                 <button key={i} onClick={() => handleSendMessage(e.url, 'emoji')} className="aspect-square bg-white rounded-xl p-2 border border-slate-200 shadow-sm active:scale-95 flex items-center justify-center">
-                                    <img src={e.url} className="w-full h-full object-contain pointer-events-none" />
+                                    <img src={e.url} loading="lazy" decoding="async" className="w-full h-full object-contain pointer-events-none" />
                                 </button>
                             ))}
                         </div>
+                        {hasMoreEmojis && (
+                            <div ref={emojiSentinelRef} className="py-3 text-center text-[10px] text-slate-400">
+                                加载中... ({visibleEmojiCount}/{emojis.length})
+                            </div>
+                        )}
                     </div>
                 )}
             </div>
