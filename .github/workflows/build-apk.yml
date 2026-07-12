@@ -24,14 +24,17 @@ jobs:
         with:
           node-version: "20"
 
+      - name: Install pnpm
+        run: npm install --global pnpm
+
       - name: Install dependencies
-        run: npm install
+        run: pnpm install --no-frozen-lockfile
 
       - name: Build web app
-        run: npm run build
+        run: pnpm run build
 
       - name: Sync Capacitor Android
-        run: npm run cap:sync
+        run: pnpm run cap:sync
 
       - name: Set up Java
         uses: actions/setup-java@v4
