@@ -33,8 +33,11 @@ jobs:
       - name: Build web app
         run: pnpm run build
 
+      - name: Create Android project
+        run: pnpm exec cap add android
+
       - name: Sync Capacitor Android
-        run: pnpm run cap:sync
+        run: pnpm exec cap sync android
 
       - name: Set up Java
         uses: actions/setup-java@v4
