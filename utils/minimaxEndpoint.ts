@@ -40,7 +40,9 @@ let currentRegion: MinimaxRegion = 'domestic';
 export const normalizeMinimaxRegion = (raw: unknown): MinimaxRegion =>
   raw === 'overseas' ? 'overseas' : 'domestic';
 
-export function setMinimaxRegion(region: MinimaxRegion | string | undefined | null): void {
+export function setMinimaxRegion(
+  region: MinimaxRegion | string | undefined | null,
+): void {
   currentRegion = normalizeMinimaxRegion(region);
 }
 
@@ -48,7 +50,9 @@ export function getMinimaxRegion(): MinimaxRegion {
   return currentRegion;
 }
 
-export function getMinimaxBaseUrl(region: MinimaxRegion = currentRegion): string {
+export function getMinimaxBaseUrl(
+  region: MinimaxRegion = currentRegion,
+): string {
   return REGION_BASE_URLS[normalizeMinimaxRegion(region)];
 }
 
@@ -60,7 +64,10 @@ const isNative = (): boolean => {
   }
 };
 
-const getUpstreamUrl = (proxyPath: string, region: MinimaxRegion = currentRegion): string | null => {
+const getUpstreamUrl = (
+  proxyPath: string,
+  region: MinimaxRegion = currentRegion,
+): string | null => {
   const endpoint = PROXY_ENDPOINTS[proxyPath];
   if (!endpoint) return null;
   return `${getMinimaxBaseUrl(region)}${endpoint}`;
@@ -78,17 +85,23 @@ const wrapWebResponse = (response: Response): MiniMaxResponseLike => ({
  */
 export function resolveMinimaxUrl(proxyPath: string): string {
   const upstream = getUpstreamUrl(proxyPath);
+
   if (upstream && isNative()) {
     return upstream;
   }
+
   return proxyPath;
 }
 
-const normalizeHeaders = (headers: Record<string, string> = {}): Record<string, string> => {
+const normalizeHeaders = (
+  headers: Record<string, string> = {},
+): Record<string, string> => {
   const normalized: Record<string, string> = {};
-  Object.entries(headers).forEach(([k, v]) => {
-    normalized[k.toLowerCase()] = v;
+
+  Object.entries(headers).forEach(([key, value]) => {
+    normalized[key.toLowerCase()] = value;
   });
+
   return normalized;
 };
 
@@ -101,31 +114,51 @@ const withRegionHeader = (
 });
 
 const buildUpstreamWebInit = (
-  init: { method?: string; headers?: Record<string, string>; body?: string },
-): { method?: string; headers?: Record<string, string>; body?: string } => {
+  init: {
+    method?: string;
+    headers?: Record<string, string>;
+    body?: string;
+  },
+): {
+  method?: string;
+  headers?: Record<string, string>;
+  body?: string;
+} => {
   const headers = normalizeHeaders(init.headers || {});
   const groupId = (headers['x-minimax-group-id'] || '').trim();
 
-  // MiniMax upstream CORS does not accept these custom headers.
+  // 这些请求头只供项目自己的代理使用，不能直接发送给 MiniMax 官网。
   delete headers['x-minimax-api-key'];
   delete headers['x-minimax-group-id'];
   delete headers['x-minimax-region'];
 
   if (!groupId || !init.body) {
-    return { ...init, headers };
+    return {
+      ...init,
+      headers,
+    };
   }
 
   try {
     const body = JSON.parse(init.body);
+
     if (body && typeof body === 'object' && !body.group_id) {
       body.group_id = groupId;
-      return { ...init, headers, body: JSON.stringify(body) };
+
+      return {
+        ...init,
+        headers,
+        body: JSON.stringify(body),
+      };
     }
   } catch {
-    // Keep the original body when it is not JSON.
+    // 如果请求体不是 JSON，则保留原请求体。
   }
 
-  return { ...init, headers };
+  return {
+    ...init,
+    headers,
+  };
 };
 
 const shouldBypassWebProxy = (proxyPath: string): boolean => {
@@ -133,28 +166,54 @@ const shouldBypassWebProxy = (proxyPath: string): boolean => {
   if (typeof window === 'undefined') return false;
 
   const protocol = String(window.location.protocol || '').toLowerCase();
-  if (protocol === 'file:') return true;
+
+  if (protocol === 'file:') {
+    return true;
+  }
 
   const host = String(window.location.hostname || '').toLowerCase();
+
   return host === 'github.io' || host.endsWith('.github.io');
 };
 
-const shouldRetryAgainstUpstream = (proxyPath: string, response: Response): boolean => {
+const shouldRetryAgainstUpstream = (
+  proxyPath: string,
+  response: Response,
+): boolean => {
   if (!PROXY_ENDPOINTS[proxyPath]) return false;
-  if (response.status === 404 || response.status === 405) return true;
 
-  const contentType = (response.headers.get('content-type') || '').toLowerCase();
-  return contentType.includes('text/html') || contentType.includes('application/xhtml+xml');
+  if (response.status === 404 || response.status === 405) {
+    return true;
+  }
+
+  const contentType = (
+    response.headers.get('content-type') || ''
+  ).toLowerCase();
+
+  return (
+    contentType.includes('text/html') ||
+    contentType.includes('application/xhtml+xml')
+  );
 };
 
 const fetchUpstreamWeb = async (
   proxyPath: string,
-  init: { method?: string; headers?: Record<string, string>; body?: string },
+  init: {
+    method?: string;
+    headers?: Record<string, string>;
+    body?: string;
+  },
   region: MinimaxRegion,
 ): Promise<MiniMaxResponseLike> => {
   const upstream = getUpstreamUrl(proxyPath, region);
-  if (!upstream) throw new Error(`No upstream mapping for ${proxyPath}`);
-  return wrapWebResponse(await fetch(upstream, buildUpstreamWebInit(init)));
+
+  if (!upstream) {
+    throw new Error(`No upstream mapping for ${proxyPath}`);
+  }
+
+  return wrapWebResponse(
+    await fetch(upstream, buildUpstreamWebInit(init)),
+  );
 };
 
 /**
@@ -164,10 +223,19 @@ const fetchUpstreamWeb = async (
  */
 export async function minimaxFetch(
   proxyPath: string,
-  init: { method?: string; headers?: Record<string, string>; body?: string },
+  init: {
+    method?: string;
+    headers?: Record<string, string>;
+    body?: string;
+  },
 ): Promise<MiniMaxResponseLike> {
   const region = currentRegion;
-  const enrichedInit = { ...init, headers: withRegionHeader(init.headers, region) };
+
+  const enrichedInit = {
+    ...init,
+    headers: withRegionHeader(init.headers, region),
+  };
+
   const url = resolveMinimaxUrl(proxyPath);
 
   if (!isNative()) {
@@ -176,25 +244,40 @@ export async function minimaxFetch(
     }
 
     try {
-      const res = await fetch(url, enrichedInit);
-      // Static preview servers can rewrite missing /api routes to index.html.
-      if (shouldRetryAgainstUpstream(proxyPath, res)) {
+      const response = await fetch(url, enrichedInit);
+
+      // 静态预览服务器可能会把不存在的 /api 路由重写成 index.html。
+      if (shouldRetryAgainstUpstream(proxyPath, response)) {
         return fetchUpstreamWeb(proxyPath, enrichedInit, region);
       }
-      return wrapWebResponse(res);
+
+      return wrapWebResponse(response);
     } catch (error) {
       if (PROXY_ENDPOINTS[proxyPath]) {
         return fetchUpstreamWeb(proxyPath, enrichedInit, region);
       }
+
       throw error;
     }
   }
 
+  /*
+   * Android APK 会直接请求 MiniMax 官网，不经过项目代理。
+   * 因此必须移除仅供内部代理使用的 X-MiniMax-* 请求头，
+   * 只保留标准 Authorization 鉴权头。
+   *
+   * 如果配置了 Group ID，buildUpstreamWebInit 会把它放入
+   * JSON 请求体，而不是作为内部代理请求头发送给 MiniMax。
+   */
+  const nativeInit = buildUpstreamWebInit(enrichedInit);
+
   const response = await CapacitorHttp.request({
     url,
-    method: enrichedInit.method || 'POST',
-    headers: enrichedInit.headers || {},
-    data: enrichedInit.body ? JSON.parse(enrichedInit.body) : undefined,
+    method: nativeInit.method || 'POST',
+    headers: nativeInit.headers || {},
+    data: nativeInit.body
+      ? JSON.parse(nativeInit.body)
+      : undefined,
   });
 
   return {
