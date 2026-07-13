@@ -21,6 +21,14 @@ type MiniMaxResponseLike = {
   ok: boolean;
   status: number;
   json: () => Promise<any>;
+  diagnostics?: {
+    requestUrl: string;
+    finalUrl: string;
+    redirected: boolean;
+    authorizationPresent: boolean;
+    authorizationScheme: string;
+    sentHeaderNames: string[];
+  };
 };
 
 const REGION_BASE_URLS: Record<MinimaxRegion, string> = {
@@ -37,7 +45,9 @@ const PROXY_ENDPOINTS: Record<string, string> = {
 
 let currentRegion: MinimaxRegion = 'domestic';
 
-export const normalizeMinimaxRegion = (raw: unknown): MinimaxRegion =>
+export const normalizeMinimaxRegion = (
+  raw: unknown,
+): MinimaxRegion =>
   raw === 'overseas' ? 'overseas' : 'domestic';
 
 export function setMinimaxRegion(
@@ -69,11 +79,17 @@ const getUpstreamUrl = (
   region: MinimaxRegion = currentRegion,
 ): string | null => {
   const endpoint = PROXY_ENDPOINTS[proxyPath];
-  if (!endpoint) return null;
+
+  if (!endpoint) {
+    return null;
+  }
+
   return `${getMinimaxBaseUrl(region)}${endpoint}`;
 };
 
-const wrapWebResponse = (response: Response): MiniMaxResponseLike => ({
+const wrapWebResponse = (
+  response: Response,
+): MiniMaxResponseLike => ({
   ok: response.ok,
   status: response.status,
   json: async () => safeResponseJson(response.clone()),
@@ -83,7 +99,9 @@ const wrapWebResponse = (response: Response): MiniMaxResponseLike => ({
  * Return the actual URL to fetch for a given proxy path.
  * Native platforms always hit the upstream directly (no CORS).
  */
-export function resolveMinimaxUrl(proxyPath: string): string {
+export function resolveMinimaxUrl(
+  proxyPath: string,
+): string {
   const upstream = getUpstreamUrl(proxyPath);
 
   if (upstream && isNative()) {
@@ -125,9 +143,12 @@ const buildUpstreamWebInit = (
   body?: string;
 } => {
   const headers = normalizeHeaders(init.headers || {});
-  const groupId = (headers['x-minimax-group-id'] || '').trim();
+  const groupId = (
+    headers['x-minimax-group-id'] || ''
+  ).trim();
 
-  // 这些请求头只供项目自己的代理使用，不能直接发送给 MiniMax 官网。
+  // These headers are only used by the project's own proxy.
+  // They must not be sent directly to MiniMax upstream.
   delete headers['x-minimax-api-key'];
   delete headers['x-minimax-group-id'];
   delete headers['x-minimax-region'];
@@ -142,7 +163,11 @@ const buildUpstreamWebInit = (
   try {
     const body = JSON.parse(init.body);
 
-    if (body && typeof body === 'object' && !body.group_id) {
+    if (
+      body &&
+      typeof body === 'object' &&
+      !body.group_id
+    ) {
       body.group_id = groupId;
 
       return {
@@ -152,7 +177,7 @@ const buildUpstreamWebInit = (
       };
     }
   } catch {
-    // 如果请求体不是 JSON，则保留原请求体。
+    // Keep the original body when it is not JSON.
   }
 
   return {
@@ -161,28 +186,47 @@ const buildUpstreamWebInit = (
   };
 };
 
-const shouldBypassWebProxy = (proxyPath: string): boolean => {
-  if (!PROXY_ENDPOINTS[proxyPath]) return false;
-  if (typeof window === 'undefined') return false;
+const shouldBypassWebProxy = (
+  proxyPath: string,
+): boolean => {
+  if (!PROXY_ENDPOINTS[proxyPath]) {
+    return false;
+  }
 
-  const protocol = String(window.location.protocol || '').toLowerCase();
+  if (typeof window === 'undefined') {
+    return false;
+  }
+
+  const protocol = String(
+    window.location.protocol || '',
+  ).toLowerCase();
 
   if (protocol === 'file:') {
     return true;
   }
 
-  const host = String(window.location.hostname || '').toLowerCase();
+  const host = String(
+    window.location.hostname || '',
+  ).toLowerCase();
 
-  return host === 'github.io' || host.endsWith('.github.io');
+  return (
+    host === 'github.io' ||
+    host.endsWith('.github.io')
+  );
 };
 
 const shouldRetryAgainstUpstream = (
   proxyPath: string,
   response: Response,
 ): boolean => {
-  if (!PROXY_ENDPOINTS[proxyPath]) return false;
+  if (!PROXY_ENDPOINTS[proxyPath]) {
+    return false;
+  }
 
-  if (response.status === 404 || response.status === 405) {
+  if (
+    response.status === 404 ||
+    response.status === 405
+  ) {
     return true;
   }
 
@@ -208,11 +252,16 @@ const fetchUpstreamWeb = async (
   const upstream = getUpstreamUrl(proxyPath, region);
 
   if (!upstream) {
-    throw new Error(`No upstream mapping for ${proxyPath}`);
+    throw new Error(
+      `No upstream mapping for ${proxyPath}`,
+    );
   }
 
   return wrapWebResponse(
-    await fetch(upstream, buildUpstreamWebInit(init)),
+    await fetch(
+      upstream,
+      buildUpstreamWebInit(init),
+    ),
   );
 };
 
@@ -233,28 +282,52 @@ export async function minimaxFetch(
 
   const enrichedInit = {
     ...init,
-    headers: withRegionHeader(init.headers, region),
+    headers: withRegionHeader(
+      init.headers,
+      region,
+    ),
   };
 
   const url = resolveMinimaxUrl(proxyPath);
 
   if (!isNative()) {
     if (shouldBypassWebProxy(proxyPath)) {
-      return fetchUpstreamWeb(proxyPath, enrichedInit, region);
+      return fetchUpstreamWeb(
+        proxyPath,
+        enrichedInit,
+        region,
+      );
     }
 
     try {
-      const response = await fetch(url, enrichedInit);
+      const response = await fetch(
+        url,
+        enrichedInit,
+      );
 
-      // 静态预览服务器可能会把不存在的 /api 路由重写成 index.html。
-      if (shouldRetryAgainstUpstream(proxyPath, response)) {
-        return fetchUpstreamWeb(proxyPath, enrichedInit, region);
+      // Static preview servers can rewrite missing
+      // /api routes to index.html.
+      if (
+        shouldRetryAgainstUpstream(
+          proxyPath,
+          response,
+        )
+      ) {
+        return fetchUpstreamWeb(
+          proxyPath,
+          enrichedInit,
+          region,
+        );
       }
 
       return wrapWebResponse(response);
     } catch (error) {
       if (PROXY_ENDPOINTS[proxyPath]) {
-        return fetchUpstreamWeb(proxyPath, enrichedInit, region);
+        return fetchUpstreamWeb(
+          proxyPath,
+          enrichedInit,
+          region,
+        );
       }
 
       throw error;
@@ -262,27 +335,148 @@ export async function minimaxFetch(
   }
 
   /*
-   * Android APK 会直接请求 MiniMax 官网，不经过项目代理。
-   * 因此必须移除仅供内部代理使用的 X-MiniMax-* 请求头，
-   * 只保留标准 Authorization 鉴权头。
+   * Android APK requests MiniMax directly.
    *
-   * 如果配置了 Group ID，buildUpstreamWebInit 会把它放入
-   * JSON 请求体，而不是作为内部代理请求头发送给 MiniMax。
+   * Build a new header object instead of reusing proxy headers.
+   * This guarantees that the standard Authorization header exists
+   * and preserves its canonical spelling.
+   *
+   * Diagnostic information never contains the actual API Key.
    */
-  const nativeInit = buildUpstreamWebInit(enrichedInit);
+  const sourceHeaders = init.headers || {};
 
-  const response = await CapacitorHttp.request({
-    url,
-    method: nativeInit.method || 'POST',
-    headers: nativeInit.headers || {},
-    data: nativeInit.body
-      ? JSON.parse(nativeInit.body)
-      : undefined,
-  });
+  const findHeader = (
+    name: string,
+  ): string => {
+    const entry = Object.entries(
+      sourceHeaders,
+    ).find(
+      ([key]) =>
+        key.toLowerCase() ===
+        name.toLowerCase(),
+    );
+
+    return entry
+      ? String(entry[1] || '').trim()
+      : '';
+  };
+
+  const rawAuthorization =
+    findHeader('Authorization');
+
+  const rawApiKey =
+    findHeader('X-MiniMax-API-Key');
+
+  const apiKey = (
+    rawAuthorization || rawApiKey
+  )
+    .replace(/^Bearer\s+/i, '')
+    .trim();
+
+  if (!apiKey) {
+    throw new Error(
+      'MiniMax 原生请求缺少 API Key，无法生成 Authorization 请求头',
+    );
+  }
+
+  const nativeHeaders: Record<string, string> = {
+    'Content-Type':
+      findHeader('Content-Type') ||
+      'application/json',
+    Authorization: `Bearer ${apiKey}`,
+  };
+
+  let nativeBody: any = init.body
+    ? JSON.parse(init.body)
+    : undefined;
+
+  const groupId = findHeader(
+    'X-MiniMax-Group-Id',
+  );
+
+  if (
+    groupId &&
+    nativeBody &&
+    typeof nativeBody === 'object' &&
+    !nativeBody.group_id
+  ) {
+    nativeBody = {
+      ...nativeBody,
+      group_id: groupId,
+    };
+  }
+
+  const performNativeRequest = async (
+    requestUrl: string,
+  ) =>
+    CapacitorHttp.request({
+      url: requestUrl,
+      method: init.method || 'POST',
+      headers: nativeHeaders,
+      data: nativeBody,
+      disableRedirects: true,
+    });
+
+  let finalUrl = url;
+  let redirected = false;
+
+  let response =
+    await performNativeRequest(finalUrl);
+
+  /*
+   * Some native HTTP stacks remove Authorization while automatically
+   * following redirects. Follow one redirect manually and resend the
+   * same Authorization header.
+   */
+  if (
+    [301, 302, 303, 307, 308].includes(
+      response.status,
+    )
+  ) {
+    const responseHeaders =
+      response.headers || {};
+
+    const locationEntry = Object.entries(
+      responseHeaders,
+    ).find(
+      ([key]) =>
+        key.toLowerCase() === 'location',
+    );
+
+    const location = locationEntry
+      ? String(locationEntry[1] || '').trim()
+      : '';
+
+    if (location) {
+      finalUrl = new URL(
+        location,
+        url,
+      ).toString();
+
+      redirected = true;
+
+      response =
+        await performNativeRequest(finalUrl);
+    }
+  }
 
   return {
-    ok: response.status >= 200 && response.status < 300,
+    ok:
+      response.status >= 200 &&
+      response.status < 300,
+
     status: response.status,
+
     json: async () => response.data,
+
+    diagnostics: {
+      requestUrl: url,
+      finalUrl,
+      redirected,
+      authorizationPresent: true,
+      authorizationScheme: 'Bearer',
+      sentHeaderNames:
+        Object.keys(nativeHeaders),
+    },
   };
 }
