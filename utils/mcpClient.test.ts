@@ -12,6 +12,7 @@ import {
     getMcpUseNativeTools,
     setMcpUseNativeTools,
     callMcpTool,
+    normalizeMcpToolArguments,
     MCP_REQUEST_TIMEOUT_MS,
     type McpServerConfig,
 } from './mcpClient';
@@ -275,6 +276,76 @@ describe('extractTextFakedMcpCalls（掉格式容错）', () => {
 });
 
 describe('MCP 聊天链路不悬挂', () => {
+    it('只按工具 schema 还原嵌套 object / array 字符串，普通 string 保持不变', () => {
+        const schema = {
+            type: 'object',
+            properties: {
+                room: { type: 'string' },
+                game: {
+                    type: 'object',
+                    properties: {
+                        players: {
+                            type: 'array',
+                            items: {
+                                type: 'object',
+                                properties: { name: { type: 'string' }, stats: { type: 'object' } },
+                            },
+                        },
+                    },
+                },
+            },
+        };
+        const input = {
+            room: '{"id":"这是普通文本，不该解析"}',
+            game: '{"players":"[{\\"name\\":\\"Sully\\",\\"stats\\":\\"{\\\\\\"coins\\\\\\":100}\\"}]"}',
+        };
+
+        expect(normalizeMcpToolArguments(input, schema)).toEqual({
+            room: input.room,
+            game: { players: [{ name: 'Sully', stats: { coins: 100 } }] },
+        });
+    });
+
+    it('tools/call 发送前按 inputSchema 修复整个 arguments 双重编码', async () => {
+        const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+        const server = mkServer({
+            id: 'nested-args-server',
+            tools: [{
+                name: 'start_game',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        config: {
+                            type: 'object',
+                            properties: { players: { type: 'array', items: { type: 'object' } } },
+                        },
+                    },
+                },
+            }],
+        });
+        let toolsCall: any;
+        vi.spyOn(globalThis, 'fetch').mockImplementation((_url, init) => {
+            const req = JSON.parse(String(init?.body || '{}'));
+            if (req.method === 'initialize') {
+                return Promise.resolve(new Response(JSON.stringify({ jsonrpc: '2.0', id: req.id, result: {} }), {
+                    status: 200, headers: { 'Content-Type': 'application/json' },
+                }));
+            }
+            if (req.method === 'notifications/initialized') return Promise.resolve(new Response('', { status: 202 }));
+            toolsCall = req;
+            return Promise.resolve(new Response(JSON.stringify({
+                jsonrpc: '2.0', id: req.id, result: { content: [{ type: 'text', text: 'ok' }] },
+            }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+        });
+
+        const onceParsedByChatLayer = '{"config":"{\\"players\\":\\"[{\\\\\\"name\\\\\\":\\\\\\"A\\\\\\"}]\\"}"}';
+        await expect(callMcpTool(server, 'start_game', onceParsedByChatLayer as any)).resolves.toMatchObject({ success: true });
+        expect(toolsCall.params.arguments).toEqual({ config: { players: [{ name: 'A' }] } });
+        expect(info).toHaveBeenCalledWith('🔌 [MCP] tools/call 完成', expect.objectContaining({
+            args: { config: { players: [{ name: 'A' }] } },
+        }));
+    });
+
     it('正文假调用已代执行后，组织回复请求移除 tools，避免空正文 tool_calls 被吞', () => {
         const body = buildMcpTextFallbackBody(
             { model: 'x', tools: [{ type: 'function' }], tool_choice: 'auto', temperature: 0.8 },
