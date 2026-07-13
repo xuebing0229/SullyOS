@@ -1,69 +1,85 @@
 /**
- * MiniMax API endpoint resolution + native HTTP for Capacitor.
+ * MiniMax API endpoint resolution.
  *
- * Web/dev mode: prefers `/api/minimax/*` when a proxy exists.
- * Static web/file previews: falls back to MiniMax upstream directly.
- * Capacitor native: uses CapacitorHttp to bypass browser CORS.
+ * Web/dev mode:
+ *   - Prefer the project's `/api/minimax/*` proxy.
+ *   - Static previews fall back to MiniMax upstream.
  *
- * Region-aware: resolves upstream to either
- *   - 国内站   https://api.minimaxi.com   ('domestic', default)
- *   - 海外站   https://api.minimax.io     ('overseas')
- * The region is synced from OSContext via `setMinimaxRegion()` and also
- * forwarded on every request as `X-MiniMax-Region`, so server-side proxies
- * (Vite dev proxy, Vercel serverless, dev middleware) can route correctly.
+ * Android/Capacitor mode:
+ *   - Request MiniMax upstream directly with standard fetch().
+ *   - Do not use CapacitorHttp because the native bridge may discard
+ *     the Authorization header on this device/build.
  */
 
-import { Capacitor, CapacitorHttp } from '@capacitor/core';
+import { Capacitor } from '@capacitor/core';
 import type { MinimaxRegion } from '../types';
 import { safeResponseJson } from './safeApi';
+
+type MiniMaxDiagnostics = {
+  requestUrl: string;
+  finalUrl: string;
+  redirected: boolean;
+  authorizationPresent: boolean;
+  authorizationScheme: string;
+  sentHeaderNames: string[];
+};
 
 type MiniMaxResponseLike = {
   ok: boolean;
   status: number;
   json: () => Promise<any>;
-  diagnostics?: {
-    requestUrl: string;
-    finalUrl: string;
-    redirected: boolean;
-    authorizationPresent: boolean;
-    authorizationScheme: string;
-    sentHeaderNames: string[];
-  };
+  diagnostics?: MiniMaxDiagnostics;
 };
 
-const REGION_BASE_URLS: Record<MinimaxRegion, string> = {
+const REGION_BASE_URLS: Record<
+  MinimaxRegion,
+  string
+> = {
   domestic: 'https://api.minimaxi.com',
   overseas: 'https://api.minimax.io',
 };
 
-// Proxy path → upstream endpoint (concatenated with region base).
-const PROXY_ENDPOINTS: Record<string, string> = {
+const PROXY_ENDPOINTS: Record<
+  string,
+  string
+> = {
   '/api/minimax/t2a': '/v1/t2a_v2',
   '/api/minimax/get-voice': '/v1/get_voice',
   '/api/minimax/music': '/v1/music_generation',
 };
 
-let currentRegion: MinimaxRegion = 'domestic';
+let currentRegion: MinimaxRegion =
+  'domestic';
 
 export const normalizeMinimaxRegion = (
   raw: unknown,
 ): MinimaxRegion =>
-  raw === 'overseas' ? 'overseas' : 'domestic';
+  raw === 'overseas'
+    ? 'overseas'
+    : 'domestic';
 
 export function setMinimaxRegion(
-  region: MinimaxRegion | string | undefined | null,
+  region:
+    | MinimaxRegion
+    | string
+    | undefined
+    | null,
 ): void {
-  currentRegion = normalizeMinimaxRegion(region);
+  currentRegion =
+    normalizeMinimaxRegion(region);
 }
 
-export function getMinimaxRegion(): MinimaxRegion {
+export function getMinimaxRegion():
+  MinimaxRegion {
   return currentRegion;
 }
 
 export function getMinimaxBaseUrl(
   region: MinimaxRegion = currentRegion,
 ): string {
-  return REGION_BASE_URLS[normalizeMinimaxRegion(region)];
+  return REGION_BASE_URLS[
+    normalizeMinimaxRegion(region)
+  ];
 }
 
 const isNative = (): boolean => {
@@ -78,49 +94,52 @@ const getUpstreamUrl = (
   proxyPath: string,
   region: MinimaxRegion = currentRegion,
 ): string | null => {
-  const endpoint = PROXY_ENDPOINTS[proxyPath];
+  const endpoint =
+    PROXY_ENDPOINTS[proxyPath];
 
   if (!endpoint) {
     return null;
   }
 
-  return `${getMinimaxBaseUrl(region)}${endpoint}`;
+  return (
+    getMinimaxBaseUrl(region) +
+    endpoint
+  );
 };
-
-const wrapWebResponse = (
-  response: Response,
-): MiniMaxResponseLike => ({
-  ok: response.ok,
-  status: response.status,
-  json: async () => safeResponseJson(response.clone()),
-});
-
-/**
- * Return the actual URL to fetch for a given proxy path.
- * Native platforms always hit the upstream directly (no CORS).
- */
-export function resolveMinimaxUrl(
-  proxyPath: string,
-): string {
-  const upstream = getUpstreamUrl(proxyPath);
-
-  if (upstream && isNative()) {
-    return upstream;
-  }
-
-  return proxyPath;
-}
 
 const normalizeHeaders = (
   headers: Record<string, string> = {},
 ): Record<string, string> => {
-  const normalized: Record<string, string> = {};
+  const normalized: Record<
+    string,
+    string
+  > = {};
 
-  Object.entries(headers).forEach(([key, value]) => {
-    normalized[key.toLowerCase()] = value;
-  });
+  Object.entries(headers).forEach(
+    ([key, value]) => {
+      normalized[key.toLowerCase()] =
+        String(value);
+    },
+  );
 
   return normalized;
+};
+
+const findHeader = (
+  headers: Record<string, string>,
+  name: string,
+): string => {
+  const entry = Object.entries(
+    headers,
+  ).find(
+    ([key]) =>
+      key.toLowerCase() ===
+      name.toLowerCase(),
+  );
+
+  return entry
+    ? String(entry[1] || '').trim()
+    : '';
 };
 
 const withRegionHeader = (
@@ -131,60 +150,118 @@ const withRegionHeader = (
   'X-MiniMax-Region': region,
 });
 
-const buildUpstreamWebInit = (
+const buildDirectRequest = (
   init: {
     method?: string;
     headers?: Record<string, string>;
     body?: string;
   },
 ): {
-  method?: string;
-  headers?: Record<string, string>;
+  method: string;
+  headers: Record<string, string>;
   body?: string;
 } => {
-  const headers = normalizeHeaders(init.headers || {});
-  const groupId = (
-    headers['x-minimax-group-id'] || ''
-  ).trim();
+  const sourceHeaders =
+    init.headers || {};
 
-  // These headers are only used by the project's own proxy.
-  // They must not be sent directly to MiniMax upstream.
-  delete headers['x-minimax-api-key'];
-  delete headers['x-minimax-group-id'];
-  delete headers['x-minimax-region'];
+  const rawAuthorization =
+    findHeader(
+      sourceHeaders,
+      'Authorization',
+    );
 
-  if (!groupId || !init.body) {
-    return {
-      ...init,
-      headers,
-    };
+  const rawApiKey =
+    findHeader(
+      sourceHeaders,
+      'X-MiniMax-API-Key',
+    );
+
+  const apiKey = (
+    rawAuthorization || rawApiKey
+  )
+    .replace(/^Bearer\s+/i, '')
+    .trim();
+
+  if (!apiKey) {
+    throw new Error(
+      'MiniMax 直连请求缺少 API Key，无法生成 Authorization 请求头',
+    );
   }
 
-  try {
-    const body = JSON.parse(init.body);
+  const groupId =
+    findHeader(
+      sourceHeaders,
+      'X-MiniMax-Group-Id',
+    );
 
-    if (
-      body &&
-      typeof body === 'object' &&
-      !body.group_id
-    ) {
-      body.group_id = groupId;
+  let requestBody =
+    init.body || undefined;
 
-      return {
-        ...init,
-        headers,
-        body: JSON.stringify(body),
-      };
+  if (groupId && requestBody) {
+    try {
+      const parsedBody =
+        JSON.parse(requestBody);
+
+      if (
+        parsedBody &&
+        typeof parsedBody === 'object' &&
+        !parsedBody.group_id
+      ) {
+        parsedBody.group_id =
+          groupId;
+
+        requestBody =
+          JSON.stringify(parsedBody);
+      }
+    } catch {
+      // 请求体不是 JSON 时保持原样。
     }
-  } catch {
-    // Keep the original body when it is not JSON.
   }
+
+  /*
+   * 直接构造全新的请求头。
+   *
+   * 不把下面这些项目内部代理头发送给 MiniMax：
+   *   X-MiniMax-API-Key
+   *   X-MiniMax-Group-Id
+   *   X-MiniMax-Region
+   */
+  const directHeaders: Record<
+    string,
+    string
+  > = {
+    'Content-Type':
+      findHeader(
+        sourceHeaders,
+        'Content-Type',
+      ) || 'application/json',
+
+    Authorization:
+      `Bearer ${apiKey}`,
+  };
 
   return {
-    ...init,
-    headers,
+    method: init.method || 'POST',
+    headers: directHeaders,
+    body: requestBody,
   };
 };
+
+const wrapFetchResponse = (
+  response: Response,
+  diagnostics?: MiniMaxDiagnostics,
+): MiniMaxResponseLike => ({
+  ok: response.ok,
+
+  status: response.status,
+
+  json: async () =>
+    safeResponseJson(
+      response.clone(),
+    ),
+
+  diagnostics,
+});
 
 const shouldBypassWebProxy = (
   proxyPath: string,
@@ -193,7 +270,9 @@ const shouldBypassWebProxy = (
     return false;
   }
 
-  if (typeof window === 'undefined') {
+  if (
+    typeof window === 'undefined'
+  ) {
     return false;
   }
 
@@ -231,12 +310,18 @@ const shouldRetryAgainstUpstream = (
   }
 
   const contentType = (
-    response.headers.get('content-type') || ''
+    response.headers.get(
+      'content-type',
+    ) || ''
   ).toLowerCase();
 
   return (
-    contentType.includes('text/html') ||
-    contentType.includes('application/xhtml+xml')
+    contentType.includes(
+      'text/html',
+    ) ||
+    contentType.includes(
+      'application/xhtml+xml',
+    )
   );
 };
 
@@ -249,7 +334,11 @@ const fetchUpstreamWeb = async (
   },
   region: MinimaxRegion,
 ): Promise<MiniMaxResponseLike> => {
-  const upstream = getUpstreamUrl(proxyPath, region);
+  const upstream =
+    getUpstreamUrl(
+      proxyPath,
+      region,
+    );
 
   if (!upstream) {
     throw new Error(
@@ -257,18 +346,62 @@ const fetchUpstreamWeb = async (
     );
   }
 
-  return wrapWebResponse(
-    await fetch(
-      upstream,
-      buildUpstreamWebInit(init),
-    ),
+  const directInit =
+    buildDirectRequest(init);
+
+  const response = await fetch(
+    upstream,
+    {
+      method: directInit.method,
+      headers: directInit.headers,
+      body: directInit.body,
+    },
+  );
+
+  return wrapFetchResponse(
+    response,
+    {
+      requestUrl: upstream,
+
+      finalUrl:
+        response.url || upstream,
+
+      redirected:
+        response.redirected === true,
+
+      authorizationPresent: true,
+
+      authorizationScheme:
+        'Bearer',
+
+      sentHeaderNames:
+        Object.keys(
+          directInit.headers,
+        ),
+    },
   );
 };
 
 /**
- * A fetch-like wrapper that uses CapacitorHttp on native platforms
- * and safe JSON parsing on web. The current MiniMax region is
- * appended as `X-MiniMax-Region` so server-side proxies can route.
+ * Resolve the actual URL used by a MiniMax request.
+ *
+ * Android APK always requests MiniMax upstream directly.
+ */
+export function resolveMinimaxUrl(
+  proxyPath: string,
+): string {
+  const upstream =
+    getUpstreamUrl(proxyPath);
+
+  if (upstream && isNative()) {
+    return upstream;
+  }
+
+  return proxyPath;
+}
+
+/**
+ * MiniMax fetch wrapper.
  */
 export async function minimaxFetch(
   proxyPath: string,
@@ -280,18 +413,178 @@ export async function minimaxFetch(
 ): Promise<MiniMaxResponseLike> {
   const region = currentRegion;
 
+  /*
+   * Android APK:
+   *
+   * Do not use CapacitorHttp.request().
+   * Use the browser-standard fetch implementation and explicitly
+   * provide Authorization.
+   */
+  if (isNative()) {
+    const upstream =
+      getUpstreamUrl(
+        proxyPath,
+        region,
+      );
+
+    if (!upstream) {
+      throw new Error(
+        `MiniMax 原生请求没有对应接口：${proxyPath}`,
+      );
+    }
+
+    const directInit =
+      buildDirectRequest(init);
+
+    console.error(
+      `[MM-NATIVE-1] TRANSPORT=fetch`,
+    );
+
+    console.error(
+      `[MM-NATIVE-2] URL=${upstream}`,
+    );
+
+    console.error(
+      `[MM-NATIVE-3] HEADERS=${Object.keys(
+        directInit.headers,
+      ).join('|')}`,
+    );
+
+    console.error(
+      `[MM-NATIVE-4] AUTH_CONSTRUCTED=yes`,
+    );
+
+    try {
+      const response =
+        await fetch(
+          upstream,
+          {
+            method:
+              directInit.method,
+
+            headers:
+              directInit.headers,
+
+            body:
+              directInit.body,
+
+            redirect: 'follow',
+
+            cache: 'no-store',
+          },
+        );
+
+      const finalUrl =
+        response.url || upstream;
+
+      console.error(
+        `[MM-NATIVE-5] HTTP=${response.status}`,
+      );
+
+      console.error(
+        `[MM-NATIVE-6] REDIRECTED=${
+          response.redirected
+            ? 'yes'
+            : 'no'
+        }`,
+      );
+
+      console.error(
+        `[MM-NATIVE-7] FINAL_URL=${finalUrl}`,
+      );
+
+      return wrapFetchResponse(
+        response,
+        {
+          requestUrl: upstream,
+
+          finalUrl,
+
+          redirected:
+            response.redirected === true,
+
+          authorizationPresent:
+            true,
+
+          authorizationScheme:
+            'Bearer',
+
+          sentHeaderNames:
+            Object.keys(
+              directInit.headers,
+            ),
+        },
+      );
+    } catch (error: any) {
+      const errorName =
+        error?.name ||
+        'UnknownError';
+
+      const errorMessage =
+        error?.message ||
+        String(error);
+
+      /*
+       * 如果 MiniMax 不允许 WebView 跨域直连，这里会明确记录
+       * TypeError / Failed to fetch，而不是继续显示错误的登录提示。
+       */
+      console.error(
+        `[MM-NATIVE-ERR-1] NAME=${errorName}`,
+      );
+
+      console.error(
+        `[MM-NATIVE-ERR-2] MESSAGE=${errorMessage}`,
+      );
+
+      console.error(
+        `[MM-NATIVE-ERR-3] URL=${upstream}`,
+      );
+
+      throw new Error(
+        `MiniMax 标准 fetch 请求失败：${errorName}: ${errorMessage}`,
+      );
+    }
+  }
+
+  /*
+   * Web/dev mode:
+   *
+   * Continue using the local/server proxy when it exists.
+   */
   const enrichedInit = {
     ...init,
+
     headers: withRegionHeader(
       init.headers,
       region,
     ),
   };
 
-  const url = resolveMinimaxUrl(proxyPath);
+  if (
+    shouldBypassWebProxy(
+      proxyPath,
+    )
+  ) {
+    return fetchUpstreamWeb(
+      proxyPath,
+      enrichedInit,
+      region,
+    );
+  }
 
-  if (!isNative()) {
-    if (shouldBypassWebProxy(proxyPath)) {
+  try {
+    const response =
+      await fetch(
+        proxyPath,
+        enrichedInit,
+      );
+
+    if (
+      shouldRetryAgainstUpstream(
+        proxyPath,
+        response,
+      )
+    ) {
       return fetchUpstreamWeb(
         proxyPath,
         enrichedInit,
@@ -299,184 +592,20 @@ export async function minimaxFetch(
       );
     }
 
-    try {
-      const response = await fetch(
-        url,
+    return wrapFetchResponse(
+      response,
+    );
+  } catch (error) {
+    if (
+      PROXY_ENDPOINTS[proxyPath]
+    ) {
+      return fetchUpstreamWeb(
+        proxyPath,
         enrichedInit,
+        region,
       );
-
-      // Static preview servers can rewrite missing
-      // /api routes to index.html.
-      if (
-        shouldRetryAgainstUpstream(
-          proxyPath,
-          response,
-        )
-      ) {
-        return fetchUpstreamWeb(
-          proxyPath,
-          enrichedInit,
-          region,
-        );
-      }
-
-      return wrapWebResponse(response);
-    } catch (error) {
-      if (PROXY_ENDPOINTS[proxyPath]) {
-        return fetchUpstreamWeb(
-          proxyPath,
-          enrichedInit,
-          region,
-        );
-      }
-
-      throw error;
     }
+
+    throw error;
   }
-
-  /*
-   * Android APK requests MiniMax directly.
-   *
-   * Build a new header object instead of reusing proxy headers.
-   * This guarantees that the standard Authorization header exists
-   * and preserves its canonical spelling.
-   *
-   * Diagnostic information never contains the actual API Key.
-   */
-  const sourceHeaders = init.headers || {};
-
-  const findHeader = (
-    name: string,
-  ): string => {
-    const entry = Object.entries(
-      sourceHeaders,
-    ).find(
-      ([key]) =>
-        key.toLowerCase() ===
-        name.toLowerCase(),
-    );
-
-    return entry
-      ? String(entry[1] || '').trim()
-      : '';
-  };
-
-  const rawAuthorization =
-    findHeader('Authorization');
-
-  const rawApiKey =
-    findHeader('X-MiniMax-API-Key');
-
-  const apiKey = (
-    rawAuthorization || rawApiKey
-  )
-    .replace(/^Bearer\s+/i, '')
-    .trim();
-
-  if (!apiKey) {
-    throw new Error(
-      'MiniMax 原生请求缺少 API Key，无法生成 Authorization 请求头',
-    );
-  }
-
-  const nativeHeaders: Record<string, string> = {
-    'Content-Type':
-      findHeader('Content-Type') ||
-      'application/json',
-    Authorization: `Bearer ${apiKey}`,
-  };
-
-  let nativeBody: any = init.body
-    ? JSON.parse(init.body)
-    : undefined;
-
-  const groupId = findHeader(
-    'X-MiniMax-Group-Id',
-  );
-
-  if (
-    groupId &&
-    nativeBody &&
-    typeof nativeBody === 'object' &&
-    !nativeBody.group_id
-  ) {
-    nativeBody = {
-      ...nativeBody,
-      group_id: groupId,
-    };
-  }
-
-  const performNativeRequest = async (
-    requestUrl: string,
-  ) =>
-    CapacitorHttp.request({
-      url: requestUrl,
-      method: init.method || 'POST',
-      headers: nativeHeaders,
-      data: nativeBody,
-      disableRedirects: true,
-    });
-
-  let finalUrl = url;
-  let redirected = false;
-
-  let response =
-    await performNativeRequest(finalUrl);
-
-  /*
-   * Some native HTTP stacks remove Authorization while automatically
-   * following redirects. Follow one redirect manually and resend the
-   * same Authorization header.
-   */
-  if (
-    [301, 302, 303, 307, 308].includes(
-      response.status,
-    )
-  ) {
-    const responseHeaders =
-      response.headers || {};
-
-    const locationEntry = Object.entries(
-      responseHeaders,
-    ).find(
-      ([key]) =>
-        key.toLowerCase() === 'location',
-    );
-
-    const location = locationEntry
-      ? String(locationEntry[1] || '').trim()
-      : '';
-
-    if (location) {
-      finalUrl = new URL(
-        location,
-        url,
-      ).toString();
-
-      redirected = true;
-
-      response =
-        await performNativeRequest(finalUrl);
-    }
-  }
-
-  return {
-    ok:
-      response.status >= 200 &&
-      response.status < 300,
-
-    status: response.status,
-
-    json: async () => response.data,
-
-    diagnostics: {
-      requestUrl: url,
-      finalUrl,
-      redirected,
-      authorizationPresent: true,
-      authorizationScheme: 'Bearer',
-      sentHeaderNames:
-        Object.keys(nativeHeaders),
-    },
-  };
 }
