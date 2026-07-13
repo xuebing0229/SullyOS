@@ -391,12 +391,96 @@ export const discoverMcpTools = async (server: McpServerConfig): Promise<McpTool
     }));
 };
 
+const isRecord = (value: unknown): value is Record<string, any> =>
+    value !== null && typeof value === 'object' && !Array.isArray(value);
+
+const resolveLocalSchemaRef = (schema: any, rootSchema: any): any => {
+    const ref = typeof schema?.$ref === 'string' ? schema.$ref : '';
+    if (!ref.startsWith('#/')) return schema;
+    const resolved = ref.slice(2).split('/').reduce((current: any, part: string) => {
+        const key = part.replace(/~1/g, '/').replace(/~0/g, '~');
+        return current?.[key];
+    }, rootSchema);
+    return resolved || schema;
+};
+
+const schemaAccepts = (schema: any, kind: 'object' | 'array'): boolean => {
+    const types = Array.isArray(schema?.type) ? schema.type : [schema?.type];
+    if (types.includes(kind)) return true;
+    if (kind === 'object' && schema?.properties) return true;
+    if (kind === 'array' && schema?.items) return true;
+    return [...(schema?.oneOf || []), ...(schema?.anyOf || [])].some((item: any) => schemaAccepts(item, kind));
+};
+
+/**
+ * 部分 OpenAI 兼容中转会把 schema 中的 object / array 再编码成 JSON 字符串。
+ * 只在 schema 明确要求结构类型时还原，避免把 URL、文本等合法 string 误解析。
+ */
+const normalizeMcpValueBySchema = (value: any, rawSchema: any, rootSchema: any, depth: number): any => {
+    if (!rawSchema || depth > 20) return value;
+    const schema = resolveLocalSchemaRef(rawSchema, rootSchema);
+    const acceptsObject = schemaAccepts(schema, 'object');
+    const acceptsArray = schemaAccepts(schema, 'array');
+    let normalized = value;
+
+    if (typeof normalized === 'string' && (acceptsObject || acceptsArray)) {
+        // 最多解三层，兼容整个 arguments 双重编码与嵌套字段额外编码。
+        for (let i = 0; i < 3 && typeof normalized === 'string'; i++) {
+            const text = normalized.trim();
+            if (!text) break;
+            try { normalized = JSON.parse(text); }
+            catch { break; }
+        }
+        const decodedMatchesSchema = (acceptsObject && isRecord(normalized)) || (acceptsArray && Array.isArray(normalized));
+        if (!decodedMatchesSchema) normalized = value;
+    }
+
+    const alternatives = [...(schema?.oneOf || []), ...(schema?.anyOf || [])];
+    if (alternatives.length) {
+        const matching = alternatives.find((item: any) =>
+            (isRecord(normalized) && schemaAccepts(item, 'object'))
+            || (Array.isArray(normalized) && schemaAccepts(item, 'array')),
+        );
+        if (matching) normalized = normalizeMcpValueBySchema(normalized, matching, rootSchema, depth + 1);
+    }
+
+    if (isRecord(normalized) && acceptsObject) {
+        const result = { ...normalized };
+        const properties = schema?.properties || {};
+        for (const [key, childSchema] of Object.entries(properties)) {
+            if (key in result) result[key] = normalizeMcpValueBySchema(result[key], childSchema, rootSchema, depth + 1);
+        }
+        if (schema?.additionalProperties && typeof schema.additionalProperties === 'object') {
+            for (const key of Object.keys(result)) {
+                if (!(key in properties)) {
+                    result[key] = normalizeMcpValueBySchema(result[key], schema.additionalProperties, rootSchema, depth + 1);
+                }
+            }
+        }
+        for (const item of schema?.allOf || []) {
+            const merged = normalizeMcpValueBySchema(result, item, rootSchema, depth + 1);
+            if (isRecord(merged)) Object.assign(result, merged);
+        }
+        return result;
+    }
+
+    if (Array.isArray(normalized) && acceptsArray && schema?.items) {
+        return normalized.map(item => normalizeMcpValueBySchema(item, schema.items, rootSchema, depth + 1));
+    }
+    return normalized;
+};
+
+export const normalizeMcpToolArguments = (args: any, inputSchema: any): any =>
+    normalizeMcpValueBySchema(args, inputSchema, inputSchema, 0);
+
 /** 调用一个工具（会自动补握手；session 失效自动重试一次） */
 export const callMcpTool = async (
     server: McpServerConfig,
     toolName: string,
     args: Record<string, any> = {},
 ): Promise<McpToolResult> => {
+    const inputSchema = (server.tools || []).find(tool => tool.name === toolName)?.inputSchema;
+    const normalizedArgs = normalizeMcpToolArguments(args, inputSchema);
     const finish = (result: McpToolResult): McpToolResult => {
         let resultPreview = '';
         if (result.success) {
@@ -407,7 +491,7 @@ export const callMcpTool = async (
         console.info('🔌 [MCP] tools/call 完成', {
             server: server.name,
             tool: toolName,
-            args,
+            args: normalizedArgs,
             success: result.success,
             ...(result.success ? { result: resultPreview } : { error: result.error }),
         });
@@ -415,7 +499,7 @@ export const callMcpTool = async (
     };
     try {
         await ensureInitialized(server);
-        const body = buildRequest('tools/call', { name: toolName, arguments: args });
+        const body = buildRequest('tools/call', { name: toolName, arguments: normalizedArgs });
         let response: McpJsonRpcResponse | null;
         try {
             ({ response } = await post(server, body));
@@ -424,7 +508,7 @@ export const callMcpTool = async (
             if (/HTTP (400|404)/.test(e?.message || '')) {
                 resetMcpSession(server.id);
                 await ensureInitialized(server);
-                ({ response } = await post(server, buildRequest('tools/call', { name: toolName, arguments: args })));
+                ({ response } = await post(server, buildRequest('tools/call', { name: toolName, arguments: normalizedArgs })));
             } else {
                 throw e;
             }
