@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { AppID, OSTheme, ChatFineTuneFields } from '../../types';
 import WhiteboxSoundEditor from '../chat/WhiteboxSoundEditor';
 import { WhiteboxSound } from '../../utils/whiteboxSound';
@@ -408,6 +408,12 @@ export const ChatAppearanceEditor: React.FC<Props> = ({ theme, updateTheme, onRe
     const showHeaderBuffs = theme.chatHideHeaderBuffs !== true;
     const [showStyleHelp, setShowStyleHelp] = useState(false);
 
+    // 调试区左右翻页：预览常驻在上，下面一页一个主题，改哪项都能立刻在预览里看到。
+    const PAGE_TITLES = ['快速预设', '聊天壳', '头部', '气泡与头像', '细节微调', '表情包与输入栏'];
+    const [page, setPage] = useState(0);
+    const swipeStartX = useRef<number | null>(null);
+    const goPage = (next: number) => setPage(Math.max(0, Math.min(PAGE_TITLES.length - 1, next)));
+
     // 聊天细节微调 → 预览联动（近似演示：字号按比例缩小 3px 以配合迷你预览）
     const fineVis = theme.chatAvatarVisibility || 'both';
     const hidePreviewAiAvatar = fineVis === 'hide_ai' || fineVis === 'hide_both';
@@ -445,29 +451,13 @@ export const ChatAppearanceEditor: React.FC<Props> = ({ theme, updateTheme, onRe
 
     return (
         <div className="space-y-5">
-            <section className={groupClass}>
-                <div className="mb-3">
-                    <h2 className="text-sm font-bold uppercase tracking-widest text-slate-400">聊天壳预设</h2>
-                    <p className="mt-1 text-[10px] text-slate-400">自由更换聊天界面的外观。</p>
-                </div>
-                <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-                    {presets.map((preset) => (
-                        <button
-                            key={preset.name}
-                            onClick={() => updateTheme({ ...FINE_TUNE_DEFAULTS, ...preset.config })}
-                            className="rounded-2xl border border-slate-200 bg-slate-50 p-3 text-left transition-all hover:border-primary/30 hover:bg-white active:scale-[0.98]"
-                        >
-                            <div className="text-xs font-bold text-slate-700">{preset.name}</div>
-                            <div className="mt-1 text-[10px] text-slate-400">{preset.desc}</div>
-                        </button>
-                    ))}
-                </div>
-            </section>
-
-            <section className={groupClass}>
-                <div className="mb-3">
-                    <h2 className="text-sm font-bold uppercase tracking-widest text-slate-400">实时预览</h2>
-                    <p className="mt-1 text-[10px] text-slate-400">头部、消息区和输入栏都会跟着你的选择同步变化。</p>
+            {/* 实时预览：sticky 常驻顶部——往下翻到哪一页、改哪个选项，效果都始终看得见。
+                -top-5 抵消外层滚动容器的 p-5 内边距，贴住 tab 栏下沿。 */}
+            <div className="sticky -top-5 z-20 -mx-1 bg-slate-50 px-1 pb-1 pt-1">
+            <section className="rounded-3xl border border-slate-100 bg-white p-3 shadow-sm">
+                <div className="mb-2 flex items-baseline justify-between px-1">
+                    <h2 className="text-[11px] font-bold uppercase tracking-widest text-slate-400">实时预览</h2>
+                    <span className="text-[9px] text-slate-300">全局设置 · 改动立即反映</span>
                 </div>
                 <div className={`sully-chat-root overflow-hidden rounded-[28px] ${shellClass(chromeStyle)}`} style={backgroundStyleForPreview(backgroundStyle, chromeStyle)}>
                     {/* 实时套用「白框自定义」CSS：预览各零件挂了同样的 .sully-chat-* 钩子，故能即时反映。
@@ -493,7 +483,7 @@ export const ChatAppearanceEditor: React.FC<Props> = ({ theme, updateTheme, onRe
                             {headerAlign !== 'center' && <div className={`sully-chat-token text-[9px] font-mono ${headerStyle === 'discord' ? 'text-slate-400' : headerStyle === 'pixel' ? 'text-[#f3ddc7]' : 'text-slate-400'}`}>42 tok</div>}
                         </div>
                     </div>
-                    <div className={`flex min-h-[190px] flex-col p-4 ${previewGap}`}>
+                    <div className={`flex min-h-[150px] flex-col p-3 ${previewGap}`}>
                         {previewMessages.map((message, index) => {
                             const isUser = message.role === 'user';
                             const nextRole = index < previewMessages.length - 1 ? previewMessages[index + 1].role : null;
@@ -526,15 +516,71 @@ export const ChatAppearanceEditor: React.FC<Props> = ({ theme, updateTheme, onRe
                     </div>
                 </div>
             </section>
+            </div>
 
+            {/* 调试区：一页一个主题，左右滑动或点页签切换；预览常驻上方，改哪项都立刻看得到 */}
             <section className={groupClass}>
-                <ChoiceGroup title="聊天壳" items={choices.chrome} value={chromeStyle} onPick={(value) => updateTheme({ chatChromeStyle: value as OSTheme['chatChromeStyle'] })} />
-                <div className="mt-4">
-                    <ChoiceGroup title="消息区背景" items={choices.background} value={backgroundStyle} onPick={(value) => updateTheme({ chatBackgroundStyle: value as OSTheme['chatBackgroundStyle'] })} />
+                <div className="mb-4 flex items-center gap-1.5">
+                    <button
+                        onClick={() => goPage(page - 1)}
+                        disabled={page === 0}
+                        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-slate-100 text-base text-slate-500 transition-all active:scale-90 disabled:opacity-30"
+                        aria-label="上一页"
+                    >‹</button>
+                    <div className="flex flex-1 gap-1.5 overflow-x-auto no-scrollbar">
+                        {PAGE_TITLES.map((title, i) => (
+                            <button
+                                key={title}
+                                onClick={() => setPage(i)}
+                                className={`shrink-0 rounded-full px-3 py-1.5 text-[11px] font-bold transition-all active:scale-95 ${i === page ? 'bg-primary text-white shadow-sm' : 'bg-slate-100 text-slate-500'}`}
+                            >{title}</button>
+                        ))}
+                    </div>
+                    <button
+                        onClick={() => goPage(page + 1)}
+                        disabled={page === PAGE_TITLES.length - 1}
+                        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-slate-100 text-base text-slate-500 transition-all active:scale-90 disabled:opacity-30"
+                        aria-label="下一页"
+                    >›</button>
                 </div>
-            </section>
+                <div
+                    onTouchStart={(e) => {
+                        // 滑杆等横向控件里起手的触摸不算翻页手势（否则拖「垂直微调」滑杆会误翻页）
+                        swipeStartX.current = (e.target as HTMLElement).closest('input') ? null : (e.touches[0]?.clientX ?? null);
+                    }}
+                    onTouchEnd={(e) => {
+                        const startX = swipeStartX.current;
+                        swipeStartX.current = null;
+                        const endX = e.changedTouches[0]?.clientX;
+                        if (startX == null || endX == null) return;
+                        const dx = endX - startX;
+                        if (Math.abs(dx) > 48) goPage(page + (dx < 0 ? 1 : -1));
+                    }}
+                >
+                {page === 0 && (<>
+                    <p className="mb-3 text-[10px] text-slate-400">一键换整套聊天壳（含头像、气泡、间距与细节微调），切预设会先清掉微调残留。</p>
+                    <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+                        {presets.map((preset) => (
+                            <button
+                                key={preset.name}
+                                onClick={() => updateTheme({ ...FINE_TUNE_DEFAULTS, ...preset.config })}
+                                className="rounded-2xl border border-slate-200 bg-slate-50 p-3 text-left transition-all hover:border-primary/30 hover:bg-white active:scale-[0.98]"
+                            >
+                                <div className="text-xs font-bold text-slate-700">{preset.name}</div>
+                                <div className="mt-1 text-[10px] text-slate-400">{preset.desc}</div>
+                            </button>
+                        ))}
+                    </div>
+                </>)}
 
-            <section className={groupClass}>
+                {page === 1 && (<>
+                    <ChoiceGroup title="聊天壳" items={choices.chrome} value={chromeStyle} onPick={(value) => updateTheme({ chatChromeStyle: value as OSTheme['chatChromeStyle'] })} />
+                    <div className="mt-4">
+                        <ChoiceGroup title="消息区背景" items={choices.background} value={backgroundStyle} onPick={(value) => updateTheme({ chatBackgroundStyle: value as OSTheme['chatBackgroundStyle'] })} />
+                    </div>
+                </>)}
+
+                {page === 2 && (<>
                 <ChoiceGroup title="头部风格" items={choices.header} value={headerStyle} onPick={(value) => updateTheme({ chatHeaderStyle: value as OSTheme['chatHeaderStyle'] })} />
                 <div className="mt-4">
                     <ChoiceGroup title="头部对齐" items={choices.align} value={headerAlign} onPick={(value) => updateTheme({ chatHeaderAlign: value as OSTheme['chatHeaderAlign'] })} />
@@ -558,9 +604,9 @@ export const ChatAppearanceEditor: React.FC<Props> = ({ theme, updateTheme, onRe
                         <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-all ${showHeaderBuffs ? 'left-[22px]' : 'left-0.5'}`} />
                     </button>
                 </div>
-            </section>
+                </>)}
 
-            <section className={groupClass}>
+                {page === 3 && (<>
                 <ChoiceGroup title="消息气泡" items={choices.bubble} value={bubbleStyle} onPick={(value) => updateTheme({ chatBubbleStyle: value as OSTheme['chatBubbleStyle'] })} />
                 <div className="mt-4">
                     <ChoiceGroup title="头像形状" items={choices.avatarShape} value={avatarShape} onPick={(value) => updateTheme({ chatAvatarShape: value as OSTheme['chatAvatarShape'] })} />
@@ -590,37 +636,35 @@ export const ChatAppearanceEditor: React.FC<Props> = ({ theme, updateTheme, onRe
                         <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-all ${pendingIndicator ? 'left-[22px]' : 'left-0.5'}`} />
                     </button>
                 </div>
-            </section>
+                </>)}
 
-            <section className={groupClass}>
-                <ChoiceGroup title="表情包大小" items={choices.emojiSize} value={theme.chatEmojiSize || 'small'} onPick={(value) => updateTheme({ chatEmojiSize: value as OSTheme['chatEmojiSize'] })} />
-                <p className="mt-2 text-[10px] text-slate-400">聊天和群聊里发出的表情包图片尺寸。用自定义 CSS 调过尺寸的美化会继续覆盖这里的设置。</p>
-            </section>
-
-            {/* 聊天细节微调 —— 收编社区白框美化的可视化版（控件组件与聊天内「聊天装扮」弹窗共用） */}
-            <section className={groupClass}>
-                <div className="mb-3">
-                    <h2 className="text-sm font-bold uppercase tracking-widest text-slate-400">聊天细节微调</h2>
-                    <p className="mt-1 text-[10px] leading-relaxed text-slate-400">
+                {/* 聊天细节微调 —— 收编社区白框美化的可视化版（控件组件与聊天内「聊天装扮」弹窗共用） */}
+                {page === 4 && (<>
+                    <p className="mb-3 text-[10px] leading-relaxed text-slate-400">
                         头像显隐/对齐、贴边、字号行距——不用再手写 CSS，改动实时反映在上方预览里。
                         手写过美化代码的老用户不受影响：<b>你的自定义 CSS 优先级更高</b>，永远盖得过这里。
                     </p>
-                </div>
-                <ChatFineTunePanel value={theme} onChange={(patch) => updateTheme(patch)} />
-                <button
-                    onClick={() => updateTheme({ ...FINE_TUNE_DEFAULTS })}
-                    className="mt-4 w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-2.5 text-[11px] font-bold text-slate-500 transition-all hover:bg-slate-100 active:scale-[0.99]">
-                    微调全部回默认（一键清残留）
-                </button>
-                <p className="mt-2 text-[10px] text-slate-400">
-                    这里设置的是全局打底。想给某个角色单独一套？进 ta 的聊天 → 「＋」菜单 → 「聊天装扮」。
-                </p>
-            </section>
+                    <ChatFineTunePanel value={theme} onChange={(patch) => updateTheme(patch)} />
+                    <button
+                        onClick={() => updateTheme({ ...FINE_TUNE_DEFAULTS })}
+                        className="mt-4 w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-2.5 text-[11px] font-bold text-slate-500 transition-all hover:bg-slate-100 active:scale-[0.99]">
+                        微调全部回默认（一键清残留）
+                    </button>
+                    <p className="mt-2 text-[10px] text-slate-400">
+                        这里设置的是全局打底。想给某个角色单独一套？进 ta 的聊天 → 「＋」菜单 → 「聊天装扮」。
+                    </p>
+                </>)}
 
-            <section className={groupClass}>
-                <ChoiceGroup title="输入栏风格" items={choices.input} value={inputStyle} onPick={(value) => updateTheme({ chatInputStyle: value as OSTheme['chatInputStyle'] })} />
-                <div className="mt-4">
-                    <ChoiceGroup title="发送按钮" items={choices.send} value={sendButtonStyle} onPick={(value) => updateTheme({ chatSendButtonStyle: value as OSTheme['chatSendButtonStyle'] })} />
+                {page === 5 && (<>
+                    <ChoiceGroup title="表情包大小" items={choices.emojiSize} value={theme.chatEmojiSize || 'small'} onPick={(value) => updateTheme({ chatEmojiSize: value as OSTheme['chatEmojiSize'] })} />
+                    <p className="mt-2 text-[10px] text-slate-400">聊天和群聊里发出的表情包图片尺寸。用自定义 CSS 调过尺寸的美化会继续覆盖这里的设置。（表情包尺寸预览里看不到，进聊天发一张试试。）</p>
+                    <div className="mt-4">
+                        <ChoiceGroup title="输入栏风格" items={choices.input} value={inputStyle} onPick={(value) => updateTheme({ chatInputStyle: value as OSTheme['chatInputStyle'] })} />
+                    </div>
+                    <div className="mt-4">
+                        <ChoiceGroup title="发送按钮" items={choices.send} value={sendButtonStyle} onPick={(value) => updateTheme({ chatSendButtonStyle: value as OSTheme['chatSendButtonStyle'] })} />
+                    </div>
+                </>)}
                 </div>
             </section>
 
