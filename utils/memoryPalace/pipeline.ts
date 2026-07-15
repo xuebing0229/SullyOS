@@ -72,6 +72,7 @@ import { rerankDocuments } from './rerank';
 import { MemoryNodeDB, MemoryVectorDB, MemoryLinkDB, AnticipationDB } from './db';
 import { DB } from '../db';
 import { isMessageSemanticallyRelevant, formatMessageForPrompt } from '../messageFormat';
+import { sanitizeQuerySourceMessages } from './querySanitizer';
 
 // ─── 轻量 LLM 配置类型 ───────────────────────────────
 
@@ -312,6 +313,7 @@ export async function retrieveMemories(
     queryOverride?: string,
     userName?: string,
     remoteVectorConfig?: RemoteVectorConfig,
+    charName?: string,
 ): Promise<string> {
     // ── 分段计时：定位 memoryPalace 到底是网络慢还是计算慢 ──
     // tag: NET = 远端 API RTT；IDB = IndexedDB 读写；CPU = 纯本地计算
@@ -338,7 +340,13 @@ export async function retrieveMemories(
         //
         //    context query：assistant 回复 + 更早 user 消息 + queryOverride。
         //                  （背景话题延续，分数 × 0.5 折扣，不会压过 user 意图）
-        const { userIntent, contextTurns, fallbackAll } = splitLastTurnQueries(recentMessages);
+        //
+        //    query 源清洗（querySanitizer）：图片/表情包/语音不进 query——
+        //    图片 content 是几万字符的 base64 data URI，URL_RE 剥不掉，
+        //    切进 spike/rerank/context 会把 Embedding 批量请求顶爆
+        //    （硅基流动 400 code 20015）。卡片类翻成可读文本再参与检索。
+        const querySourceMessages = sanitizeQuerySourceMessages(recentMessages, charName, userName);
+        const { userIntent, contextTurns, fallbackAll } = splitLastTurnQueries(querySourceMessages);
 
         // 抽取每条有意义的 user 消息作为独立 spike + 二次拆分子 spike
         //
@@ -929,7 +937,7 @@ function getEmbeddingConfig(charEmbeddingConfig?: any): EmbeddingConfig | null {
 }
 
 export async function injectMemoryPalace(
-    char: { memoryPalaceEnabled?: boolean; embeddingConfig?: any; activeBuffs?: any[]; personalityStyle?: string; ruminationTendency?: number; id: string; memoryPalaceInjection?: string; roomPlatesInjection?: string },
+    char: { memoryPalaceEnabled?: boolean; embeddingConfig?: any; activeBuffs?: any[]; personalityStyle?: string; ruminationTendency?: number; id: string; name?: string; memoryPalaceInjection?: string; roomPlatesInjection?: string },
     recentMessages?: Message[],
     queryHint?: string,
     userName?: string,
@@ -965,6 +973,7 @@ export async function injectMemoryPalace(
             queryHint,
             resolvedUserName,
             getRemoteVectorConfig(),
+            char.name,
         );
         if (context) {
             char.memoryPalaceInjection = context;
