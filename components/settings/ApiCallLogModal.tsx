@@ -3,6 +3,7 @@ import Modal from '../os/Modal';
 import { DB } from '../../utils/db';
 import { isSameCoreModel } from '../../utils/apiCallLog';
 import type { ApiCallLogEntry } from '../../utils/apiCallLog';
+import { clearAiCache } from '../../utils/aiRequestManager';
 
 interface ApiCallLogModalProps {
     isOpen: boolean;
@@ -55,6 +56,12 @@ const ApiCallLogModal: React.FC<ApiCallLogModalProps> = ({ isOpen, onClose }) =>
         setEntries([]);
     }, []);
 
+    const handleClearAiCache = useCallback(async () => {
+        if (!window.confirm('确定清除本机 AI 响应缓存吗？聊天记录不会被删除。')) return;
+        await clearAiCache();
+        window.alert('AI 缓存已清除，聊天记录保持不变。');
+    }, []);
+
     return (
         <Modal
             isOpen={isOpen}
@@ -62,6 +69,12 @@ const ApiCallLogModal: React.FC<ApiCallLogModalProps> = ({ isOpen, onClose }) =>
             onClose={onClose}
             footer={
                 <div className="flex gap-2 w-full">
+                    <button
+                        onClick={handleClearAiCache}
+                        className="px-4 py-3 bg-sky-50 text-sky-600 font-bold rounded-2xl active:scale-95 transition-transform"
+                    >
+                        清 AI 缓存
+                    </button>
                     <button
                         onClick={onClose}
                         className="flex-1 py-3 bg-slate-100 text-slate-600 font-bold rounded-2xl active:scale-95 transition-transform"
@@ -119,14 +132,14 @@ const ApiCallLogModal: React.FC<ApiCallLogModalProps> = ({ isOpen, onClose }) =>
 
             {entries.length > 0 && (() => {
                 const totalTok = entries.reduce((s, e) => s + (e.totalTokens ?? 0), 0);
-                const promptTok = entries.reduce((s, e) => s + (e.promptTokens ?? 0), 0);
-                const compTok = entries.reduce((s, e) => s + (e.completionTokens ?? 0), 0);
+                const networkCount = entries.filter(e => e.networkRequest !== false).length;
+                const cacheCount = entries.filter(e => e.cacheHit).length;
                 const fmt = (n: number) => n.toLocaleString('en-US');
                 return (
                     <div className="mb-3 rounded-2xl bg-primary/5 border border-primary/15 px-4 py-3 flex items-center justify-around text-center">
                         <div>
-                            <div className="text-[10px] text-slate-400">调用次数</div>
-                            <div className="text-sm font-bold text-slate-600">{entries.length}</div>
+                            <div className="text-[10px] text-slate-400">真实发网</div>
+                            <div className="text-sm font-bold text-slate-600">{networkCount}</div>
                         </div>
                         <div className="w-px h-7 bg-slate-200" />
                         <div>
@@ -135,8 +148,8 @@ const ApiCallLogModal: React.FC<ApiCallLogModalProps> = ({ isOpen, onClose }) =>
                         </div>
                         <div className="w-px h-7 bg-slate-200" />
                         <div>
-                            <div className="text-[10px] text-slate-400">输入 / 输出</div>
-                            <div className="text-[11px] font-semibold text-slate-500">{fmt(promptTok)} / {fmt(compTok)}</div>
+                            <div className="text-[10px] text-slate-400">缓存命中</div>
+                            <div className="text-sm font-bold text-emerald-600">{cacheCount}</div>
                         </div>
                     </div>
                 );
@@ -165,6 +178,12 @@ const ApiCallLogModal: React.FC<ApiCallLogModalProps> = ({ isOpen, onClose }) =>
                                         <span className="text-[11px] font-bold text-slate-400 shrink-0">{day}</span>
                                         <span className="text-[11px] font-mono text-slate-500 shrink-0">{time}</span>
                                     </div>
+                                    <div className="flex items-center gap-1">
+                                    {e.cacheHit && (
+                                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-sky-100 text-sky-600">
+                                            {e.source === 'memory-dedupe' ? '并发复用' : '本地缓存'}
+                                        </span>
+                                    )}
                                     <span
                                         className={`text-[10px] font-bold px-2 py-0.5 rounded-full shrink-0 ${
                                             e.ok ? 'bg-emerald-100 text-emerald-600' : 'bg-rose-100 text-rose-600'
@@ -172,6 +191,7 @@ const ApiCallLogModal: React.FC<ApiCallLogModalProps> = ({ isOpen, onClose }) =>
                                     >
                                         {e.ok ? '成功' : `失败${e.status ? ` ${e.status}` : ''}`}
                                     </span>
+                                    </div>
                                 </div>
                                 <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-[11px]">
                                     <Field label="API" value={e.presetName} accent />
@@ -200,6 +220,7 @@ const ApiCallLogModal: React.FC<ApiCallLogModalProps> = ({ isOpen, onClose }) =>
                                     {e.durationMs != null && (
                                         <Field label="耗时" value={e.durationMs >= 1000 ? `${(e.durationMs / 1000).toFixed(1)}s` : `${e.durationMs}ms`} />
                                     )}
+                                    <Field label="请求" value={e.networkRequest === false ? '未发网' : '真实发网'} />
                                     {(e.totalTokens != null || e.promptTokens != null || e.completionTokens != null) && (
                                         <div className="col-span-2 flex items-baseline gap-1.5 min-w-0">
                                             <span className="text-[10px] text-slate-400 shrink-0">Token</span>
@@ -208,6 +229,15 @@ const ApiCallLogModal: React.FC<ApiCallLogModalProps> = ({ isOpen, onClose }) =>
                                                 <span className="text-slate-400">
                                                     {' '}（入 {(e.promptTokens ?? 0).toLocaleString('en-US')} · 出 {(e.completionTokens ?? 0).toLocaleString('en-US')}）
                                                 </span>
+                                            </span>
+                                        </div>
+                                    )}
+                                    {(e.cachedTokens != null || e.cacheMissTokens != null) && (
+                                        <div className="col-span-2 flex items-baseline gap-1.5 min-w-0">
+                                            <span className="text-[10px] text-slate-400 shrink-0">厂商缓存</span>
+                                            <span className="text-emerald-600">
+                                                命中 {(e.cachedTokens ?? 0).toLocaleString('en-US')}
+                                                {e.cacheMissTokens != null ? ` · 未命中 ${e.cacheMissTokens.toLocaleString('en-US')}` : ''}
                                             </span>
                                         </div>
                                     )}

@@ -436,21 +436,21 @@ export async function minimaxFetch(
     const directInit =
       buildDirectRequest(init);
 
-    console.error(
+    console.debug(
       `[MM-NATIVE-1] TRANSPORT=fetch`,
     );
 
-    console.error(
+    console.debug(
       `[MM-NATIVE-2] URL=${upstream}`,
     );
 
-    console.error(
+    console.debug(
       `[MM-NATIVE-3] HEADERS=${Object.keys(
         directInit.headers,
       ).join('|')}`,
     );
 
-    console.error(
+    console.debug(
       `[MM-NATIVE-4] AUTH_CONSTRUCTED=yes`,
     );
 
@@ -477,11 +477,11 @@ export async function minimaxFetch(
       const finalUrl =
         response.url || upstream;
 
-      console.error(
+      console.debug(
         `[MM-NATIVE-5] HTTP=${response.status}`,
       );
 
-      console.error(
+      console.debug(
         `[MM-NATIVE-6] REDIRECTED=${
           response.redirected
             ? 'yes'
@@ -489,7 +489,7 @@ export async function minimaxFetch(
         }`,
       );
 
-      console.error(
+      console.debug(
         `[MM-NATIVE-7] FINAL_URL=${finalUrl}`,
       );
 

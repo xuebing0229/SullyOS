@@ -57,6 +57,18 @@ export interface ApiCallLogEntry extends ApiCallMeta {
     completionTokens?: number;
     /** 总 token（total_tokens） */
     totalTokens?: number;
+    /** 厂商原生 Prompt Cache 命中的输入 token。 */
+    cachedTokens?: number;
+    /** DeepSeek 等响应提供的未命中输入 token。 */
+    cacheMissTokens?: number;
+    /** 结果来源；旧记录为空时按 network 展示。 */
+    source?: 'network' | 'memory-dedupe' | 'indexeddb-cache';
+    cacheHit?: boolean;
+    /** 本条记录是否真的发起了 HTTP 请求。 */
+    networkRequest?: boolean;
+    /** 仅记录请求摘要，不保存 Prompt 正文。 */
+    requestHash?: string;
+    requestChars?: number;
     /** 请求从发起到响应 / 报错的耗时 ms（NetworkError 类失败时 = 等了多久才断） */
     durationMs?: number;
 }
@@ -197,7 +209,7 @@ function resolvePresetName(baseUrl: string, model: string): string {
  * 在 safeFetchJson 里对 `/chat/completions` 的成功与失败都会调用。
  */
 /** 从 OpenAI 兼容响应里抠 usage（各家代理大多遵循这个字段）。 */
-function extractUsage(response: unknown): { prompt?: number; completion?: number; total?: number } {
+function extractUsage(response: unknown): { prompt?: number; completion?: number; total?: number; cached?: number; miss?: number } {
     const usage = (response as any)?.usage;
     if (!usage || typeof usage !== 'object') return {};
     const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : undefined);
@@ -205,6 +217,8 @@ function extractUsage(response: unknown): { prompt?: number; completion?: number
         prompt: num(usage.prompt_tokens),
         completion: num(usage.completion_tokens),
         total: num(usage.total_tokens),
+        cached: num(usage.prompt_tokens_details?.cached_tokens) ?? num(usage.prompt_cache_hit_tokens),
+        miss: num(usage.prompt_cache_miss_tokens),
     };
 }
 
@@ -239,6 +253,11 @@ export function recordApiCall(input: {
     responseText?: string;
     meta?: ApiCallMeta;
     durationMs?: number;
+    source?: 'network' | 'memory-dedupe' | 'indexeddb-cache';
+    cacheHit?: boolean;
+    networkRequest?: boolean;
+    requestHash?: string;
+    requestChars?: number;
 }): void {
     try {
         const baseUrl = deriveBaseUrl(input.url);
@@ -268,6 +287,13 @@ export function recordApiCall(input: {
             promptTokens: usage.prompt,
             completionTokens: usage.completion,
             totalTokens: usage.total,
+            cachedTokens: usage.cached,
+            cacheMissTokens: usage.miss,
+            source: input.source ?? 'network',
+            cacheHit: input.cacheHit ?? false,
+            networkRequest: input.networkRequest ?? true,
+            requestHash: input.requestHash,
+            requestChars: input.requestChars,
             durationMs: input.durationMs,
             appId: meta.appId,
             appName: meta.appName,

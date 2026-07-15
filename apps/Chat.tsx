@@ -49,6 +49,7 @@ import { resolveActiveSound, playWhiteboxSound, unlockWhiteboxAudio, parseWhiteb
 import WhiteboxSoundEditor from '../components/chat/WhiteboxSoundEditor';
 import { normalizeTranslationLangLabel } from '../utils/translationLang';
 import { CharacterGroupFilterBar, filterCharactersByGroup, GROUP_FILTER_ALL } from '../components/character/CharacterGroupFilter';
+import { invalidateAiCacheWhere } from '../utils/aiRequestManager';
 
 const VOICE_LANG_LABELS: Record<string, string> = { en: 'English', ja: '日本語', ko: '한국어', fr: 'Français', es: 'Español' };
 type InstantToolUiStatus = {
@@ -1167,13 +1168,14 @@ const Chat: React.FC = () => {
         if (toDeleteIds.length === 0) return;
 
         await DB.deleteMessages(toDeleteIds);
+        await invalidateAiCacheWhere(entry => entry.kind === 'emotion' && entry.metadata?.charId === char.id);
         discardVoiceForMessages(toDeleteIds);
         const newHistory = messages.slice(0, index + 1);
         setMessages(newHistory);
         addToast('回溯对话中...', 'info');
 
         // 重 roll：不注入上一轮残留的情绪 buff 与意识流（innerState），两边独立重新生成。
-        triggerAI(newHistory, undefined, undefined, { skipEmotionInjection: true });
+        triggerAI(newHistory, undefined, undefined, { skipEmotionInjection: true, forceRefresh: true });
     };
 
     const handleImageSelect = async (file: File) => {
@@ -2143,6 +2145,7 @@ const Chat: React.FC = () => {
         if (!selectedMessage) return;
         const deletedId = selectedMessage.id;
         await DB.deleteMessage(deletedId);
+        await invalidateAiCacheWhere(entry => entry.kind === 'emotion' && entry.metadata?.charId === char.id);
         discardVoiceForMessages([deletedId]);
         setMessages(prev => prev.filter(m => m.id !== deletedId));
         setTotalMsgCount(prev => Math.max(0, prev - 1));
@@ -2155,6 +2158,9 @@ const Chat: React.FC = () => {
         if (!selectedMessage) return;
         const contentChanged = editContent !== selectedMessage.content;
         await DB.updateMessage(selectedMessage.id, editContent);
+        if (contentChanged) {
+            await invalidateAiCacheWhere(entry => entry.kind === 'emotion' && entry.metadata?.charId === char.id);
+        }
         // 内容变了旧语音就作废，否则语音条仍会播放编辑前的音频。
         if (contentChanged) discardVoiceForMessages([selectedMessage.id]);
         setMessages(prev => prev.map(m => m.id === selectedMessage.id ? { ...m, content: editContent } : m));
