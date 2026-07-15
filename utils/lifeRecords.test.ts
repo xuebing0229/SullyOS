@@ -248,3 +248,37 @@ describe('全局隐藏模块（长按页签隐藏）', () => {
         expect(text).toBe('');
     });
 });
+
+describe('EXPENSE 去重窗口（同金额可以是两笔不同消费）', () => {
+    it('15 分钟内复读同金额+同备注 → 判重，不重复入账（防重 roll / 指令回显）', async () => {
+        const char = mkChar();
+        await executeLifeDirectives('[[LIFE:EXPENSE|25.5|奶茶测试]]', char, noToast);
+        await executeLifeDirectives('[[LIFE:EXPENSE|25.5|奶茶测试]]', char, noToast);
+        const txs = (await DB.getAllTransactions()).filter(t => t.amount === 25.5);
+        expect(txs).toHaveLength(1);
+    });
+
+    it('隔了超过 15 分钟的同金额+同备注 → 是新的一笔，正常入账（修"同金额记账停止"）', async () => {
+        const char = mkChar();
+        await DB.saveTransaction({
+            id: `tx-test-${Math.random().toString(36).slice(2, 8)}`,
+            amount: 66.6, category: 'general', note: '奶茶隔久了',
+            timestamp: Date.now() - 16 * 60 * 1000, dateStr: lifeToday(),
+        } as any);
+        await executeLifeDirectives('[[LIFE:EXPENSE|66.6|奶茶隔久了]]', char, noToast);
+        const txs = (await DB.getAllTransactions()).filter(t => t.amount === 66.6);
+        expect(txs).toHaveLength(2);
+    });
+
+    it('缺 timestamp 的老流水 → 保守按重复处理（回到旧行为，防脏数据翻倍）', async () => {
+        const char = mkChar();
+        await DB.saveTransaction({
+            id: `tx-test-old-${Math.random().toString(36).slice(2, 8)}`,
+            amount: 77.7, category: 'general', note: '老数据',
+            dateStr: lifeToday(),
+        } as any);
+        await executeLifeDirectives('[[LIFE:EXPENSE|77.7|老数据]]', char, noToast);
+        const txs = (await DB.getAllTransactions()).filter(t => t.amount === 77.7);
+        expect(txs).toHaveLength(1);
+    });
+});

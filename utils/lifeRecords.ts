@@ -396,9 +396,19 @@ const findDuplicate = async (
             return rec ? byName(rec) : null;
         }
         case 'expense': {
-            // 宽松去重：两杯奶茶是合法的两笔——只有同日"金额+备注"完全一致才算重复
+            // 去重只防"同一笔的复读"（重 roll / 指令回显 / 用户刚记完角色又记），不防"真的又买了一笔"。
+            // 旧版按"同日 金额+备注 一致"判重——两笔同价奶茶隔几小时也会被吞掉（用户实报 bug）。
+            // 现在收紧到时间窗：只有 15 分钟内已存在同金额+同备注的流水才算重复；
+            // 超窗一律视为新的一笔（角色本来就能在注入的"今日流水"里看到旧账，提示词层自会克制）。
+            const DUP_WINDOW_MS = 15 * 60 * 1000;
+            const now = Date.now();
             const txs = await DB.getAllTransactions().catch(() => [] as BankTransaction[]);
-            const hit = txs.find(t => t.dateStr === today && t.amount === d.payload.amount && (t.note || '') === (d.payload.note || ''));
+            const hit = txs.find(t =>
+                t.dateStr === today
+                && t.amount === d.payload.amount
+                && (t.note || '') === (d.payload.note || '')
+                // 老数据缺 timestamp 时保守按"重复"处理（回到旧行为），避免陈年脏数据被翻倍入账
+                && (typeof t.timestamp !== 'number' || now - t.timestamp <= DUP_WINDOW_MS));
             if (!hit) return null;
             const rec = eff.filter(r => r.module === 'expense' && r.bankTxId === hit.id).pop();
             return rec ? byName(rec) : { byName: '你自己' };

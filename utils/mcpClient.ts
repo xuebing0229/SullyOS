@@ -2,7 +2,7 @@
  * 通用 MCP 客户端 (Model Context Protocol, Streamable HTTP)
  *
  * 与 mcdMcpClient / luckinMcpClient 的「一家一个客户端」不同，这里是用户
- * 自配的任意远程 MCP 服务器：设置里填 URL（+ 可选 Bearer Token），发现工具后
+ * 自配的任意远程 MCP 服务器：设置里填 URL（+ 可选 Bearer Token / 自定义头），发现工具后
  * 以 OpenAI function-calling 格式注入聊天请求，工具循环见 useChatAI。
  *
  * 网络路径（用户三选一，见 docs/mcp-client.md）：
@@ -19,12 +19,19 @@ export interface McpToolDef {
     inputSchema?: any;
 }
 
+export interface McpCustomHeader {
+    name: string;
+    value: string;
+}
+
 export interface McpServerConfig {
     id: string;
     name: string;
     url: string;
     /** Bearer Token，可选（Authorization: Bearer <token>） */
     token?: string;
+    /** 额外请求头，可选（例如 X-API-Key / XBY-APIKEY） */
+    customHeaders?: McpCustomHeader[];
     /** 代理 URL，可选。空 = 浏览器直连 */
     proxyUrl?: string;
     /** 自部署 Worker 的防白嫖密钥，可选（X-Proxy-Key 头） */
@@ -33,7 +40,8 @@ export interface McpServerConfig {
     /** 「发现工具」后持久化的工具清单（聊天注入直接读这里，不用每次握手） */
     tools?: McpToolDef[];
     /**
-     * 绑定角色：空/缺省 = 通用（所有角色可用）；非空 = 只有这些角色能用。
+     * 绑定聊天：空/缺省 = 通用（所有私聊和群聊可用）；非空 = 只有这些角色/群聊能用。
+     * 为兼容已有本地配置沿用 charIds 字段名，数组项也可以是 GroupProfile.id。
      * 老配置没有该字段，天然落在通用语义上。
      */
     charIds?: string[];
@@ -87,9 +95,9 @@ export const createMcpServer = (name: string, url: string): McpServerConfig => (
 });
 
 /**
- * 启用且已发现工具、且对当前角色可见的服务器。
- * charId 缺省时只返回通用服务器（绑定了角色的必须给出匹配的 charId 才可见），
- * 保证没有角色上下文的调用点不会泄漏绑定服务器的工具。
+ * 启用且已发现工具、且对当前聊天可见的服务器。
+ * charId 可传角色 ID 或群聊 ID；缺省时只返回通用服务器，保证没有聊天上下文
+ * 的调用点不会泄漏绑定服务器的工具。
  */
 export const getEnabledMcpServers = (charId?: string): McpServerConfig[] =>
     loadMcpServers().filter(s =>
@@ -163,6 +171,38 @@ export const buildMcpFetchUrl = (server: Pick<McpServerConfig, 'url' | 'proxyUrl
     if (!proxy) return server.url;
     const sep = proxy.includes('?') ? '&' : '?';
     return `${proxy}${sep}target=${encodeURIComponent(server.url)}`;
+};
+
+/**
+ * 组装 MCP 请求头。自定义头在 Bearer / session 等托管字段之前写入，因此用户
+ * 可以在不填 Bearer Token 时自定义 Authorization，但不会意外覆盖当前 session。
+ * 走代理时额外带一份“需要透传的头名”清单，代理据此只放行用户明确配置的头。
+ */
+export const buildMcpRequestHeaders = (
+    server: Pick<McpServerConfig, 'token' | 'customHeaders' | 'proxyUrl' | 'proxyKey'>,
+    sessionId?: string | null,
+): Headers => {
+    const headers = new Headers({
+        'Content-Type': 'application/json',
+        'Accept': 'application/json, text/event-stream',
+    });
+    const customNames: string[] = [];
+    for (const item of server.customHeaders || []) {
+        const name = String(item?.name || '').trim();
+        const value = String(item?.value || '').trim();
+        if (!name || !value) continue;
+        try {
+            headers.set(name, value);
+            customNames.push(name);
+        } catch {
+            // 非法 HTTP 头名/值留给设置页继续编辑，不让整条 MCP 请求在 fetch 前崩掉。
+        }
+    }
+    if (server.token) headers.set('Authorization', `Bearer ${server.token}`);
+    if (server.proxyUrl && server.proxyKey) headers.set('X-Proxy-Key', server.proxyKey);
+    if (server.proxyUrl && customNames.length) headers.set('X-MCP-Forward-Headers', customNames.join(','));
+    if (sessionId) headers.set('Mcp-Session-Id', sessionId);
+    return headers;
 };
 
 const buildRequest = (method: string, params?: any, isNotification = false): McpJsonRpcRequest => {
@@ -239,13 +279,7 @@ const post = async (
     expectResponse = true,
 ): Promise<{ response: McpJsonRpcResponse | null }> => {
     const session = getSession(server.id);
-    const headers: Record<string, string> = {
-        'Content-Type': 'application/json',
-        'Accept': 'application/json, text/event-stream',
-    };
-    if (server.token) headers['Authorization'] = `Bearer ${server.token}`;
-    if (server.proxyUrl && server.proxyKey) headers['X-Proxy-Key'] = server.proxyKey;
-    if (session.sessionId) headers['Mcp-Session-Id'] = session.sessionId;
+    const headers = buildMcpRequestHeaders(server, session.sessionId);
 
     let resp: Response;
     const controller = new AbortController();
@@ -357,12 +391,96 @@ export const discoverMcpTools = async (server: McpServerConfig): Promise<McpTool
     }));
 };
 
+const isRecord = (value: unknown): value is Record<string, any> =>
+    value !== null && typeof value === 'object' && !Array.isArray(value);
+
+const resolveLocalSchemaRef = (schema: any, rootSchema: any): any => {
+    const ref = typeof schema?.$ref === 'string' ? schema.$ref : '';
+    if (!ref.startsWith('#/')) return schema;
+    const resolved = ref.slice(2).split('/').reduce((current: any, part: string) => {
+        const key = part.replace(/~1/g, '/').replace(/~0/g, '~');
+        return current?.[key];
+    }, rootSchema);
+    return resolved || schema;
+};
+
+const schemaAccepts = (schema: any, kind: 'object' | 'array'): boolean => {
+    const types = Array.isArray(schema?.type) ? schema.type : [schema?.type];
+    if (types.includes(kind)) return true;
+    if (kind === 'object' && schema?.properties) return true;
+    if (kind === 'array' && schema?.items) return true;
+    return [...(schema?.oneOf || []), ...(schema?.anyOf || [])].some((item: any) => schemaAccepts(item, kind));
+};
+
+/**
+ * 部分 OpenAI 兼容中转会把 schema 中的 object / array 再编码成 JSON 字符串。
+ * 只在 schema 明确要求结构类型时还原，避免把 URL、文本等合法 string 误解析。
+ */
+const normalizeMcpValueBySchema = (value: any, rawSchema: any, rootSchema: any, depth: number): any => {
+    if (!rawSchema || depth > 20) return value;
+    const schema = resolveLocalSchemaRef(rawSchema, rootSchema);
+    const acceptsObject = schemaAccepts(schema, 'object');
+    const acceptsArray = schemaAccepts(schema, 'array');
+    let normalized = value;
+
+    if (typeof normalized === 'string' && (acceptsObject || acceptsArray)) {
+        // 最多解三层，兼容整个 arguments 双重编码与嵌套字段额外编码。
+        for (let i = 0; i < 3 && typeof normalized === 'string'; i++) {
+            const text = normalized.trim();
+            if (!text) break;
+            try { normalized = JSON.parse(text); }
+            catch { break; }
+        }
+        const decodedMatchesSchema = (acceptsObject && isRecord(normalized)) || (acceptsArray && Array.isArray(normalized));
+        if (!decodedMatchesSchema) normalized = value;
+    }
+
+    const alternatives = [...(schema?.oneOf || []), ...(schema?.anyOf || [])];
+    if (alternatives.length) {
+        const matching = alternatives.find((item: any) =>
+            (isRecord(normalized) && schemaAccepts(item, 'object'))
+            || (Array.isArray(normalized) && schemaAccepts(item, 'array')),
+        );
+        if (matching) normalized = normalizeMcpValueBySchema(normalized, matching, rootSchema, depth + 1);
+    }
+
+    if (isRecord(normalized) && acceptsObject) {
+        const result = { ...normalized };
+        const properties = schema?.properties || {};
+        for (const [key, childSchema] of Object.entries(properties)) {
+            if (key in result) result[key] = normalizeMcpValueBySchema(result[key], childSchema, rootSchema, depth + 1);
+        }
+        if (schema?.additionalProperties && typeof schema.additionalProperties === 'object') {
+            for (const key of Object.keys(result)) {
+                if (!(key in properties)) {
+                    result[key] = normalizeMcpValueBySchema(result[key], schema.additionalProperties, rootSchema, depth + 1);
+                }
+            }
+        }
+        for (const item of schema?.allOf || []) {
+            const merged = normalizeMcpValueBySchema(result, item, rootSchema, depth + 1);
+            if (isRecord(merged)) Object.assign(result, merged);
+        }
+        return result;
+    }
+
+    if (Array.isArray(normalized) && acceptsArray && schema?.items) {
+        return normalized.map(item => normalizeMcpValueBySchema(item, schema.items, rootSchema, depth + 1));
+    }
+    return normalized;
+};
+
+export const normalizeMcpToolArguments = (args: any, inputSchema: any): any =>
+    normalizeMcpValueBySchema(args, inputSchema, inputSchema, 0);
+
 /** 调用一个工具（会自动补握手；session 失效自动重试一次） */
 export const callMcpTool = async (
     server: McpServerConfig,
     toolName: string,
     args: Record<string, any> = {},
 ): Promise<McpToolResult> => {
+    const inputSchema = (server.tools || []).find(tool => tool.name === toolName)?.inputSchema;
+    const normalizedArgs = normalizeMcpToolArguments(args, inputSchema);
     const finish = (result: McpToolResult): McpToolResult => {
         let resultPreview = '';
         if (result.success) {
@@ -373,7 +491,7 @@ export const callMcpTool = async (
         console.info('🔌 [MCP] tools/call 完成', {
             server: server.name,
             tool: toolName,
-            args,
+            args: normalizedArgs,
             success: result.success,
             ...(result.success ? { result: resultPreview } : { error: result.error }),
         });
@@ -381,7 +499,7 @@ export const callMcpTool = async (
     };
     try {
         await ensureInitialized(server);
-        const body = buildRequest('tools/call', { name: toolName, arguments: args });
+        const body = buildRequest('tools/call', { name: toolName, arguments: normalizedArgs });
         let response: McpJsonRpcResponse | null;
         try {
             ({ response } = await post(server, body));
@@ -390,7 +508,7 @@ export const callMcpTool = async (
             if (/HTTP (400|404)/.test(e?.message || '')) {
                 resetMcpSession(server.id);
                 await ensureInitialized(server);
-                ({ response } = await post(server, buildRequest('tools/call', { name: toolName, arguments: args })));
+                ({ response } = await post(server, buildRequest('tools/call', { name: toolName, arguments: normalizedArgs })));
             } else {
                 throw e;
             }

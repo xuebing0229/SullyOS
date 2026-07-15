@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import Modal from '../os/Modal';
 import { DB } from '../../utils/db';
+import { isSameCoreModel } from '../../utils/apiCallLog';
 import type { ApiCallLogEntry } from '../../utils/apiCallLog';
 
 interface ApiCallLogModalProps {
@@ -28,6 +29,7 @@ function formatTime(ts: number): { day: string; time: string } {
 const ApiCallLogModal: React.FC<ApiCallLogModalProps> = ({ isOpen, onClose }) => {
     const [entries, setEntries] = useState<ApiCallLogEntry[]>([]);
     const [loading, setLoading] = useState(false);
+    const [showHelp, setShowHelp] = useState(false);
 
     const load = useCallback(async () => {
         setLoading(true);
@@ -76,9 +78,44 @@ const ApiCallLogModal: React.FC<ApiCallLogModalProps> = ({ isOpen, onClose }) =>
                 </div>
             }
         >
-            <p className="text-[11px] text-slate-400 mb-3 leading-relaxed px-1">
-                只保留最近 <span className="font-semibold text-slate-500">5 天</span>的调用，超期自动丢弃。记录在你本地浏览器，不上传。
-            </p>
+            <div className="flex items-start justify-between gap-2 mb-3 px-1">
+                <p className="text-[11px] text-slate-400 leading-relaxed">
+                    只保留最近 <span className="font-semibold text-slate-500">5 天</span>的调用，超期自动丢弃。记录在你本地浏览器，不上传。
+                </p>
+                <button
+                    onClick={() => setShowHelp(v => !v)}
+                    className={`shrink-0 w-5 h-5 rounded-full text-[11px] font-bold leading-none flex items-center justify-center transition-colors ${
+                        showHelp ? 'bg-primary text-white' : 'bg-slate-200 text-slate-500'
+                    }`}
+                    aria-label="字段说明"
+                >
+                    ?
+                </button>
+            </div>
+
+            {showHelp && (
+                <div className="mb-3 rounded-2xl bg-amber-50/70 border border-amber-200/60 px-4 py-3 text-[11px] text-slate-600 leading-relaxed space-y-2">
+                    <p className="font-bold text-amber-700">「实际后端」是什么——仅供参考，不是测谎仪</p>
+                    <p>
+                        它是<span className="font-semibold">对面在回复里自己报的模型名字</span>。注意：这个名字是对面自己填的，可以是真的，也可以是假的。
+                    </p>
+                    <p className="font-semibold">三种情况：</p>
+                    <p>
+                        <span className="font-semibold text-amber-600">🟡 琥珀色 + ⚠️</span>：报的名字和你要的对不上。
+                        <span className="font-semibold">有可能</span>被换了便宜模型，但也可能只是站子标签没写整齐——别只凭这一行去定罪。
+                    </p>
+                    <p>
+                        <span className="font-semibold">⚪ 灰色</span>：名字基本一致，只是格式不同（比如少了 [渠道]、(按次)、gcli- 这类标签前缀）。正常。
+                    </p>
+                    <p>
+                        <span className="font-semibold">🫥 没有这一行</span>：最常见的情况。要么对面把你请求的名字<span className="font-semibold">原样抄了回来</span>（等于什么都没说），要么干脆没报。
+                        <span className="font-semibold">不代表有问题，也不代表没问题——就是从这条线索看不出来。</span>
+                    </p>
+                    <p>
+                        想判断有没有被偷偷换模型，要几个信号<span className="font-semibold">一起看</span>：token 数是否突然对不上（比如平时 4 万这次 1.5 万）、速度是否突变、角色是否突然变笨/掉格式。只有一个信号异常时，先观望，多攒几轮再说。
+                    </p>
+                </div>
+            )}
 
             {entries.length > 0 && (() => {
                 const totalTok = entries.reduce((s, e) => s + (e.totalTokens ?? 0), 0);
@@ -142,8 +179,24 @@ const ApiCallLogModal: React.FC<ApiCallLogModalProps> = ({ isOpen, onClose }) =>
                                     <Field label="角色" value={e.charName} />
                                     <Field label="用途" value={e.purpose} />
                                     <div className="col-span-2">
-                                        <Field label="模型" value={e.model} mono />
+                                        {/* 模型/实际后端两行不截断（break-all 换行）：截断会把「为什么黄了」的
+                                            关键差异（后缀 -c、渠道标签）藏进省略号里，用户看着两行一样却标黄一头雾水 */}
+                                        <Field label="模型" value={e.model} mono wrap />
                                     </div>
+                                    {/* 后端自报身份（response.model）：字符串不同就展示；琥珀判定见
+                                        isSameCoreModel——渠道标签/前缀（[渠道]、(按次)、gcli-、models/）算同名
+                                        （灰色），尾巴长出变体（X-c / X-lite）才是真被换了后端（琥珀）。 */}
+                                    {e.backendModel && e.backendModel !== e.model && (() => {
+                                        const swapped = !isSameCoreModel(e.model, e.backendModel);
+                                        return (
+                                            <div className="col-span-2 flex items-baseline gap-1.5 min-w-0">
+                                                <span className={`text-[10px] shrink-0 ${swapped ? 'text-amber-500' : 'text-slate-400'}`}>实际后端</span>
+                                                <span className={`break-all font-mono ${swapped ? 'font-semibold text-amber-600' : 'text-slate-500'}`}>
+                                                    {e.backendModel}{swapped ? ' ⚠️' : ''}
+                                                </span>
+                                            </div>
+                                        );
+                                    })()}
                                     {e.durationMs != null && (
                                         <Field label="耗时" value={e.durationMs >= 1000 ? `${(e.durationMs / 1000).toFixed(1)}s` : `${e.durationMs}ms`} />
                                     )}
@@ -168,16 +221,17 @@ const ApiCallLogModal: React.FC<ApiCallLogModalProps> = ({ isOpen, onClose }) =>
     );
 };
 
-const Field: React.FC<{ label: string; value?: string; accent?: boolean; mono?: boolean }> = ({
+const Field: React.FC<{ label: string; value?: string; accent?: boolean; mono?: boolean; wrap?: boolean }> = ({
     label,
     value,
     accent,
     mono,
+    wrap,
 }) => (
     <div className="flex items-baseline gap-1.5 min-w-0">
         <span className="text-[10px] text-slate-400 shrink-0">{label}</span>
         <span
-            className={`truncate ${mono ? 'font-mono' : ''} ${
+            className={`${wrap ? 'break-all' : 'truncate'} ${mono ? 'font-mono' : ''} ${
                 accent ? 'font-semibold text-primary' : 'text-slate-600'
             }`}
             title={value || ''}

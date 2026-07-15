@@ -92,7 +92,25 @@ export interface OSTheme {
   // Chat UI customization (global)
   chatAvatarShape?: 'circle' | 'rounded' | 'square';
   chatAvatarSize?: 'small' | 'medium' | 'large';
+  /** 聊天表情包大小三挡：小 96px（默认）/ 中 128px / 大 160px（旧版尺寸）。经 --sully-emoji-size CSS 变量生效 */
+  chatEmojiSize?: 'small' | 'medium' | 'large';
   chatAvatarMode?: 'grouped' | 'every_message';
+  // ── 聊天细节微调（外观 → 聊天细节）。收编自社区白框美化 CSS，全部可选，缺省 = 现状。
+  //    经 utils/chatFineTuneCss.ts 生成 CSS 注入 .sully-chat-root；用户自定义白框 CSS 排在其后可覆盖。
+  /** 头像显示：双侧 / 隐藏角色侧 / 隐藏用户侧 / 全部隐藏 */
+  chatAvatarVisibility?: 'both' | 'hide_ai' | 'hide_user' | 'hide_both';
+  /** 头像与气泡的对齐：底部（默认）/ 顶部 / 垂直居中 */
+  chatAvatarAlign?: 'bottom' | 'top' | 'center';
+  /** 头像垂直微调 px（负上正下），0/undefined = 不调 */
+  chatAvatarOffsetY?: number;
+  /** 气泡正文字号 px，0/undefined = 默认 */
+  chatBubbleFontSize?: number;
+  /** 气泡正文行距（如 1.35），0/undefined = 默认 */
+  chatBubbleLineHeight?: number;
+  /** 气泡与头像侧的间距 px，0/undefined = 默认（48px） */
+  chatBubbleIndent?: number;
+  /** 隐藏头像的一侧是否贴边（收回头像空位） */
+  chatSnapToEdge?: boolean;
   chatBubbleStyle?: 'modern' | 'flat' | 'outline' | 'shadow' | 'wechat' | 'ios';
   chatMessageSpacing?: 'compact' | 'default' | 'spacious';
   chatShowTimestamp?: 'always' | 'hover' | 'never';
@@ -114,6 +132,18 @@ export interface OSTheme {
   chatSound?: { src: string; volume?: number };
   /** 隐藏顶栏的情绪 buff 栏。 */
   chatHideHeaderBuffs?: boolean;
+}
+
+/** 聊天细节微调的 7 个字段（外观 App「聊天细节微调」区块），可整组按角色覆盖。
+ *  与 OSTheme 同名字段一一对应，经 utils/chatFineTuneCss.ts 生成 CSS。 */
+export type ChatFineTuneFields = Pick<OSTheme,
+  'chatAvatarVisibility' | 'chatAvatarAlign' | 'chatAvatarOffsetY' |
+  'chatBubbleFontSize' | 'chatBubbleLineHeight' | 'chatBubbleIndent' | 'chatSnapToEdge'>;
+
+/** 角色级「聊天装扮」覆盖：enabled=true 才生效；生效时已定义的字段逐个覆盖全局，
+ *  未定义的字段跟随全局（合并规则见 utils/chatFineTuneCss.ts 的 mergeChatFineTune）。 */
+export interface ChatFineTuneOverride extends ChatFineTuneFields {
+  enabled?: boolean;
 }
 
 export interface AppearancePreset {
@@ -2059,6 +2089,11 @@ export interface CharacterProfile {
   impression?: UserImpression;
 
   bubbleStyle?: string;
+  /** 聊天细节微调的角色级覆盖（聊天内「＋」→「聊天装扮」）。
+   *  enabled=true 时已定义的字段逐个覆盖全局 OSTheme 同名设置，未定义的字段继续跟随全局；
+   *  enabled 为 false/undefined 或整个字段缺省 = 完全跟随全局（现状零变化）。
+   *  属美化类本地偏好：随完整备份走，但角色卡分享时剥离（见 utils/characterCard.ts）。 */
+  chatFineTune?: ChatFineTuneOverride;
   chatBackground?: string;
   contextLimit?: number;
   hideSystemLogs?: boolean; 
@@ -2396,6 +2431,10 @@ export interface UserProfile {
     name: string;
     avatar: string;
     bio: string;
+    /** 分角色聊天头像（档案 App 设置）：charId → 头像（http(s) URL 或 data:image）。
+     *  私聊里「你」的头像取 perCharAvatars[charId] || avatar（上面的整体头像作宏观默认）；
+     *  群聊/其他场合仍用整体头像。删角色留下的孤儿键无害，读取端永远按当前 charId 取。 */
+    perCharAvatars?: Record<string, string>;
     /**
      * 用户本人接入「彼方」的状态：捏的 chibi、此刻所在房间、在干嘛。可随时改。
      * enabled=false（登出）时，聊天里给角色的"用户在彼方"提示词随之消失。

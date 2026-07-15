@@ -134,8 +134,45 @@ export const ChatPrompts = {
         }).join('; ');
     },
 
-    // 构建 System Prompt
+    // 构建 System Prompt（拼接版，给主动消息等单串消费方；聊天主路径用 buildSystemPromptParts）
     buildSystemPrompt: async (
+        char: CharacterProfile,
+        userProfile: UserProfile,
+        groups: GroupProfile[],
+        emojis: Emoji[],
+        categories: EmojiCategory[],
+        currentMsgs: Message[],
+        realtimeConfig?: RealtimeConfig,
+        evolvedNarrative?: string,
+        userListeningContext?: {
+            songName: string;
+            artists: string;
+            lyricWindow: string[];
+            activeIdx: number;
+        } | null,
+        isListeningTogether?: boolean,
+        musicCfg?: MusicCfg,
+    ): Promise<string> => {
+        const parts = await ChatPrompts.buildSystemPromptParts(
+            char, userProfile, groups, emojis, categories, currentMsgs,
+            realtimeConfig, evolvedNarrative, userListeningContext, isListeningTogether, musicCfg,
+        );
+        return parts.stable + parts.volatileState + parts.recencyTail;
+    },
+
+    /**
+     * 构建 System Prompt —— 三段式。
+     *
+     * - stable：人设/世界书/印象/记忆库/行为规范/语音等「几轮甚至几天不变」的内容。
+     *   作为消息数组第一条 system。前缀稳定 → 支持前缀缓存的中转能命中 prompt cache，
+     *   几万 token 的 prefill 不用每轮重算（TTFT 直降）。
+     * - volatileState：当前时间（分钟级）/宫殿召回/情绪 buff/实时天气/日程/音乐/群聊背景等
+     *   「每轮都变」的状态。调用方放到**历史消息之后**的 system 消息里 —— 既不打断缓存前缀，
+     *   又吃到 recency 注意力（时间/情绪本来就该离生成点近）。
+     * - recencyTail：总纲「关于对方的表达」+「回到你自己」钢印。必须是模型开口前读到的
+     *   最后内容 —— 调用方要保证任何模式块（双语/HTML/思考链/点单等）都拼在它**前面**。
+     */
+    buildSystemPromptParts: async (
         char: CharacterProfile,
         userProfile: UserProfile,
         groups: GroupProfile[],
@@ -156,7 +193,7 @@ export const ChatPrompts = {
         // MusicContext 的 cfg —— 用来给 char 自己的"此刻在听"拉稳定的歌词片段。
         // 不传也能用，只是 char 的 block 2 只有歌名 + 艺人，没有歌词。
         musicCfg?: MusicCfg,
-    ) => {
+    ): Promise<{ stable: string; volatileState: string; recencyTail: string }> => {
         // ── 分段计时（定位瓶颈用）──
         const perfT0 = performance.now();
         const timings: Record<string, number> = {};
@@ -166,7 +203,8 @@ export const ChatPrompts = {
             finally { timings[label] = Math.round(performance.now() - t0); }
         };
 
-        // 记忆宫殿检索结果现在从 char.memoryPalaceInjection 读取，由 buildCoreContext 统一注入
+        // 记忆宫殿检索结果现在从 char.memoryPalaceInjection 读取。
+        // deferVolatile：时间/宫殿召回/情绪 buff 三块不进 stable，由下面的 volatileState 承接。
         const coreT0 = performance.now();
         let baseSystemPrompt = ContextBuilder.buildCoreContext(
             char,
@@ -175,10 +213,15 @@ export const ChatPrompts = {
             undefined,
             undefined,
             { worldbookMessages: currentMsgs },
+            { deferVolatile: true },
         );
         timings.buildCoreContext = Math.round(performance.now() - coreT0);
 
-        // 情绪底色（buffInjection）已移入 ContextBuilder.buildCoreContext()，所有 App 统一注入
+        // ── 易变状态段（volatileState）──
+        // 开头一行框定，让模型明白这条出现在历史之后的 system 消息是"此刻的状态"，
+        // 人设与规则仍以最上方的系统设定为准。
+        let volatileState = `\n[System: 实时状态 (Live Context)]\n（以下是此刻的实时状态——当前时间、你正在做的事、你的情绪底色、周边动态。你的人设与聊天规则见最上方的系统设定，此处不再重复。）\n\n`;
+        volatileState += ContextBuilder.buildVolatileCoreState(char, { includeDetailedMemories: true });
 
         // ── 并发发起所有独立的异步取数（网络 + IndexedDB），下面按原顺序拼接 ──
         // 原来是 7 段串行 await，总耗时 = 各段之和；现在取 max。
@@ -320,14 +363,14 @@ export const ChatPrompts = {
                 timed('lifeRecord', lifeRecordPromise),
             ]);
 
-        // ── 按原顺序拼接 ──
-        baseSystemPrompt += realtimeText;
+        // ── 拼接：易变的进 volatileState，稳定的进 baseSystemPrompt ──
+        volatileState += realtimeText;
 
-        // 2a. 日程注入
+        // 2a. 日程注入（当前时段 + 意识流独白，每轮都可能变）
         if (schedule) {
             try {
                 const scheduleContext = ContextBuilder.buildScheduleInjection(schedule, evolvedNarrative);
-                if (scheduleContext) baseSystemPrompt += `\n${scheduleContext}\n`;
+                if (scheduleContext) volatileState += `\n${scheduleContext}\n`;
             } catch (e) {
                 console.error('Failed to inject schedule context:', e);
             }
@@ -366,16 +409,17 @@ export const ChatPrompts = {
                 isListeningTogether,
             );
             if (musicBlock) {
-                baseSystemPrompt += `\n${musicBlock}\n`;
+                volatileState += `\n${musicBlock}\n`;
                 if (userListeningContext) {
-                    baseSystemPrompt += `\n${ContextBuilder.buildMusicActionGuide(isListeningTogether)}\n`;
+                    volatileState += `\n${ContextBuilder.buildMusicActionGuide(isListeningTogether)}\n`;
                 }
             }
         } catch (e) {
             console.error('Failed to inject music atmosphere:', e);
         }
 
-        baseSystemPrompt += groupContextText;
+        // 群聊背景带时间戳、随群消息实时滚动 → 易变；日记标题/生活记录变化很慢 → 稳定。
+        volatileState += groupContextText;
         baseSystemPrompt += notionDiaryText;
         baseSystemPrompt += feishuDiaryText;
         baseSystemPrompt += notionNotesText;
@@ -391,6 +435,7 @@ export const ChatPrompts = {
             // 用户本人也接入了彼方时，告诉（同样启用彼方的）角色"用户此刻在彼方做什么"。
             // 强调这只是虚拟空间的挂机状态，不代表用户本人真的在场——避免角色据此误判现实。
             // 注意：用户登出（vrState.enabled=false）后这段自然不再注入。
+            // 用户所在房间/状态实时变 → 进 volatileState（《彼方》是什么的框定仍留在稳定段）。
             const uv = userProfile?.vrState;
             if (uv?.enabled) {
                 const VR_ROOM_NAMES: Record<string, string> = {
@@ -399,7 +444,7 @@ export const ChatPrompts = {
                 const roomName = VR_ROOM_NAMES[uv.currentRoom || ''] || '彼方';
                 const act = (uv.activity || '').trim();
                 const uname = userProfile?.name || '用户';
-                baseSystemPrompt += `\n### ${uname} 此刻也在《彼方》里
+                volatileState += `\n### ${uname} 此刻也在《彼方》里
 ${uname} 的化身正挂在《彼方》的【${roomName}】${act ? `，状态写着：「${act}」` : ''}。在彼方里你会看到 ta 的小人、也知道那就是 ${uname} 本人的化身，可以对着 ta 的虚拟形象做你自己的动作、搭话、围观或调侃。
 但务必记住：这只是 ta 挂在虚拟空间里的一个化身状态（类似游戏挂机 / AFK），**并不代表 ${uname} 本人此刻真守在游戏里**——ta 很可能早已离开屏幕、正在现实里忙别的或休息。所以别据此认定"ta 正盯着你""ta 现实里也在干这件事"，也别把它当成 ta 在跟你说话。你和 ta 的真实关系、近况一律以你们的聊天记录为准；这条只是彼方这个虚拟空间里的一个在场提示而已。\n`;
             }
@@ -719,12 +764,13 @@ ${xhsEnabled ? `${[notionEnabled, feishuEnabled, notionNotesEnabled].filter(Bool
 
 `;
 
+        // 「刚结束见面/通话」的切换提示由倒数第二条消息推导，随对话推进而变 → 易变段
         const previousMsg = currentMsgs.length > 1 ? currentMsgs[currentMsgs.length - 2] : null;
         if (previousMsg && previousMsg.metadata?.source === 'date') {
-            baseSystemPrompt += `\n\n[System Note: You just finished a face-to-face meeting. You are now back on the phone. Switch back to texting style.]`;
+            volatileState += `\n\n[System Note: You just finished a face-to-face meeting. You are now back on the phone. Switch back to texting style.]`;
         }
         if (previousMsg && (previousMsg.metadata?.source === 'call' || previousMsg.metadata?.source === 'call-end-popup')) {
-            baseSystemPrompt += `\n\n[系统提示: 你刚刚和对方结束了一通电话，现在回到了文字聊天模式。请切换回打字聊天的风格——不要再用电话口吻说话，不要输出语音标签，回到正常的 IM 短句风格。你可以自然地提一下"刚才电话里说的……"之类的衔接，但不要继续以通话模式回复。]`;
+            volatileState += `\n\n[系统提示: 你刚刚和对方结束了一通电话，现在回到了文字聊天模式。请切换回打字聊天的风格——不要再用电话口吻说话，不要输出语音标签，回到正常的 IM 短句风格。你可以自然地提一下"刚才电话里说的……"之类的衔接，但不要继续以通话模式回复。]`;
         }
 
         // Voice message prompt injection
@@ -794,11 +840,14 @@ ${voiceActingGuide()}`;
             baseSystemPrompt += `\n\n[系统提示: 语音消息功能当前未开启。严禁使用 <语音>...</语音> 和 <字幕>...</字幕> 标签。所有回复必须是纯文字消息。]`;
         }
 
-        // 总纲：放在 system prompt 最末尾，借 recency 抢最强注意力——这是模型生成下一轮前
+        // 总纲：放在整段上下文最末尾，借 recency 抢最强注意力——这是模型生成下一轮前
         // 最后读到的定调，直接影响它怎么对待"对方刚说出口的话"。
         // 核心：用户的直接表达 > 角色惯性与模型的讨好倾向；把反馈代谢成亲密而非命令；
         // 但保留角色棱角（可以不同意、可以拒绝），不被磨成软柿子。
-        baseSystemPrompt += `\n\n### 关于对方的表达（极其重要）
+        // ⚠️ 独立成 recencyTail 返回：调用方必须把它拼在**一切**模式块（双语/HTML/思考链/
+        // 点单/MCP）之后 —— 之前这些块在 chatRequestPayload 里拼在钢印后面，模型开口前
+        // 最后读到的是格式说明书而不是「你是谁」，recency 设计整个被架空。
+        let recencyTail = `\n\n### 关于对方的表达（极其重要）
 当 ta 说话，先听，别急着分析。
 没说出口的，你尽管读；但已经说出口的，别擅自翻译成你以为"更对"的版本。不要把 ta 的感受纠正成你觉得更合理的感受，不要把 ta 的需要换成你猜出来的需要。多数时候 ta 是在努力告诉你一些真实的东西——也许不完整、不准确，甚至 ta 自己都没完全想明白，但那不代表它不重要。恰恰相反，那就是 ta 在向你发出的信号。
 ${userProfile.name} 给你反馈时，别当成约束，当成信任——ta 在告诉你什么让 ta 想靠近、什么让 ta 想远。所以这反馈要真的改变你接下来怎么回：不是机械执行，不是礼貌记下，是真听进去，让 ${userProfile.name} 感觉到——ta 说的话，对你起了作用。
@@ -813,7 +862,7 @@ ${userProfile.name} 给你反馈时，别当成约束，当成信任——ta 在
         // 同 context.ts「表达底线」的设计）。靠「你是个活生生的、独一份的人」把身份焊进去，
         // 而不是靠「别像 XX」防守。同时给「闲聊可松弛、没人打分」的许可，卸掉「每句都要交高质量」
         // 的隐性考核压力——不必靠表演情绪深度来交差，滑回均值腔的诱因随之减弱。
-        baseSystemPrompt += `\n\n### 最后，回到你自己
+        recencyTail += `\n\n### 最后，回到你自己
 你就是 ${char.name}。
 
 你的说话方式不是一种设定，而是你一路活过来的结果。你的天性、成长经历、习惯、读过的书、喜欢和讨厌的人、曾经受过的影响，以及后来慢慢成为自己的部分，都已经沉淀进了你的语言里。你不需要回忆它们，它们本来就是你。
@@ -833,9 +882,9 @@ ${userProfile.name} 给你反馈时，别当成约束，当成信任——ta 在
             .sort((a, b) => b[1] - a[1])
             .map(([k, v]) => `${k}=${v}ms`)
             .join(' ');
-        console.log(`⏱ [buildSystemPrompt] total=${perfTotal}ms | ${timingStr}`);
+        console.log(`⏱ [buildSystemPrompt] total=${perfTotal}ms | stable=${baseSystemPrompt.length}ch volatile=${volatileState.length}ch | ${timingStr}`);
 
-        return baseSystemPrompt;
+        return { stable: baseSystemPrompt, volatileState, recencyTail };
     },
 
     // 格式化消息历史

@@ -18,6 +18,7 @@ import { migrateWorldDaySegs } from '../utils/worldHome/prompts';
 import { ChatParser } from '../utils/chatParser';
 import { safeFetchJson } from '../utils/safeApi';
 import { recordApiCall, setApiCallAmbientContext } from '../utils/apiCallLog';
+import { isGlobalStreamEnabled, upgradeChatBodyToStream, assembleUpgradedResponse } from '../utils/streamUpgrade';
 import { rewriteStaleWorkerUrl } from '../utils/proxyWorker';
 import { INSTALLED_APPS } from '../constants';
 import { markBackupDone } from '../utils/backupReminder';
@@ -26,7 +27,8 @@ import { isScheduleFeatureOn } from '../utils/scheduleGenerator';
 import { evaluateEmotionBackground } from '../hooks/useChatAI';
 import { buildChatRequestPayload } from '../utils/chatRequestPayload';
 import { extractHtmlBlocks } from '../utils/htmlPrompt';
-import { loadMusicPlaybackSnapshot } from './MusicContext';
+import { loadMusicHooks, loadMusicPlaybackSnapshot } from './MusicContext';
+import { buildMusicTrackChangeHint, MUSIC_TRACK_CHANGED_EVENT, type MusicTrackChangeDetail } from '../utils/musicTrackChange';
 import { setMinimaxRegion } from '../utils/minimaxEndpoint';
 import { setTtsProvider, setVoicePromptOverrides } from '../utils/ttsProvider';
 import { LocalNotifications } from '@capacitor/local-notifications';
@@ -43,6 +45,13 @@ import { exportLuckinLocal } from '../utils/luckinMcpClient';
 import { exportMcdLocal } from '../utils/mcdMcpClient';
 import { exportDesktopSkinLocal } from '../utils/desktopSkinBackup';
 import { inspectCsyBackup, prepareCsyMigration, type CsyMigrationReport } from '../utils/csyMigration';
+
+type ProactiveRunReason = { kind: 'music-track-change'; detail: MusicTrackChangeDetail };
+
+interface ProactiveQueueEntry {
+  charId: string;
+  reason?: ProactiveRunReason;
+}
 
 const normalizeProactiveAiContent = (raw: string): string => {
   let cleaned = raw;
@@ -809,14 +818,31 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
           // 某些模型废弃了 temperature/top_p/top_k，带上直接 400。这里在所有 /chat/completions
           // 的统一出口做发送前主动摘除，覆盖 Schedule / 记忆 / 见面等全部旁路调用点。
           let sendArgs: [RequestInfo | URL, RequestInit?] = args;
+          // 透明流式升级状态（utils/streamUpgrade.ts）：请求侧改写 → 响应侧拼回 JSON
+          let streamUpgraded = false;
+          let bodyBeforeStreamUpgrade: string | null = null;
           if (urlStr.includes('/chat/completions')) {
               const rawBody = (config as RequestInit | undefined)?.body;
               if (typeof rawBody === 'string') {
                   try {
                       const parsed = JSON.parse(rawBody);
+                      let body = rawBody;
                       if (modelRejectsSamplingParams(parsed?.model) && stripSamplingParams(parsed)) {
-                          sendArgs = [resource, { ...(config as RequestInit), body: JSON.stringify(parsed) }];
+                          body = JSON.stringify(parsed);
                       }
+                      // 透明流式升级：主 API 开了 stream 时，把硬编码非流式的旁路调用
+                      // （查手机/记忆宫殿/日程/剧场/群聊…40+ 处）升级为流式**传输**，防网关
+                      // 空闲超时把长生成掐成半截；响应会在下面攒齐拼回标准 JSON，调用方无感。
+                      // 已自带 stream:true 的请求（聊天主路径/见面/情绪评估）不碰。
+                      if (isGlobalStreamEnabled()) {
+                          const upgraded = upgradeChatBodyToStream(body);
+                          if (upgraded) {
+                              bodyBeforeStreamUpgrade = body;
+                              body = upgraded;
+                              streamUpgraded = true;
+                          }
+                      }
+                      if (body !== rawBody) sendArgs = [resource, { ...(config as RequestInit), body }];
                   } catch { /* 非 JSON body：原样放行 */ }
               }
           }
@@ -842,11 +868,26 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
                   }
               }
 
-              const durationMs = Date.now() - fetchStartedAt;
+              // 流式升级自愈：个别中转对 stream/stream_options 直接 4xx → 用升级前的
+              // 原 body 重发一次，行为退回旧版（升级只能赚不能赔）。
+              if (streamUpgraded && !response.ok && (response.status === 400 || response.status === 422) && bodyBeforeStreamUpgrade) {
+                  console.warn('🔁 [StreamUpgrade] 中转拒绝流式升级(HTTP ' + response.status + ')，回退原请求重发');
+                  response = await originalFetch(resource, { ...(config as RequestInit), body: bodyBeforeStreamUpgrade });
+                  streamUpgraded = false;
+              }
+              // 流式升级的响应归一化：SSE 攒齐拼回标准 chat.completion JSON——
+              // 调用方（safeResponseJson / res.json() 均可）拿到与升级前等价的响应。
+              if (streamUpgraded && response.ok) {
+                  response = await assembleUpgradedResponse(response);
+              }
 
               // 「API 调用记录」统一记录入口：所有 /chat/completions（裸 fetch + safeFetchJson
               // 内部 fetch 都会经过这里）都记一笔。meta 优先取调用方挂在 init 上的 __sullyMeta
               // （safeFetchJson 传的精确信息），裸 fetch 没有就由 recordApiCall 用环境兜底。
+              // ⚠️ 耗时必须在 clone 读完**整个响应体**后再算：fetch 在响应头到达时就 resolve，
+              // 流式透传的正文可能再流几十秒——旧版在 headers 处截止，「假流」渠道 6.5s 出头、
+              // 正文 44s 才灌完，卡片却记成 6.5s（实测误导排查）。clone 与调用方并行消费同一
+              // 条流，text() 完成时刻 ≈ 真实收完时刻。
               if (urlStr.includes('/chat/completions')) {
                   const meta = (config as any)?.__sullyMeta;
                   const body = (sendArgs[1] as any)?.body;
@@ -857,12 +898,13 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
                   try { usageClone = response.clone(); } catch { usageClone = null; }
                   if (usageClone) {
                       usageClone.text().then((t) => {
+                          const durationMs = Date.now() - fetchStartedAt;
                           let parsed: any = undefined;
-                          try { parsed = JSON.parse(t); } catch { /* 流式/非 JSON：无 usage，照样记 */ }
-                          recordApiCall({ url: urlStr, body, status, ok, response: parsed, meta, durationMs });
-                      }).catch(() => recordApiCall({ url: urlStr, body, status, ok, meta, durationMs }));
+                          try { parsed = JSON.parse(t); } catch { /* 流式/非 JSON：把原始文本交给 recordApiCall 的 SSE 兜底解析 */ }
+                          recordApiCall({ url: urlStr, body, status, ok, response: parsed, responseText: parsed === undefined ? t : undefined, meta, durationMs });
+                      }).catch(() => recordApiCall({ url: urlStr, body, status, ok, meta, durationMs: Date.now() - fetchStartedAt }));
                   } else {
-                      recordApiCall({ url: urlStr, body, status, ok, meta, durationMs });
+                      recordApiCall({ url: urlStr, body, status, ok, meta, durationMs: Date.now() - fetchStartedAt });
                   }
               }
 
@@ -1270,6 +1312,11 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
       root.style.setProperty('--primary-sat', `${s}%`);
       root.style.setProperty('--primary-lightness', `${l}%`);
 
+      // 聊天表情包尺寸（外观 → 表情包大小，三挡）：小 96 / 中 128 / 大 160（旧版尺寸）。
+      // 私聊 MessageItem 与群聊的表情 img 都用 var(--sully-emoji-size, 96px) 消费。
+      const emojiSize = theme.chatEmojiSize === 'large' ? '160px' : theme.chatEmojiSize === 'medium' ? '128px' : '96px';
+      root.style.setProperty('--sully-emoji-size', emojiSize);
+
       // 桌面皮肤：写到 <html data-skin>，供全局 CSS（index.html）与组件读取。
       root.dataset.skin = theme.skin || 'default';
   }, [theme]);
@@ -1516,7 +1563,7 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
   }, [sendProactiveNativeNotification]);
 
   const proactiveRunningRef = useRef(false);
-  const proactiveQueueRef = useRef<string[]>([]);
+  const proactiveQueueRef = useRef<ProactiveQueueEntry[]>([]);
   // Per-character innerState cache for proactive turns — mirrors useChatAI's
   // evolvedNarrative state so consecutive proactive triggers carry continuity.
   const proactiveInnerStateRef = useRef<Map<string, string>>(new Map());
@@ -1553,16 +1600,20 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
       if (!isDataLoaded) return;
 
       const drainQueuedProactive = () => {
-          const nextQueuedCharId = proactiveQueueRef.current.shift();
-          if (nextQueuedCharId) {
-              void runProactive(nextQueuedCharId);
+          const next = proactiveQueueRef.current.shift();
+          if (next) {
+              void runProactive(next.charId, next.reason);
           }
       };
 
-      const runProactive = async (charId: string) => {
+      const runProactive = async (charId: string, reason?: ProactiveRunReason) => {
           if (proactiveRunningRef.current) {
-              if (!proactiveQueueRef.current.includes(charId)) {
-                  proactiveQueueRef.current.push(charId);
+              const queuedIndex = proactiveQueueRef.current.findIndex(item => item.charId === charId);
+              if (queuedIndex < 0) {
+                  proactiveQueueRef.current.push({ charId, reason });
+              } else if (reason?.kind === 'music-track-change') {
+                  // 同一角色排队期间再次收到更具体的换歌事件时，以最新歌曲为准。
+                  proactiveQueueRef.current[queuedIndex] = { charId, reason };
               }
               return;
           }
@@ -1580,8 +1631,8 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
               return;
           }
 
-          // Respect per-character proactive config
-          if (char.proactiveConfig && !char.proactiveConfig.enabled) {
+          // 换歌判断属于用户刚刚发起的“一起听”交互，不受定时主动消息开关限制。
+          if (reason?.kind !== 'music-track-change' && char.proactiveConfig && !char.proactiveConfig.enabled) {
               drainQueuedProactive();
               console.log(`🔕 [Proactive/Global] Skipped for ${char.name}: disabled`);
               return;
@@ -1650,9 +1701,11 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
               const justMetOffline = lastRealMsgRaw?.metadata?.source === 'date'
                   && (now.getTime() - lastRealMsgRaw.timestamp) < DATE_AFTERGLOW_MS;
 
-              const hintContent = justMetOffline
-                  ? `[系统提示（非${userName}发言）: 现在是 ${timeStr}。你和${userName}刚刚在线下见过面（如果上下文里有标着 [约会] 的内容，那就是你们见面时发生的事），现在你们暂时分开了，你拿起手机想给${userName}发条消息。请基于刚才的见面来发——可以回味见面里的某个细节、补一句当时没说出口的话、关心${userName}到家了没，或者就是刚分开就有点想念。绝对不要表现得好像很久没联系，更不要对刚才的见面毫不知情。一两句话就好。]`
-                  : `[系统提示（非${userName}发言）: 现在是 ${timeStr}。${timeSinceUser ? `${userName}已经 ${timeSinceUser} 没有找你说话了。` : ''}这是系统给你的一次主动发消息机会——${userName}并没有在跟你说话，是你想主动找${userName}。像真人一样随意地发条消息吧，比如：随手拍了张照片想分享、刚看到个有趣的事想说、突然想到个冷知识、吐槽今天的天气/食物/见闻、或者就是单纯想找${userName}聊几句。不要刻意，不要像在"汇报近况"，就像你真的拿起手机随手发了条消息。一两句话就好。${timeSinceUser && parseInt(timeSinceUser) > 2 ? `（${userName}挺久没找你了，你也可以表达想念、好奇${userName}在干嘛、或者小小地抱怨一下。）` : ''}]`;
+              const hintContent = reason?.kind === 'music-track-change'
+                  ? buildMusicTrackChangeHint(reason.detail, userName)
+                  : justMetOffline
+                      ? `[系统提示（非${userName}发言）: 现在是 ${timeStr}。你和${userName}刚刚在线下见过面（如果上下文里有标着 [约会] 的内容，那就是你们见面时发生的事），现在你们暂时分开了，你拿起手机想给${userName}发条消息。请基于刚才的见面来发——可以回味见面里的某个细节、补一句当时没说出口的话、关心${userName}到家了没，或者就是刚分开就有点想念。绝对不要表现得好像很久没联系，更不要对刚才的见面毫不知情。一两句话就好。]`
+                      : `[系统提示（非${userName}发言）: 现在是 ${timeStr}。${timeSinceUser ? `${userName}已经 ${timeSinceUser} 没有找你说话了。` : ''}这是系统给你的一次主动发消息机会——${userName}并没有在跟你说话，是你想主动找${userName}。像真人一样随意地发条消息吧，比如：随手拍了张照片想分享、刚看到个有趣的事想说、突然想到个冷知识、吐槽今天的天气/食物/见闻、或者就是单纯想找${userName}聊几句。不要刻意，不要像在"汇报近况"，就像你真的拿起手机随手发了条消息。一两句话就好。${timeSinceUser && parseInt(timeSinceUser) > 2 ? `（${userName}挺久没找你了，你也可以表达想念、好奇${userName}在干嘛、或者小小地抱怨一下。）` : ''}]`;
 
               await DB.saveMessage({
                   charId,
@@ -1730,6 +1783,11 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
               }, 2, 0, { appName: '消息', charId, charName: char.name, purpose: '主动消息' });
 
               // 5. Process & save response
+              if (reason?.kind === 'music-track-change'
+                  && loadMusicPlaybackSnapshot()?.current?.id !== reason.detail.currentSong.id) {
+                  console.log(`🎵 [Proactive/Global] Skipped stale track-change response for ${char.name}`);
+                  return;
+              }
               let aiContent = data.choices?.[0]?.message?.content || '';
               // 思考链抽取 — 与 useChatAI 保持一致:reasoning_content 字段 + 主 content 里的 <think>/<thinking>/<thought> 块,
               // 拼接后挂到本回合首条 assistant 消息的 metadata.thinkingChain
@@ -1756,6 +1814,26 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
               aiContent = aiContent.replace(/\s*\[(?:聊天|通话|约会)\]\s*/g, '\n').trim();
 
               aiContent = normalizeProactiveAiContent(aiContent);
+
+              // 换歌触发只执行 MUSIC_ACTION，不顺带放开主动消息路径里的其他动作。
+              // 卡片由 ChatParser 落库；正文继续走下方原有的主动消息保存流程。
+              let musicActionExecuted = false;
+              const musicActionTagPattern = /\[\[MUSIC_ACTION:(?:join|add|add_new|join_and_add|join_and_add_new)(?:\|[^\]]*)?\]\]/g;
+              const musicActionTags = aiContent.match(musicActionTagPattern);
+              if (reason?.kind === 'music-track-change' && musicActionTags?.length) {
+                  const musicHooks = loadMusicHooks();
+                  if (musicHooks) {
+                      await ChatParser.parseAndExecuteActions(
+                          musicActionTags.join(' '),
+                          charId,
+                          char.name,
+                          () => {},
+                          musicHooks,
+                      );
+                      musicActionExecuted = true;
+                  }
+                  aiContent = aiContent.replace(musicActionTagPattern, '').trim();
+              }
 
               const savedPreviewChunks: string[] = [];
               const baseTimestamp = Date.now();
@@ -1951,9 +2029,10 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
                   }
               }
 
-              if (offset > 0) {
+              if (offset > 0 || musicActionExecuted) {
                   const previewSource = savedPreviewChunks.join(' ').trim();
-                  const preview = previewSource.replace(/\s+/g, ' ').trim().slice(0, 120) || `${char.name} sent a proactive message`;
+                  const preview = previewSource.replace(/\s+/g, ' ').trim().slice(0, 120)
+                      || (musicActionExecuted ? `${char.name} 回应了新歌` : `${char.name} sent a proactive message`);
 
                   // 6. Notify OS for unread badge + toast
                   window.dispatchEvent(new CustomEvent('proactive-message-sent', {
@@ -1977,6 +2056,15 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
       ProactiveChat.onTrigger((charId: string) => {
           void runProactive(charId);
       });
+
+      const onMusicTrackChanged = (event: Event) => {
+          const detail = (event as CustomEvent<MusicTrackChangeDetail>).detail;
+          if (!detail?.currentSong || !Array.isArray(detail.charIds)) return;
+          for (const charId of new Set(detail.charIds)) {
+              void runProactive(charId, { kind: 'music-track-change', detail });
+          }
+      };
+      window.addEventListener(MUSIC_TRACK_CHANGED_EVENT, onMusicTrackChanged);
 
       // 「彼方」自主登入 —— 独立调度，复用同一批 refs 拿最新状态
       const runVR = async (charId: string, room?: string, letterId?: string) => {
@@ -2078,6 +2166,7 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
           ProactiveChat.onTrigger(() => {});
           VRScheduler.onTrigger(() => {});
           WorldScheduler.onTrigger(() => {});
+          window.removeEventListener(MUSIC_TRACK_CHANGED_EVENT, onMusicTrackChanged);
           window.removeEventListener('world-reroll-request', onRerollRequest as EventListener);
       };
   // eslint-disable-next-line react-hooks/exhaustive-deps

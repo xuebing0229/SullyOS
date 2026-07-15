@@ -288,6 +288,13 @@ export interface PostProcessCtx {
     /** UI / 业务钩子 */
     hooks: PostProcessHooks;
     /**
+     * 流式预览已把气泡实时展示过（hooks/useChatAI 的 streamingBubbles）时置 true：
+     * 落库时跳过"拟人打字延迟"（每条 0.5~2s 的 setTimeout），气泡近乎立即回填。
+     * 否则用户会看到"预览气泡收回去 → 再一条条慢慢重弹"的二次播放。
+     * 未预览的路径（非流式 / 双语 / 工具模式 / instant push）不传，打字节奏不变。
+     */
+    instantRender?: boolean;
+    /**
      * Phase 1+: 当 worker 已在自己内部跑过 2nd-pass LLM 时, 主线程不该再调一次。
      * Phase 0 始终为 false / undefined。
      */
@@ -328,11 +335,15 @@ export async function applyAssistantPostProcessing(
         xhsCaches,
         api,
         hooks,
+        instantRender,
         skipSecondPassLLM,
         directives,
         reasoningContent: pushReasoningContent,
     } = ctx;
     const { baseUrl, headers, effectiveApi } = api;
+    // 拟人打字延迟：流式预览已实时展示过气泡时（instantRender）跳过，避免二次慢放
+    const typingPause = (ms: number): Promise<void> =>
+        instantRender ? Promise.resolve() : new Promise(r => setTimeout(r, ms));
     const {
         setMessages,
         addToast,
@@ -527,7 +538,7 @@ export async function applyAssistantPostProcessing(
                         for (const chunk of chunks) {
                             if (!chunk) continue;
                             const replyData = globalMsgIndex === 0 ? aiReplyTarget : undefined;
-                            await new Promise(r => setTimeout(r, Math.min(Math.max(chunk.length * 50, 500), 2000)));
+                            await typingPause(Math.min(Math.max(chunk.length * 50, 500), 2000));
                             await DB.saveMessage({ charId: char.id, role: 'assistant', type: 'text', content: chunk, replyTo: replyData, metadata: takeMeta(mcdInheritMeta) } as any);
                             setMessages(await DB.getRecentMessagesByCharId(char.id, 200));
                             globalMsgIndex++;
@@ -542,7 +553,7 @@ export async function applyAssistantPostProcessing(
                         ? `${originalText}\n%%BILINGUAL%%\n${translatedText}`
                         : (originalText || translatedText);
                     const replyData = globalMsgIndex === 0 ? aiReplyTarget : undefined;
-                    await new Promise(r => setTimeout(r, Math.min(Math.max(biContent.length * 30, 400), 2000)));
+                    await typingPause(Math.min(Math.max(biContent.length * 30, 400), 2000));
                     await DB.saveMessage({ charId: char.id, role: 'assistant', type: 'text', content: biContent, replyTo: replyData, metadata: takeMeta(mcdInheritMeta) } as any);
                     setMessages(await DB.getRecentMessagesByCharId(char.id, 200));
                     globalMsgIndex++;
@@ -559,7 +570,7 @@ export async function applyAssistantPostProcessing(
                     for (const chunk of chunks) {
                         if (!chunk) continue;
                         const replyData = globalMsgIndex === 0 ? aiReplyTarget : undefined;
-                        await new Promise(r => setTimeout(r, Math.min(Math.max(chunk.length * 50, 500), 2000)));
+                        await typingPause(Math.min(Math.max(chunk.length * 50, 500), 2000));
                         await DB.saveMessage({ charId: char.id, role: 'assistant', type: 'text', content: chunk, replyTo: replyData, metadata: takeMeta(mcdInheritMeta) } as any);
                         setMessages(await DB.getRecentMessagesByCharId(char.id, 200));
                         globalMsgIndex++;
@@ -570,7 +581,7 @@ export async function applyAssistantPostProcessing(
             for (const emojiName of bilingualEmojis) {
                 const foundEmoji = emojis.find(e => e.name === emojiName);
                 if (foundEmoji) {
-                    await new Promise(r => setTimeout(r, Math.random() * 500 + 300));
+                    await typingPause(Math.random() * 500 + 300);
                     await DB.saveMessage({ charId: char.id, role: 'assistant', type: 'emoji', content: foundEmoji.url, metadata: takeMeta(mcdInheritMeta) } as any);
                     setMessages(await DB.getRecentMessagesByCharId(char.id, 200));
                 }
@@ -588,7 +599,7 @@ export async function applyAssistantPostProcessing(
                 if (part.type === 'emoji') {
                     const foundEmoji = emojis.find(e => e.name === part.content);
                     if (foundEmoji) {
-                        await new Promise(r => setTimeout(r, Math.random() * 500 + 300));
+                        await typingPause(Math.random() * 500 + 300);
                         await DB.saveMessage({ charId: char.id, role: 'assistant', type: 'emoji', content: foundEmoji.url, metadata: takeMeta(mcdInheritMeta) } as any);
                         setMessages(await DB.getRecentMessagesByCharId(char.id, 200));
                     }
@@ -603,7 +614,7 @@ export async function applyAssistantPostProcessing(
                     for (let i = 0; i < allChunks.length; i++) {
                         let chunk = allChunks[i];
                         const delay = Math.min(Math.max(chunk.length * 50, 500), 2000);
-                        await new Promise(r => setTimeout(r, delay));
+                        await typingPause(delay);
 
                         let chunkReplyTarget: { id: number, content: string, name: string } | undefined;
                         const chunkQuoteMatch = chunk.match(QUOTE_RE_DOUBLE) || chunk.match(QUOTE_RE_SINGLE) || chunk.match(REPLY_RE_CN) || chunk.match(QUOTE_RE_NL);

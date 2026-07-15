@@ -40,6 +40,13 @@ export interface ApiCallLogEntry extends ApiCallMeta {
     presetName: string;
     baseUrl: string;
     model: string;
+    /**
+     * 响应侧自报的模型（response.model）——实际服务这次请求的后端身份。
+     * 中转的渠道名（如 `[千岛-自营]xxx`）只锁"店面"，上游内部降级/轮询时对外模型名
+     * 不变，但后端会在响应里自报真身（如 `[逆-V]xxx-c`）。请求名 ≠ 自报名时，
+     * 这个字段就是"被换后端了"的直接证据。拿不到（响应无 model 字段）则空。
+     */
+    backendModel?: string;
     /** HTTP 状态码（成功 / 失败均记，失败时可能是最后一次的状态） */
     status?: number;
     /** 请求是否成功拿到 JSON */
@@ -88,6 +95,64 @@ function hostOf(url: string): string {
     } catch {
         return url;
     }
+}
+
+/**
+ * 模型名的"核心名"：剥掉渠道标签（[方括号]、(半角圆括号)、（全角圆括号））、
+ * 去空白、统一小写。用于判断「请求名 vs 后端自报名」是不是同一个模型——
+ * `(按次)gemini-3.1-pro-preview` 和 `gemini-3.1-pro-preview` 是同一个（只是渠道标签），
+ * `gemini-3.1-pro-preview` 和 `gemini-3.1-pro-preview-c` 才是真的换了后端。
+ */
+/**
+ * 已知模型家族开头（gemini-…/gpt-…/claude-…）。渠道前缀的花样穷举不完，
+ * 但家族名是个短且稳定的清单——把它当锚点：名字开头若不是家族名、且剥掉
+ * 一段裸前缀（`gcli-` / `vertex-ai/`）后就是，则认定那段是渠道标签。
+ * 这样「两头贴了不同裸前缀」（gcli-X vs vertex-X）也能对上核心名。
+ */
+const MODEL_FAMILY_RE = /^(gemini|gemma|gpt|chatgpt|o\d|claude|deepseek|qwen|qwq|glm|llama|grok|kimi|moonshot|mistral|mixtral|doubao|hunyuan|minimax|ernie|command|nova|phi)[-_.\d]/i;
+
+function stripBareChannelPrefixes(s: string): string {
+    let cur = s;
+    // 最多剥 3 层（渠道套渠道），每刀都必须让剩余部分以已知家族名开头才算数
+    for (let i = 0; i < 3; i++) {
+        if (MODEL_FAMILY_RE.test(cur)) return cur;
+        // 非贪婪取最短首段：'chatgpt-4o' 不会被误劈成 'chatgpt-4o' + …
+        const m = cur.match(/^[a-z0-9_.]{1,24}?[-/](.+)$/i);
+        if (!m || !MODEL_FAMILY_RE.test(m[1])) return cur;
+        cur = m[1];
+    }
+    return cur;
+}
+
+export function coreModelName(m: string): string {
+    const stripped = (m || '')
+        .replace(/\[[^\]]*\]|\([^)]*\)|（[^）]*）/g, '')
+        .replace(/\s+/g, '')
+        .toLowerCase();
+    return stripBareChannelPrefixes(stripped);
+}
+
+/**
+ * 「请求的模型」和「后端自报的模型」是否应视为同一个（＝不该报琥珀 ⚠️）。
+ *
+ * 贩子的渠道标签格式穷举不完（[方括号]、(按次)、gcli- 裸前缀…），所以不枚举格式，
+ * 改用方向性判定——核心名归一后：
+ *   - 完全相等 → 同一个
+ *   - 一方是另一方**去掉开头一截**的结果（endsWith）→ 同一个。
+ *     覆盖两个方向：请求带渠道前缀（gcli-X ↔ X）、后端带路径/前缀（X ↔ models/X）。
+ *     「开头多一截」只是运营商贴标签，不改变模型本体。
+ *   - 其余（尤其**尾巴多一截**：X ↔ X-c / X-lite）→ 不同。缩水变体都长在尾巴上，
+ *     这正是要抓的降级信号，绝不放行。
+ * 短名（<8 字符）不做 endsWith 宽容，防止病态短串误匹配。
+ */
+export function isSameCoreModel(requested: string, backend: string): boolean {
+    const a = coreModelName(requested);
+    const b = coreModelName(backend);
+    if (!a || !b) return true;   // 有一方空：无从比较，不报警
+    if (a === b) return true;
+    const shorter = a.length < b.length ? a : b;
+    if (shorter.length < 8) return false;
+    return a.endsWith(b) || b.endsWith(a);
 }
 
 /** 从请求体里抠出 model 字段（body 可能是 JSON 字符串或对象）。 */
@@ -143,12 +208,35 @@ function extractUsage(response: unknown): { prompt?: number; completion?: number
     };
 }
 
+/**
+ * SSE 流式响应文本的兜底解析：扫 `data: {...}` 行，抠后端自报 model（首个非空）
+ * 和 usage（取最后一个非空，OpenAI 约定 usage 在末尾 chunk）。
+ * 拦截器 clone 出的流式响应 JSON.parse 必然失败，之前流式调用在记录里
+ * 既没有 token 数也没有后端身份——这里补上。
+ */
+export function scanSseForLog(text: string): { model?: string; usage?: unknown } {
+    let model: string | undefined;
+    let usage: unknown;
+    for (const line of text.split(/\r?\n/)) {
+        if (!line.startsWith('data:')) continue;
+        const payload = line.slice(5).trim();
+        if (!payload || payload === '[DONE]') continue;
+        let chunk: any;
+        try { chunk = JSON.parse(payload); } catch { continue; }
+        if (!model && typeof chunk?.model === 'string' && chunk.model) model = chunk.model;
+        if (chunk?.usage && typeof chunk.usage === 'object') usage = chunk.usage;
+    }
+    return { model, usage };
+}
+
 export function recordApiCall(input: {
     url: string;
     body?: unknown;
     status?: number;
     ok: boolean;
     response?: unknown;
+    /** 响应原始文本（JSON.parse 失败时传入，供 SSE 兜底解析 model / usage） */
+    responseText?: string;
     meta?: ApiCallMeta;
     durationMs?: number;
 }): void {
@@ -157,13 +245,24 @@ export function recordApiCall(input: {
         const model = extractModel(input.body);
         // 显式 meta 优先（safeFetchJson 各调用点传的精确信息）；没有就用环境兜底（裸 fetch）。
         const meta = hasMeta(input.meta) ? input.meta! : ambientMeta;
-        const usage = extractUsage(input.response);
+        // 整包 JSON 直接读；流式响应（response 为空但有原始文本）走 SSE 兜底扫描
+        let responseForExtract: unknown = input.response;
+        let backendModel: string | undefined =
+            typeof (input.response as any)?.model === 'string' && (input.response as any).model
+                ? (input.response as any).model : undefined;
+        if (input.response === undefined && typeof input.responseText === 'string' && input.responseText.trimStart().startsWith('data:')) {
+            const scanned = scanSseForLog(input.responseText);
+            backendModel = scanned.model;
+            if (scanned.usage) responseForExtract = { usage: scanned.usage };
+        }
+        const usage = extractUsage(responseForExtract);
         const entry: ApiCallLogEntry = {
             id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
             timestamp: Date.now(),
             presetName: resolvePresetName(baseUrl, model),
             baseUrl,
             model,
+            backendModel,
             status: input.status,
             ok: input.ok,
             promptTokens: usage.prompt,

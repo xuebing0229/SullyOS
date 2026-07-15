@@ -33,6 +33,11 @@ import {
     type InstantPushPayload,
 } from '../utils/instantPushClient';
 import { applyAssistantPostProcessing, type XhsCaches } from '../utils/applyAssistantPostProcessing';
+import {
+    computeStreamPreviewBubbles,
+    extractStreamingEmbeddedThinking,
+    findNewStreamPreviewHandoverIds,
+} from '../utils/streamPreview';
 import { ActiveMsgStore } from '../utils/activeMsgStore';
 import { applyEmotionEvalRaw, extractAssistantText } from '../utils/emotionApply';
 import { shouldRequestAmbient, buildAmbientEvalSection } from '../utils/roomAmbient';
@@ -302,7 +307,7 @@ export async function evaluateEmotionBackground(
     userProfile: UserProfile,
     mainSystemPrompt: string,
     apiMessages: Array<{ role: string; content: any }>,
-    api: { baseUrl: string; apiKey: string; model: string }
+    api: { baseUrl: string; apiKey: string; model: string; stream?: boolean }
 ): Promise<string | null> {
     try {
         const ambientSection = shouldRequestAmbient(charData.id) ? buildAmbientEvalSection(charData) : '';
@@ -324,9 +329,17 @@ export async function evaluateEmotionBackground(
                 // 显式给足输出额度: 部分代理不传 max_tokens 时默认很小 (1k~2k), eval 的
                 // injection+innerState 很长, 会被截断成半截 JSON → buff 静默丢失.
                 max_tokens: 8000,
-                stream: false
+                // 跟随全局流式开关（响应由 safeFetchJson 透明拼装，下游 JSON 解析不变）。
+                // 好处: ①评估动辄生成 4~5k token、跑 30~46s，非流式最容易撞网关超时；
+                // ②中转若按流式/非流式分渠道池，评估与主聊天落同一池，行为可对比。
+                stream: !!api.stream,
+                ...(api.stream ? { stream_options: { include_usage: true } } : {}),
             })
         }, 2, 0, { appName: '消息', charId: charData.id, charName: charData.name, purpose: '情绪评估' });
+
+        // 排查贩子降级路由用：把评估实际落到的后端和 token 计数打出来，
+        // 和主聊天的 🔢 [Token Usage] 一对比就能看出哪个请求被挤进了备用渠道。
+        console.log(`🎭 [Emotion] backend=${data?.model || '?'} | prompt=${data?.usage?.prompt_tokens ?? '?'} completion=${data?.usage?.completion_tokens ?? '?'}`);
 
         // content 可能是分块数组 / 空 content + reasoning_content (个别 Claude 兼容代理), 统一走兜底提取
         const raw = extractAssistantText(data.choices?.[0]?.message);
@@ -355,6 +368,8 @@ interface UseChatAIProps {
     /** 长报错走弹窗 (toast 一行装不下), 手机用户能看清并复制反馈 */
     showError?: (title: string, details: string) => void;
     setMessages: (msgs: Message[]) => void; // Callback to update UI messages
+    /** 正式消息接替流式预览前同步登记 id，避免真实气泡重新播放入场动画。 */
+    onStreamPreviewHandover?: (charId: string, messageIds: number[]) => void;
     realtimeConfig?: RealtimeConfig; // 新增：实时配置
     translationConfig?: { enabled: boolean; sourceLang: string; targetLang: string };
     memoryPalaceConfig?: { embedding: { baseUrl: string; apiKey: string; model: string; dimensions: number }; lightLLM: { baseUrl: string; apiKey: string; model: string } };
@@ -378,6 +393,7 @@ export const useChatAI = ({
     addToast,
     showError,
     setMessages,
+    onStreamPreviewHandover,
     realtimeConfig,  // 新增
     translationConfig,
     memoryPalaceConfig,
@@ -391,6 +407,10 @@ export const useChatAI = ({
     const music = useMusic();
 
     const [isTyping, setIsTyping] = useState(false);
+    // 流式预览气泡：stream 开启时，已完成行与安全尾句随增量以临时气泡上屏。
+    // 流结束后由 applyAssistantPostProcessing 正常落库渲染，预览随即清空 —— 只影响体感，不改持久化。
+    const [streamingBubbles, setStreamingBubbles] = useState<string[]>([]);
+    const [streamingThinking, setStreamingThinking] = useState('');
     const [recallStatus, setRecallStatus] = useState<string>('');
     const [searchStatus, setSearchStatus] = useState<string>('');
     const [diaryStatus, setDiaryStatus] = useState<string>('');
@@ -477,9 +497,10 @@ export const useChatAI = ({
                 try { await ActiveMsgStore.clearPendingEmotionEval(charIdAtMount); } catch { /* ignore */ }
                 return;
             }
+            // 评估跟随全局流式开关（与 triggerAI 路径同口径；专用情绪 API 自带 stream 时以它为准）
             const emotionApi = (char.emotionConfig.api?.baseUrl)
-                ? char.emotionConfig.api
-                : { baseUrl: deps.apiConfig.baseUrl, apiKey: deps.apiConfig.apiKey, model: deps.apiConfig.model };
+                ? { ...char.emotionConfig.api, stream: (char.emotionConfig.api as any).stream ?? !!(deps.apiConfig.stream ?? false) }
+                : { baseUrl: deps.apiConfig.baseUrl, apiKey: deps.apiConfig.apiKey, model: deps.apiConfig.model, stream: !!(deps.apiConfig.stream ?? false) };
 
             try {
                 // 重新从 DB 拉 history (push msg 此刻已经在 DB 里, activeMsgRuntime 在 dispatch
@@ -628,6 +649,8 @@ export const useChatAI = ({
             : char;
 
         setIsTyping(true);
+        setStreamingBubbles([]);
+        setStreamingThinking('');
         setRecallStatus('');
 
         // Keep the Service Worker alive while we make potentially long AI calls
@@ -742,12 +765,18 @@ export const useChatAI = ({
             //      且不会跟客户端 eval 双跑双扣费. 见下方 instant 分支 + worker/instant-push + activeMsgRuntime.
             const emotionEvalEnabled = !!(!promptBuildSkipped && !isEmotionEvalSkipped() && isScheduleFeatureOn(char) && char.emotionConfig?.enabled);
             const instantOn = isInstantConfigReady();
+            // 评估跟随全局流式开关（专用情绪 API 自带 stream 字段时以它为准）
+            const evalStream: boolean = !!((effectiveApi as any).stream ?? apiConfig.stream ?? false);
             const emotionApi = emotionEvalEnabled
                 ? ((char.emotionConfig!.api?.baseUrl)
-                    ? char.emotionConfig!.api!
-                    : { baseUrl: apiConfig.baseUrl, apiKey: apiConfig.apiKey, model: apiConfig.model })
+                    ? { ...char.emotionConfig!.api!, stream: (char.emotionConfig!.api as any).stream ?? evalStream }
+                    : { baseUrl: apiConfig.baseUrl, apiKey: apiConfig.apiKey, model: apiConfig.model, stream: evalStream })
                 : null;
-            if (emotionEvalEnabled && !instantOn && emotionApi) {
+            // 本地路径的情绪评估：主 fetch 发出后立即发射（见下方调用点）。
+            // 历史备注：曾为串行中转做过 1.5s 错峰（评估抢跑会把主回复压后一个评估时长），
+            // 用户侧已排查确认当前渠道无该并发问题，2026-07 应用户要求取消延迟。
+            // instant 模式不受影响：worker 端本来就是主回复跑完才跑评估（天然串行）。
+            const fireLocalEmotionEval = (emotionEvalEnabled && !instantOn && emotionApi) ? () => {
                 setEmotionStatus('evaluating');
                 evaluateEmotionBackground(charForGen, userProfile, systemPrompt, cleanedApiMessages, emotionApi)
                     .then((innerState) => {
@@ -756,7 +785,7 @@ export const useChatAI = ({
                     .finally(() => {
                         setEmotionStatus('');
                     });
-            }
+            } : null;
             const instantEmotionEval = (emotionEvalEnabled && instantOn && emotionApi)
                 ? {
                     // includeContext=false: 不嵌 system prompt + 对话历史 (worker 复用本次请求的 messages 作前文),
@@ -926,12 +955,62 @@ export const useChatAI = ({
                 return;
             }
 
+            // 流式预览：仅在用户开了 stream、且非工具/双语模式时启用。
+            // 工具模式的首轮响应可能是 tool_calls（无正文可预览）；双语模式正文包在
+            // 跨行 <翻译> 标签里。这两类连正文/思考钩子都不挂，完整走原有整包路径。
+            // 语音、日记、HTML 等由内容标签动态识别，computeStreamPreviewBubbles 会扣住控制块，
+            // 只允许标签外确实属于普通文字的部分预览。
+            // 每次 onDelta 基于累计全文全量重算（safeFetchJson 重试会重开流，天然重置）；
+            // 正文尾句和思考内容只在累计文本确实变化时触发重渲染。
+            const streamUiEligible = !!userStream && !toolModeActive && !bilingualActive;
+            const streamPreviewEligible = streamUiEligible;
+            const streamThinkingEligible = streamUiEligible && payload.flags.thinkingActive;
+            // 预览真的上过屏才置 true → 后处理落库时跳过拟人打字延迟（instantRender），
+            // 否则用户会看到"预览气泡收回去、再一条条慢慢重弹"的二次播放。
+            let streamPreviewShown = false;
+            let streamThinkingShown = false;
+            let latestStreamPreviewBubbles: string[] = [];
+            let latestNativeReasoning = '';
+            let latestEmbeddedThinking = '';
+            const publishStreamingThinking = () => {
+                const combined = [latestNativeReasoning, latestEmbeddedThinking]
+                    .map(text => text.trim())
+                    .filter(Boolean)
+                    .join('\n\n');
+                if (combined) streamThinkingShown = true;
+                setStreamingThinking(prev => prev === combined ? prev : combined);
+            };
+            const streamHooks = (streamPreviewEligible || streamThinkingEligible) ? {
+                onDelta: (_delta: string, fullText: string) => {
+                    if (streamPreviewEligible) {
+                        const bubbles = computeStreamPreviewBubbles(fullText);
+                        latestStreamPreviewBubbles = bubbles;
+                        if (bubbles.length > 0) streamPreviewShown = true;
+                        setStreamingBubbles(prev =>
+                            (prev.length === bubbles.length && prev.every((b, i) => b === bubbles[i])) ? prev : bubbles
+                        );
+                    }
+                    if (streamThinkingEligible) {
+                        latestEmbeddedThinking = extractStreamingEmbeddedThinking(fullText);
+                        publishStreamingThinking();
+                    }
+                },
+                onReasoningDelta: (_delta: string, fullReasoning: string) => {
+                    if (!streamThinkingEligible) return;
+                    latestNativeReasoning = fullReasoning;
+                    publishStreamingThinking();
+                },
+            } : undefined;
+
+            // 主请求即将发出 → 立即并行发射情绪评估（错峰延迟已按用户要求取消，见定义处注释）。
+            fireLocalEmotionEval?.();
+
             let data: any;
             try {
                 data = await safeFetchJson(`${baseUrl}/chat/completions`, {
                     method: 'POST', headers,
                     body: JSON.stringify(baseReqBody)
-                }, 2, 0, { appName: '消息', charId: char.id, charName: char.name, purpose: '聊天回复' });
+                }, 2, 0, { appName: '消息', charId: char.id, charName: char.name, purpose: '聊天回复' }, streamHooks);
             } catch (e) {
                 // 仅通用 MCP、且没有和其他工具模式混用时降级。部分 OpenAI 兼容中转
                 // 会对携带 tools 的请求直接回 4xx，而不是忽略参数；去掉 tools 后让
@@ -1335,6 +1414,41 @@ export const useChatAI = ({
             // 详见 utils/applyAssistantPostProcessing.ts。Phase 0 行为字节级不变;
             // Phase 1 会让 instant push 路径也调它 (skipSecondPassLLM=true);
             // Phase 2 会让 worker 端把识别的副作用打包成 directives 传过来重放。
+            // 预览气泡的无缝交棒：不提前清（提前清 = 气泡集体消失→再劈里啪啦重放，用户实报），
+            // 而是包装 setMessages——后处理第一条真实消息落库上屏的**同一帧**清预览。
+            // 交接前预览一直挂着，交接后 instantRender 秒速回填，视觉上是"预览定格成正式消息"。
+            let previewHandedOver = false;
+            const previewHandoverIds = new Set<number>();
+            const previewBaselineMaxId = contextMsgs.reduce(
+                (maxId, message) => Math.max(maxId, message.id),
+                Number.NEGATIVE_INFINITY,
+            );
+            const setMessagesWithPreviewHandover = (msgs: Message[]) => {
+                const newlyHandedOverIds = findNewStreamPreviewHandoverIds(
+                    msgs,
+                    latestStreamPreviewBubbles,
+                    previewBaselineMaxId,
+                    previewHandoverIds,
+                );
+                const handoverIds = new Set(newlyHandedOverIds);
+                if (streamThinkingShown) {
+                    const thinkingHost = msgs.find(message =>
+                        message.id > previewBaselineMaxId && message.role === 'assistant'
+                    );
+                    if (thinkingHost && !previewHandoverIds.has(thinkingHost.id)) handoverIds.add(thinkingHost.id);
+                }
+                if (handoverIds.size > 0) {
+                    handoverIds.forEach(id => previewHandoverIds.add(id));
+                    // ref 在 setMessages 触发渲染前同步更新，首帧就能关掉正式气泡的 fade-in。
+                    onStreamPreviewHandover?.(char.id, [...handoverIds]);
+                }
+                setMessages(msgs);
+                if (!previewHandedOver) {
+                    previewHandedOver = true;
+                    setStreamingBubbles([]);
+                    setStreamingThinking('');
+                }
+            };
             const rawAiContent = data.choices?.[0]?.message?.content || '';
             const xhsCaches: XhsCaches = {
                 xsecTokenCache: xsecTokenCacheRef.current,
@@ -1360,7 +1474,7 @@ export const useChatAI = ({
                     effectiveApi,
                 },
                 hooks: {
-                    setMessages,
+                    setMessages: setMessagesWithPreviewHandover,
                     addToast,
                     setRecallStatus,
                     setSearchStatus,
@@ -1371,6 +1485,8 @@ export const useChatAI = ({
                     // instant push 路径 (activeMsgRuntime) 共享同一份, 见 MusicContext.loadMusicHooks.
                     musicHooks: loadMusicHooks() ?? undefined,
                 },
+                // 流式预览已把气泡展示过 → 落库免打字延迟，秒回填（未预览时行为不变）
+                instantRender: streamPreviewShown,
                 // Phase 0: 本地 fetch 路径保持原逻辑, 不跳 2nd-pass LLM, 也没有结构化 directives。
                 skipSecondPassLLM: false,
                 directives: [],
@@ -1394,6 +1510,8 @@ export const useChatAI = ({
         } finally {
             KeepAlive.stop();
             setIsTyping(false);
+            setStreamingBubbles([]);  // 错误/中断路径兜底清预览
+            setStreamingThinking('');
             setRecallStatus('');
             setSearchStatus('');
             setDiaryStatus('');
@@ -1523,6 +1641,8 @@ export const useChatAI = ({
 
     return {
         isTyping,
+        streamingBubbles,
+        streamingThinking,
         recallStatus,
         searchStatus,
         diaryStatus,

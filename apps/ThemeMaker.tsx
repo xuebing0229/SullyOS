@@ -468,6 +468,7 @@ const ThemeMaker: React.FC = () => {
     const [paddingVal, setPaddingVal] = useState(12);
 
     const fileInputRef = useRef<HTMLInputElement>(null);
+    const themeImportInputRef = useRef<HTMLInputElement>(null);
     const decorationInputRef = useRef<HTMLInputElement>(null);
     const avatarDecoInputRef = useRef<HTMLInputElement>(null);
     const cssTextareaRef = useRef<HTMLTextAreaElement>(null);
@@ -533,6 +534,35 @@ const ThemeMaker: React.FC = () => {
         setPaddingVal(extractPaddingFromCss(copy.customCss || ''));
         addToast(`正在修改「${theme.name}」`, 'info');
     });
+
+    // 导入别人分享的 .sully-bubble.json（exportSavedTheme 的逆操作，此前只有导出没有入口）。
+    // 兼容两种形态：完整导出包 {kind:'sullyos-chat-theme', theme} 或直接一个 ChatTheme 对象。
+    // 永远发新 id（防覆盖自己已有作品）；CSS 走与保存一致的可渲染性校验，坏 CSS 不入库。
+    const importThemeFile = async (file: File) => {
+        try {
+            const parsed = JSON.parse(await file.text());
+            const raw = (parsed && typeof parsed === 'object' && parsed.kind === 'sullyos-chat-theme') ? parsed.theme : parsed;
+            if (!raw || typeof raw !== 'object' || !raw.user || !raw.ai) {
+                addToast('导入失败：不是有效的气泡主题文件', 'error');
+                return;
+            }
+            const css = typeof raw.customCss === 'string' ? raw.customCss : '';
+            if (css) {
+                const renderability = runCssRenderabilityCheck(css, validateCustomCss(css));
+                if (!renderability.ok) {
+                    addToast(`导入失败：${renderability.message}`, 'error');
+                    return;
+                }
+            }
+            const baseName = String(raw.name || '导入的气泡').slice(0, 30);
+            const name = customThemes.some(t => t.name === baseName) ? `${baseName}（导入）` : baseName;
+            const imported: ChatTheme = { ...raw, id: `custom-${Date.now()}-${Math.floor(Math.random() * 1e4)}`, type: 'custom', name };
+            addCustomTheme(imported);
+            addToast(`已导入「${name}」，在作品区可选用`, 'success');
+        } catch {
+            addToast('导入失败：无法解析文件', 'error');
+        }
+    };
 
     const exportSavedTheme = (theme: ChatTheme) => {
         const blob = new Blob([JSON.stringify({ kind: 'sullyos-chat-theme', version: 1, theme }, null, 2)], { type: 'application/json' });
@@ -958,13 +988,30 @@ const ThemeMaker: React.FC = () => {
                 <button type="button" onClick={() => setIsThemeLibraryOpen(prev => !prev)} aria-expanded={isThemeLibraryOpen} className="w-full flex items-center justify-between text-left">
                     <div>
                         <h2 className="text-xs font-bold text-slate-600">我的自定义气泡</h2>
-                        <p className="text-[10px] text-slate-400 mt-0.5">点击{isThemeLibraryOpen ? '收起' : '展开并选择'} · 可搜索、修改或导出</p>
+                        <p className="text-[10px] text-slate-400 mt-0.5">点击{isThemeLibraryOpen ? '收起' : '展开并选择'} · 可搜索、导入、修改或导出</p>
                     </div>
                     <div className="flex items-center gap-2">
                         <span className="text-[10px] text-slate-400">{customThemes.length} 套</span>
                         <span className={`text-slate-400 transition-transform ${isThemeLibraryOpen ? 'rotate-180' : ''}`} aria-hidden>⌄</span>
                     </div>
                 </button>
+                {isThemeLibraryOpen && (
+                    <div className="mt-2 flex justify-end">
+                        <input
+                            type="file"
+                            ref={themeImportInputRef}
+                            className="hidden"
+                            accept=".json,application/json"
+                            onChange={(e) => { const f = e.target.files?.[0]; if (f) importThemeFile(f); e.target.value = ''; }}
+                        />
+                        <button
+                            onClick={() => themeImportInputRef.current?.click()}
+                            className="px-3 py-1.5 rounded-xl bg-slate-100 text-slate-600 text-[11px] font-bold active:scale-95 transition-transform"
+                        >
+                            ⬆ 导入气泡文件
+                        </button>
+                    </div>
+                )}
                 {isThemeLibraryOpen && (customThemes.length > 0 ? (
                     <div className="mt-3">
                         {customThemes.length > 6 && (
@@ -1520,7 +1567,10 @@ const ThemeMaker: React.FC = () => {
                             <div className="text-base font-bold text-slate-700">✅ 已存进气泡库 · 给谁穿上？</div>
                             <p className="mt-1.5 text-[11px] text-slate-400 leading-relaxed">
                                 勾选角色，「{editingTheme.name}」就会用在 ta 的聊天里；取消勾选则换回默认气泡。
-                                之后也能随时在 <b>聊天 → 顶栏会话面板 → 气泡样式</b> 里切换。
+                                想全局生效就点「全选」。之后也能随时在 <b>聊天 → 顶栏会话面板 → 气泡样式</b> 里切换。
+                            </p>
+                            <p className="mt-1 text-[10px] text-slate-400 leading-relaxed">
+                                气泡主题会盖过「外观 → 聊天界面」的可视化设置；但角色手写的「白框」自定义 CSS 优先级更高，撞上时以 CSS 为准。
                             </p>
                             <div className="mt-2.5 flex items-center gap-2">
                                 <button

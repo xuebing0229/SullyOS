@@ -32,6 +32,7 @@ describe('stripSensitiveCardFields', () => {
       sprites: { happy: 'data:img' },
       // 美化
       bubbleStyle: 'theme-1',
+      chatFineTune: { enabled: true, chatBubbleFontSize: 14 },
       chromeCustomCss: '.x{}',
       embeddedTheme: { id: 't1' },
       chatBackground: 'bg',
@@ -53,7 +54,7 @@ describe('stripSensitiveCardFields', () => {
     expect(out.sprites).toEqual({ happy: 'data:img' });
 
     // 全部被剥离
-    for (const key of ['bubbleStyle', 'chromeCustomCss', 'embeddedTheme', 'chatBackground',
+    for (const key of ['bubbleStyle', 'chatFineTune', 'chromeCustomCss', 'embeddedTheme', 'chatBackground',
       'chatVoiceLang', 'dateVoiceLang', 'activeBuffs', 'buffInjection', 'phoneState', 'savedDateState']) {
       expect(out).not.toHaveProperty(key);
     }

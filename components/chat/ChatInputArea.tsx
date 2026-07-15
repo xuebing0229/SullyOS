@@ -1,5 +1,5 @@
 import React, { useRef, useState, useEffect } from 'react';
-import { ShareNetwork, Trash, Plus, Smiley, PaperPlaneTilt, Money, BookOpenText, GearSix, Image, Lock, ArrowsClockwise, ChatCircleDots, CalendarBlank, ForkKnife, Coffee, Code, Brain, PencilSimple, BellSimpleRinging, Sparkle, CaretDown } from '@phosphor-icons/react';
+import { ShareNetwork, Trash, Plus, Smiley, PaperPlaneTilt, Money, BookOpenText, GearSix, Image, Lock, ArrowsClockwise, ChatCircleDots, CalendarBlank, ForkKnife, Coffee, Code, Brain, PencilSimple, BellSimpleRinging, Sparkle, CaretDown, FadersHorizontal } from '@phosphor-icons/react';
 import { CharacterProfile, ChatTheme, EmojiCategory, Emoji } from '../../types';
 import { PRESET_THEMES } from './ChatConstants';
 import { AcnhActionTile } from '../os/acnhIcons';
@@ -467,10 +467,12 @@ const ChatInputArea: React.FC<ChatInputAreaProps> = ({
                         <>
                             {/* Categories Bar */}
                             <div className="relative">
-                                <div className={panelTopBarClass}>
+                                {/* touch-action: pan-x —— 显式告诉浏览器"从分组 chip 上起手的触摸就是横向滚动"，
+                                    防止 chip 的长按/点击手势让部分浏览器犹豫而吞掉滑动（分组多时滑不到末尾的 +） */}
+                                <div className={panelTopBarClass} style={{ touchAction: 'pan-x' }}>
                                     {categories.map(cat => (
-                                        <button 
-                                            key={cat.id} 
+                                        <button
+                                            key={cat.id}
                                             onClick={(e) => handleItemClick(e, cat, 'category')}
                                             // Long press handlers for Categories
                                             onTouchStart={(e) => handleTouchStart(cat, 'category', e)}
@@ -481,7 +483,7 @@ const ChatInputArea: React.FC<ChatInputAreaProps> = ({
                                             onMouseUp={handleTouchEnd}
                                             onMouseLeave={handleTouchEnd}
                                             onContextMenu={(e) => e.preventDefault()}
-                                            className={`px-3 py-1 text-xs rounded-full whitespace-nowrap transition-all select-none flex items-center gap-1 ${activeCategory === cat.id ? activeCategoryClass : inactiveCategoryClass}`}
+                                            className={`px-3 py-1 text-xs rounded-full whitespace-nowrap shrink-0 transition-all select-none flex items-center gap-1 ${activeCategory === cat.id ? activeCategoryClass : inactiveCategoryClass}`}
                                         >
                                             {cat.name}
                                             {cat.allowedCharacterIds && cat.allowedCharacterIds.length > 0 && (
@@ -490,7 +492,9 @@ const ChatInputArea: React.FC<ChatInputAreaProps> = ({
                                         </button>
                                     ))}
                                     <button onClick={() => onPanelAction('add-category')} className={categoryAddButtonClass}>+</button>
-                                    <div className="w-14 shrink-0 pointer-events-none" />
+                                    {/* 尾部留白必须 ≥ 右侧浮动按钮区宽度（两个 w-6 + gap + px-3 ≈ 78px），
+                                        否则滚到最右时 + 按钮被浮动小药丸盖住点不到 */}
+                                    <div className="w-24 shrink-0 pointer-events-none" />
                                 </div>
                                 {emojiSelectionMode ? (
                                     <div 
@@ -561,11 +565,20 @@ const ChatInputArea: React.FC<ChatInputAreaProps> = ({
                                             )}
                                         </button>
                                     ))}
+                                    {/* 总览里也能新建分组：横向条分组多时 + 可能滑不到/被浮动按钮挡，这里保底 */}
+                                    <button
+                                        onClick={() => { onPanelAction('add-category'); setShowCategoryOverview(false); }}
+                                        className={`px-3 py-1 text-xs rounded-full whitespace-nowrap transition-all select-none ${inactiveCategoryClass}`}
+                                    >
+                                        + 新建分组
+                                    </button>
                                 </div>
                             )}
 
                             <div className="flex-1 overflow-y-auto no-scrollbar p-4">
-                                <div className="grid grid-cols-4 gap-3">
+                                {/* 4 列 → 5 列：面板缩略图整体缩小一档（吸收社区美化的共识密度）。
+                                    已用自定义 CSS（.sully-chat-panel button img 定宽 !important）的用户不受影响。 */}
+                                <div className="grid grid-cols-5 gap-2">
                                     {emojiSelectionMode ? (
                                         <button 
                                             onClick={() => {
@@ -581,11 +594,14 @@ const ChatInputArea: React.FC<ChatInputAreaProps> = ({
                                     ) : (
                                         <button onClick={() => onPanelAction('emoji-import')} className={emojiImportTileClass}>+</button>
                                     )}
-                                    {emojis.slice(0, visibleEmojiCount).map((e, i) => {
+                                    {emojis.slice(0, visibleEmojiCount).map((e) => {
                                         const isSelected = selectedEmojiUrls.has(e.url);
                                         return (
                                         <button
-                                            key={i}
+                                            // key 必须用 url 而不是索引：索引 key 会让 React 复用 <img> 节点、
+                                            // 切分组时只换 src——旧分组的位图在新图解码完成前一直挂在格子上
+                                            // （表现为"新分组显示旧分组的图"）。按 url 重建节点则空白等加载，不串图。
+                                            key={e.url}
                                             onClick={(ev) => handleItemClick(ev, e, 'emoji')}
                                             // Long press handlers for Emojis
                                             onTouchStart={(ev) => handleTouchStart(e, 'emoji', ev)}
@@ -599,7 +615,7 @@ const ChatInputArea: React.FC<ChatInputAreaProps> = ({
                                             className={`${emojiTileClass} ${isSelected ? '!border-blue-500' : ''}`}
                                         >
                                             <div className="aspect-square w-full">
-                                                <img src={e.url} loading="lazy" decoding="async" className="w-full h-full object-contain pointer-events-none" />
+                                                <img src={e.url} loading="lazy" decoding="async" className="sully-emoji-thumb w-full h-full object-contain pointer-events-none" />
                                             </div>
                                             <span className={`text-[9px] truncate w-full text-center mt-0.5 leading-tight pointer-events-none ${emojiLabelClass}`}>{e.name}</span>
                                             {isSelected && <div className="absolute inset-0 bg-blue-500/20 rounded-2xl pointer-events-none border-2 border-blue-500" />}
@@ -783,6 +799,17 @@ const ChatInputArea: React.FC<ChatInputAreaProps> = ({
                                   {showThinkingChain && <span className={`absolute -top-1 -right-1 w-3 h-3 rounded-full border-2 ${isDiscordStyle ? 'bg-indigo-400 border-slate-900' : 'bg-indigo-500 border-white'}`} />}
                               </div>)}
                               <span className="text-xs font-bold">{showThinkingChain ? '思考已开' : '展示思考'}</span>
+                            </button>
+
+                            {/* 聊天装扮：打开该角色专属的「聊天细节微调」弹窗（跟随全局 / 单独定制，不用写 CSS） */}
+                            <button
+                              onClick={() => onPanelAction('fine-tune')}
+                              className={`flex flex-col items-center gap-2 active:scale-95 transition-transform ${acnh ? 'text-[#725d42]' : isDiscordStyle ? 'text-slate-200' : 'text-slate-600'}`}
+                            >
+                              <div className={`w-14 h-14 rounded-2xl flex items-center justify-center shadow-sm border ${acnh ? 'bg-white/70 border-[#e6dab4] text-[#5fae6e]' : isDiscordStyle ? 'bg-slate-800 text-teal-300 border-teal-400/20' : 'bg-teal-50 text-teal-500 border-teal-100'}`}>
+                                  <FadersHorizontal className="w-6 h-6" weight="bold" />
+                              </div>
+                              <span className="text-xs font-bold">聊天装扮</span>
                             </button>
 
                             {/* 白框：打开该角色专属的「白框自定义 CSS」弹窗 */}

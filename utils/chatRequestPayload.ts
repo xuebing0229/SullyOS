@@ -24,7 +24,8 @@ import type { LuckinMiniAppSnapshot, LuckinChatState } from './luckinToolBridge'
 import { isMcpChatAvailable } from './mcpClient';
 import { buildMcpSystemBlock, MCP_TAIL_REMINDER } from './mcpToolBridge';
 import type { MusicCfg, Song, LyricLine, MusicPlaybackSnapshot } from '../context/MusicContext';
-import { isPromptBuildSkipped } from './devDebug';
+import { isPromptBuildSkipped, isSystemMessageMergeEnabled } from './devDebug';
+import { mergeSystemMessages } from './systemMessageMerge';
 import { injectWorldbookDepthEntries, resolveWorldbookEntries } from './worldbook';
 import { normalizeTranslationLangLabel } from './translationLang';
 
@@ -155,20 +156,23 @@ export function cleanApiMessages(apiMessages: Array<{ role: string; content: any
 }
 
 /**
- * 构造完整 chat 请求载荷。顺序严格对齐 useChatAI.ts 现有实现：
+ * 构造完整 chat 请求载荷。三段式结构（稳定前缀 / 历史 / 易变尾段）：
  *
  *   1. injectMemoryPalace（向量召回挂到 char.memoryPalaceInjection）
- *   2. ChatPrompts.buildSystemPrompt（核心人设 + 实时 + 记忆 + 音乐 + 日程内心独白）
- *   3. += 双语指令
- *   4. += HTML 模式提示词
- *   5. += 思考链提示词（+ 用户额外要求）
- *   6. ChatPrompts.buildMessageHistory → apiMessages
- *   7. 剥离 apiMessages 里旧的双语标签 → cleanedApiMessages
- *   8. += 麦当劳小程序上下文（注意：在 6/7 之后追加到 systemPrompt）
- *   9. fullMessages = [system, ...cleanedApiMessages]
- *  10. fullMessages.push（末尾双语 reminder，不进 systemPrompt）
+ *   2. ChatPrompts.buildSystemPromptParts → { stable, volatileState, recencyTail }
+ *   3. stable += 双语指令 / HTML 模式 / 思考链（按角色配置，变化慢）
+ *   4. ChatPrompts.buildMessageHistory → apiMessages → 剥离旧双语标签 → cleanedApiMessages
+ *   5. volatileTail = volatileState + 麦当劳/瑞幸/瑞一杯实时快照块
+ *   6. stable += 通用 MCP 工具块（工具清单持久化，变化慢）
+ *   7. volatileTail += recencyTail（总纲+「回到你自己」钢印，永远最后）
+ *   8. fullMessages = [stable system, ...cleanedApiMessages, volatileTail system]
+ *   9. fullMessages.push（末尾双语 reminder / MCP reminder）
  *
- * emotion eval 应当吃 (systemPrompt, cleanedApiMessages) —— 与主 API 看到的完全一致。
+ * 设计动机：稳定前缀不含分钟级时间戳/召回/buff → 中转的 prompt 前缀缓存能跨轮命中
+ * （TTFT 直降）；易变状态贴着生成点，时间/情绪拿到最强 recency 注意力。
+ *
+ * emotion eval 吃 (systemPrompt=stable+volatileTail 拼接, cleanedApiMessages) ——
+ * 信息与主 API 完全一致，仅易变段的位置不同（主 API 在历史后，eval 拼在 system 文本里）。
  */
 export async function buildChatRequestPayload(input: BuildChatPayloadInput): Promise<BuildChatPayloadResult> {
     const {
@@ -213,14 +217,20 @@ export async function buildChatRequestPayload(input: BuildChatPayloadInput): Pro
         musicCfg = derived.musicCfg ?? musicCfg;
     }
 
-    // ── 3. buildSystemPrompt 核心 ─────────────────────────
-    let systemPrompt = await ChatPrompts.buildSystemPrompt(
+    // ── 3. buildSystemPromptParts 核心（三段式） ──────────
+    // stable → 消息数组第一条 system（前缀稳定，吃 prompt cache）；
+    // volatileTail → 历史消息之后的 system（时间/召回/buff/日程/音乐等实时状态 + 点单类模式块）；
+    // recencyTail（总纲+「回到你自己」钢印）最后拼进 volatileTail 末尾，保证它是模型
+    // 开口前读到的最后内容 —— 双语/HTML/思考链等格式块都只能拼在 stable 里、排它前面。
+    const parts = await ChatPrompts.buildSystemPromptParts(
         char, userProfile, groups, emojis, categories, recentMsgsHint,
         realtimeConfig, innerState || undefined,
         userListeningContext ?? null,
         !!isListeningTogether,
         musicCfg,
     );
+    let systemPrompt = parts.stable;
+    let volatileTail = parts.volatileState;
 
     // ── 4. 双语指令注入 ───────────────────────────────────
     const sourceLang = normalizeTranslationLangLabel(translationConfig?.sourceLang);
@@ -285,35 +295,35 @@ export async function buildChatRequestPayload(input: BuildChatPayloadInput): Pro
         resolvedWorldbookEntries.filter(entry => entry.position === 4),
     );
 
-    // ── 9. 麦当劳小程序上下文（在 cleanedApiMessages 之后追加到 systemPrompt） ──
+    // ── 9. 麦当劳小程序上下文（购物车/菜单实时快照 → 易变尾段） ──
     const mcdActive = !!mcdMiniSnap?.open;
     if (mcdActive) {
         const block = buildMcdMiniAppContextBlock(mcdMiniSnap, userProfile?.name || '用户');
         if (block) {
-            systemPrompt += block;
+            volatileTail += block;
         }
     }
 
-    // ── 9b. 瑞幸小程序上下文 ──
+    // ── 9b. 瑞幸小程序上下文（同上，易变尾段） ──
     const luckinActive = !!luckinMiniSnap?.open;
     if (luckinActive) {
         const block = buildLuckinMiniAppContextBlock(luckinMiniSnap, userProfile?.name || '用户');
         if (block) {
-            systemPrompt += block;
+            volatileTail += block;
         }
     }
 
-    // ── 9c. 瑞幸聊天点单模式 (角色直接调真实工具) ──
+    // ── 9c. 瑞幸聊天点单模式 (角色直接调真实工具；含实时定位/会话状态 → 易变尾段) ──
     const luckinChatActive = !!luckinChat?.active;
     if (luckinChatActive) {
         const block = buildLuckinChatSystemBlock(luckinChat, recentMsgsHint, userProfile?.name || '用户');
         if (block) {
-            systemPrompt += block;
+            volatileTail += block;
         }
     }
 
     // ── 9d. 通用 MCP 工具模式 (用户自配的远程 MCP 服务器, 见 docs/mcp-client.md) ──
-    // 只要有启用且已发现工具的服务器就常开，不像瑞幸靠关键词激活。
+    // 工具清单来自持久化的发现结果，变化很慢 → 稳定段。
     const mcpChatActive = isMcpChatAvailable(char.id);
     if (mcpChatActive) {
         const block = buildMcpSystemBlock(userProfile?.name || '用户', char.id);
@@ -322,10 +332,20 @@ export async function buildChatRequestPayload(input: BuildChatPayloadInput): Pro
         }
     }
 
-    // ── 10. 组装 fullMessages + 末尾双语 reminder ─────────
+    // ── 10. recency 钢印归位 + 组装 fullMessages ─────────
+    // 「关于对方的表达」+「回到你自己」必须是易变尾段的最后内容：修复旧版把双语/HTML/
+    // 思考链/点单块拼在钢印之后、模型开口前最后读到的是格式说明书的问题。
+    volatileTail += parts.recencyTail;
+
+    // 结构：[稳定 system] + [历史消息] + [易变状态 system] (+ 末尾 reminder)。
+    // 稳定前缀不再包含分钟级时间戳等易变内容 → 支持前缀缓存的中转能跨轮命中；
+    // 易变状态贴着生成点注入，时间/情绪/日程反而拿到最强 recency 注意力。
+    // 注意：instant push 的 worker 端情绪评估把 messages[0] 当 system、messages[1..]
+    // 展平为对话历史 —— 易变尾段会以「[系统]: …」行出现在历史末尾，信息不丢。
     const fullMessages: Array<{ role: string; content: any }> = [
         { role: 'system', content: systemPrompt },
         ...messagesWithWorldbookDepth,
+        { role: 'system', content: volatileTail },
     ];
     if (bilingualActive) {
         fullMessages.push({
@@ -337,10 +357,19 @@ export async function buildChatRequestPayload(input: BuildChatPayloadInput): Pro
         fullMessages.push({ role: 'system', content: MCP_TAIL_REMINDER });
     }
 
+    // Dev 开关：多条 system 合并成开头一条，A/B 对照中转适配层对多 system 的计量行为。
+    let finalMessages = fullMessages;
+    if (isSystemMessageMergeEnabled()) {
+        finalMessages = mergeSystemMessages(fullMessages);
+        console.warn(`[DevDebug] Merge system messages: ${fullMessages.length} → ${finalMessages.length} messages (system ${fullMessages.length - finalMessages.length + 1} → 1).`);
+    }
+
     return {
-        systemPrompt,
+        // 返回给情绪评估 / 调试查看器的仍是"完整拼接"——信息与主 API 完全一致，
+        // 只是主 API 的实际消息结构把易变尾段放在历史之后（见上）。
+        systemPrompt: systemPrompt + volatileTail,
         cleanedApiMessages: messagesWithWorldbookDepth,
-        fullMessages,
+        fullMessages: finalMessages,
         flags: { bilingualActive, mcdActive, luckinActive, luckinChatActive, mcpChatActive, htmlActive, thinkingActive, promptBuildSkipped: false },
     };
 }
