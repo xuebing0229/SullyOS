@@ -480,7 +480,7 @@ const WorldbookApp: React.FC = () => {
                                 <div>
                                     <label className="flex items-center gap-2 text-xs font-bold text-slate-400 mb-2">
                                         <input type="checkbox" checked={tempUseProbability} onChange={e => setTempUseProbability(e.target.checked)} className="accent-indigo-500" />
-                                        使用概率
+                                        启用随机概率
                                     </label>
                                     <input
                                         type="number"
@@ -492,6 +492,10 @@ const WorldbookApp: React.FC = () => {
                                         className="w-full text-sm text-slate-700 bg-slate-50/80 border border-slate-200 rounded-xl px-4 py-3 outline-none focus:bg-white focus:border-indigo-400 focus:ring-4 focus:ring-indigo-50 transition-all disabled:opacity-40"
                                     />
                                 </div>
+                            </div>
+                            <div className="rounded-xl border border-indigo-100 bg-indigo-50/70 px-4 py-3 text-[10px] leading-relaxed text-indigo-700">
+                                <span className="font-bold">未勾选“启用随机概率”不代表条目没有激活。</span>
+                                未勾选时会跳过随机判定：只要条目已启用且满足常驻／关键词条件，就会按 100% 通过；勾选后，才会在条件满足时按上方百分比再次随机判断。
                             </div>
                         </div>
 
@@ -548,6 +552,21 @@ const WorldbookApp: React.FC = () => {
 
             {/* Content List */}
             <div className="flex-1 overflow-y-auto p-5 pb-24 space-y-4 no-scrollbar relative z-0">
+                <div className="rounded-2xl border border-indigo-100/80 bg-white/75 backdrop-blur-md p-4 shadow-sm text-slate-600">
+                    <div className="flex items-center gap-2 text-xs font-bold text-indigo-600">
+                        <BookOpen size={16} weight="bold" /> 世界书是做什么的？
+                    </div>
+                    <p className="mt-2 text-[11px] leading-relaxed">
+                        世界书是一组按条件提供给 AI 的补充设定，可用于世界观、人物关系、地点和规则等内容。它不会自己发消息，也不等同于角色记忆。
+                    </p>
+                    <p className="mt-1.5 text-[11px] leading-relaxed text-slate-500">
+                        创建或导入后，还要在角色编辑页的“扩展设定”中挂载；聊天生成回复时，已启用并满足常驻或关键词条件（以及可选的概率判定）的条目才会注入提示词。
+                    </p>
+                    <p className="mt-2 rounded-xl bg-indigo-50 px-3 py-2 text-[10px] leading-relaxed text-indigo-700">
+                        注意：“启用随机概率”未点亮 = 不使用随机抽取，条件满足时按 100% 通过；并不是“未激活”。
+                    </p>
+                </div>
+
                 {Object.keys(groupedBooks).length === 0 && (
                     <div className="flex flex-col items-center justify-center h-64 text-slate-400 gap-4 opacity-60">
                         <BookOpen size={48} className="text-slate-400" />

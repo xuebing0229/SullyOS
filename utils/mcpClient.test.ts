@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
     buildMcpFetchUrl,
+    buildMcpRequestHeaders,
     createMcpServer,
     loadMcpServers,
     saveMcpServers,
@@ -11,10 +12,12 @@ import {
     getMcpUseNativeTools,
     setMcpUseNativeTools,
     callMcpTool,
+    normalizeMcpToolArguments,
     MCP_REQUEST_TIMEOUT_MS,
     type McpServerConfig,
 } from './mcpClient';
 import { buildMcpOpenAITools, buildMcpRejectedToolsFallbackBody, buildMcpTextFallbackBody, formatMcpToolResult, MCP_RESULT_MAX_CHARS, sanitizeMcpLeadInText, shouldRetryMcpWithoutTools, stripTextFakedMcpCalls } from './mcpToolBridge';
+import { completeGroupChatWithMcp } from './groupChat/mcp';
 
 const mkServer = (over: Partial<McpServerConfig>): McpServerConfig => ({
     ...createMcpServer('测试', 'https://mcp.example.com/mcp'),
@@ -48,6 +51,38 @@ describe('buildMcpFetchUrl', () => {
             .toBe('https://w.dev?target=https%3A%2F%2Fa.com%2Fmcp');
         expect(buildMcpFetchUrl({ url: 'https://a.com/mcp', proxyUrl: 'https://w.dev?x=1' }))
             .toBe('https://w.dev?x=1&target=https%3A%2F%2Fa.com%2Fmcp');
+    });
+});
+
+describe('buildMcpRequestHeaders', () => {
+    it('直连时发送任意自定义请求头，空行与非法头名会被忽略', () => {
+        const headers = buildMcpRequestHeaders({
+            customHeaders: [
+                { name: 'XBY-APIKEY', value: 'secret-xby' },
+                { name: '', value: 'empty-name' },
+                { name: 'bad header', value: 'invalid-name' },
+            ],
+        });
+        expect(headers.get('XBY-APIKEY')).toBe('secret-xby');
+        expect(Array.from(headers.keys())).not.toContain('bad header');
+        expect(headers.has('X-MCP-Forward-Headers')).toBe(false);
+    });
+
+    it('走代理时声明需要透传的自定义头；Bearer 与 session 仍由客户端托管', () => {
+        const headers = buildMcpRequestHeaders({
+            token: 'bearer-token',
+            proxyUrl: 'https://proxy.example.com',
+            proxyKey: 'proxy-secret',
+            customHeaders: [
+                { name: 'XBY-APIKEY', value: 'secret-xby' },
+                { name: 'Authorization', value: 'Custom auth' },
+            ],
+        }, 'session-1');
+        expect(headers.get('XBY-APIKEY')).toBe('secret-xby');
+        expect(headers.get('Authorization')).toBe('Bearer bearer-token');
+        expect(headers.get('Mcp-Session-Id')).toBe('session-1');
+        expect(headers.get('X-Proxy-Key')).toBe('proxy-secret');
+        expect(headers.get('X-MCP-Forward-Headers')).toBe('XBY-APIKEY,Authorization');
     });
 });
 
@@ -116,6 +151,16 @@ describe('服务器配置持久化', () => {
         saveMcpServers([mkServer({ id: 'srv_a', charIds: ['char_a'] })]);
         expect(isMcpChatAvailable('char_a')).toBe(true);
         expect(isMcpChatAvailable('char_b')).toBe(false);
+    });
+
+    it('群聊 ID 与角色 ID 共用绑定过滤，指定群聊可见且不会泄漏给其他群', () => {
+        saveMcpServers([
+            mkServer({ id: 'srv_group', charIds: ['group_game'] }),
+        ]);
+        expect(isMcpChatAvailable('group_game')).toBe(true);
+        expect(isMcpChatAvailable('group_other')).toBe(false);
+        expect(buildMcpOpenAITools('group_game').tools).toHaveLength(1);
+        expect(buildMcpOpenAITools('group_other').tools).toHaveLength(0);
     });
 
     it('原生 tools 开关默认开启，可持久化并随 MCP 备份导入导出', () => {
@@ -231,6 +276,76 @@ describe('extractTextFakedMcpCalls（掉格式容错）', () => {
 });
 
 describe('MCP 聊天链路不悬挂', () => {
+    it('只按工具 schema 还原嵌套 object / array 字符串，普通 string 保持不变', () => {
+        const schema = {
+            type: 'object',
+            properties: {
+                room: { type: 'string' },
+                game: {
+                    type: 'object',
+                    properties: {
+                        players: {
+                            type: 'array',
+                            items: {
+                                type: 'object',
+                                properties: { name: { type: 'string' }, stats: { type: 'object' } },
+                            },
+                        },
+                    },
+                },
+            },
+        };
+        const input = {
+            room: '{"id":"这是普通文本，不该解析"}',
+            game: '{"players":"[{\\"name\\":\\"Sully\\",\\"stats\\":\\"{\\\\\\"coins\\\\\\":100}\\"}]"}',
+        };
+
+        expect(normalizeMcpToolArguments(input, schema)).toEqual({
+            room: input.room,
+            game: { players: [{ name: 'Sully', stats: { coins: 100 } }] },
+        });
+    });
+
+    it('tools/call 发送前按 inputSchema 修复整个 arguments 双重编码', async () => {
+        const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+        const server = mkServer({
+            id: 'nested-args-server',
+            tools: [{
+                name: 'start_game',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        config: {
+                            type: 'object',
+                            properties: { players: { type: 'array', items: { type: 'object' } } },
+                        },
+                    },
+                },
+            }],
+        });
+        let toolsCall: any;
+        vi.spyOn(globalThis, 'fetch').mockImplementation((_url, init) => {
+            const req = JSON.parse(String(init?.body || '{}'));
+            if (req.method === 'initialize') {
+                return Promise.resolve(new Response(JSON.stringify({ jsonrpc: '2.0', id: req.id, result: {} }), {
+                    status: 200, headers: { 'Content-Type': 'application/json' },
+                }));
+            }
+            if (req.method === 'notifications/initialized') return Promise.resolve(new Response('', { status: 202 }));
+            toolsCall = req;
+            return Promise.resolve(new Response(JSON.stringify({
+                jsonrpc: '2.0', id: req.id, result: { content: [{ type: 'text', text: 'ok' }] },
+            }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+        });
+
+        const onceParsedByChatLayer = '{"config":"{\\"players\\":\\"[{\\\\\\"name\\\\\\":\\\\\\"A\\\\\\"}]\\"}"}';
+        await expect(callMcpTool(server, 'start_game', onceParsedByChatLayer as any)).resolves.toMatchObject({ success: true });
+        expect(toolsCall.params.arguments).toEqual({ config: { players: [{ name: 'A' }] } });
+        expect(info).toHaveBeenCalledWith('🔌 [MCP] tools/call 完成', expect.objectContaining({
+            args: { config: { players: [{ name: 'A' }] } },
+        }));
+    });
+
     it('正文假调用已代执行后，组织回复请求移除 tools，避免空正文 tool_calls 被吞', () => {
         const body = buildMcpTextFallbackBody(
             { model: 'x', tools: [{ type: 'function' }], tool_choice: 'auto', temperature: 0.8 },
@@ -336,5 +451,59 @@ describe('MCP 聊天链路不悬挂', () => {
             success: true,
             result: '"React 是一个 UI 库"',
         }));
+    });
+});
+
+describe('群聊 MCP 工具循环', () => {
+    it('向绑定群聊注入工具，执行 tools/call 后把结果交回模型生成群聊内容', async () => {
+        const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+        saveMcpServers([mkServer({
+            id: 'group-mcp-server',
+            charIds: ['group_game'],
+            tools: [{ name: 'roll_dice', description: '掷骰子', inputSchema: { type: 'object', properties: { sides: { type: 'number' } } } }],
+        })]);
+        const chatBodies: any[] = [];
+        vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+            const url = String(input);
+            const body = JSON.parse(String(init?.body || '{}'));
+            if (url.includes('/chat/completions')) {
+                chatBodies.push(body);
+                const payload = chatBodies.length === 1
+                    ? {
+                        choices: [{ message: { content: '', tool_calls: [{ id: 'call-1', type: 'function', function: { name: 'roll_dice', arguments: '{"sides":6}' } }] } }],
+                        usage: { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12 },
+                    }
+                    : {
+                        choices: [{ message: { content: '[{"charId":"char_a","content":"你掷出了 4。"}]' } }],
+                        usage: { prompt_tokens: 12, completion_tokens: 5, total_tokens: 17 },
+                    };
+                return Promise.resolve(new Response(JSON.stringify(payload), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+            }
+            if (body.method === 'initialize') {
+                return Promise.resolve(new Response(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: {} }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+            }
+            if (body.method === 'notifications/initialized') return Promise.resolve(new Response('', { status: 202 }));
+            return Promise.resolve(new Response(JSON.stringify({
+                jsonrpc: '2.0', id: body.id,
+                result: { content: [{ type: 'text', text: '{"value":4}' }] },
+            }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+        });
+
+        const result = await completeGroupChatWithMcp({
+            url: 'https://api.example.com/chat/completions',
+            headers: { Authorization: 'Bearer chat-key' },
+            body: { model: 'test', messages: [{ role: 'user', content: '开始游戏' }] },
+            groupId: 'group_game',
+            userName: '用户',
+        });
+
+        expect(chatBodies).toHaveLength(2);
+        expect(chatBodies[0].tools[0].function.name).toBe('roll_dice');
+        expect(chatBodies[1].messages).toEqual(expect.arrayContaining([
+            expect.objectContaining({ role: 'tool', tool_call_id: 'call-1', content: expect.stringContaining('{"value":4}') }),
+        ]));
+        expect(result.choices[0].message.content).toContain('你掷出了 4');
+        expect(result.usage.total_tokens).toBe(29);
+        expect(info).toHaveBeenCalled();
     });
 });

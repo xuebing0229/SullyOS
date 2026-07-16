@@ -5,6 +5,9 @@ import { DB } from '../utils/db';
 import { Message, MessageType, MemoryFragment, Emoji, EmojiCategory, DailySchedule, ScheduleSlot } from '../types';
 import { processImage } from '../utils/file';
 import { safeResponseJson, extractContent } from '../utils/safeApi';
+import { buildChatFineTuneCss, mergeChatFineTune } from '../utils/chatFineTuneCss';
+import ChatFineTunePanel from '../components/chat/ChatFineTunePanel';
+import { FadersHorizontal } from '@phosphor-icons/react';
 import { generateDailyScheduleForChar, isScheduleFeatureOn } from '../utils/scheduleGenerator';
 import { generateSlotTheater } from '../utils/theaterGenerator';
 import TheaterPlayer from '../components/schedule/TheaterPlayer';
@@ -19,7 +22,7 @@ import { isMcdConfigured } from '../utils/mcdMcpClient';
 import { isMcdActivatedInMessages, MCD_ACTIVATE_TRIGGER, MCD_DEACTIVATE_TRIGGER } from '../utils/mcdToolBridge';
 import { isLuckinConfigured } from '../utils/luckinMcpClient';
 import { isLuckinActivatedInMessages, LUCKIN_ACTIVATE_TRIGGER, LUCKIN_DEACTIVATE_TRIGGER } from '../utils/luckinToolBridge';
-import MessageItem from '../components/chat/MessageItem';
+import MessageItem, { ThinkingChainBlock } from '../components/chat/MessageItem';
 import McdMiniApp from '../components/mcd/McdMiniApp';
 import LuckinMiniApp from '../components/luckin/LuckinMiniApp';
 import LuckinLocationModal from '../components/luckin/LuckinLocationModal';
@@ -46,6 +49,7 @@ import { resolveActiveSound, playWhiteboxSound, unlockWhiteboxAudio, parseWhiteb
 import WhiteboxSoundEditor from '../components/chat/WhiteboxSoundEditor';
 import { normalizeTranslationLangLabel } from '../utils/translationLang';
 import { CharacterGroupFilterBar, filterCharactersByGroup, GROUP_FILTER_ALL } from '../components/character/CharacterGroupFilter';
+import { invalidateAiCacheWhere } from '../utils/aiRequestManager';
 
 const VOICE_LANG_LABELS: Record<string, string> = { en: 'English', ja: '日本語', ko: '한국어', fr: 'Français', es: 'Español' };
 type InstantToolUiStatus = {
@@ -96,6 +100,12 @@ const Chat: React.FC = () => {
     const scrollThrottleRef = useRef(0);
     const visibleCountRef = useRef(30);
     const activeCharIdRef = useRef(activeCharacterId);
+    // 流式预览接棒过的正式消息在当前会话内始终跳过入场动画，避免后续 DB 刷新时动画类又被加回来。
+    const streamPreviewHandoverIdsRef = useRef<Set<number>>(new Set());
+    const registerStreamPreviewHandover = useCallback((charId: string, messageIds: number[]) => {
+        if (activeCharIdRef.current !== charId) return;
+        messageIds.forEach(id => streamPreviewHandoverIdsRef.current.add(id));
+    }, []);
     const charRef = useRef<typeof char>(null as any);
     // 白框提示音：记录当前角色"见过的最大消息 ID" + "上一条气泡到达时刻"，一轮回复只在首条气泡响一次。
     // 用 max-id 基线天然免疫：切角色/进入(先记基线不播)、翻旧历史(末尾 ID 变小不响)、自己发消息(role≠assistant 不响)。
@@ -108,6 +118,11 @@ const Chat: React.FC = () => {
     const [replyTarget, setReplyTarget] = useState<Message | null>(null);
 
     const [modalType, setModalType] = useState<'none' | 'transfer' | 'emoji-import' | 'chat-settings' | 'message-options' | 'edit-message' | 'delete-emoji' | 'delete-category' | 'add-category' | 'history-manager' | 'archive-settings' | 'prompt-editor' | 'category-options' | 'category-visibility' | 'emoji-options' | 'rename-emoji' | 'schedule' | 'chrome-css' | 'chrome-sound'>('none');
+    // 「聊天装扮」悬浮态：不走全屏 modal——圆气泡挂在聊天上，点开小面板边看真聊天边调。
+    const [fineTuneOpen, setFineTuneOpen] = useState(false);          // 圆气泡在场
+    const [fineTunePanelOpen, setFineTunePanelOpen] = useState(false); // 小面板展开/收起
+    // 切换角色时收掉装扮气泡：定制是 per-character 的，避免误改到下一个角色
+    useEffect(() => { setFineTuneOpen(false); setFineTunePanelOpen(false); }, [activeCharacterId]);
     const [scheduleData, setScheduleData] = useState<DailySchedule | null>(null);
     // 小剧场（窥视演出）：正在播放的时段索引（null = 未打开），以及生成中标志
     const [theaterSlotIdx, setTheaterSlotIdx] = useState<number | null>(null);
@@ -122,6 +137,9 @@ const Chat: React.FC = () => {
     const [settingsHtmlModeCustomPrompt, setSettingsHtmlModeCustomPrompt] = useState('');
     const [preserveContext, setPreserveContext] = useState(true);
     const [isVectorizing, setIsVectorizing] = useState(false);
+    // 记忆宫殿「一键存入」：打开设置弹窗时算出待处理条数（排除热区的真实口径），处理中显示逐轮进度
+    const [vectorizePendingCount, setVectorizePendingCount] = useState<number | null>(null);
+    const [vectorizeProgress, setVectorizeProgress] = useState('');
     const [selectedMessage, setSelectedMessage] = useState<Message | null>(null);
     const [selectedEmoji, setSelectedEmoji] = useState<Emoji | null>(null);
     const [selectedCategory, setSelectedCategory] = useState<EmojiCategory | null>(null); // For deletion modal
@@ -193,7 +211,7 @@ const Chat: React.FC = () => {
     const luckinChatRef = useRef<import('../utils/luckinToolBridge').LuckinChatState | undefined>(undefined);
 
     // --- Initialize Hook ---
-    const { isTyping, recallStatus, searchStatus, diaryStatus, emotionStatus, memoryPalaceStatus, memoryPalaceResult, setMemoryPalaceResult, lastDigestResult, setLastDigestResult, lastTokenUsage, tokenBreakdown, setLastTokenUsage, triggerAI, startProactiveChat, stopProactiveChat, isProactiveActive } = useChatAI({
+    const { isTyping, streamingBubbles, streamingThinking, recallStatus, searchStatus, diaryStatus, emotionStatus, memoryPalaceStatus, memoryPalaceResult, setMemoryPalaceResult, lastDigestResult, setLastDigestResult, lastTokenUsage, tokenBreakdown, setLastTokenUsage, triggerAI, startProactiveChat, stopProactiveChat, isProactiveActive } = useChatAI({
         char,
         userProfile,
         apiConfig,
@@ -203,6 +221,7 @@ const Chat: React.FC = () => {
         addToast,
         showError,
         setMessages,
+        onStreamPreviewHandover: registerStreamPreviewHandover,
         realtimeConfig,
         translationConfig: translationEnabled
             ? { enabled: true, sourceLang: translateSourceLang, targetLang: translateTargetLang }
@@ -811,7 +830,7 @@ const Chat: React.FC = () => {
                 scrollRef.current.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
             }
         }
-    }, [messages, isTyping, recallStatus, searchStatus, diaryStatus, selectionMode, windowedFocusMsgId]);
+    }, [messages, isTyping, streamingBubbles, streamingThinking, recallStatus, searchStatus, diaryStatus, selectionMode, windowedFocusMsgId]);
 
     // 白框提示音：当 char 新发的消息成为会话最后一条时播放一次（用户自己/历史/翻旧消息都不响）。
     // 声音配置编码在白框 CSS 注释里（角色 chromeCustomCss 覆盖全局 chatChromeCustomCss），随白框分享一起走。
@@ -1149,13 +1168,14 @@ const Chat: React.FC = () => {
         if (toDeleteIds.length === 0) return;
 
         await DB.deleteMessages(toDeleteIds);
+        await invalidateAiCacheWhere(entry => entry.kind === 'emotion' && entry.metadata?.charId === char.id);
         discardVoiceForMessages(toDeleteIds);
         const newHistory = messages.slice(0, index + 1);
         setMessages(newHistory);
         addToast('回溯对话中...', 'info');
 
         // 重 roll：不注入上一轮残留的情绪 buff 与意识流（innerState），两边独立重新生成。
-        triggerAI(newHistory, undefined, undefined, { skipEmotionInjection: true });
+        triggerAI(newHistory, undefined, undefined, { skipEmotionInjection: true, forceRefresh: true });
     };
 
     const handleImageSelect = async (file: File) => {
@@ -1176,6 +1196,7 @@ const Chat: React.FC = () => {
             case 'settings': setModalType('chat-settings'); break;
             case 'chrome-css': setModalType('chrome-css'); break;
             case 'chrome-sound': setModalType('chrome-sound'); break;
+            case 'fine-tune': setShowPanel('none'); setFineTuneOpen(true); setFineTunePanelOpen(true); break;
             case 'emoji-import': setModalType('emoji-import'); break;
             case 'send-emoji': if (payload) handleSendText(payload.url, 'emoji'); break;
             case 'delete-emoji-req': setSelectedEmoji(payload); setModalType('delete-emoji'); break;
@@ -1828,6 +1849,26 @@ const Chat: React.FC = () => {
         setModalType('none');
     };
 
+    // 打开「聊天设置」弹窗且开了记忆宫殿时，算一次待处理条数显示在「一键存入」按钮上。
+    // 口径与 pipeline 一致（getMemoryPalaceUnprocessedBufferCount 已排除热区 200 条）。
+    useEffect(() => {
+        if (modalType !== 'chat-settings' || !char?.memoryPalaceEnabled) {
+            setVectorizePendingCount(null);
+            return;
+        }
+        let cancelled = false;
+        (async () => {
+            try {
+                const { getMemoryPalaceUnprocessedBufferCount } = await import('../utils/memoryPalace/pipeline');
+                const n = await getMemoryPalaceUnprocessedBufferCount(char.id);
+                if (!cancelled) setVectorizePendingCount(n);
+            } catch {
+                // 算不出就不显示条数，不影响按钮可用
+            }
+        })();
+        return () => { cancelled = true; };
+    }, [modalType, char?.id, char?.memoryPalaceEnabled]);
+
     const handleForceVectorize = async () => {
         if (!char || !char.memoryPalaceEnabled || isVectorizing) return;
         const mpEmb = memoryPalaceConfig?.embedding;
@@ -1838,13 +1879,12 @@ const Chat: React.FC = () => {
         }
 
         setIsVectorizing(true);
-        setModalType('none');
+        // 留在「聊天设置」弹窗里，按钮原地转成逐轮进度，跑完才收
+        setVectorizeProgress('准备中...');
         addToast('🏰 开始向量化所有聊天记录...', 'info');
 
         try {
-            const { processNewMessages, getMemoryPalaceHighWaterMark, mergePalaceFragmentsIntoMemories } = await import('../utils/memoryPalace/pipeline');
-            const BATCH_PROCESS_RATIO = 0.85;
-            const BATCH_SIZE = 170; // 200 * 0.85
+            const { processNewMessages, getMemoryPalaceHighWaterMark, getMemoryPalaceUnprocessedBufferCount, mergePalaceFragmentsIntoMemories } = await import('../utils/memoryPalace/pipeline');
             let totalProcessed = 0;
             let round = 0;
             const MAX_ROUNDS = 50; // 安全上限
@@ -1854,21 +1894,21 @@ const Chat: React.FC = () => {
 
             while (round < MAX_ROUNDS) {
                 round++;
+                // 角色已切走就中断：Chat 是单实例复用、这些是共享 state，继续跑会把旧角色的进度串到新角色 UI 上。
+                // 向量化基于高水位、可续跑，下次进这个角色再点会接着来。
+                if (char.id !== activeCharIdRef.current) break;
                 const hwm = getMemoryPalaceHighWaterMark(char.id);
-                const allMessages = await DB.getMessagesByCharId(char.id, true);
-                const textMessages = allMessages
-                    .filter(m => m.type === 'text' && m.content?.trim())
-                    .sort((a, b) => a.id - b.id);
+                // 用 pipeline 的真实缓冲区口径（排除热区），与 processNewMessages(force) 实际会处理的量一致，
+                // 循环才能正确收敛，进度条数也不会骗人。
+                const remaining = await getMemoryPalaceUnprocessedBufferCount(char.id);
+                if (char.id !== activeCharIdRef.current) break;
+                if (remaining < 10) break; // 剩余太少，停止
+                setVectorizeProgress(`第 ${round} 轮 · 剩余 ${remaining} 条`);
+                setVectorizePendingCount(remaining);
 
-                // 计算未处理的消息
-                const unprocessed = textMessages.filter(m => m.id > hwm);
-                if (unprocessed.length < 10) break; // 剩余太少，停止
-
-                // 取一批处理
-                const batch = unprocessed.slice(0, BATCH_SIZE);
-                console.log(`🏰 [ForceVectorize] 第 ${round} 轮：处理 ${batch.length} 条消息（hwm=${hwm}，剩余 ${unprocessed.length}）`);
-
-                const pipelineResult = await processNewMessages(batch, char.id, char.name, mpEmb, mpLLM, userProfile?.name || '', true);
+                // processNewMessages 内部直接从 DB 加载并按缓冲区口径取批，忽略首个参数，传 [] 即可
+                const pipelineResult = await processNewMessages([], char.id, char.name, mpEmb, mpLLM, userProfile?.name || '', true);
+                if (char.id !== activeCharIdRef.current) break;
 
                 // 软跳过：缓冲区还没到阈值 / 热区还没被挤出 / 已有任务在跑 —— 不是 LLM 失败
                 if (pipelineResult?.skipReason) {
@@ -1878,7 +1918,7 @@ const Chat: React.FC = () => {
                     break;
                 }
 
-                totalProcessed += batch.length;
+                totalProcessed += pipelineResult?.processedMessages || 0;
 
                 // 累积自动归档，统一在循环结束后 updateCharacter
                 // 避免每轮 setState 触发 char 对象重建进而 dep 失效
@@ -1914,15 +1954,24 @@ const Chat: React.FC = () => {
                 } as any);
             }
 
-            if (totalProcessed > 0) {
-                addToast(`✅ 向量化完成：${round} 轮处理了约 ${totalProcessed} 条消息`, 'success');
-            } else {
-                addToast('所有聊天记录都已处理完毕，无需操作', 'info');
+            // 仅当仍停在这个角色时刷新按钮 + 弹结果提示，避免串台到刚切过去的新角色
+            if (char.id === activeCharIdRef.current) {
+                // 跑完刷新按钮上的待处理条数
+                try {
+                    setVectorizePendingCount(await getMemoryPalaceUnprocessedBufferCount(char.id));
+                } catch { /* 忽略：刷新失败不影响结果提示 */ }
+
+                if (totalProcessed > 0) {
+                    addToast(`✅ 向量化完成：${round} 轮处理了约 ${totalProcessed} 条消息`, 'success');
+                } else {
+                    addToast('所有聊天记录都已处理完毕，无需操作', 'info');
+                }
             }
         } catch (e: any) {
             addToast(`❌ 向量化失败：${e.message}`, 'error');
         } finally {
             setIsVectorizing(false);
+            setVectorizeProgress('');
         }
     };
 
@@ -2096,6 +2145,7 @@ const Chat: React.FC = () => {
         if (!selectedMessage) return;
         const deletedId = selectedMessage.id;
         await DB.deleteMessage(deletedId);
+        await invalidateAiCacheWhere(entry => entry.kind === 'emotion' && entry.metadata?.charId === char.id);
         discardVoiceForMessages([deletedId]);
         setMessages(prev => prev.filter(m => m.id !== deletedId));
         setTotalMsgCount(prev => Math.max(0, prev - 1));
@@ -2108,6 +2158,9 @@ const Chat: React.FC = () => {
         if (!selectedMessage) return;
         const contentChanged = editContent !== selectedMessage.content;
         await DB.updateMessage(selectedMessage.id, editContent);
+        if (contentChanged) {
+            await invalidateAiCacheWhere(entry => entry.kind === 'emotion' && entry.metadata?.charId === char.id);
+        }
         // 内容变了旧语音就作废，否则语音条仍会播放编辑前的音频。
         if (contentChanged) discardVoiceForMessages([selectedMessage.id]);
         setMessages(prev => prev.map(m => m.id === selectedMessage.id ? { ...m, content: editContent } : m));
@@ -2364,6 +2417,33 @@ const Chat: React.FC = () => {
 
     const collapsedCount = Math.max(0, totalMsgCount - displayMessages.length);
 
+    // ── 新消息进入动画 ──────────────────────────────────────────────
+    // 只让「刚追加的最新消息」（自己发的 / AI 回的）整条淡入一次。
+    // 进聊天首帧、切角色、翻历史（老消息 id 更小）都不播，避免满屏一起闪。
+    const animSeenMaxIdRef = useRef<number | null>(null);
+    const [animatingIds, setAnimatingIds] = useState<Set<number>>(() => new Set());
+    // 切角色 / 首次进入：清基线，下一轮 detect 只记录不播
+    useEffect(() => {
+        animSeenMaxIdRef.current = null;
+        streamPreviewHandoverIdsRef.current.clear();
+        setAnimatingIds(new Set());
+    }, [activeCharacterId]);
+    // 检测新增：id 超过基线的才淡入；首帧只记基线不播
+    useEffect(() => {
+        if (displayMessages.length === 0) return;
+        let maxId = -Infinity;
+        for (const m of displayMessages) if (typeof m.id === 'number' && m.id > maxId) maxId = m.id;
+        if (animSeenMaxIdRef.current === null) { animSeenMaxIdRef.current = maxId; return; }
+        const baseline = animSeenMaxIdRef.current;
+        const fresh = displayMessages
+            .filter(m => typeof m.id === 'number' && m.id > baseline && !streamPreviewHandoverIdsRef.current.has(m.id))
+            .map(m => m.id);
+        if (fresh.length > 0) {
+            setAnimatingIds(prev => { const next = new Set(prev); fresh.forEach(id => next.add(id)); return next; });
+            animSeenMaxIdRef.current = maxId;
+        }
+    }, [displayMessages]);
+
     // 稳定的思维链配置对象：只在角色/样式变化时重建，避免每次渲染新建对象击穿 MessageItem.memo。
     const thinkingChainOptions = useMemo(() => ({
         styleId: (char as any)?.thinkingChainStyle || 'echo',
@@ -2460,6 +2540,9 @@ const Chat: React.FC = () => {
     // 动森下强制覆盖角色自定义聊天背景，保证整机一致的彩蛋观感
     // 进入/切换的过场由 CharacterEntryTransition 覆盖层负责，根容器不再自己做淡入。
     const finalRootStyle = acnh ? acnhRootStyle : chatRootStyle;
+    // 聊天细节微调 CSS（外观 → 聊天细节，全局打底；角色开了「聊天装扮」时逐字段覆盖）：
+    // 全默认时为空串，不注入任何 <style>
+    const chatFineTuneCss = useMemo(() => buildChatFineTuneCss(mergeChatFineTune(osTheme, char?.chatFineTune)), [osTheme, char?.chatFineTune]);
     const chatAvatarSizeClass = osTheme.chatAvatarSize === 'small' ? 'w-7 h-7' : osTheme.chatAvatarSize === 'large' ? 'w-12 h-12' : 'w-9 h-9';
     const chatAvatarRadiusClass = osTheme.chatAvatarShape === 'square' ? 'rounded-sm' : osTheme.chatAvatarShape === 'rounded' ? 'rounded-xl' : 'rounded-full';
     const chatPendingAvatarClass = `${chatAvatarSizeClass} ${chatAvatarRadiusClass} object-cover`;
@@ -2469,6 +2552,9 @@ const Chat: React.FC = () => {
             className={`sully-chat-root ${finalRootClass}`}
             style={finalRootStyle}
         >
+             {/* 聊天细节微调（外观 App 可视化设置生成）：排在用户自定义 CSS 之前——
+                 同为 !important 时后写的胜，手写美化代码永远可覆盖可视化设置。 */}
+             {chatFineTuneCss && <style>{chatFineTuneCss}</style>}
              {/* 白框自定义 CSS：全局默认在前、角色专属在后（后者叠加覆盖）。作用于 .sully-chat-* 各零件。
                  守护样式统一放在气泡主题 customCss 之后（见下），保证对所有用户 CSS 都能兜底。 */}
              {osTheme.chatChromeCustomCss && <style>{osTheme.chatChromeCustomCss}</style>}
@@ -2730,6 +2816,8 @@ const Chat: React.FC = () => {
                 onToggleScheduleFeature={handleToggleScheduleFeature}
                 isMemoryPalaceEnabled={!!char.memoryPalaceEnabled}
                 isVectorizing={isVectorizing}
+                vectorizePendingCount={vectorizePendingCount}
+                vectorizeProgress={vectorizeProgress}
                 onForceVectorize={handleForceVectorize}
                 apiPresets={apiPresets}
                 onAddApiPreset={addApiPreset}
@@ -2948,14 +3036,20 @@ const Chat: React.FC = () => {
                         !nextMessage ||
                         nextMessage.role !== m.role ||
                         Math.abs(nextMessage.timestamp - m.timestamp) > messageGroupGapMs;
+                    const suppressEntranceAnimation = streamPreviewHandoverIdsRef.current.has(m.id);
                     return (
                         <div
                             key={m.id || i}
                             id={`chat-msg-${m.id}`}
                             className={[
                                 flashMsgId === m.id ? 'ring-2 ring-yellow-300 bg-yellow-50/40 rounded-2xl mx-2' : '',
+                                animatingIds.has(m.id) && !suppressEntranceAnimation ? 'animate-fade-in' : '',
                                 'transition-all duration-300',
                             ].filter(Boolean).join(' ')}
+                            onAnimationEnd={(e) => {
+                                if (e.target !== e.currentTarget) return;
+                                if (animatingIds.has(m.id)) setAnimatingIds(prev => { const next = new Set(prev); next.delete(m.id); return next; });
+                            }}
                         >
                         <MessageItem
                             msg={m}
@@ -2964,7 +3058,7 @@ const Chat: React.FC = () => {
                             activeTheme={activeTheme}
                             charAvatar={char.avatar}
                             charName={char.name}
-                            userAvatar={userProfile.avatar}
+                            userAvatar={userProfile.perCharAvatars?.[char.id] || userProfile.avatar}
                             onLongPress={handleMessageLongPress}
                             onReply={handleQuickReply}
                             selectionMode={selectionMode}
@@ -2985,6 +3079,7 @@ const Chat: React.FC = () => {
                             bubbleVariant={osTheme.chatBubbleStyle}
                             messageSpacing={osTheme.chatMessageSpacing}
                             showTimestamp={osTheme.chatShowTimestamp}
+                            suppressEntranceAnimation={suppressEntranceAnimation}
                             isPending={false}
                             pendingIndicator={osTheme.chatPendingIndicator !== false}
                             onMcdSendCart={handleMcdSendCart}
@@ -3035,6 +3130,59 @@ const Chat: React.FC = () => {
                     </div>
                 )}
 
+                {/* 渠道确实发送 reasoning 增量时，先用正式心象卡实时展示；落库后同帧交给正式消息。 */}
+                {streamingThinking && !selectionMode && (
+                    <div className="group flex items-end justify-start relative px-3 mb-1.5 animate-fade-in">
+                        <div className="relative max-w-[72%] min-w-0 ml-12">
+                            <ThinkingChainBlock
+                                chain={streamingThinking}
+                                styleId={thinkingChainOptions.styleId}
+                                customColors={thinkingChainOptions.customColors}
+                                onOpenSettings={thinkingChainOptions.onOpenSettings}
+                            />
+                        </div>
+                    </div>
+                )}
+
+                {/* 流式预览直接复用正式 MessageItem：气泡变体、主题背景图/装饰、头像框、
+                    grouped/every_message、消息间距、时间戳、Markdown 与所有自定义 CSS 天然一致。
+                    落库时 useChatAI 会登记接棒 id，正式消息首帧不再重播 fade-in。 */}
+                {streamingBubbles.length > 0 && !selectionMode && (
+                    <>
+                        {streamingBubbles.map((bubble, i) => (
+                            <div key={`stream-preview-${i}`} className="transition-all duration-300">
+                                <MessageItem
+                                    msg={{
+                                        id: -(i + 1),
+                                        charId: char.id,
+                                        role: 'assistant',
+                                        type: 'text',
+                                        content: bubble,
+                                        timestamp: Date.now(),
+                                    }}
+                                    isFirstInGroup={i === 0}
+                                    isLastInGroup={i === streamingBubbles.length - 1}
+                                    activeTheme={activeTheme}
+                                    charAvatar={char.avatar}
+                                    charName={char.name}
+                                    userAvatar={userProfile.perCharAvatars?.[char.id] || userProfile.avatar}
+                                    onLongPress={() => {}}
+                                    onReply={() => {}}
+                                    selectionMode={false}
+                                    isSelected={false}
+                                    onToggleSelect={() => {}}
+                                    avatarShape={osTheme.chatAvatarShape}
+                                    avatarSize={osTheme.chatAvatarSize}
+                                    avatarMode={osTheme.chatAvatarMode}
+                                    bubbleVariant={osTheme.chatBubbleStyle}
+                                    messageSpacing={osTheme.chatMessageSpacing}
+                                    showTimestamp={osTheme.chatShowTimestamp}
+                                    thinkingChainOptions={thinkingChainOptions}
+                                />
+                            </div>
+                        ))}
+                    </>
+                )}
                 {(isTyping || recallStatus || searchStatus || diaryStatus || isProactiveComposing) && !selectionMode && (
                     <div className="flex items-end gap-3 px-3 mb-6 animate-fade-in">
                         <img src={char.avatar} className={chatPendingAvatarClass} />
@@ -3207,6 +3355,82 @@ const Chat: React.FC = () => {
                     }}
                 />
             )}
+
+            {/* 角色专属「聊天装扮」悬浮气泡 + 小面板 —— 从加号面板「聊天装扮」进入。
+                不是全屏 modal：没有遮罩，聊天内容一直可见、就是实时预览。点圆气泡收起/展开面板
+                （收起后能看清整个聊天再继续调），点「完成」气泡消失、调试结束。
+                全局打底，开了「为 TA 单独定制」后已改动的字段逐个覆盖全局（写到 char.chatFineTune）。 */}
+            {char && fineTuneOpen && (() => {
+                const override = char.chatFineTune;
+                const customized = override?.enabled === true;
+                // 控件展示合并后的生效值：未覆盖的字段显示全局当前值，改哪个才覆盖哪个
+                const effective = mergeChatFineTune(osTheme, override);
+                return (
+                    <>
+                        {/* 悬浮圆气泡：挂在右侧中部，点击 = 收起/展开小面板 */}
+                        <button
+                            onClick={() => setFineTunePanelOpen(v => !v)}
+                            className={`fixed right-3 z-[106] flex h-12 w-12 items-center justify-center rounded-full shadow-lg transition-all active:scale-90 ${fineTunePanelOpen ? 'bg-primary text-white ring-4 ring-primary/20' : 'bg-white/95 text-primary ring-1 ring-primary/30 backdrop-blur'}`}
+                            style={{ top: 'calc(var(--safe-top) + 35vh)' }}
+                            aria-label={fineTunePanelOpen ? '收起聊天装扮面板' : '展开聊天装扮面板'}
+                        >
+                            <FadersHorizontal className="h-6 w-6" weight="bold" />
+                        </button>
+                        {/* 小面板：贴在下方但不遮全屏，上半屏聊天照常可见可滚动 */}
+                        {fineTunePanelOpen && (
+                            <div
+                                className="fixed left-1/2 z-[105] w-[94%] max-w-md -translate-x-1/2 overflow-y-auto rounded-3xl border border-white/60 bg-white/95 p-4 shadow-[0_12px_40px_rgba(15,23,42,0.22)] backdrop-blur-xl [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+                                style={{ bottom: 'calc(84px + var(--safe-bottom))', maxHeight: '46vh' }}
+                            >
+                                <div className="mb-3 flex items-start justify-between gap-2">
+                                    <div>
+                                        <div className="text-[13px] font-bold text-slate-800">聊天装扮 · {char.name}</div>
+                                        <div className="mt-0.5 text-[10px] text-slate-400">改动立刻生效在上方聊天里；点右侧圆气泡可收起面板看效果。</div>
+                                    </div>
+                                    <button
+                                        onClick={() => { setFineTuneOpen(false); setFineTunePanelOpen(false); }}
+                                        className="shrink-0 rounded-full bg-primary px-4 py-1.5 text-[11px] font-bold text-white shadow-sm transition-all active:scale-95">
+                                        完成
+                                    </button>
+                                </div>
+                                <div className="mb-3 flex items-center justify-between rounded-2xl bg-slate-50 px-3 py-2.5">
+                                    <div className="min-w-0 pr-3">
+                                        <div className="text-[11px] font-bold text-slate-700">{customized ? '为 TA 单独定制中' : '跟随全局设置（默认）'}</div>
+                                        <div className="mt-0.5 text-[10px] text-slate-400">
+                                            {customized
+                                                ? '只有你改过的项目覆盖全局，其余仍跟随「外观 → 聊天界面」。关掉开关回到跟随全局，定制内容保留。'
+                                                : '当前用的是「外观 → 聊天界面」的全局设置。打开开关即可为这个角色单独定制。'}
+                                        </div>
+                                    </div>
+                                    <button
+                                        onClick={() => updateCharacter(char.id, { chatFineTune: { ...override, enabled: !customized } } as any)}
+                                        className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${customized ? 'bg-primary' : 'bg-slate-300'}`}
+                                        aria-pressed={customized}
+                                    >
+                                        <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-all ${customized ? 'left-[22px]' : 'left-0.5'}`} />
+                                    </button>
+                                </div>
+                                {customized && (
+                                    <>
+                                        <ChatFineTunePanel
+                                            value={effective}
+                                            onChange={(patch) => updateCharacter(char.id, { chatFineTune: { ...override, enabled: true, ...patch } } as any)}
+                                        />
+                                        <button
+                                            onClick={() => { updateCharacter(char.id, { chatFineTune: undefined } as any); addToast('已清除该角色的聊天装扮，回到跟随全局', 'success'); }}
+                                            className="mt-3 w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-2.5 text-[11px] font-bold text-slate-500 transition-all hover:bg-slate-100 active:scale-[0.99]">
+                                            清除定制，回到跟随全局
+                                        </button>
+                                    </>
+                                )}
+                                <p className="mt-3 text-[10px] leading-relaxed text-slate-400">
+                                    只影响私聊界面，群聊不受影响。手写过「白框」自定义 CSS 的话不用担心：<b>自定义 CSS 优先级更高</b>，永远盖得过这里的设置。
+                                </p>
+                            </div>
+                        )}
+                    </>
+                );
+            })()}
 
             {/* 角色专属「白框自定义」Modal —— 从加号面板「白框」进入；写到 char.chromeCustomCss，叠加在全局之上 */}
             {char && modalType === 'chrome-css' && (

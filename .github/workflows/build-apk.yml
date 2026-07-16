@@ -32,6 +32,10 @@ jobs:
 
       - name: Build web app
         run: pnpm run build
+        env:
+          # APK artifacts are user-facing install packages even when built from
+          # a feature branch. Never expose the branch badge or DevDebug wrench.
+          VITE_HIDE_BUILD_BADGE: "1"
 
       - name: Create Android project
         run: pnpm exec cap add android
@@ -56,6 +60,6 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: SullyOS-debug-apk
+          name: SullyOS-clean-apk
           path: android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
