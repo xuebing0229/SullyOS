@@ -59,6 +59,20 @@ export interface ApiCallLogEntry extends ApiCallMeta {
     totalTokens?: number;
     /** 请求从发起到响应 / 报错的耗时 ms（NetworkError 类失败时 = 等了多久才断） */
     durationMs?: number;
+    /**
+     * 输入构成统计（每块的名字 + 字符数），回答「prompt_tokens 为什么这么大」。
+     * 只存统计不存原文（原文一条就几十 KB，5 天日志会撑爆存储）；在响应回来后的
+     * fire-and-forget 记录路径里扫一遍请求体算出，不占请求主链路。
+     */
+    promptBreakdown?: PromptBlockStat[];
+}
+
+/** 输入构成里的一块：system prompt 的一个 ### 段落，或聚合后的聊天历史。 */
+export interface PromptBlockStat {
+    /** 块名：### 标题 / [System: …] 行 / 无标题时取首行摘要；历史消息聚合成「聊天历史·×N」 */
+    label: string;
+    /** 该块字符数（含标题行与换行） */
+    chars: number;
 }
 
 const PRESETS_STORAGE_KEY = 'os_api_presets';
@@ -229,6 +243,99 @@ export function scanSseForLog(text: string): { model?: string; usage?: unknown }
     return { model, usage };
 }
 
+// ── 输入构成统计（promptBreakdown） ──────────────────────────────────────
+
+/** 多模态 content 摊平成可计数文本（图片按占位符计，与 emotion eval 的展平口径一致）。 */
+function contentToText(content: unknown): string {
+    if (typeof content === 'string') return content;
+    if (Array.isArray(content)) {
+        return content.map((part: any) => {
+            if (part?.type === 'text') return part.text || '';
+            if (part?.type === 'image_url') return '[图片]';
+            return '';
+        }).filter(Boolean).join(' ');
+    }
+    if (content == null) return '';
+    try { return JSON.stringify(content) ?? ''; } catch { return String(content); }
+}
+
+const BLOCK_LABEL_MAX = 40;
+
+/**
+ * 把一条 system 消息按块头切开：`## / ### 标题` 行或 `[System: …]` 行开新块。
+ * 一个块头都没有的短消息（双语 / MCP 尾部提醒等）整条算一块，取首行当名字。
+ */
+function splitSystemBlocks(text: string): PromptBlockStat[] {
+    const out: PromptBlockStat[] = [];
+    let label = '（开头·未分块部分）';
+    let chars = 0;
+    let sawHeader = false;
+    for (const line of text.split('\n')) {
+        const header = line.match(/^\s*#{2,3}\s+(.+?)\s*$/) || line.match(/^\s*(\[System:[^\]]*\])/);
+        if (header) {
+            if (chars > 0) out.push({ label, chars });
+            label = header[1].trim().slice(0, BLOCK_LABEL_MAX);
+            chars = line.length + 1;
+            sawHeader = true;
+        } else {
+            chars += line.length + 1;
+        }
+    }
+    if (chars > 0) out.push({ label, chars });
+    if (!sawHeader && out.length === 1) {
+        const firstLine = text.trimStart().split('\n', 1)[0] || '(空 system)';
+        out[0] = { ...out[0], label: firstLine.slice(0, BLOCK_LABEL_MAX) };
+    }
+    return out;
+}
+
+const MAX_BREAKDOWN_BLOCKS = 48;
+
+/**
+ * 从 chat/completions 请求体算输入构成。解析不了 / 没有 messages 时返回 undefined。
+ * system 逐块统计，历史消息按角色聚合（用户只关心"内置注入哪块肥"，不关心第几条历史）。
+ */
+export function buildPromptBreakdown(body: unknown): PromptBlockStat[] | undefined {
+    try {
+        let parsed: any = body;
+        if (typeof body === 'string') {
+            try { parsed = JSON.parse(body); } catch { return undefined; }
+        }
+        const messages = parsed?.messages;
+        if (!Array.isArray(messages) || messages.length === 0) return undefined;
+
+        const out: PromptBlockStat[] = [];
+        let userChars = 0, userCount = 0, asstChars = 0, asstCount = 0, otherChars = 0, otherCount = 0;
+        for (const msg of messages) {
+            const text = contentToText(msg?.content);
+            if (msg?.role === 'system') {
+                out.push(...splitSystemBlocks(text));
+            } else if (msg?.role === 'user') {
+                userChars += text.length; userCount++;
+            } else if (msg?.role === 'assistant') {
+                asstChars += text.length; asstCount++;
+            } else {
+                otherChars += text.length; otherCount++;
+            }
+        }
+        if (userCount) out.push({ label: `聊天历史·用户消息 ×${userCount}`, chars: userChars });
+        if (asstCount) out.push({ label: `聊天历史·角色消息 ×${asstCount}`, chars: asstChars });
+        if (otherCount) out.push({ label: `其他消息（tool 等）×${otherCount}`, chars: otherChars });
+        if (out.length === 0) return undefined;
+
+        // 限容：病态多块时合并尾巴，保证单条记录体积可控
+        if (out.length > MAX_BREAKDOWN_BLOCKS) {
+            const head = out.slice(0, MAX_BREAKDOWN_BLOCKS - 1);
+            const restChars = out.slice(MAX_BREAKDOWN_BLOCKS - 1).reduce((sum, b) => sum + b.chars, 0);
+            head.push({ label: `（其余 ${out.length - (MAX_BREAKDOWN_BLOCKS - 1)} 块合计）`, chars: restChars });
+            return head;
+        }
+        return out;
+    } catch {
+        return undefined;
+    }
+}
+
 export function recordApiCall(input: {
     url: string;
     body?: unknown;
@@ -269,6 +376,7 @@ export function recordApiCall(input: {
             completionTokens: usage.completion,
             totalTokens: usage.total,
             durationMs: input.durationMs,
+            promptBreakdown: buildPromptBreakdown(input.body),
             appId: meta.appId,
             appName: meta.appName,
             charId: meta.charId,
