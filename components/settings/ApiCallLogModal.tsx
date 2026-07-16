@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import Modal from '../os/Modal';
 import { DB } from '../../utils/db';
-import { isSameCoreModel } from '../../utils/apiCallLog';
+import { isSameCoreModel, isFixedPromptBlockLabel } from '../../utils/apiCallLog';
 import type { ApiCallLogEntry, PromptBlockStat } from '../../utils/apiCallLog';
 
 interface ApiCallLogModalProps {
@@ -239,7 +239,16 @@ const ApiCallLogModal: React.FC<ApiCallLogModalProps> = ({ isOpen, onClose }) =>
  */
 const PromptBreakdownView: React.FC<{ blocks: PromptBlockStat[]; promptTokens?: number }> = ({ blocks, promptTokens }) => {
     const totalChars = blocks.reduce((sum, b) => sum + b.chars, 0) || 1;
-    const rows = [...blocks].sort((a, b) => b.chars - a.chars);
+    // 写死的固定骨架块（行为规范/表达底线/钢印等）合并成一行——它们不随用户数据
+    // 变化、也没有可优化空间，散成一堆小行只会淹没真正有信息量的数据块。
+    const fixed = blocks.filter(b => isFixedPromptBlockLabel(b.label));
+    const merged: PromptBlockStat[] = fixed.length >= 2
+        ? [
+            ...blocks.filter(b => !isFixedPromptBlockLabel(b.label)),
+            { label: `固定提示词（规则/格式，共 ${fixed.length} 块）`, chars: fixed.reduce((s, b) => s + b.chars, 0) },
+        ]
+        : blocks;
+    const rows = [...merged].sort((a, b) => b.chars - a.chars);
     const fmt = (n: number) => n.toLocaleString('en-US');
     return (
         <div className="mt-2 pt-2 border-t border-slate-100 space-y-1.5" onClick={(ev) => ev.stopPropagation()}>

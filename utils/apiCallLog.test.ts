@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { scanSseForLog, coreModelName, isSameCoreModel, buildPromptBreakdown } from './apiCallLog';
+import { scanSseForLog, coreModelName, isSameCoreModel, buildPromptBreakdown, isFixedPromptBlockLabel } from './apiCallLog';
 
 // 锁住 API 调用记录的 SSE 兜底解析：流式响应 JSON.parse 必然失败，
 // 后端自报 model（首个非空）与 usage（末个非空）从 data: 行里扫出来。
@@ -197,5 +197,39 @@ describe('buildPromptBreakdown · 单条提示词标注', () => {
             ],
         })!;
         expect(blocks.map(b => b.label)).toContain('聊天历史·用户消息 ×1');
+    });
+});
+
+// 围栏感知 + 固定块识别：行为规范里的日记示例（``` 内的 ## 行）不能被切成独立块；
+// 固定骨架块名能被 isFixedPromptBlockLabel 识别（展示层据此合并）。
+describe('buildPromptBreakdown · 围栏感知与固定块', () => {
+    it('``` 代码块内的 ##/### 行不开新块', () => {
+        const sys = [
+            '### 聊天 App 行为规范 (Chat App Rules)',
+            '规则正文',
+            '```',
+            '## 今天的小确幸',
+            '### 小标题（会变成彩色卡片）',
+            '```',
+            '规则继续',
+            '### 表达底线 (Anti-Filler)',
+            '正文',
+        ].join('\n');
+        const labels = buildPromptBreakdown({ messages: [{ role: 'system', content: sys }, { role: 'user', content: 'hi' }] })!
+            .map(b => b.label);
+        expect(labels).toEqual([
+            '聊天 App 行为规范 (Chat App Rules)',
+            '表达底线 (Anti-Filler)',
+            '聊天历史·用户消息 ×1',
+        ]);
+    });
+
+    it('固定骨架块名识别，数据块不误伤', () => {
+        expect(isFixedPromptBlockLabel('聊天 App 行为规范 (Chat App Rules)')).toBe(true);
+        expect(isFixedPromptBlockLabel('最后，回到你自己')).toBe(true);
+        expect(isFixedPromptBlockLabel('[MCP 工具 ON · 永远用角色语气回复别空回')).toBe(true);
+        expect(isFixedPromptBlockLabel('记忆系统 (Memory Bank)')).toBe(false);
+        expect(isFixedPromptBlockLabel('底色认知 (Resident Knowledge)')).toBe(false);
+        expect(isFixedPromptBlockLabel('[Background Context: Recent Group Activi')).toBe(false);
     });
 });
