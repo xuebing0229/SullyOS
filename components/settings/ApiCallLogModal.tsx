@@ -2,7 +2,7 @@ import React, { useEffect, useState, useCallback } from 'react';
 import Modal from '../os/Modal';
 import { DB } from '../../utils/db';
 import { isSameCoreModel } from '../../utils/apiCallLog';
-import type { ApiCallLogEntry } from '../../utils/apiCallLog';
+import type { ApiCallLogEntry, PromptBlockStat } from '../../utils/apiCallLog';
 
 interface ApiCallLogModalProps {
     isOpen: boolean;
@@ -30,6 +30,7 @@ const ApiCallLogModal: React.FC<ApiCallLogModalProps> = ({ isOpen, onClose }) =>
     const [entries, setEntries] = useState<ApiCallLogEntry[]>([]);
     const [loading, setLoading] = useState(false);
     const [showHelp, setShowHelp] = useState(false);
+    const [expandedId, setExpandedId] = useState<string | null>(null);
 
     const load = useCallback(async () => {
         setLoading(true);
@@ -153,12 +154,15 @@ const ApiCallLogModal: React.FC<ApiCallLogModalProps> = ({ isOpen, onClose }) =>
                 <div className="space-y-2">
                     {entries.map((e) => {
                         const { day, time } = formatTime(e.timestamp);
+                        const hasBreakdown = !!e.promptBreakdown?.length;
+                        const expanded = expandedId === e.id;
                         return (
                             <div
                                 key={e.id}
+                                onClick={hasBreakdown ? () => setExpandedId(expanded ? null : e.id) : undefined}
                                 className={`rounded-2xl border p-3 ${
                                     e.ok ? 'bg-white/70 border-slate-200/60' : 'bg-rose-50/60 border-rose-200/60'
-                                }`}
+                                } ${hasBreakdown ? 'cursor-pointer active:scale-[0.99] transition-transform' : ''}`}
                             >
                                 <div className="flex items-center justify-between gap-2 mb-1.5">
                                     <div className="flex items-center gap-1.5 min-w-0">
@@ -212,12 +216,57 @@ const ApiCallLogModal: React.FC<ApiCallLogModalProps> = ({ isOpen, onClose }) =>
                                         </div>
                                     )}
                                 </div>
+                                {hasBreakdown && (
+                                    <div className="mt-1.5 text-[10px] text-slate-300 select-none">
+                                        {expanded ? '▲ 收起输入构成' : '▼ 点击查看输入构成（哪块占了多少）'}
+                                    </div>
+                                )}
+                                {expanded && e.promptBreakdown && (
+                                    <PromptBreakdownView blocks={e.promptBreakdown} promptTokens={e.promptTokens} />
+                                )}
                             </div>
                         );
                     })}
                 </div>
             )}
         </Modal>
+    );
+};
+
+/**
+ * 输入构成面板：按字数降序列出每块（system 的 ### 段落 / 聚合的聊天历史），
+ * 附占比条 + 按字符占比折算的 token 估算（分词器差异下只是量级参考，不是精确值）。
+ */
+const PromptBreakdownView: React.FC<{ blocks: PromptBlockStat[]; promptTokens?: number }> = ({ blocks, promptTokens }) => {
+    const totalChars = blocks.reduce((sum, b) => sum + b.chars, 0) || 1;
+    const rows = [...blocks].sort((a, b) => b.chars - a.chars);
+    const fmt = (n: number) => n.toLocaleString('en-US');
+    return (
+        <div className="mt-2 pt-2 border-t border-slate-100 space-y-1.5" onClick={(ev) => ev.stopPropagation()}>
+            <div className="flex items-baseline justify-between">
+                <span className="text-[10px] font-bold text-slate-400">输入构成 · 共 {fmt(totalChars)} 字符</span>
+                {promptTokens != null && (
+                    <span className="text-[9px] text-slate-300">token 列为按字符占比折算的估算</span>
+                )}
+            </div>
+            {rows.map((b, i) => {
+                const pct = (b.chars / totalChars) * 100;
+                const estTok = promptTokens != null ? Math.round(promptTokens * b.chars / totalChars) : null;
+                return (
+                    <div key={i} className="min-w-0">
+                        <div className="flex items-baseline justify-between gap-2 min-w-0">
+                            <span className="text-[10px] text-slate-500 truncate" title={b.label}>{b.label}</span>
+                            <span className="text-[10px] font-mono text-slate-400 shrink-0">
+                                {fmt(b.chars)} 字{estTok != null ? ` · ~${fmt(estTok)} tok` : ''} · {pct < 1 ? '<1' : Math.round(pct)}%
+                            </span>
+                        </div>
+                        <div className="h-1 rounded-full bg-slate-100 overflow-hidden">
+                            <div className="h-full rounded-full bg-primary/50" style={{ width: `${Math.max(pct, 1.5)}%` }} />
+                        </div>
+                    </div>
+                );
+            })}
+        </div>
     );
 };
 
