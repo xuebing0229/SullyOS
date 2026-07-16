@@ -306,12 +306,22 @@ export function buildPromptBreakdown(body: unknown): PromptBlockStat[] | undefin
 
         const out: PromptBlockStat[] = [];
         let userChars = 0, userCount = 0, asstChars = 0, asstCount = 0, otherChars = 0, otherCount = 0;
+        // 情绪评估等路径把「完整 system prompt + 展平历史 + 任务说明」整个打包成一条
+        // user 消息发送——不拆的话构成面板只会显示「用户消息 ×1 · 100%」，看不出内里。
+        // 巨型且含多个块头的 user 消息按 system 同款规则拆块；普通聊天消息不受影响。
+        const HUGE_USER_MSG_SPLIT_CHARS = 8000;
+        const countBlockHeaders = (text: string): number =>
+            text.split('\n').reduce((n, line) => n + (/^\s*(#{2,3}\s+.+|\[System:[^\]]*\])/.test(line) ? 1 : 0), 0);
         for (const msg of messages) {
             const text = contentToText(msg?.content);
             if (msg?.role === 'system') {
                 out.push(...splitSystemBlocks(text));
             } else if (msg?.role === 'user') {
-                userChars += text.length; userCount++;
+                if (text.length > HUGE_USER_MSG_SPLIT_CHARS && countBlockHeaders(text) >= 2) {
+                    out.push(...splitSystemBlocks(text));
+                } else {
+                    userChars += text.length; userCount++;
+                }
             } else if (msg?.role === 'assistant') {
                 asstChars += text.length; asstCount++;
             } else {

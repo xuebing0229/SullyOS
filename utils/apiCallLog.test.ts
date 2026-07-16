@@ -145,3 +145,34 @@ describe('buildPromptBreakdown', () => {
         expect(blocks[blocks.length - 1].label).toContain('其余');
     });
 });
+
+// 情绪评估形态：完整上下文打包成一条巨型 user 消息——必须拆块，否则面板只显示
+// 「用户消息 ×1 · 100%」，用户会误以为评估请求里没有角色设定。
+describe('buildPromptBreakdown · 巨型 user 消息拆块', () => {
+    it('超阈值且含多个块头的 user 消息按 system 同款规则拆开', () => {
+        const evalPrompt = [
+            '你是一个角色情绪分析系统。请分析角色「Noir」当前的情绪底色状态。',
+            '## 角色此刻看到的完整上下文（与主 API 发送的 system prompt 完全一致）',
+            `### 你的身份 (Character)\n${'设'.repeat(6000)}`,
+            '## 完整对话历史（与主 API 看到的消息历史完全一致）',
+            `${'[用户]: 在吗\n'.repeat(300)}`,
+            '## 任务\n基于以上对话……',
+        ].join('\n');
+        const blocks = buildPromptBreakdown({ messages: [{ role: 'user', content: evalPrompt }] })!;
+        const labels = blocks.map(b => b.label);
+        expect(labels.some(l => l.startsWith('角色此刻看到的完整上下文'))).toBe(true);
+        expect(labels.some(l => l.startsWith('你的身份'))).toBe(true);
+        expect(labels.some(l => l === '任务')).toBe(true);
+        expect(labels.some(l => l.startsWith('聊天历史·用户消息'))).toBe(false);
+    });
+
+    it('普通短 user 消息仍走角色聚合，不拆', () => {
+        const blocks = buildPromptBreakdown({
+            messages: [
+                { role: 'user', content: '## 今天的计划\n买菜' },
+                { role: 'user', content: '在吗' },
+            ],
+        })!;
+        expect(blocks).toEqual([{ label: '聊天历史·用户消息 ×2', chars: '## 今天的计划\n买菜'.length + 2 }]);
+    });
+});
