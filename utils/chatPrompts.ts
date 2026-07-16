@@ -14,6 +14,7 @@ import { FISH_VOICE_ACTING_GUIDE } from './fishAudioTts';
 import { getTtsProvider, getVoicePromptOverride } from './ttsProvider';
 import { resolveCharTimeZone, nowInTimeZone } from './timezone';
 import { buildLifeRecordInjection } from './lifeRecords';
+import { appendTurnContext } from './turnContext';
 
 // 语音格式指导按当前 TTS 服务商二选一：用 MiniMax 才注入 MiniMax 那套（含 <#秒#> 停顿标记），
 // 用鱼声则注入鱼声版（去掉 MiniMax 专属标记，改用标点 / 省略号控制停顿）。
@@ -1183,6 +1184,10 @@ ${userProfile.name} 给你反馈时，别当成约束，当成信任——ta 在
                     content = `${timeStr} ${normalizeMessageContent(m, char?.name || '你', userProfile?.name || '用户')}`;
                 }
                 else content = `${timeStr} ${sourceTag} ${content}`;
+
+                if (m.role === 'user' && typeof m.metadata?.aiTurnContext === 'string') {
+                    content = appendTurnContext(content, m.metadata.aiTurnContext);
+                }
 
                 return { role: m.role, content };
             }),
