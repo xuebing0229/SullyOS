@@ -517,55 +517,24 @@ export async function applyAssistantPostProcessing(
 
         if (hasTranslationTags) {
             // ─── 双语 ───
-            const bilingualEmojis: string[] = [];
-            let bEm;
-            const bEmojiPat = /\[\[SEND_EMOJI:\s*(.*?)\]\]/g;
-            while ((bEm = bEmojiPat.exec(content)) !== null) {
-                const name = bEm[1].trim();
-                if (!bilingualEmojis.includes(name)) bilingualEmojis.push(name);
-            }
-            content = content.replace(/\[\[SEND_EMOJI:\s*.*?\]\]/g, '').trim();
-            const tagPattern = /<翻译>\s*<原文>([\s\S]*?)<\/原文>\s*<译文>([\s\S]*?)<\/译文>\s*<\/翻译>/g;
-            let lastIndex = 0;
-            let tagMatch;
-
-            while ((tagMatch = tagPattern.exec(content)) !== null) {
-                const textBefore = content.slice(lastIndex, tagMatch.index).trim();
-                if (textBefore) {
-                    const cleaned = ChatParser.sanitize(textBefore);
-                    if (cleaned && ChatParser.hasDisplayContent(cleaned)) {
-                        const chunks = ChatParser.chunkText(cleaned);
-                        for (const chunk of chunks) {
-                            if (!chunk) continue;
-                            const replyData = globalMsgIndex === 0 ? aiReplyTarget : undefined;
-                            await typingPause(Math.min(Math.max(chunk.length * 50, 500), 2000));
-                            await DB.saveMessage({ charId: char.id, role: 'assistant', type: 'text', content: chunk, replyTo: replyData, metadata: takeMeta(mcdInheritMeta) } as any);
-                            setMessages(await DB.getRecentMessagesByCharId(char.id, 200));
-                            globalMsgIndex++;
-                        }
+            // 表情包按模型写的位置原地插发。旧实现先把所有 [[SEND_EMOJI:]] 抽走、正文发完后
+            // 统一追加到最后（还去了重），表现为「翻译模式下角色永远最后才发表情包」。
+            const sendEmojiBubble = async (name: string): Promise<void> => {
+                const foundEmoji = emojis.find(e => e.name === name);
+                if (!foundEmoji) return;
+                await typingPause(Math.random() * 500 + 300);
+                await DB.saveMessage({ charId: char.id, role: 'assistant', type: 'emoji', content: foundEmoji.url, metadata: takeMeta(mcdInheritMeta) } as any);
+                setMessages(await DB.getRecentMessagesByCharId(char.id, 200));
+            };
+            // 翻译标签之外的普通文本段：splitResponse 按出现顺序拆出文字 / 表情逐条发
+            const renderPlainSegment = async (segment: string): Promise<void> => {
+                for (const part of ChatParser.splitResponse(segment)) {
+                    if (part.type === 'emoji') {
+                        await sendEmojiBubble(part.content);
+                        continue;
                     }
-                }
-
-                const originalText = ChatParser.sanitize(tagMatch[1].trim());
-                const translatedText = ChatParser.sanitize(tagMatch[2].trim());
-                if (originalText || translatedText) {
-                    const biContent = originalText && translatedText
-                        ? `${originalText}\n%%BILINGUAL%%\n${translatedText}`
-                        : (originalText || translatedText);
-                    const replyData = globalMsgIndex === 0 ? aiReplyTarget : undefined;
-                    await typingPause(Math.min(Math.max(biContent.length * 30, 400), 2000));
-                    await DB.saveMessage({ charId: char.id, role: 'assistant', type: 'text', content: biContent, replyTo: replyData, metadata: takeMeta(mcdInheritMeta) } as any);
-                    setMessages(await DB.getRecentMessagesByCharId(char.id, 200));
-                    globalMsgIndex++;
-                }
-
-                lastIndex = tagMatch.index + tagMatch[0].length;
-            }
-
-            const textAfter = content.slice(lastIndex).trim();
-            if (textAfter) {
-                const cleaned = ChatParser.sanitize(textAfter.replace(/<\/?翻译>|<\/?原文>|<\/?译文>/g, '').trim());
-                if (cleaned && ChatParser.hasDisplayContent(cleaned)) {
+                    const cleaned = ChatParser.sanitize(part.content);
+                    if (!cleaned || !ChatParser.hasDisplayContent(cleaned)) continue;
                     const chunks = ChatParser.chunkText(cleaned);
                     for (const chunk of chunks) {
                         if (!chunk) continue;
@@ -576,16 +545,38 @@ export async function applyAssistantPostProcessing(
                         globalMsgIndex++;
                     }
                 }
+            };
+            const tagPattern = /<翻译>\s*<原文>([\s\S]*?)<\/原文>\s*<译文>([\s\S]*?)<\/译文>\s*<\/翻译>/g;
+            let lastIndex = 0;
+            let tagMatch;
+
+            while ((tagMatch = tagPattern.exec(content)) !== null) {
+                const textBefore = content.slice(lastIndex, tagMatch.index).trim();
+                if (textBefore) await renderPlainSegment(textBefore);
+
+                // 混进 <原文>/<译文> 里的表情标签剥出来，紧跟这条双语气泡之后发
+                const inlineEmojis: string[] = [];
+                const stripInlineEmoji = (s: string): string =>
+                    s.replace(/\[\[SEND_EMOJI:\s*(.*?)\]\]/g, (_m, n) => { inlineEmojis.push(String(n).trim()); return ''; });
+                const originalText = ChatParser.sanitize(stripInlineEmoji(tagMatch[1]).trim());
+                const translatedText = ChatParser.sanitize(stripInlineEmoji(tagMatch[2]).trim());
+                if (originalText || translatedText) {
+                    const biContent = originalText && translatedText
+                        ? `${originalText}\n%%BILINGUAL%%\n${translatedText}`
+                        : (originalText || translatedText);
+                    const replyData = globalMsgIndex === 0 ? aiReplyTarget : undefined;
+                    await typingPause(Math.min(Math.max(biContent.length * 30, 400), 2000));
+                    await DB.saveMessage({ charId: char.id, role: 'assistant', type: 'text', content: biContent, replyTo: replyData, metadata: takeMeta(mcdInheritMeta) } as any);
+                    setMessages(await DB.getRecentMessagesByCharId(char.id, 200));
+                    globalMsgIndex++;
+                }
+                for (const name of inlineEmojis) await sendEmojiBubble(name);
+
+                lastIndex = tagMatch.index + tagMatch[0].length;
             }
 
-            for (const emojiName of bilingualEmojis) {
-                const foundEmoji = emojis.find(e => e.name === emojiName);
-                if (foundEmoji) {
-                    await typingPause(Math.random() * 500 + 300);
-                    await DB.saveMessage({ charId: char.id, role: 'assistant', type: 'emoji', content: foundEmoji.url, metadata: takeMeta(mcdInheritMeta) } as any);
-                    setMessages(await DB.getRecentMessagesByCharId(char.id, 200));
-                }
-            }
+            const textAfter = content.slice(lastIndex).trim();
+            if (textAfter) await renderPlainSegment(textAfter.replace(/<\/?翻译>|<\/?原文>|<\/?译文>/g, '').trim());
         } else {
             // ─── normal path (splitResponse → chunkText → per-chunk save) ───
             const parts = ChatParser.splitResponse(content);
