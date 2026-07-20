@@ -4,7 +4,8 @@ import { APIConfig, AppID, OSTheme, VirtualTime, CharacterProfile, CharacterGrou
 import { DB } from '../utils/db';
 import { modelRejectsSamplingParams, stripSamplingParams, isSamplingParamError } from '../utils/samplingParamCompat';
 import { extractImagesInPlace, deepCloneForExport } from '../utils/backupExport';
-import { isBlobRef, getBlobForRef, migrateDataUrlToRef, resolveBlobRefsDeep, BLOBREF_PREFIX, deleteBlobRefIfUnreferenced } from '../utils/blobRef';
+import { isBlobRef, getBlobForRef, migrateDataUrlToRef, migrateAppearancePresetBlobRefs, resolveBlobRefsDeep, BLOBREF_PREFIX, deleteBlobRefIfUnreferenced } from '../utils/blobRef';
+import { isLegacyDefaultWallpaper } from '../utils/wallpaperCompat';
 import { migrateSharkpanAssets } from '../utils/sharkpanAssetMigration';
 import { writeV2Backup, assembleV2Backup, type BackupManifest, type ZipFileWriter, type ZipFileReader } from '../utils/backupFormat';
 import { encodeVectorsForBackup } from '../utils/memoryPalace/db';
@@ -377,7 +378,6 @@ interface OSContextType {
   consumeDateAutoStart: () => void;
 }
 
-const LEGACY_DEFAULT_WALLPAPER = 'linear-gradient(135deg, #FFDEE9 0%, #B5FFFC 100%)';
 const PREVIOUS_DEFAULT_WALLPAPER = [
   'radial-gradient(120% 85% at 12% 0%, rgba(255,255,255,0.72) 0%, rgba(255,255,255,0) 58%)',
   'repeating-linear-gradient(0deg, rgba(92,72,49,0.018) 0px, rgba(92,72,49,0.018) 1px, transparent 1px, transparent 4px)',
@@ -399,6 +399,20 @@ export const DEFAULT_PAPER_APPEARANCE = {
   lightness: 46,
   contentColor: '#4b4136',
 } as const;
+
+/** 只迁移旧系统默认配色；任一项被用户改过都保留，避免把自定义主题误重置。 */
+const migrateLegacyDefaultPalette = (theme: OSTheme): OSTheme => {
+  const next = { ...theme };
+  if (!next.contentColor || next.contentColor.toLowerCase() === '#ffffff') {
+    next.contentColor = DEFAULT_PAPER_APPEARANCE.contentColor;
+  }
+  if (next.hue === 245 && next.saturation === 25 && next.lightness === 65) {
+    next.hue = DEFAULT_PAPER_APPEARANCE.hue;
+    next.saturation = DEFAULT_PAPER_APPEARANCE.saturation;
+    next.lightness = DEFAULT_PAPER_APPEARANCE.lightness;
+  }
+  return next;
+};
 
 export const isPaperWallpaper = (wallpaper?: string) => {
   if (!wallpaper) return false;
@@ -450,6 +464,11 @@ const resolveWallpaperStoredValue = async (w: string): Promise<string> => {
     const revokePrev = () => {
         if (currentWallpaperObjUrl) { try { URL.revokeObjectURL(currentWallpaperObjUrl); } catch { /* ignore */ } currentWallpaperObjUrl = null; }
     };
+    if (isLegacyDefaultWallpaper(w)) {
+        await replaceWallpaperAssetPointer('wallpaper', null);
+        revokePrev();
+        return DEFAULT_WALLPAPER;
+    }
     if (isBlobRef(w) || (w && w.startsWith('data:'))) {
         const token = isBlobRef(w) ? w : await migrateDataUrlToRef(w);
         const blob = await getBlobForRef(token);
@@ -1110,16 +1129,9 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
                  const parsed = JSON.parse(savedThemeStr);
                  loadedTheme = { ...loadedTheme, ...parsed };
                  // 仅迁移旧系统默认值；用户自定义过的壁纸、文字色和主题色全部保留。
-                 if (loadedTheme.wallpaper === LEGACY_DEFAULT_WALLPAPER || (isPaperWallpaper(loadedTheme.wallpaper) && loadedTheme.wallpaper !== DEFAULT_WALLPAPER)) {
+                 if (isLegacyDefaultWallpaper(loadedTheme.wallpaper) || (isPaperWallpaper(loadedTheme.wallpaper) && loadedTheme.wallpaper !== DEFAULT_WALLPAPER)) {
                      loadedTheme.wallpaper = DEFAULT_WALLPAPER;
-                     if (!parsed.contentColor || (typeof parsed.contentColor === 'string' && parsed.contentColor.toLowerCase() === '#ffffff')) {
-                         loadedTheme.contentColor = defaultTheme.contentColor;
-                     }
-                     if ((parsed.hue ?? 245) === 245 && (parsed.saturation ?? 25) === 25 && (parsed.lightness ?? 65) === 65) {
-                         loadedTheme.hue = defaultTheme.hue;
-                         loadedTheme.saturation = defaultTheme.saturation;
-                         loadedTheme.lightness = defaultTheme.lightness;
-                     }
+                     loadedTheme = migrateLegacyDefaultPalette(loadedTheme);
                  }
                  // Strip the legacy Unsplash hard-coded wallpaper, keep user-imported http(s) URLs
                  if (
@@ -1173,8 +1185,10 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
                 if (assetMap['wallpaper']) {
                     // assets 'wallpaper' 现在存的是指针（blobref 令牌 / 旧 data: / http）。
                     // 解析成可渲染 url（令牌→objectURL；旧 data: 顺手迁移成 Blob）。
-                    if (isPaperWallpaper(assetMap['wallpaper'])) {
+                    const legacyAssetWallpaper = isLegacyDefaultWallpaper(assetMap['wallpaper']);
+                    if (legacyAssetWallpaper || isPaperWallpaper(assetMap['wallpaper'])) {
                         loadedTheme.wallpaper = DEFAULT_WALLPAPER;
+                        if (legacyAssetWallpaper) loadedTheme = migrateLegacyDefaultPalette(loadedTheme);
                         await DB.deleteAsset('wallpaper');
                     } else {
                         loadedTheme.wallpaper = await resolveWallpaperStoredValue(assetMap['wallpaper']);
@@ -2316,7 +2330,9 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
     // theme.wallpaper 在内存里始终是能直接喂 CSS 的值（objectURL / http / 渐变），
     // 不是 blobref 令牌。
     if (wallpaper !== undefined) {
+        const legacyWallpaper = isLegacyDefaultWallpaper(wallpaper);
         newTheme.wallpaper = await resolveWallpaperStoredValue(wallpaper);
+        if (legacyWallpaper) Object.assign(newTheme, migrateLegacyDefaultPalette(newTheme));
     }
     if ('lockWallpaper' in updates) {
         newTheme.lockWallpaper = await resolveLockWallpaperStoredValue(lockWallpaper);
@@ -2955,7 +2971,7 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
           raw = JSON.parse(text);
       }
       if (raw.type !== 'sully_appearance_preset') throw new Error('无效的外观预设文件');
-      const preset: AppearancePreset = {
+      const preset = await migrateAppearancePresetBlobRefs({
           id: `ap_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
           name: raw.name || '导入的预设',
           createdAt: Date.now(),
@@ -2963,7 +2979,7 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
           customIcons: raw.customIcons,
           chatThemes: raw.chatThemes,
           chatLayout: raw.chatLayout,
-      };
+      } as AppearancePreset);
       setAppearancePresets(prev => [preset, ...prev]);
       await DB.saveAsset(`appearance_preset_${preset.id}`, JSON.stringify(preset));
       addToast(`已导入预设「${preset.name}」`, 'success');
@@ -3861,9 +3877,14 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
                   }
               }
               if (data.appearancePresets) {
+                  const cache = new Map<string, string>();
+                  const migratedPresets: AppearancePreset[] = [];
                   for (const preset of data.appearancePresets) {
-                      await DB.saveAsset(`appearance_preset_${preset.id}`, JSON.stringify(preset));
+                      const migrated = await migrateAppearancePresetBlobRefs(preset, cache);
+                      migratedPresets.push(migrated);
+                      await DB.saveAsset(`appearance_preset_${migrated.id}`, JSON.stringify(migrated));
                   }
+                  data.appearancePresets = migratedPresets;
               }
           }
 

@@ -3,7 +3,7 @@ import {
     isBlobRef, BLOBREF_PREFIX,
     putImageBlob, getBlobForRef, deleteBlobRef, deleteBlobRefIfUnreferenced,
     dataUrlToBlob, blobToDataUrl,
-    migrateDataUrlToRef, resolveBlobRefsDeep,
+    migrateDataUrlToRef, migrateAppearancePresetBlobRefs, resolveBlobRefsDeep,
 } from './blobRef';
 import { DB } from './db';
 
@@ -90,6 +90,32 @@ describe('migrateDataUrlToRef', () => {
     it('非法 data URL 迁移失败时原样返回，不抛错、不丢值', async () => {
         const bad = 'not-a-data-url';
         expect(await migrateDataUrlToRef(bad)).toBe(bad);
+    });
+});
+
+describe('migrateAppearancePresetBlobRefs', () => {
+    it('导入时立即迁移壁纸、锁屏和自定义图标，并复用相同图片 Blob', async () => {
+        const source: any = {
+            id: 'preset_import_test',
+            name: '导入测试',
+            createdAt: 1,
+            theme: {
+                hue: 88,
+                saturation: 14,
+                lightness: 46,
+                wallpaper: TINY_PNG,
+                lockWallpaper: TINY_PNG,
+                darkMode: false,
+            },
+            customIcons: { chat: TINY_PNG },
+        };
+
+        const migrated = await migrateAppearancePresetBlobRefs(source);
+        expect(isBlobRef(migrated.theme.wallpaper)).toBe(true);
+        expect(migrated.theme.lockWallpaper).toBe(migrated.theme.wallpaper);
+        expect(migrated.customIcons?.chat).toBe(migrated.theme.wallpaper);
+        expect(await blobToDataUrl((await getBlobForRef(migrated.theme.wallpaper))!)).toBe(TINY_PNG);
+        expect(source.theme.wallpaper).toBe(TINY_PNG);
     });
 });
 

@@ -16,6 +16,7 @@
 
 import { useEffect, useState } from 'react';
 import { DB } from './db';
+import type { AppearancePreset } from '../types';
 
 export const BLOBREF_PREFIX = 'blobref:';
 
@@ -150,6 +151,38 @@ export async function migrateDataUrlToRef(dataUrl: string): Promise<string> {
     } catch {
         return dataUrl;
     }
+}
+
+/**
+ * 外观预设导入专用迁移：只转换已经接入 BlobRef 渲染链路的字段，其他 data URL 保持原状。
+ * cache 让同一张原图在壁纸、锁屏或多个图标中复用同一个 Blob，避免导入时重复占空间。
+ */
+export async function migrateAppearancePresetBlobRefs(
+    preset: AppearancePreset,
+    cache: Map<string, string> = new Map<string, string>(),
+): Promise<AppearancePreset> {
+    const migrate = async (value: string | undefined): Promise<string | undefined> => {
+        if (!value?.startsWith('data:')) return value;
+        const cached = cache.get(value);
+        if (cached) return cached;
+        const stored = await migrateDataUrlToRef(value);
+        cache.set(value, stored);
+        return stored;
+    };
+
+    const theme = { ...preset.theme };
+    theme.wallpaper = (await migrate(theme.wallpaper)) || theme.wallpaper;
+    if ('lockWallpaper' in theme) theme.lockWallpaper = await migrate(theme.lockWallpaper);
+
+    let customIcons = preset.customIcons;
+    if (customIcons) {
+        customIcons = {};
+        for (const [appId, icon] of Object.entries(preset.customIcons || {})) {
+            customIcons[appId] = (await migrate(icon)) || icon;
+        }
+    }
+
+    return { ...preset, theme, customIcons };
 }
 
 /**
