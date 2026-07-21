@@ -96,8 +96,37 @@ describe('忠实用户一次性资格检测', () => {
         expect(result.passed).toBe(true);
     });
 
-    it('有非默认角色时，神经链接有效记忆超过二十即可走深度通道', () => {
-        const memories: CharacterProfile['memories'] = Array.from({ length: 21 }, (_, index) => ({
+    it('有非默认角色时，七月以来三条有效神经链接记忆即可走深度通道', () => {
+        const memories: CharacterProfile['memories'] = ['2026-07-01', '2026-07-10', '2026-07-19']
+            .map((date, index) => ({ id: `m-${index}`, date, summary: `memory-${index}` }));
+        const result = evaluateLoyalUserEligibility(snapshot({
+            characters: [character('preset-sully-v2'), character('char-custom', memories)],
+        }));
+
+        expect(result.metrics.neuralMemoryEntriesSinceJuly).toBe(3);
+        expect(result.metrics.neuralMemoryEntriesSinceJune).toBe(3);
+        expect(result.deepUserChannelPassed).toBe(true);
+        expect(result.qualificationPath).toBe('deep');
+    });
+
+    it('有非默认角色时，六月以来十五条有效神经链接记忆即可走深度通道', () => {
+        const memories: CharacterProfile['memories'] = Array.from({ length: 15 }, (_, index) => ({
+            id: `m-${index}`,
+            date: `2026-06-${String(index + 1).padStart(2, '0')}`,
+            summary: `memory-${index}`,
+        }));
+        const result = evaluateLoyalUserEligibility(snapshot({
+            characters: [character('preset-sully-v2'), character('char-custom', memories)],
+        }));
+
+        expect(result.metrics.neuralMemoryEntriesSinceJuly).toBe(0);
+        expect(result.metrics.neuralMemoryEntriesSinceJune).toBe(15);
+        expect(result.deepUserChannelPassed).toBe(true);
+        expect(result.qualificationPath).toBe('deep');
+    });
+
+    it('有非默认角色时，截止日前累计二百条有效神经链接记忆即可走深度通道', () => {
+        const memories: CharacterProfile['memories'] = Array.from({ length: 200 }, (_, index) => ({
             id: `m-${index}`,
             date: '2026-05-01',
             summary: `memory-${index}`,
@@ -106,9 +135,31 @@ describe('忠实用户一次性资格检测', () => {
             characters: [character('preset-sully-v2'), character('char-custom', memories)],
         }));
 
-        expect(result.metrics.memoryUnits).toBe(21);
+        expect(result.metrics.neuralMemoryEntriesTotal).toBe(200);
         expect(result.deepUserChannelPassed).toBe(true);
         expect(result.qualificationPath).toBe('deep');
+    });
+
+    it('神经链接三档条件都必须达到边界，二条七月、十四条六月和不足二百总量不会通过', () => {
+        const june = Array.from({ length: 12 }, (_, index) => ({
+            id: `june-${index}`,
+            date: `2026-06-${String(index + 1).padStart(2, '0')}`,
+            summary: `june-${index}`,
+        }));
+        const july = ['2026-07-01', '2026-07-19'].map((date, index) => ({
+            id: `july-${index}`,
+            date,
+            summary: `july-${index}`,
+        }));
+        const result = evaluateLoyalUserEligibility(snapshot({
+            characters: [character('preset-sully-v2'), character('char-custom', [...june, ...july])],
+        }));
+
+        expect(result.metrics.neuralMemoryEntriesSinceJuly).toBe(2);
+        expect(result.metrics.neuralMemoryEntriesSinceJune).toBe(14);
+        expect(result.metrics.neuralMemoryEntriesTotal).toBe(14);
+        expect(result.deepUserChannelPassed).toBe(false);
+        expect(result.passed).toBe(false);
     });
 
     it('有非默认角色时，记忆宫殿有效节点超过二十即可走深度通道', () => {

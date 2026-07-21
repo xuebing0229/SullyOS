@@ -9,14 +9,16 @@ import type { MemoryNode } from './memoryPalace/types';
  * 时间全部写明 +08:00，不能跟随设备所在时区。传统 MemoryFragment 只有日期、没有
  * 时分，因此截止日（7 月 20 日）整天不计；其它带 timestamp/createdAt 的数据精确计到 19:00。
  */
-export const LOYAL_RECRUITMENT_CRITERIA_VERSION = '2026-07-20-v3';
+export const LOYAL_RECRUITMENT_CRITERIA_VERSION = '2026-07-20-v4';
 export const LOYAL_RECRUITMENT_CUTOFF_ISO = '2026-07-20T19:00:00+08:00';
 export const LOYAL_RECRUITMENT_RECENT_START_ISO = '2026-06-20T19:00:00+08:00';
 export const LOYAL_RECRUITMENT_CUTOFF_AT = Date.parse(LOYAL_RECRUITMENT_CUTOFF_ISO);
 export const LOYAL_RECRUITMENT_RECENT_START_AT = Date.parse(LOYAL_RECRUITMENT_RECENT_START_ISO);
 export const LOYAL_RECRUITMENT_PASS_SCORE = 65;
 export const LOYAL_RECRUITMENT_DEEP_MIN_CHARACTER_ACTIVE_DAYS = 3;
-export const LOYAL_RECRUITMENT_DEEP_MEMORY_THRESHOLD = 20;
+export const LOYAL_RECRUITMENT_DEEP_JULY_MEMORY_THRESHOLD = 3;
+export const LOYAL_RECRUITMENT_DEEP_JUNE_MEMORY_THRESHOLD = 15;
+export const LOYAL_RECRUITMENT_DEEP_TOTAL_MEMORY_THRESHOLD = 200;
 export const LOYAL_RECRUITMENT_DEEP_PALACE_THRESHOLD = 20;
 
 const BEIJING_OFFSET_MS = 8 * 60 * 60 * 1000;
@@ -25,6 +27,8 @@ const DEFAULT_CHARACTER_ID = 'preset-sully-v2';
 const CUTOFF_DAY_KEY = '2026-07-20';
 const RECENT_START_DAY_KEY = '2026-06-20';
 const CUTOFF_MONTH_KEY = '2026-07';
+const JUNE_START_AT = Date.parse('2026-06-01T00:00:00+08:00');
+const JULY_START_AT = Date.parse('2026-07-01T00:00:00+08:00');
 
 const ELIGIBLE_USER_MESSAGE_TYPES = new Set([
     'text', 'voice', 'image', 'emoji', 'interaction',
@@ -53,6 +57,10 @@ export interface LoyalEligibilityMetrics {
     memoryUnits: number;
     recentMemoryUnits: number;
     memorySpanDays: number;
+    /** 只数有效的神经链接记忆条目，不把月度精炼总结算作一条记忆。 */
+    neuralMemoryEntriesTotal?: number;
+    neuralMemoryEntriesSinceJune?: number;
+    neuralMemoryEntriesSinceJuly?: number;
     palaceNodes: number;
     recentPalaceNodes: number;
     palaceRooms: number;
@@ -86,9 +94,19 @@ export function reclassifyLoyalEligibilityResult(
     // v1/v2 没有按角色累计历史活跃日；迁移时用已封存的近期活跃日作保守兼容证据。
     const characterActiveDays = result.metrics.maxPreCutoffCharacterActiveDays
         ?? result.metrics.recentActiveDays;
+    const hasCurrentMemoryEntryMetrics = typeof result.metrics.neuralMemoryEntriesTotal === 'number'
+        && typeof result.metrics.neuralMemoryEntriesSinceJune === 'number'
+        && typeof result.metrics.neuralMemoryEntriesSinceJuly === 'number';
+    const neuralMemoryConditionPassed = hasCurrentMemoryEntryMetrics
+        ? result.metrics.neuralMemoryEntriesSinceJuly! >= LOYAL_RECRUITMENT_DEEP_JULY_MEMORY_THRESHOLD
+            || result.metrics.neuralMemoryEntriesSinceJune! >= LOYAL_RECRUITMENT_DEEP_JUNE_MEMORY_THRESHOLD
+            || result.metrics.neuralMemoryEntriesTotal! >= LOYAL_RECRUITMENT_DEEP_TOTAL_MEMORY_THRESHOLD
+        // v1-v3 没有 6/1、7/1 两个分段计数；用封存的 6/20 后记忆量作宽松兼容，仍不重读新数据。
+        : result.metrics.recentMemoryUnits >= LOYAL_RECRUITMENT_DEEP_JULY_MEMORY_THRESHOLD
+            || result.metrics.memoryUnits >= LOYAL_RECRUITMENT_DEEP_TOTAL_MEMORY_THRESHOLD;
     const deepUserChannelPassed = result.metrics.hasQualifiedCustomCharacter && (
         characterActiveDays >= LOYAL_RECRUITMENT_DEEP_MIN_CHARACTER_ACTIVE_DAYS
-        || result.metrics.memoryUnits > LOYAL_RECRUITMENT_DEEP_MEMORY_THRESHOLD
+        || neuralMemoryConditionPassed
         || result.metrics.palaceNodes > LOYAL_RECRUITMENT_DEEP_PALACE_THRESHOLD
     );
 
@@ -106,6 +124,7 @@ interface DatedMemoryUnit {
     at: number;
     units: number;
     recent: boolean;
+    isMemoryEntry: boolean;
 }
 
 function beijingDayKey(timestamp: number): string {
@@ -158,6 +177,7 @@ function collectTraditionalMemoryUnits(characters: CharacterProfile[]): DatedMem
             units.push({
                 at: atBeijingNoon(dayKey),
                 units: 1,
+                isMemoryEntry: true,
                 // 起始日同样没有时分，保守排除 6 月 20 日整天。
                 recent: dayKey > RECENT_START_DAY_KEY && dayKey < CUTOFF_DAY_KEY,
             });
@@ -171,6 +191,7 @@ function collectTraditionalMemoryUnits(characters: CharacterProfile[]): DatedMem
                 at: monthMidpointAt(monthKey),
                 units: 2,
                 recent: monthKey === '2026-06',
+                isMemoryEntry: false,
             });
         }
     }
@@ -340,6 +361,12 @@ export function evaluateLoyalUserEligibility(snapshot: LoyalEligibilitySnapshot)
     const recentMemoryUnits = datedMemoryUnits
         .filter(item => item.recent)
         .reduce((sum, item) => sum + item.units, 0);
+    const neuralMemoryEntryTimes = datedMemoryUnits
+        .filter(item => item.isMemoryEntry)
+        .map(item => item.at);
+    const neuralMemoryEntriesTotal = neuralMemoryEntryTimes.length;
+    const neuralMemoryEntriesSinceJune = neuralMemoryEntryTimes.filter(at => at >= JUNE_START_AT).length;
+    const neuralMemoryEntriesSinceJuly = neuralMemoryEntryTimes.filter(at => at >= JULY_START_AT).length;
     const memoryTimes = datedMemoryUnits.map(item => item.at);
     const memorySpanDays = memoryTimes.length > 0
         ? Math.max(0, Math.floor((Math.max(...memoryTimes) - Math.min(...memoryTimes)) / DAY_MS))
@@ -371,6 +398,9 @@ export function evaluateLoyalUserEligibility(snapshot: LoyalEligibilitySnapshot)
             memoryUnits,
             recentMemoryUnits,
             memorySpanDays,
+            neuralMemoryEntriesTotal,
+            neuralMemoryEntriesSinceJune,
+            neuralMemoryEntriesSinceJuly,
             palaceNodes: validPalaceNodes.length,
             recentPalaceNodes: recentPalaceNodes.length,
             palaceRooms: palaceRooms.size,

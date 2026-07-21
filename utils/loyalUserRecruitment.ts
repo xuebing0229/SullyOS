@@ -10,6 +10,7 @@ export const LOYAL_RECRUITMENT_EVENT = 'sullyos-loyal-recruitment-change';
 export const LOYAL_RECRUITMENT_DEFAULT_BASE = 'https://noir2.cc.cd/recruit';
 const LOYAL_RECRUITMENT_BASE_KEY = 'sullyos_loyal_recruitment_base';
 const LOYAL_RECRUITMENT_LEGACY_ATTEMPT_KEYS = [
+    'sullyos_loyal_recruitment_2026-07-20-v3',
     'sullyos_loyal_recruitment_2026-07-20-v2',
     'sullyos_loyal_recruitment_2026-07-20-v1',
 ];
