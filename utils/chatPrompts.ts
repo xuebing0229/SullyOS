@@ -15,6 +15,8 @@ import { getTtsProvider, getVoicePromptOverride } from './ttsProvider';
 import { resolveCharTimeZone, nowInTimeZone } from './timezone';
 import { buildLifeRecordInjection } from './lifeRecords';
 import { getCharNameById } from './charNameRegistry';
+import { getLocalDateKey } from './localDate';
+import { getLocalDailySchedule } from './dailySchedule';
 
 // 语音格式指导按当前 TTS 服务商二选一：用 MiniMax 才注入 MiniMax 那套（含 <#秒#> 停顿标记），
 // 用鱼声则注入鱼声版（去掉 MiniMax 专属标记，改用标点 / 省略号控制停顿）。
@@ -229,7 +231,7 @@ export const ChatPrompts = {
         // ── 并发发起所有独立的异步取数（网络 + IndexedDB），下面按原顺序拼接 ──
         // 原来是 7 段串行 await，总耗时 = 各段之和；现在取 max。
         const config = realtimeConfig || defaultRealtimeConfig;
-        const today = new Date().toISOString().split('T')[0];
+        const today = getLocalDateKey();
         // 自定义时区：开启后「当前时间」按角色所在时区折算，并附时差提示（异国恋等场景）
         const charTz = resolveCharTimeZone(char);
 
@@ -257,7 +259,7 @@ export const ChatPrompts = {
         //    总开关关闭时跳过查询与注入，确保不额外调用任何 LLM 依赖链
         const scheduleFeatureOn = isScheduleFeatureOn(char);
         const schedulePromise: Promise<DailySchedule | null> = scheduleFeatureOn
-            ? DB.getDailySchedule(char.id, today).catch(e => {
+            ? getLocalDailySchedule(char.id).catch(e => {
                 console.error('Failed to load daily schedule:', e);
                 return null;
             })
