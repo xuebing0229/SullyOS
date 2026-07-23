@@ -106,5 +106,7 @@ describe('MessageItem module layout', () => {
         expect(markup).toContain('aria-label="心象：点击展开，长按复制全文"');
         expect(markup).toContain('title="长按复制心象全文"');
         expect(markup).toContain('这是可以一键复制的完整心象');
+        expect(markup).toContain('user-select:text');
+        expect(markup).toContain('-webkit-touch-callout:default');
     });
 });
