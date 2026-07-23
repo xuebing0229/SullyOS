@@ -71,6 +71,20 @@ export interface ApiCallLogEntry extends ApiCallMeta {
     requestChars?: number;
     /** 请求从发起到响应 / 报错的耗时 ms（NetworkError 类失败时 = 等了多久才断） */
     durationMs?: number;
+    /**
+     * 输入构成统计（每块的名字 + 字符数），回答「prompt_tokens 为什么这么大」。
+     * 只存统计不存原文（原文一条就几十 KB，5 天日志会撑爆存储）；在响应回来后的
+     * fire-and-forget 记录路径里扫一遍请求体算出，不占请求主链路。
+     */
+    promptBreakdown?: PromptBlockStat[];
+}
+
+/** 输入构成里的一块：system prompt 的一个 ### 段落，或聚合后的聊天历史。 */
+export interface PromptBlockStat {
+    /** 块名：### 标题 / [System: …] 行 / 无标题时取首行摘要；历史消息聚合成「聊天历史·×N」 */
+    label: string;
+    /** 该块字符数（含标题行与换行） */
+    chars: number;
 }
 
 const PRESETS_STORAGE_KEY = 'os_api_presets';
@@ -86,6 +100,11 @@ let ambientMeta: ApiCallMeta = {};
 
 export function setApiCallAmbientContext(meta: ApiCallMeta): void {
     ambientMeta = meta || {};
+}
+
+/** Snapshot the current fallback context when a request starts. */
+export function getApiCallAmbientContext(): ApiCallMeta {
+    return { ...ambientMeta };
 }
 
 function hasMeta(meta?: ApiCallMeta): boolean {
@@ -243,6 +262,180 @@ export function scanSseForLog(text: string): { model?: string; usage?: unknown }
     return { model, usage };
 }
 
+// ── 输入构成统计（promptBreakdown） ──────────────────────────────────────
+
+/** 多模态 content 摊平成可计数文本（图片按占位符计，与 emotion eval 的展平口径一致）。 */
+function contentToText(content: unknown): string {
+    if (typeof content === 'string') return content;
+    if (Array.isArray(content)) {
+        return content.map((part: any) => {
+            if (part?.type === 'text') return part.text || '';
+            if (part?.type === 'image_url') return '[图片]';
+            return '';
+        }).filter(Boolean).join(' ');
+    }
+    if (content == null) return '';
+    try { return JSON.stringify(content) ?? ''; } catch { return String(content); }
+}
+
+const BLOCK_LABEL_MAX = 40;
+
+/** 行是块头？返回块名（`## / ### 标题` 或 `[System: …]`），否则 null。 */
+const matchBlockHeader = (line: string): string | null => {
+    const m = line.match(/^\s*#{2,3}\s+(.+?)\s*$/) || line.match(/^\s*(\[System:[^\]]*\])/);
+    return m ? m[1].trim() : null;
+};
+
+/**
+ * 计算哪些行是有效的 ``` 围栏开合线。围栏必须**成对**才生效：用户数据（记忆
+ * 摘要等）里落单的半个 ``` 会把围栏状态永久翻转，后面所有块头全被吞进上一块
+ * （实测：62K 的「记忆系统」行吞掉了对话历史+评估框架）。奇数个时最后一个不算。
+ */
+function fenceToggleLines(lines: string[]): Set<number> {
+    const indices: number[] = [];
+    lines.forEach((line, i) => { if (/^\s*```/.test(line)) indices.push(i); });
+    if (indices.length % 2 === 1) indices.pop();
+    return new Set(indices);
+}
+
+/**
+ * 把一条 system 消息按块头切开。``` 围栏内的行不算块头——行为规范里的日记
+ * 示例（`## 今天的小确幸` 等）都在代码块里，不加围栏感知会被误切成独立块。
+ * 一个块头都没有的短消息（双语 / MCP 尾部提醒等）整条算一块，取首行当名字。
+ */
+function splitSystemBlocks(text: string): PromptBlockStat[] {
+    const out: PromptBlockStat[] = [];
+    let label = '（开头·未分块部分）';
+    let chars = 0;
+    let sawHeader = false;
+    let inFence = false;
+    const lines = text.split('\n');
+    const fenceAt = fenceToggleLines(lines);
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        if (fenceAt.has(i)) inFence = !inFence;
+        const header = inFence ? null : matchBlockHeader(line);
+        if (header) {
+            if (chars > 0) out.push({ label, chars });
+            label = header.slice(0, BLOCK_LABEL_MAX);
+            chars = line.length + 1;
+            sawHeader = true;
+        } else {
+            chars += line.length + 1;
+        }
+    }
+    if (chars > 0) out.push({ label, chars });
+    if (!sawHeader && out.length === 1) {
+        const firstLine = text.trimStart().split('\n', 1)[0] || '(空 system)';
+        out[0] = { ...out[0], label: firstLine.slice(0, BLOCK_LABEL_MAX) };
+    }
+    return out;
+}
+
+/**
+ * 已知的「写死的固定骨架」块名前缀（规则/格式/钢印类，内容不随用户数据变化）。
+ * 构成面板的展示层把命中的块合并成一行「固定提示词」，突出真正能优化的数据块。
+ * 新增固定提示词块时记得把块头加进来（漏加只是显示散一点，无功能影响）。
+ */
+const FIXED_PROMPT_LABEL_PREFIXES = [
+    '聊天 App 行为规范',
+    '表达底线',
+    '🎤 语音消息功能',
+    '关于对方的表达',
+    '最后，回到你自己',
+    '【音乐互动工具】',
+    '关于《彼方》',
+    '[MCP 工具 ON',
+    '[Reminder:',
+    // 思考链提示词（thinkingChainPrompt.ts）的章节头
+    '语言铁律',
+    '你不是在演',
+    '起点:你本来在干嘛',
+    '同时被激活的多个东西',
+    '别急着安慰',
+    '别造谣',
+    '温度:脑内比嘴上更吵',
+    'Thinking 写法总则',
+];
+
+export const isFixedPromptBlockLabel = (label: string): boolean =>
+    FIXED_PROMPT_LABEL_PREFIXES.some(prefix => label.startsWith(prefix));
+
+const MAX_BREAKDOWN_BLOCKS = 48;
+
+/**
+ * 从 chat/completions 请求体算输入构成。解析不了 / 没有 messages 时返回 undefined。
+ * system 逐块统计，历史消息按角色聚合（用户只关心"内置注入哪块肥"，不关心第几条历史）。
+ */
+export function buildPromptBreakdown(body: unknown): PromptBlockStat[] | undefined {
+    try {
+        let parsed: any = body;
+        if (typeof body === 'string') {
+            try { parsed = JSON.parse(body); } catch { return undefined; }
+        }
+        const messages = parsed?.messages;
+        if (!Array.isArray(messages) || messages.length === 0) return undefined;
+
+        const out: PromptBlockStat[] = [];
+        let userChars = 0, userCount = 0, asstChars = 0, asstCount = 0, otherChars = 0, otherCount = 0;
+        // 情绪评估等路径把「完整 system prompt + 展平历史 + 任务说明」整个打包成一条
+        // user 消息发送——不拆的话构成面板只会显示「用户消息 ×1 · 100%」，看不出内里。
+        // 巨型且含多个块头的 user 消息按 system 同款规则拆块；普通聊天消息不受影响。
+        const HUGE_USER_MSG_SPLIT_CHARS = 8000;
+        const countBlockHeaders = (text: string): number => {
+            let n = 0, inFence = false;
+            const lines = text.split('\n');
+            const fenceAt = fenceToggleLines(lines);
+            for (let i = 0; i < lines.length; i++) {
+                if (fenceAt.has(i)) inFence = !inFence;
+                if (!inFence && matchBlockHeader(lines[i])) n++;
+            }
+            return n;
+        };
+        for (const msg of messages) {
+            const text = contentToText(msg?.content);
+            if (msg?.role === 'system') {
+                out.push(...splitSystemBlocks(text));
+            } else if (msg?.role === 'user') {
+                if (text.length > HUGE_USER_MSG_SPLIT_CHARS && countBlockHeaders(text) >= 2) {
+                    out.push(...splitSystemBlocks(text));
+                } else {
+                    userChars += text.length; userCount++;
+                }
+            } else if (msg?.role === 'assistant') {
+                asstChars += text.length; asstCount++;
+            } else {
+                otherChars += text.length; otherCount++;
+            }
+        }
+        if (userCount) {
+            // 记忆提取/日程生成/查手机等大量调用点是「单条 user 提示词」形态——
+            // 标成"聊天历史"纯属误导，改用首行摘要让人一眼看出是什么任务。
+            const soloPrompt = messages.length === 1 && userCount === 1;
+            const firstLine = soloPrompt
+                ? (contentToText(messages[0]?.content).trimStart().split('\n', 1)[0] || '').slice(0, BLOCK_LABEL_MAX)
+                : '';
+            out.push(soloPrompt
+                ? { label: `提示词整体「${firstLine}」`, chars: userChars }
+                : { label: `聊天历史·用户消息 ×${userCount}`, chars: userChars });
+        }
+        if (asstCount) out.push({ label: `聊天历史·角色消息 ×${asstCount}`, chars: asstChars });
+        if (otherCount) out.push({ label: `其他消息（tool 等）×${otherCount}`, chars: otherChars });
+        if (out.length === 0) return undefined;
+
+        // 限容：病态多块时合并尾巴，保证单条记录体积可控
+        if (out.length > MAX_BREAKDOWN_BLOCKS) {
+            const head = out.slice(0, MAX_BREAKDOWN_BLOCKS - 1);
+            const restChars = out.slice(MAX_BREAKDOWN_BLOCKS - 1).reduce((sum, b) => sum + b.chars, 0);
+            head.push({ label: `（其余 ${out.length - (MAX_BREAKDOWN_BLOCKS - 1)} 块合计）`, chars: restChars });
+            return head;
+        }
+        return out;
+    } catch {
+        return undefined;
+    }
+}
+
 export function recordApiCall(input: {
     url: string;
     body?: unknown;
@@ -295,6 +488,7 @@ export function recordApiCall(input: {
             requestHash: input.requestHash,
             requestChars: input.requestChars,
             durationMs: input.durationMs,
+            promptBreakdown: buildPromptBreakdown(input.body),
             appId: meta.appId,
             appName: meta.appName,
             charId: meta.charId,

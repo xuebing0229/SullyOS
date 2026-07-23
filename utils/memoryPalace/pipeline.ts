@@ -72,6 +72,8 @@ import { rerankDocuments } from './rerank';
 import { MemoryNodeDB, MemoryVectorDB, MemoryLinkDB, AnticipationDB } from './db';
 import { DB } from '../db';
 import { isMessageSemanticallyRelevant, formatMessageForPrompt } from '../messageFormat';
+import { sanitizeQuerySourceMessages } from './querySanitizer';
+import { getLocalDateKey } from '../localDate';
 
 // ─── 轻量 LLM 配置类型 ───────────────────────────────
 
@@ -312,6 +314,7 @@ export async function retrieveMemories(
     queryOverride?: string,
     userName?: string,
     remoteVectorConfig?: RemoteVectorConfig,
+    charName?: string,
 ): Promise<string> {
     // ── 分段计时：定位 memoryPalace 到底是网络慢还是计算慢 ──
     // tag: NET = 远端 API RTT；IDB = IndexedDB 读写；CPU = 纯本地计算
@@ -338,7 +341,13 @@ export async function retrieveMemories(
         //
         //    context query：assistant 回复 + 更早 user 消息 + queryOverride。
         //                  （背景话题延续，分数 × 0.5 折扣，不会压过 user 意图）
-        const { userIntent, contextTurns, fallbackAll } = splitLastTurnQueries(recentMessages);
+        //
+        //    query 源清洗（querySanitizer）：图片/表情包/语音不进 query——
+        //    图片 content 是几万字符的 base64 data URI，URL_RE 剥不掉，
+        //    切进 spike/rerank/context 会把 Embedding 批量请求顶爆
+        //    （硅基流动 400 code 20015）。卡片类翻成可读文本再参与检索。
+        const querySourceMessages = sanitizeQuerySourceMessages(recentMessages, charName, userName);
+        const { userIntent, contextTurns, fallbackAll } = splitLastTurnQueries(querySourceMessages);
 
         // 抽取每条有意义的 user 消息作为独立 spike + 二次拆分子 spike
         //
@@ -929,7 +938,7 @@ function getEmbeddingConfig(charEmbeddingConfig?: any): EmbeddingConfig | null {
 }
 
 export async function injectMemoryPalace(
-    char: { memoryPalaceEnabled?: boolean; embeddingConfig?: any; activeBuffs?: any[]; personalityStyle?: string; ruminationTendency?: number; id: string; memoryPalaceInjection?: string; roomPlatesInjection?: string },
+    char: { memoryPalaceEnabled?: boolean; embeddingConfig?: any; activeBuffs?: any[]; personalityStyle?: string; ruminationTendency?: number; id: string; name?: string; memoryPalaceInjection?: string; roomPlatesInjection?: string },
     recentMessages?: Message[],
     queryHint?: string,
     userName?: string,
@@ -965,6 +974,7 @@ export async function injectMemoryPalace(
             queryHint,
             resolvedUserName,
             getRemoteVectorConfig(),
+            char.name,
         );
         if (context) {
             char.memoryPalaceInjection = context;
@@ -1140,7 +1150,7 @@ const PROCESS_RATIO = 0.85;
  * 计算当前"真正可被 pipeline 处理"的缓冲区消息数。
  *
  * 与 processNewMessages 的口径完全一致：
- *   - 只数语义相关消息（排除纯图片/语音/表情）
+ *   - 只数语义相关消息（排除纯图片/表情和无转写的纯音频；保留有文字的语音与卡片）
  *   - 排除最后 HOT_ZONE_SIZE 条（热区永远不会被处理）
  *   - 只数 id > 高水位标记的部分
  *
@@ -1475,7 +1485,7 @@ async function applyMemorySideEffects(
                     merged.set(c.targetId, arr);
                 }
 
-                const dateStr = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+                const dateStr = getLocalDateKey();
                 const toRevectorize: import('./types').MemoryNode[] = [];
                 for (const [targetId, notes] of merged) {
                     const node = await MemoryNodeDB.getById(targetId);
@@ -1538,8 +1548,8 @@ export async function processNewMessages(
 
     try {
         // 1. 加载全部消息（含已处理的），计算热区和缓冲区
-        //    过滤：保留任何有语义的消息类型（text / score_card / system / transfer / interaction），
-        //    只排除纯视觉/音频类（image / emoji / voice）—— 后者经 normalize 变短占位，对 LLM 无增益
+        //    过滤：保留任何有语义的消息类型（文字、带转写的语音、卡片、系统事件等），
+        //    只排除纯视觉资源和无转写的纯音频，避免 URL / base64 污染 LLM。
         const allMessages = await DB.getMessagesByCharId(charId, true);
         const textMessages = allMessages
             .filter(m => isMessageSemanticallyRelevant(m))

@@ -23,6 +23,7 @@ import { DB } from '../db';
 import { buildChatRequestPayload } from '../chatRequestPayload';
 import { safeFetchJson } from '../safeApi';
 import { processNewMessages } from '../memoryPalace/pipeline';
+import { getLocalDailySchedule } from '../dailySchedule';
 import {
     worldTimeLabel, buildWorldSystemAddendum, buildWorldCharTurn, buildNpcTurn,
     parseCharBeat, parseNpcScene, realObserveTarget, formatRealClock, migrateWorldDaySegs,
@@ -246,8 +247,7 @@ export function buildWorldCardMeta(world: WorldProfile, beat: WorldCharBeat, rou
 async function buildFullDayScheduleBlock(world: WorldProfile, charId: string): Promise<string> {
     if ((world.timeMode ?? 'real') === 'sim') return '';
     try {
-        const today = new Date().toISOString().split('T')[0];
-        const s = await DB.getDailySchedule(charId, today);
+        const s = await getLocalDailySchedule(charId);
         if (!s?.slots?.length) return '';
         const lines = s.slots
             .map(x => `- ${x.startTime} ${x.activity}${x.location ? `（${x.location}）` : ''}`)
@@ -351,6 +351,8 @@ export async function runWorldEpisode(deps: WorldEpisodeDeps): Promise<WorldEpis
                 const payload = await buildChatRequestPayload({
                     char, userProfile, groups, emojis: [], categories: [],
                     historyMsgs, contextLimit, realtimeConfig, recallQueryHint,
+                    // 家园可配独立 API（可能不支持视觉，image_url 会 400）→ 历史图片压平成文本占位
+                    stripImages: true,
                 });
                 const systemPrompt = payload.systemPrompt
                     + buildWorldSystemAddendum(world, char, userProfile?.name || '')
@@ -587,6 +589,8 @@ export async function rerollWorldCharBeat(
         const payload = await buildChatRequestPayload({
             char, userProfile, groups, emojis: [], categories: [],
             historyMsgs, contextLimit, realtimeConfig, recallQueryHint,
+            // 同上：独立 API 可能不支持视觉 → 历史图片压平成文本占位
+            stripImages: true,
         });
         const systemPrompt = payload.systemPrompt
             + buildWorldSystemAddendum(world, char, userProfile?.name || '')

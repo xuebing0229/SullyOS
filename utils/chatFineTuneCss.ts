@@ -14,12 +14,15 @@
  * 全部字段缺省时返回空串（一个 <style> 都不注入，现状零变化）。
  */
 
-import type { OSTheme, ChatFineTuneFields, ChatFineTuneOverride } from '../types';
+import type { ChatFineTuneFields, ChatFineTuneOverride } from '../types';
 
 /** 微调字段清单（合并 / 重置 / 快照都以这份为准，加字段只改这里一处）。 */
 export const CHAT_FINE_TUNE_KEYS = [
     'chatAvatarVisibility', 'chatAvatarAlign', 'chatAvatarOffsetY',
     'chatBubbleFontSize', 'chatBubbleLineHeight', 'chatBubbleIndent', 'chatSnapToEdge',
+    // chatModuleAlign 不生成 CSS（HTML/心象卡片位置经 MessageItem 布局属性生效），
+    // 但同属微调字段：合并/重置/角色覆盖/备份都跟这份清单走。
+    'chatModuleAlign',
 ] as const satisfies ReadonlyArray<keyof ChatFineTuneFields>;
 
 /**
@@ -47,14 +50,15 @@ const USER_BODY = '.sully-chat-root .sully-bubble-user > div[class~="select-text
 // 的默认位置就是"视觉居中"的约定，:not() 绕开让它不随美化挪窝。
 const AI_WRAP = '.sully-chat-root .group.justify-start [class~="max-w-[72%]"].ml-12:not(.sully-html-wrap)';
 const USER_WRAP = '.sully-chat-root .group.justify-end [class~="max-w-[72%]"].mr-12:not(.sully-html-wrap)';
+// 心象卡片（思考链，仅 AI 侧）与气泡共用包装层，:not() 绕不开——包装层被贴边/缩进挪动时
+// 给它一个反向 margin 抵消，钉回默认位置（ml-12 = 48px），与 HTML 卡片同一"模块不挪窝"约定。
+const AI_PSYCHE = '.sully-chat-root .group.justify-start .sully-psyche';
+const DEFAULT_WRAP_MARGIN = 48;
 
 const hideRule = (sel: string) =>
     `${sel} { display: none !important; visibility: hidden !important; opacity: 0 !important; pointer-events: none !important; }`;
 
-export function buildChatFineTuneCss(theme: Pick<OSTheme,
-    'chatAvatarVisibility' | 'chatAvatarAlign' | 'chatAvatarOffsetY' |
-    'chatBubbleFontSize' | 'chatBubbleLineHeight' | 'chatBubbleIndent' | 'chatSnapToEdge'
->): string {
+export function buildChatFineTuneCss(theme: ChatFineTuneFields): string {
     const rules: string[] = [];
     const vis = theme.chatAvatarVisibility || 'both';
     const hideAi = vis === 'hide_ai' || vis === 'hide_both';
@@ -89,6 +93,15 @@ export function buildChatFineTuneCss(theme: Pick<OSTheme,
     if (indent > 0) {
         if (!(theme.chatSnapToEdge && hideAi)) rules.push(`${AI_WRAP} { margin-left: ${indent}px !important; }`);
         if (!(theme.chatSnapToEdge && hideUser)) rules.push(`${USER_WRAP} { margin-right: ${indent}px !important; }`);
+    }
+
+    // ── 心象卡片钉回默认位置 ──
+    // AI 侧包装层被挪动多少，就给心象反向补多少：贴边时包装层 48→0（补 48px），
+    // 缩进时 48→indent（补 48-indent，可为负）。包装层没动就不出规则。
+    if (theme.chatSnapToEdge && hideAi) {
+        rules.push(`${AI_PSYCHE} { margin-left: ${DEFAULT_WRAP_MARGIN}px !important; }`);
+    } else if (indent > 0) {
+        rules.push(`${AI_PSYCHE} { margin-left: ${DEFAULT_WRAP_MARGIN - indent}px !important; }`);
     }
 
     // ── 正文字号 / 行距（沿用社区版的四层选择器：容器/内层行/内联继承/引用行）──

@@ -74,17 +74,27 @@ export interface OSTheme {
   saturation: number;
   lightness: number;
   wallpaper: string;
+  /** 独立锁屏壁纸；未设置时跟随桌面 wallpaper。 */
+  lockWallpaper?: string;
   darkMode: boolean;
   contentColor?: string;
   /** 桌面整体皮肤。'animalcrossing' = 动森风格（NookPhone 彩色圆角图标 + 暖色界面）；
    *  'mobilegame' = 二次元手游首页风格（角色卡 + 等级经验条 + 货币栏 + 网格卡 + 罗盘 dock）；
    *  'tamagotchi' = 电子宠物养成机（桌面即角色的小屋舞台 + 四颗糖果实体键）。默认 'default'。 */
   skin?: 'default' | 'animalcrossing' | 'mobilegame' | 'tamagotchi';
+  /** 默认桌面的视觉版本：纸感是现行默认，nostalgia 是用户主动选择的最初粉绿白玻璃界面。 */
+  desktopVariant?: 'paper' | 'nostalgia';
   /** 动森皮肤下，聊天 App 是否也跟随换成动森界面。默认 true（undefined 视为 true）。关掉则聊天保持原样式。 */
   acnhChatSync?: boolean;
   launcherWidgetImage?: string; // DEPRECATED: always stripped on load — never renders.
   launcherWidgets?: Record<string, string>; // slots: 'tl' | 'tr' | 'wide' | 'dsq' (legacy 'bl' / 'br' are banned)
-  /** 默认皮肤桌面「正在播放」音乐卡片改用浅色系样式（默认 false = 深色玻璃）。 */
+  /** 默认桌面长按编辑后的 App / Dock / 第二页风车组件顺序。 */
+  launcherAppOrder?: string[];
+  launcherDockOrder?: string[];
+  launcherPinwheelOrder?: Array<'music' | 'appsA' | 'appsB' | 'image'>;
+  /** 自定义透明图标是否保留原始轮廓并移除系统圆角底框。默认 false。 */
+  preserveCustomIconOutlines?: boolean;
+  /** 默认皮肤桌面「正在播放」音乐卡片改用浅色系样式（新安装默认 true）。 */
   nowPlayingWidgetLight?: boolean;
   desktopDecorations?: DesktopDecoration[];
   customFont?: string;
@@ -111,6 +121,10 @@ export interface OSTheme {
   chatBubbleIndent?: number;
   /** 隐藏头像的一侧是否贴边（收回头像空位） */
   chatSnapToEdge?: boolean;
+  /** HTML 卡片 / 心象卡片 / 音乐卡片的出现位置：缺省/'center' = 水平居中（默认），'anchor' = 贴气泡列
+   *  （头像位，不随贴边/缩进挪动，即旧版观感）。经 MessageItem 布局属性生效（不走注入 CSS），
+   *  同属聊天细节微调字段、可按角色覆盖 */
+  chatModuleAlign?: 'anchor' | 'center';
   chatBubbleStyle?: 'modern' | 'flat' | 'outline' | 'shadow' | 'wechat' | 'ios';
   chatMessageSpacing?: 'compact' | 'default' | 'spacious';
   chatShowTimestamp?: 'always' | 'hover' | 'never';
@@ -138,7 +152,8 @@ export interface OSTheme {
  *  与 OSTheme 同名字段一一对应，经 utils/chatFineTuneCss.ts 生成 CSS。 */
 export type ChatFineTuneFields = Pick<OSTheme,
   'chatAvatarVisibility' | 'chatAvatarAlign' | 'chatAvatarOffsetY' |
-  'chatBubbleFontSize' | 'chatBubbleLineHeight' | 'chatBubbleIndent' | 'chatSnapToEdge'>;
+  'chatBubbleFontSize' | 'chatBubbleLineHeight' | 'chatBubbleIndent' | 'chatSnapToEdge' |
+  'chatModuleAlign'>;
 
 /** 角色级「聊天装扮」覆盖：enabled=true 才生效；生效时已定义的字段逐个覆盖全局，
  *  未定义的字段跟随全局（合并规则见 utils/chatFineTuneCss.ts 的 mergeChatFineTune）。 */
@@ -673,6 +688,8 @@ export interface PhoneContact {
     name: string;
     /** 身份/关系标签，如「辅导员」「中间人」 */
     identity?: string;
+    /** identity 是否由用户手动确认；确认后自动扫描不得覆盖（即使用户选择留空） */
+    identityManual?: boolean;
     /** 机主对此人的备注（用户/机主手写的「已确立事实」，对话里当真遵守，不被自动覆盖） */
     note?: string;
     /**
@@ -2096,7 +2113,21 @@ export interface CharacterProfile {
   chatFineTune?: ChatFineTuneOverride;
   chatBackground?: string;
   contextLimit?: number;
+  /**
+   * AI 原文读取范围策略：
+   * - adaptive：全自动记忆接管，最大范围从记忆宫殿水位线之后开始；
+   * - manual：用户拉杆决定最多读取最近 contextLimit 条完整原文。
+   */
+  contextRangeMode?: 'adaptive' | 'manual';
+  /** 上下文范围结构版本；用于把旧版「5000 条 + 自动水位隐藏」一次性迁移到自适应模式。 */
+  contextRangePolicyVersion?: number;
+  /**
+   * 用户额外设置的 AI 原文断点。它只能在拉杆/自适应最大范围内进一步缩小，
+   * 不能突破最大范围向更早读取；一旦被移动中的最大范围越过便自动失效。
+   */
+  contextUserStartMessageId?: number;
   hideSystemLogs?: boolean; 
+  /** 旧版归档内部隐藏线；新版 AI 原文范围不再拿它当用户断点。 */
   hideBeforeMessageId?: number; 
   
   dateBackground?: string;
@@ -3020,7 +3051,7 @@ export interface GameSession {
     lastPlayedAt: number;
 }
 
-export type MessageType = 'text' | 'image' | 'emoji' | 'interaction' | 'transfer' | 'system' | 'social_card' | 'chat_forward' | 'xhs_card' | 'score_card' | 'music_card' | 'mcd_card' | 'luckin_card' | 'html_card' | 'news_card' | 'vr_card' | 'trpg_card' | 'novel_card' | 'world_card' | 'sim_card' | 'phone_card' | 'webpage_card' | 'theater_card' | 'room_card' | 'life_card' | 'group_topic_card';
+export type MessageType = 'text' | 'image' | 'emoji' | 'voice' | 'interaction' | 'transfer' | 'system' | 'social_card' | 'chat_forward' | 'xhs_card' | 'score_card' | 'music_card' | 'mcd_card' | 'luckin_card' | 'html_card' | 'news_card' | 'vr_card' | 'trpg_card' | 'novel_card' | 'world_card' | 'sim_card' | 'phone_card' | 'webpage_card' | 'theater_card' | 'room_card' | 'life_card' | 'group_topic_card';
 
 export interface Message {
     id: number;

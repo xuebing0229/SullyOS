@@ -4,6 +4,8 @@ import { ContextBuilder } from './context';
 import { DB } from './db';
 import { safeResponseJson, extractContent, extractJson } from './safeApi';
 import { injectMemoryPalace } from './memoryPalace/pipeline';
+import { getLocalDateKey } from './localDate';
+import { getLocalDailySchedule } from './dailySchedule';
 
 interface ApiConfig {
     baseUrl: string;
@@ -244,11 +246,12 @@ export async function generateDailyScheduleForChar(
     // 总开关关闭时直接短路，避免副 API / 兜底调用
     if (!isScheduleFeatureOn(char)) return null;
 
-    const today = new Date().toISOString().split('T')[0];
+    const now = new Date();
+    const today = getLocalDateKey(now);
 
     // Check if already exists
     if (!forceRegenerate) {
-        const existing = await DB.getDailySchedule(char.id, today);
+        const existing = await getLocalDailySchedule(char.id, now);
         if (existing) return existing;
     }
 
@@ -284,7 +287,6 @@ export async function generateDailyScheduleForChar(
 
     const chatHistoryBlock = formatChatHistoryForSchedule(filteredMessages, char, userProfile);
 
-    const now = new Date();
     const dayOfWeek = ['日', '一', '二', '三', '四', '五', '六'][now.getDay()];
 
     const style = char.scheduleStyle || 'lifestyle';
@@ -301,8 +303,11 @@ export async function generateDailyScheduleForChar(
                 messages: [{ role: 'user', content: prompt }],
                 temperature: 0.85,
                 max_tokens: 8000
-            })
-        });
+            }),
+            // API 调用记录标签（全局 fetch 拦截器读取）；不传会兜底成「用户当时打开的 App」，
+            // 后台任务被标成 Message/群聊 之类，用户看记录一头雾水。
+            __sullyMeta: { appName: '日程系统', charId: char.id, charName: char.name, purpose: '生成当日日程' },
+        } as RequestInit);
 
         if (!response.ok) {
             console.error('[Schedule] API error:', response.status);
@@ -439,8 +444,9 @@ ${chatSummary}
                 messages: [{ role: 'user', content: prompt }],
                 temperature: 0.85,
                 max_tokens: 500
-            })
-        });
+            }),
+            __sullyMeta: { appName: '日程系统', charId: char.id, charName: char.name, purpose: '进化意识流' },
+        } as RequestInit);
 
         if (!response.ok) {
             console.error('[Schedule/Evolve] API error:', response.status);

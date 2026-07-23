@@ -2414,6 +2414,39 @@ function normalizeVoiceTags(t) {
   result = repairPairedTag(result, /<\/?字幕[^>]*>/g, () => "\u5B57\u5E55", false);
   return result;
 }
+var simpTransTag = (tag) => tag.replace(/譯/g, "\u8BD1");
+function normalizeTranslationTags(t) {
+  if (!/[<＜]\s*[/／]?\s*(?:翻[译譯]|原文|[译譯]文)/.test(t)) return t;
+  let result = t;
+  result = result.replace(/[<＜]\s*[/／]\s*(翻[译譯]|原文|[译譯]文)\s*[>＞]/g, (_m, tag) => `</${simpTransTag(tag)}>`);
+  result = result.replace(/[<＜]\s*(翻[译譯]|原文|[译譯]文)\s*[>＞]/g, (_m, tag) => `<${simpTransTag(tag)}>`);
+  result = result.replace(
+    /[<＜]\s*([/／]?)\s*(翻[译譯]|原文|[译譯]文)\s*(?=$|\n|[<＜])/g,
+    (_m, slash, tag) => `<${slash ? "/" : ""}${simpTransTag(tag)}>`
+  );
+  result = repairPairedTag(result, /<\/?原文[^>]*>/g, () => "\u539F\u6587", false);
+  result = repairPairedTag(result, /<\/?译文[^>]*>/g, () => "\u8BD1\u6587", false);
+  result = repairPairedTag(result, /<\/?翻译[^>]*>/g, () => "\u7FFB\u8BD1", false);
+  const HOLD = String.fromCharCode(3);
+  const blocks = [];
+  const hold = (m) => {
+    blocks.push(m);
+    return `${HOLD}${blocks.length - 1}${HOLD}`;
+  };
+  result = result.replace(/<翻译>\s*<原文>[\s\S]*?<\/原文>\s*<译文>[\s\S]*?<\/译文>\s*<\/翻译>/g, hold);
+  result = result.replace(
+    /(?:<翻译>\s*)?<原文>([\s\S]*?)<\/原文>\s*<译文>([\s\S]*?)<\/译文>\s*(?:<\/翻译>)?/g,
+    (_m, a, b) => hold(`<\u7FFB\u8BD1><\u539F\u6587>${a.trim()}</\u539F\u6587><\u8BD1\u6587>${b.trim()}</\u8BD1\u6587></\u7FFB\u8BD1>`)
+  );
+  result = result.replace(
+    /<翻译>\s*(?!<原文>)((?:(?!<\/?翻译>)[\s\S])*?)<\/翻译>\s*<译文>([\s\S]*?)<\/译文>/g,
+    (_m, a, b) => hold(`<\u7FFB\u8BD1><\u539F\u6587>${a.trim()}</\u539F\u6587><\u8BD1\u6587>${b.trim()}</\u8BD1\u6587></\u7FFB\u8BD1>`)
+  );
+  result = result.replace(/<译文>[\s\S]*?<\/译文>/g, "");
+  result = result.replace(/[<＜]\s*[/／]?\s*(?:翻[译譯]|原文|[译譯]文)\s*[>＞]?/g, "");
+  result = result.replace(new RegExp(`${HOLD}(\\d+)${HOLD}`, "g"), (_m, n) => blocks[Number(n)] || "");
+  return result;
+}
 var extractTranslationOriginal = (t) => {
   let result = t.replace(
     /<翻译>\s*<原文>([\s\S]*?)<\/原文>\s*<译文>[\s\S]*?<\/译文>\s*<\/翻译>/g,
@@ -2430,6 +2463,7 @@ function sanitizeForNotification(text) {
   result = replaceHtmlBlocks(result);
   result = replaceEmojiReverseTag(result);
   result = replaceSendEmoji(result);
+  result = normalizeTranslationTags(result);
   result = extractTranslationOriginal(result);
   result = stripTimestamps(result);
   result = stripChineseDate(result);
@@ -2451,6 +2485,7 @@ function sanitizeIntoSegments(text) {
   let cleaned = stripLiteralBackslashN(text);
   cleaned = stripThinkBlocks(cleaned);
   cleaned = normalizeVoiceTags(cleaned);
+  cleaned = normalizeTranslationTags(cleaned);
   const ATOM_MARKER = String.fromCharCode(2);
   const atomBlocks = [];
   const atomSegments = segmentTextWithProtectedBlocks(cleaned, {
@@ -2789,7 +2824,7 @@ function classifyLLMOutput(text) {
 }
 
 // utils/instantWorkerVersion.ts
-var INSTANT_WORKER_VERSION = "2026-07-04";
+var INSTANT_WORKER_VERSION = "2026-07-17";
 
 // worker/instant-push/src/index.ts
 var MULTIPART_TRANSPORT = { enabled: true };
@@ -3106,7 +3141,7 @@ var cfWorker = createCloudflareWorker((env) => {
     onAfterLoop: async ({ deliver, pending, requestBody, sessionId }) => {
       if (!pending?.emotionEval) return;
       try {
-        const emotionRaw = await pending.emotionEval;
+        const { raw: emotionRaw, error: emotionError } = await pending.emotionEval;
         const charId = requestBody?.charId || requestBody?.metadata?.charId || "";
         await deliver({
           messageKind: "emotion_update",
@@ -3115,7 +3150,8 @@ var cfWorker = createCloudflareWorker((env) => {
           metadata: {
             ...requestBody?.metadata || {},
             charId,
-            emotionRaw
+            emotionRaw,
+            ...emotionError ? { emotionError } : {}
           },
           notification: {
             show: "when-hidden",
@@ -3134,7 +3170,7 @@ var cfWorker = createCloudflareWorker((env) => {
 async function runEmotionEval(body) {
   const ee = body?.emotionEval;
   if (!ee?.prompt || !ee?.api?.baseUrl || !ee?.api?.apiKey || !ee?.api?.model) {
-    return "";
+    return { raw: "", error: "\u8BC4\u4F30\u914D\u7F6E\u4E0D\u5B8C\u6574\uFF08\u7F3A prompt / baseUrl / apiKey / model\uFF09" };
   }
   const charId = body?.metadata && typeof body.metadata === "object" ? body.metadata.charId : "";
   const priorMessages = Array.isArray(body?.messages) ? body.messages : [];
@@ -3175,18 +3211,25 @@ async function runEmotionEval(body) {
         stream: false
       })
     });
-    let raw = "";
-    if (res.ok) {
-      const data = await res.json();
-      const msg = data?.choices?.[0]?.message;
-      raw = flattenContent(msg?.content) || (typeof msg?.reasoning_content === "string" ? msg.reasoning_content : "");
-    } else {
+    if (!res.ok) {
+      let snippet = "";
+      try {
+        snippet = (await res.text()).replace(/\s+/g, " ").slice(0, 120);
+      } catch {
+      }
       console.error("[emotion-eval] LLM call failed", res.status);
+      return { raw: "", error: `\u526F API HTTP ${res.status}${snippet ? `\uFF1A${snippet}` : ""}` };
     }
-    return raw;
+    const data = await res.json();
+    const msg = data?.choices?.[0]?.message;
+    const raw = flattenContent(msg?.content) || (typeof msg?.reasoning_content === "string" ? msg.reasoning_content : "");
+    if (!raw) {
+      return { raw: "", error: `\u8BC4\u4F30\u6A21\u578B\u6CA1\u6709\u8F93\u51FA\u5185\u5BB9 (finish_reason: ${data?.choices?.[0]?.finish_reason ?? "?"})` };
+    }
+    return { raw };
   } catch (e) {
     console.error("[emotion-eval] failed", e);
-    return "";
+    return { raw: "", error: `\u8BC4\u4F30\u8BF7\u6C42\u5F02\u5E38\uFF1A${e?.message || String(e)}` };
   }
 }
 function withSseAntiBufferingHeaders(resp) {

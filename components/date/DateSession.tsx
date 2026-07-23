@@ -562,8 +562,10 @@ const DateSession: React.FC<DateSessionProps> = ({
             setDialogueBatch(items);
             setDialogueQueue(items);
             if (items.length > 0) processNextDialogue(items[0], items.slice(1));
-        } catch(e) {
-            // Error handled in parent
+        } catch(e: any) {
+            // 父级 handleReroll 只抛不提示；这里不给反馈的话，点了「重新生成」
+            // 没动静用户会以为没点上（旧版更糟：消息已被删还毫无提示）
+            addToast(`重新生成失败: ${e?.message || '未知错误'}`, 'error');
         } finally {
             setIsTyping(false);
         }

@@ -8,7 +8,7 @@ import { processNewMessages, mergePalaceFragmentsIntoMemories, getMemoryPalaceHi
 import type { PipelineResult } from '../utils/memoryPalace/pipeline';
 import { incrementDigestRound, runCognitiveDigestion } from '../utils/memoryPalace';
 import { getRoomLabel } from '../utils/memoryPalace/types';
-import { safeResponseJson } from '../utils/safeApi';
+import { safeResponseJson, extractContent } from '../utils/safeApi';
 import Modal from '../components/os/Modal';
 import DateSession from '../components/date/DateSession';
 import DateSettings from '../components/date/DateSettings';
@@ -152,9 +152,13 @@ const DateApp: React.FC = () => {
                 stream: apiConfig.stream ?? false,
             })
         });
-        if (!response.ok) throw new Error('API Error');
+        if (!response.ok) throw new Error(`API Error ${response.status}`);
         const data = await safeResponseJson(response);
-        return data.choices[0].message.content;
+        // 思考型渠道会把正文塞进 reasoning_content、content 留空——直接取 content
+        // 会拿到空串且不报错：感知页黑屏卡死（无按钮可退），会话里则落库空消息。
+        const content = extractContent(data);
+        if (!content) throw new Error('模型返回了空回复，请重试或检查渠道/模型设置');
+        return content;
     };
 
     // --- Resume / Start Logic ---
@@ -222,6 +226,9 @@ const DateApp: React.FC = () => {
                 setHasSavedOpening(true);
             } catch (e) {
                 console.error("Failed to save opening", e);
+                // 落库失败不能静默：开场白进不了 DB，阅读模式/见面记录会缺这次开场，
+                // 表现和「阅读模式播旧剧情」一样，让用户知道出了什么事
+                addToast('开场白保存失败，本次开场可能不会出现在阅读模式', 'error');
             }
         }
 
@@ -387,22 +394,37 @@ const DateApp: React.FC = () => {
 
     const handleReroll = async (): Promise<string> => {
         if (!char || dateMessages.length === 0) throw new Error("No context");
-        
+
         const lastMsg = dateMessages[dateMessages.length - 1];
         if (lastMsg.role !== 'assistant') throw new Error("Cannot reroll user message");
 
-        // 1. Delete last AI message
-        await DB.deleteMessage(lastMsg.id);
-        
-        // 2. Find the user input that triggered it
         const allMsgs = await DB.getMessagesByCharId(char.id, true);
         const validMsgs = allMsgs.filter(m => m.id !== lastMsg.id);
+        const emojis = await DB.getEmojis();
+
+        // 重掷的是开场白（isOpening 锚点消息）：走感知同款 payload 重新生成开场。
+        // 不能走下面的普通 reroll 路径——开场白前面没有触发它的 user 消息。旧逻辑会
+        // 先删消息再报 "Context lost"（开场白被吞），即使上一条恰好是 user 侥幸续上，
+        // 新消息也不带 isOpening，阅读模式会从上一次见面的开场开始切片，表现为
+        // 「新见面只有立绘模式是新剧情，阅读模式全是旧剧情」。
+        if (lastMsg.metadata?.isOpening === true) {
+            const { messages } = DatePrompts.buildPeekPayload({ char, userProfile, allMsgs: validMsgs, emojis });
+            const content = await callLLM(messages, Math.max(apiConfig.temperature ?? 0.85, 0.9));
+            // 生成成功后才动库：先删旧开场、再带 isOpening 落新开场，请求失败时原剧情不丢
+            await DB.deleteMessage(lastMsg.id);
+            await DB.saveMessage({ charId: char.id, role: 'assistant', type: 'text', content, metadata: { source: 'date', isOpening: true } });
+            // 阅读模式空会话时顶部渲染的开场 & 退出快照里的 peekStatus 同步成新开场
+            setPeekStatus(content);
+
+            const freshMsgs = await DB.getMessagesByCharId(char.id, true);
+            setDateMessages(freshMsgs.filter(m => m.metadata?.source === 'date').sort((a,b) => a.timestamp - b.timestamp));
+            return content;
+        }
+
         const lastUserMsg = validMsgs[validMsgs.length - 1];
-        
         if (!lastUserMsg || lastUserMsg.role !== 'user') throw new Error("Context lost");
 
-        // 3. Call API logic（与 handleSendMessage 共用 buildSessionPayload，只差 variant）
-        const emojis = await DB.getEmojis();
+        // Call API logic（与 handleSendMessage 共用 buildSessionPayload，只差 variant）
         const { messages } = await DatePrompts.buildSessionPayload({
             char,
             userProfile,
@@ -414,6 +436,8 @@ const DateApp: React.FC = () => {
         // Reroll 略调高温度求多样性，但绝不低于用户配置的基线。
         const content = await callLLM(messages, Math.max(apiConfig.temperature ?? 0.85, 0.9));
 
+        // 生成成功后才删旧回复：以前先删后调 API，请求一失败上一条剧情就永久消失
+        await DB.deleteMessage(lastMsg.id);
         await DB.saveMessage({ charId: char.id, role: 'assistant', type: 'text', content: content, metadata: { source: 'date' } });
 
         // Sync
@@ -815,6 +839,15 @@ const DateApp: React.FC = () => {
                              </div>
                              <div className="flex flex-col items-center gap-3 text-[10px] text-neutral-600 font-medium tracking-wider"><button onClick={() => { setPreviousMode('peek'); setMode('settings'); }} className="hover:text-neutral-400 transition-colors">布置场景 / 设定立绘</button><button onClick={handleBack} className="hover:text-neutral-400 transition-colors">悄悄离开</button></div>
                         </div>
+                    </div>
+                )}
+                {/* 兜底：感知结束但 peekStatus 为空（历史上模型空回复会走到这）——
+                    以前这里什么都不渲染，页面只剩角色名的纯黑屏，连退出按钮都没有 */}
+                {!peekLoading && !peekStatus && (
+                    <div className="flex-1 flex flex-col items-center justify-center gap-8 -mt-20 z-10 animate-fade-in">
+                        <p className="text-sm font-light text-neutral-500 italic tracking-widest">未能感知到 {char.name} 的状态</p>
+                        <button onClick={() => startPeek(char)} className="h-12 px-10 bg-white text-black rounded-full font-bold tracking-[0.1em] text-sm active:scale-95 transition-transform hover:bg-neutral-200">重新感知</button>
+                        <button onClick={handleBack} className="text-[10px] text-neutral-600 font-medium tracking-wider hover:text-neutral-400 transition-colors">悄悄离开</button>
                     </div>
                 )}
             </div>

@@ -731,7 +731,23 @@ export const DB = {
         const timestamp = typeof msg.timestamp === 'number' ? msg.timestamp : Date.now();
         const { timestamp: _ignored, ...payload } = msg;
         const request = store.add({ ...payload, timestamp });
-        request.onsuccess = () => resolve(request.result as number);
+        request.onsuccess = () => {
+            const newId = request.result as number;
+            // 水位线自愈：新消息的自增 id 必然大于既有一切消息 id，也就必然大于水位线
+            // （水位线本身是某条旧消息的 id）。出现 newId ≤ 水位线，只有一种可能——
+            // IndexedDB 被浏览器清过、自增计数器归零，而 localStorage 里的记忆宫殿水位
+            // 是清库前残留的。不清掉它，该角色所有新消息都会被 hwm 过滤挡在 AI 上下文
+            // 之外（请求只剩 system → 上游 400）。此处直接移除失效水位。
+            try {
+                const staleKeys = [`mp_lastMsgId_${msg.charId}`];
+                if (msg.groupId) staleKeys.push(`mp_lastMsgId_group_${msg.groupId}`);
+                for (const key of staleKeys) {
+                    const hwm = parseInt(localStorage.getItem(key) || '0', 10) || 0;
+                    if (hwm >= newId) localStorage.removeItem(key);
+                }
+            } catch { /* localStorage 不可用时静默跳过 */ }
+            resolve(newId);
+        };
         request.onerror = () => reject(request.error);
     });
   },
@@ -1126,8 +1142,15 @@ export const DB = {
 
   saveAsset: async (id: string, data: string): Promise<void> => {
     const db = await openDB();
-    const transaction = db.transaction(STORE_ASSETS, 'readwrite');
-    transaction.objectStore(STORE_ASSETS).put({ id, data });
+    // 等事务真正落盘并把失败抛出去：旧实现发完 put 就返回，配额不足（iOS Safari 常见）
+    // 时写入静默丢失，调用方还以为保存成功了。
+    return new Promise((resolve, reject) => {
+        const transaction = db.transaction(STORE_ASSETS, 'readwrite');
+        transaction.objectStore(STORE_ASSETS).put({ id, data });
+        transaction.oncomplete = () => resolve();
+        transaction.onerror = () => reject(transaction.error);
+        transaction.onabort = () => reject(transaction.error || new Error('IndexedDB transaction aborted'));
+    });
   },
 
   getAssetRaw: async (id: string): Promise<any | null> => {
@@ -1149,8 +1172,13 @@ export const DB = {
 
   deleteAsset: async (id: string): Promise<void> => {
     const db = await openDB();
-    const transaction = db.transaction(STORE_ASSETS, 'readwrite');
-    transaction.objectStore(STORE_ASSETS).delete(id);
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction(STORE_ASSETS, 'readwrite');
+      transaction.objectStore(STORE_ASSETS).delete(id);
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error);
+      transaction.onabort = () => reject(transaction.error || new Error('deleteAsset aborted'));
+    });
   },
 
   // ─── Blob 资源（图片二进制，见 utils/blobRef.ts）───────────────
@@ -1182,8 +1210,13 @@ export const DB = {
   deleteBlobAsset: async (id: string): Promise<void> => {
       const db = await openDB();
       if (!db.objectStoreNames.contains(STORE_BLOB_ASSETS)) return;
-      const transaction = db.transaction(STORE_BLOB_ASSETS, 'readwrite');
-      transaction.objectStore(STORE_BLOB_ASSETS).delete(id);
+      return new Promise((resolve, reject) => {
+          const transaction = db.transaction(STORE_BLOB_ASSETS, 'readwrite');
+          transaction.objectStore(STORE_BLOB_ASSETS).delete(id);
+          transaction.oncomplete = () => resolve();
+          transaction.onerror = () => reject(transaction.error);
+          transaction.onabort = () => reject(transaction.error || new Error('deleteBlobAsset aborted'));
+      });
   },
 
   getJournalStickers: async (): Promise<{name: string, url: string}[]> => {
