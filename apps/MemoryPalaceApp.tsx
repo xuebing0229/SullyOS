@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useDeferredValue, useMemo } from 'react';
 import { useOS } from '../context/OSContext';
 import {
     MemoryRoom, MemoryNode, ROOM_CONFIGS, ROOM_LABELS, getRoomLabel,
@@ -21,9 +21,15 @@ import {
     CONTEXT_RANGE_POLICY_VERSION,
     DEFAULT_MANUAL_CONTEXT_LIMIT,
 } from '../utils/chatContextRange';
+import {
+    buildRangeSearchEntries,
+    filterRangeSearchEntries,
+    getRangeEndpointLabel,
+    getRangeSelectionHint,
+} from '../utils/memoryPalace/rangeSelection';
 
 /** 手动总结面板：每页渲染多少条聊天记录（翻页，避免一次性塞几百条 DOM 卡顿） */
-const RANGE_PAGE_SIZE = 100;
+const RANGE_PAGE_SIZE = 50;
 
 /** 手动总结面板：把毫秒时间戳格式化成「2026-03-20 14:30」 */
 const fmtRangeTs = (ts: number): string => {
@@ -482,6 +488,16 @@ export default function MemoryPalaceApp() {
     const [rangeRunning, setRangeRunning] = useState(false);
     const [rangeProgress, setRangeProgress] = useState('');
     const [rangeResult, setRangeResult] = useState<string | null>(null);
+    // 输入优先响应；消息内容和格式化日期只在记录集变化时预计算一次。
+    const deferredRangeQuery = useDeferredValue(rangeQuery);
+    const rangeSearchEntries = useMemo(
+        () => buildRangeSearchEntries(rangeMessages, fmtRangeTs),
+        [rangeMessages],
+    );
+    const filteredRangeMessages = useMemo(
+        () => filterRangeSearchEntries(rangeSearchEntries, deferredRangeQuery),
+        [rangeSearchEntries, deferredRangeQuery],
+    );
     // 完成后的结果弹窗（逐条列出新增记忆，和水位线总结一致）
     const [rangeResultData, setRangeResultData] = useState<import('../utils/memoryPalace/pipeline').RangeProcessResult | null>(null);
 
@@ -3376,30 +3392,26 @@ create table if not exists memory_vectors (
                 {/* 手动总结：区间选择弹窗（浏览聊天记录 → 点选起点/终点 → 总结） */}
                 {rangeModalOpen && char && (() => {
                     const bothSet = rangeStartId != null && rangeEndId != null;
-                    const lo = bothSet ? Math.min(rangeStartId!, rangeEndId!) : rangeStartId;
+                    const hasEndpoint = rangeStartId != null || rangeEndId != null;
+                    const lo = bothSet ? Math.min(rangeStartId!, rangeEndId!) : null;
                     const hi = bothSet ? Math.max(rangeStartId!, rangeEndId!) : null;
                     const selectedCount = (lo != null && hi != null)
                         ? rangeMessages.filter(m => m.id >= lo && m.id <= hi).length
-                        : (rangeStartId != null ? 1 : 0);
+                        : (hasEndpoint ? 1 : 0);
 
-                    const q = rangeQuery.trim().toLowerCase();
-                    const filtered = q
-                        ? rangeMessages.filter(m => (m.content || '').toLowerCase().includes(q) || fmtRangeTs(m.timestamp).includes(q))
-                        : rangeMessages;
                     // 翻页：每页 RANGE_PAGE_SIZE 条，避免一次渲染几百条 DOM
-                    const totalPages = Math.max(1, Math.ceil(filtered.length / RANGE_PAGE_SIZE));
+                    const totalPages = Math.max(1, Math.ceil(filteredRangeMessages.length / RANGE_PAGE_SIZE));
                     const page = Math.min(Math.max(0, rangePage), totalPages - 1);
                     const pageStart = page * RANGE_PAGE_SIZE;
-                    const shown = filtered.slice(pageStart, pageStart + RANGE_PAGE_SIZE);
+                    const shown = filteredRangeMessages.slice(pageStart, pageStart + RANGE_PAGE_SIZE);
 
                     return (
                         <div
                             style={{
                                 position: 'fixed', inset: 0, zIndex: 210,
                                 display: 'flex', alignItems: 'center', justifyContent: 'center',
-                                padding: 16,
+                                padding: 12,
                                 background: 'rgba(31,17,71,0.45)',
-                                backdropFilter: 'blur(8px)', WebkitBackdropFilter: 'blur(8px)',
                                 animation: 'fade-in 0.2s ease-out',
                             }}
                             onClick={() => { if (!rangeRunning) setRangeModalOpen(false); }}
@@ -3407,7 +3419,8 @@ create table if not exists memory_vectors (
                             <div
                                 onClick={e => e.stopPropagation()}
                                 style={{
-                                    width: '100%', maxWidth: 420, height: '82vh',
+                                    width: '100%', maxWidth: 420, height: 'min(82dvh, 720px)', maxHeight: 'calc(100dvh - 24px)',
+                                    minHeight: 0,
                                     display: 'flex', flexDirection: 'column',
                                     borderRadius: 24, overflow: 'hidden',
                                     background: '#ffffff',
@@ -3446,7 +3459,10 @@ create table if not exists memory_vectors (
                                 </div>
 
                                 {/* 消息列表 */}
-                                <div style={{ flex: 1, overflowY: 'auto', padding: '8px 10px' }}>
+                                <div style={{
+                                    flex: 1, minHeight: 0, overflowY: 'auto', padding: '8px 10px',
+                                    WebkitOverflowScrolling: 'touch', overscrollBehavior: 'contain', touchAction: 'pan-y',
+                                }}>
                                     {rangeLoading && (
                                         <div style={{ textAlign: 'center', color: '#94a3b8', fontSize: 12, padding: 24 }}>加载聊天记录中...</div>
                                     )}
@@ -3455,7 +3471,7 @@ create table if not exists memory_vectors (
                                             {rangeMessages.length === 0 ? '这个角色还没有聊天记录' : '没有匹配的消息'}
                                         </div>
                                     )}
-                                    {!rangeLoading && filtered.length > RANGE_PAGE_SIZE && (
+                                    {!rangeLoading && filteredRangeMessages.length > RANGE_PAGE_SIZE && (
                                         <div style={{
                                             display: 'flex', alignItems: 'center', justifyContent: 'space-between',
                                             gap: 8, padding: '6px 8px', marginBottom: 6,
@@ -3469,7 +3485,7 @@ create table if not exists memory_vectors (
                                                 ‹ 更早
                                             </button>
                                             <span style={{ fontSize: 10, color: '#7c3aed', fontWeight: 600 }}>
-                                                第 {page + 1} / {totalPages} 页 · 共 {filtered.length} 条
+                                                第 {page + 1} / {totalPages} 页 · 共 {filteredRangeMessages.length} 条
                                             </span>
                                             <button
                                                 onClick={() => setRangePage(p => Math.min(totalPages - 1, p + 1))}
@@ -3483,9 +3499,10 @@ create table if not exists memory_vectors (
                                     {!rangeLoading && shown.map(m => {
                                         const isStart = m.id === rangeStartId;
                                         const isEnd = m.id === rangeEndId;
+                                        const endpointLabel = getRangeEndpointLabel(m.id, rangeStartId, rangeEndId);
                                         const isPending = m.id === rangePendingId;
                                         const inRange = lo != null && hi != null && m.id >= lo && m.id <= hi;
-                                        const isEndpoint = (lo != null && m.id === lo) || (hi != null && m.id === hi) || (rangeStartId != null && rangeEndId == null && isStart);
+                                        const isEndpoint = !!endpointLabel;
                                         const who = m.role === 'user' ? '我' : m.role === 'system' ? '系统' : char.name;
                                         const isDate = (m.metadata as any)?.source === 'date';
                                         const preview = (m.content || '').replace(/\s+/g, ' ').trim().slice(0, 48);
@@ -3508,7 +3525,7 @@ create table if not exists memory_vectors (
                                                     </span>
                                                     {(isStart || isEnd) && (
                                                         <span style={{ fontSize: 9, fontWeight: 800, color: '#fff', background: '#7c3aed', borderRadius: 6, padding: '1px 6px' }}>
-                                                            {bothSet ? (m.id === lo ? '起点' : '终点') : '起点'}
+                                                            {endpointLabel}
                                                         </span>
                                                     )}
                                                 </div>
@@ -3556,15 +3573,15 @@ create table if not exists memory_vectors (
                                     )}
                                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
                                         <span style={{ fontSize: 11, color: '#64748b' }}>
-                                            {bothSet ? `已选 ${selectedCount} 条` : rangeStartId != null ? '已选起点，请再点终点' : '未选择'}
+                                            {getRangeSelectionHint(rangeStartId, rangeEndId, selectedCount)}
                                         </span>
                                         <button
                                             onClick={() => { setRangeStartId(null); setRangeEndId(null); }}
-                                            disabled={rangeRunning || rangeStartId == null}
+                                            disabled={rangeRunning || !hasEndpoint}
                                             style={{
-                                                fontSize: 11, fontWeight: 600, color: (rangeRunning || rangeStartId == null) ? '#cbd5e1' : '#dc2626',
+                                                fontSize: 11, fontWeight: 600, color: (rangeRunning || !hasEndpoint) ? '#cbd5e1' : '#dc2626',
                                                 background: 'transparent', border: 'none',
-                                                cursor: (rangeRunning || rangeStartId == null) ? 'not-allowed' : 'pointer',
+                                                cursor: (rangeRunning || !hasEndpoint) ? 'not-allowed' : 'pointer',
                                             }}
                                         >
                                             清除选择
