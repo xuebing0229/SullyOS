@@ -435,7 +435,7 @@ const PREVIEW_SCENES: PreviewScene[] = [
 ];
 
 const ThemeMaker: React.FC = () => {
-    const { closeApp, addCustomTheme, addToast, characters, updateCharacter, customThemes } = useOS();
+    const { closeApp, addCustomTheme, removeCustomTheme, addToast, characters, updateCharacter, customThemes } = useOS();
     const [initialThemeId] = useState(() => `theme-${Date.now()}`);
     const [editingTheme, setEditingTheme] = useState<ChatTheme>({ ...DEFAULT_THEME, id: initialThemeId });
     const [activeTab, setActiveTab] = useState<'user' | 'ai' | 'css'>('user');
@@ -448,6 +448,7 @@ const ThemeMaker: React.FC = () => {
     const [lastSavedTheme, setLastSavedTheme] = useState<ChatTheme>(() => cloneTheme({ ...DEFAULT_THEME, id: initialThemeId }));
     const [isDirty, setIsDirty] = useState(false);
     const [pendingDiscardAction, setPendingDiscardAction] = useState<(() => void) | null>(null);
+    const [pendingDeleteTheme, setPendingDeleteTheme] = useState<ChatTheme | null>(null);
     const [showLowContrastConfirm, setShowLowContrastConfirm] = useState(false);
     const [pendingSaveExit, setPendingSaveExit] = useState(false);
     const [isAppliedToPreview, setIsAppliedToPreview] = useState(false);
@@ -575,6 +576,18 @@ const ThemeMaker: React.FC = () => {
         anchor.remove();
         URL.revokeObjectURL(url);
         addToast(`已导出「${theme.name}」`, 'success');
+    };
+
+    // 删除只移除气泡库里的存档；若正在编辑这套气泡，工坊内容保留为未保存状态，避免用户手滑丢稿。
+    const confirmDeleteTheme = () => {
+        const theme = pendingDeleteTheme;
+        if (!theme) return;
+        setPendingDeleteTheme(null);
+        removeCustomTheme(theme.id);
+        if (editingTheme.id === theme.id) {
+            setIsAppliedToPreview(false);
+        }
+        addToast(`已删除「${theme.name}」`, 'success');
     };
 
     // Initialize padding state from CSS on load
@@ -1027,9 +1040,10 @@ const ThemeMaker: React.FC = () => {
                                     </span>
                                     <span className="text-xs font-bold text-slate-700 truncate">{theme.name}</span>
                                 </div>
-                                <div className="grid grid-cols-2 gap-1.5 mt-2.5">
+                                <div className="grid grid-cols-3 gap-1.5 mt-2.5">
                                     <button onClick={() => editSavedTheme(theme)} className="py-1.5 rounded-xl bg-indigo-50 text-indigo-600 text-[11px] font-bold">选择载入</button>
                                     <button onClick={() => exportSavedTheme(theme)} className="py-1.5 rounded-xl bg-slate-100 text-slate-600 text-[11px] font-bold">导出</button>
+                                    <button onClick={() => setPendingDeleteTheme(theme)} className="py-1.5 rounded-xl bg-red-50 text-red-500 text-[11px] font-bold">删除</button>
                                 </div>
                             </div>
                         ))}
@@ -1537,6 +1551,20 @@ const ThemeMaker: React.FC = () => {
                         <div className="mt-5 flex gap-3">
                             <button onClick={() => setPendingDiscardAction(null)} className="flex-1 py-2.5 rounded-2xl bg-slate-100 text-slate-600 font-bold">取消</button>
                             <button onClick={() => { const action = pendingDiscardAction; setPendingDiscardAction(null); action(); }} className="flex-1 py-2.5 rounded-2xl bg-red-500 text-white font-bold">放弃改动</button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Delete saved theme confirm */}
+            {pendingDeleteTheme && (
+                <div className="absolute inset-0 z-[999] bg-black/40 backdrop-blur-sm flex items-center justify-center px-6">
+                    <div className="w-full max-w-sm bg-white rounded-3xl p-5 shadow-2xl">
+                        <div className="text-base font-bold text-slate-700">删除这套气泡？</div>
+                        <p className="mt-2 text-sm text-slate-500">「{pendingDeleteTheme.name}」将从气泡库中移除，正在使用它的角色会回落到默认气泡。此操作无法撤销，删除前可先导出备份。</p>
+                        <div className="mt-5 flex gap-3">
+                            <button onClick={() => setPendingDeleteTheme(null)} className="flex-1 py-2.5 rounded-2xl bg-slate-100 text-slate-600 font-bold">取消</button>
+                            <button onClick={confirmDeleteTheme} className="flex-1 py-2.5 rounded-2xl bg-red-500 text-white font-bold">删除</button>
                         </div>
                     </div>
                 </div>

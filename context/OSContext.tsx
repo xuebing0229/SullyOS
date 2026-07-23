@@ -4,7 +4,8 @@ import { APIConfig, AppID, OSTheme, VirtualTime, CharacterProfile, CharacterGrou
 import { DB } from '../utils/db';
 import { modelRejectsSamplingParams, stripSamplingParams, isSamplingParamError } from '../utils/samplingParamCompat';
 import { extractImagesInPlace, deepCloneForExport } from '../utils/backupExport';
-import { isBlobRef, getBlobForRef, migrateDataUrlToRef, resolveBlobRefsDeep, BLOBREF_PREFIX } from '../utils/blobRef';
+import { isBlobRef, getBlobForRef, migrateDataUrlToRef, migrateAppearancePresetBlobRefs, resolveBlobRefsDeep, BLOBREF_PREFIX, deleteBlobRefIfUnreferenced } from '../utils/blobRef';
+import { LEGACY_DEFAULT_WALLPAPER, isLegacyDefaultWallpaper, shouldPreserveLegacyDefaultWallpaper } from '../utils/wallpaperCompat';
 import { migrateSharkpanAssets } from '../utils/sharkpanAssetMigration';
 import { writeV2Backup, assembleV2Backup, type BackupManifest, type ZipFileWriter, type ZipFileReader } from '../utils/backupFormat';
 import { encodeVectorsForBackup } from '../utils/memoryPalace/db';
@@ -17,18 +18,25 @@ import { runWorldEpisode, rerollWorldCharBeat } from '../utils/worldHome/engine'
 import { migrateWorldDaySegs } from '../utils/worldHome/prompts';
 import { ChatParser } from '../utils/chatParser';
 import { safeFetchJson } from '../utils/safeApi';
-import { recordApiCall, setApiCallAmbientContext } from '../utils/apiCallLog';
+import { getApiCallAmbientContext, recordApiCall, setApiCallAmbientContext } from '../utils/apiCallLog';
 import { isGlobalStreamEnabled, upgradeChatBodyToStream, assembleUpgradedResponse } from '../utils/streamUpgrade';
 import { rewriteStaleWorkerUrl } from '../utils/proxyWorker';
 import { INSTALLED_APPS } from '../constants';
 import { markBackupDone } from '../utils/backupReminder';
 import { normalizeCharacterImpression, normalizeCharacterDefaults } from '../utils/impression';
+import {
+  CONTEXT_RANGE_POLICY_VERSION,
+  DEFAULT_MANUAL_CONTEXT_LIMIT,
+  loadCharacterContextRange,
+  migrateCharacterContextRange,
+} from '../utils/chatContextRange';
 import { isScheduleFeatureOn } from '../utils/scheduleGenerator';
 import { evaluateEmotionBackground } from '../hooks/useChatAI';
+import { CHAT_GEN_EVENTS, setChatViewSnapshot } from '../utils/chatGenEvents';
 import { buildChatRequestPayload } from '../utils/chatRequestPayload';
 import { extractHtmlBlocks } from '../utils/htmlPrompt';
-import { loadMusicHooks, loadMusicPlaybackSnapshot } from './MusicContext';
-import { buildMusicTrackChangeHint, MUSIC_TRACK_CHANGED_EVENT, type MusicTrackChangeDetail } from '../utils/musicTrackChange';
+import { loadMusicPlaybackSnapshot } from './MusicContext';
+import { setCharNameRegistry } from '../utils/charNameRegistry';
 import { setMinimaxRegion } from '../utils/minimaxEndpoint';
 import { setTtsProvider, setVoicePromptOverrides } from '../utils/ttsProvider';
 import { LocalNotifications } from '@capacitor/local-notifications';
@@ -44,13 +52,10 @@ import { exportWorldHomeLocal } from '../utils/worldHome/localBackup';
 import { exportLuckinLocal } from '../utils/luckinMcpClient';
 import { exportMcdLocal } from '../utils/mcdMcpClient';
 import { exportDesktopSkinLocal } from '../utils/desktopSkinBackup';
-import { inspectCsyBackup, prepareCsyMigration, type CsyMigrationReport } from '../utils/csyMigration';
-
-type ProactiveRunReason = { kind: 'music-track-change'; detail: MusicTrackChangeDetail };
+import { assertSupportedSullyBackup } from '../utils/backupImportPolicy';
 
 interface ProactiveQueueEntry {
   charId: string;
-  reason?: ProactiveRunReason;
 }
 
 const normalizeProactiveAiContent = (raw: string): string => {
@@ -233,7 +238,7 @@ interface OSContextType {
   openApp: (appId: AppID) => void;
   closeApp: () => void;
   theme: OSTheme;
-  updateTheme: (updates: Partial<OSTheme>) => void;
+  updateTheme: (updates: Partial<OSTheme>) => Promise<void>;
   virtualTime: VirtualTime;
   apiConfig: APIConfig;
   updateApiConfig: (updates: Partial<APIConfig>) => void;
@@ -329,7 +334,7 @@ interface OSContextType {
 
   // Icons
   customIcons: Record<string, string>;
-  setCustomIcon: (appId: string, iconUrl: string | undefined) => void;
+  setCustomIcon: (appId: string, iconUrl: string | undefined) => Promise<void>;
 
   // Appearance Reset
   resetAppearance: () => Promise<void>;
@@ -354,8 +359,6 @@ interface OSContextType {
   // System
   exportSystem: (mode: 'text_only' | 'media_only' | 'full') => Promise<Blob>;
   importSystem: (fileOrJson: File | string) => Promise<void>; // Accept File or String
-  previewCsySystem: (fileOrJson: File | string) => Promise<CsyMigrationReport>;
-  importCsySystem: (fileOrJson: File | string) => Promise<void>;
   resetSystem: () => Promise<void>;
   sysOperation: { status: 'idle' | 'processing', message: string, progress: number }; // Progress state
 
@@ -379,13 +382,95 @@ interface OSContextType {
   consumeDateAutoStart: () => void;
 }
 
-export const DEFAULT_WALLPAPER = 'linear-gradient(135deg, #FFDEE9 0%, #B5FFFC 100%)';
+const PREVIOUS_DEFAULT_WALLPAPER = [
+  'radial-gradient(120% 85% at 12% 0%, rgba(255,255,255,0.72) 0%, rgba(255,255,255,0) 58%)',
+  'repeating-linear-gradient(0deg, rgba(92,72,49,0.018) 0px, rgba(92,72,49,0.018) 1px, transparent 1px, transparent 4px)',
+  'linear-gradient(145deg, #f3ecdf 0%, #e9dfcf 52%, #dfd2bf 100%)',
+].join(', ');
+
+// 默认桌面使用低对比暖米纸纹：只靠同色系层次与极细纤维感建立质感，
+// 不再用粉绿撞色渐变。字符串同时作为“仍在使用系统默认壁纸”的稳定标记。
+export const DEFAULT_WALLPAPER = [
+  'radial-gradient(120% 85% at 12% 0%, rgba(255,255,255,0.64) 0%, rgba(255,255,255,0) 58%)',
+  'repeating-linear-gradient(0deg, rgba(76,69,60,0.010) 0px, rgba(76,69,60,0.010) 1px, transparent 1px, transparent 4px)',
+  'linear-gradient(145deg, #fdfcf9 0%, #f8f6f1 54%, #f1eee8 100%)',
+].join(', ');
+
+/** 纸感桌面的唯一默认配色来源；外观 App 的“默认风格”也直接复用，避免再次漂回旧粉蓝配置。 */
+export const DEFAULT_PAPER_APPEARANCE = {
+  hue: 88,
+  saturation: 14,
+  lightness: 46,
+  contentColor: '#4b4136',
+  desktopVariant: 'paper',
+} as const;
+
+/** 用户主动选择的最初默认界面：粉绿渐变、白色文字与白色玻璃桌面组件。 */
+export const NOSTALGIA_APPEARANCE = {
+  skin: 'default',
+  desktopVariant: 'nostalgia',
+  hue: 245,
+  saturation: 25,
+  lightness: 65,
+  contentColor: '#ffffff',
+  wallpaper: LEGACY_DEFAULT_WALLPAPER,
+  darkMode: false,
+  nowPlayingWidgetLight: false,
+} as const;
+
+/** 只迁移旧系统默认配色；任一项被用户改过都保留，避免把自定义主题误重置。 */
+const migrateLegacyDefaultPalette = (theme: OSTheme): OSTheme => {
+  const next = { ...theme };
+  next.desktopVariant = 'paper';
+  if (!next.contentColor || next.contentColor.toLowerCase() === '#ffffff') {
+    next.contentColor = DEFAULT_PAPER_APPEARANCE.contentColor;
+  }
+  if (next.hue === 245 && next.saturation === 25 && next.lightness === 65) {
+    next.hue = DEFAULT_PAPER_APPEARANCE.hue;
+    next.saturation = DEFAULT_PAPER_APPEARANCE.saturation;
+    next.lightness = DEFAULT_PAPER_APPEARANCE.lightness;
+  }
+  return next;
+};
+
+export const isPaperWallpaper = (wallpaper?: string) => {
+  if (!wallpaper) return false;
+  if (wallpaper === DEFAULT_WALLPAPER || wallpaper === PREVIOUS_DEFAULT_WALLPAPER) return true;
+  const compact = wallpaper.toLowerCase().replace(/\s+/g, '');
+  return (
+    compact.includes('#f3ecdf') ||
+    compact.includes('rgb(243,236,223)') ||
+    compact.includes('#faf7f1') ||
+    compact.includes('rgb(250,247,241)') ||
+    compact.includes('#fdfcf9') ||
+    compact.includes('rgb(253,252,249)')
+  );
+};
 
 // 壁纸改存 Blob（见 utils/blobRef.ts）：assets store 的 'wallpaper' 记录只存一个指针值
 // （blobref 令牌 / 旧 data: / http url），真正二进制在 blob_assets。内存里 theme.wallpaper
 // 必须是能直接喂给 CSS 的 url，所以令牌要解析成 objectURL。全 OS 只有一张壁纸，用一个模块级
 // 变量记住当前 objectURL，换壁纸时回收上一张，避免泄漏。
 let currentWallpaperObjUrl: string | null = null;
+let currentLockWallpaperObjUrl: string | null = null;
+
+/**
+ * 原子替换壁纸指针；旧令牌在确认已不被桌面、锁屏、外观预设或皮肤备份引用后后台清理。
+ * 清理不阻塞换壁纸渲染，且任何引用检查失败都会保守地保留旧 Blob。
+ */
+const replaceWallpaperAssetPointer = async (assetId: 'wallpaper' | 'lock_wallpaper', next: string | null): Promise<void> => {
+    let previous: string | null = null;
+    try {
+        previous = await DB.getAsset(assetId);
+        if (next) await DB.saveAsset(assetId, next);
+        else await DB.deleteAsset(assetId);
+    } catch {
+        return;
+    }
+    if (previous && previous !== next && isBlobRef(previous)) {
+        void deleteBlobRefIfUnreferenced(previous);
+    }
+};
 
 /**
  * 把「存储值」壁纸解析成可直接渲染的 url，并把指针（令牌）落进 assets 'wallpaper'。
@@ -394,34 +479,78 @@ let currentWallpaperObjUrl: string | null = null;
  *   · http(s) / 空 / 渐变 → 删除 assets 指针，原样返回。
  * 传入空字符串（重置）时原样返回，交给上层用 DEFAULT_WALLPAPER 兜底。
  */
-const resolveWallpaperStoredValue = async (w: string): Promise<string> => {
+const resolveWallpaperStoredValue = async (w: string, preserveLegacyDefault = false): Promise<string> => {
     const revokePrev = () => {
         if (currentWallpaperObjUrl) { try { URL.revokeObjectURL(currentWallpaperObjUrl); } catch { /* ignore */ } currentWallpaperObjUrl = null; }
     };
+    if (isLegacyDefaultWallpaper(w) && !preserveLegacyDefault) {
+        await replaceWallpaperAssetPointer('wallpaper', null);
+        revokePrev();
+        return DEFAULT_WALLPAPER;
+    }
     if (isBlobRef(w) || (w && w.startsWith('data:'))) {
         const token = isBlobRef(w) ? w : await migrateDataUrlToRef(w);
-        try { await DB.saveAsset('wallpaper', token); } catch { /* ignore */ }
         const blob = await getBlobForRef(token);
         revokePrev();
         if (blob) {
+            await replaceWallpaperAssetPointer('wallpaper', token);
             currentWallpaperObjUrl = URL.createObjectURL(blob);
             return currentWallpaperObjUrl;
         }
-        return w; // Blob 意外缺失：data: 仍可渲染；令牌无解时保底不改
+        if (isBlobRef(token)) {
+            await replaceWallpaperAssetPointer('wallpaper', null);
+            return DEFAULT_WALLPAPER;
+        }
+        // data: 迁移失败时仍保留旧格式，保证原图能继续显示。
+        await replaceWallpaperAssetPointer('wallpaper', token);
+        return w;
     }
     // http(s) 链接 / 重置 / 渐变：没有二进制要存，清掉指针
-    try { await DB.deleteAsset('wallpaper'); } catch { /* ignore */ }
+    await replaceWallpaperAssetPointer('wallpaper', null);
     revokePrev();
     return w;
 };
 
 const defaultTheme: OSTheme = {
-  hue: 245, // Default Indigo-ish
-  saturation: 25,
-  lightness: 65,
+  ...DEFAULT_PAPER_APPEARANCE,
   wallpaper: DEFAULT_WALLPAPER,
   darkMode: false,
-  contentColor: '#ffffff', // Default white text
+  preserveCustomIconOutlines: false,
+  nowPlayingWidgetLight: true,
+};
+
+/** 锁屏壁纸使用独立资产槽；undefined 表示继续跟随桌面壁纸。 */
+const resolveLockWallpaperStoredValue = async (w: string | undefined): Promise<string | undefined> => {
+    const revokePrev = () => {
+        if (currentLockWallpaperObjUrl) {
+            try { URL.revokeObjectURL(currentLockWallpaperObjUrl); } catch { /* ignore */ }
+            currentLockWallpaperObjUrl = null;
+        }
+    };
+    if (!w) {
+        await replaceWallpaperAssetPointer('lock_wallpaper', null);
+        revokePrev();
+        return undefined;
+    }
+    if (isBlobRef(w) || w.startsWith('data:')) {
+        const token = isBlobRef(w) ? w : await migrateDataUrlToRef(w);
+        const blob = await getBlobForRef(token);
+        revokePrev();
+        if (blob) {
+            await replaceWallpaperAssetPointer('lock_wallpaper', token);
+            currentLockWallpaperObjUrl = URL.createObjectURL(blob);
+            return currentLockWallpaperObjUrl;
+        }
+        if (isBlobRef(token)) {
+            await replaceWallpaperAssetPointer('lock_wallpaper', null);
+            return undefined;
+        }
+        await replaceWallpaperAssetPointer('lock_wallpaper', token);
+        return w;
+    }
+    await replaceWallpaperAssetPointer('lock_wallpaper', null);
+    revokePrev();
+    return w;
 };
 
 const defaultApiConfig: APIConfig = {
@@ -538,6 +667,8 @@ Sully是小手机的内置AI。
   // Default theme settings
   bubbleStyle: 'default', // Or specific theme ID if we had one
   contextLimit: 1000,
+  contextRangeMode: 'manual',
+  contextRangePolicyVersion: CONTEXT_RANGE_POLICY_VERSION,
   
   // Default Room Config
   roomConfig: {
@@ -813,6 +944,10 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
           
           const urlStr = String(resource);
           const fetchStartedAt = Date.now();
+          // Bare fetch calls do not carry explicit metadata. Snapshot the active
+          // App now; reading the ambient value after a long response would label
+          // the request as whichever App the user navigated to in the meantime.
+          const ambientMetaAtStart = getApiCallAmbientContext();
 
           // 采样参数兼容层（详见 utils/samplingParamCompat.ts）：
           // 某些模型废弃了 temperature/top_p/top_k，带上直接 400。这里在所有 /chat/completions
@@ -889,7 +1024,7 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
               // 正文 44s 才灌完，卡片却记成 6.5s（实测误导排查）。clone 与调用方并行消费同一
               // 条流，text() 完成时刻 ≈ 真实收完时刻。
               if (urlStr.includes('/chat/completions')) {
-                  const meta = (config as any)?.__sullyMeta;
+                  const meta = (config as any)?.__sullyMeta || ambientMetaAtStart;
                   const body = (sendArgs[1] as any)?.body;
                   const status = response.status;
                   const ok = response.ok;
@@ -949,7 +1084,7 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
           } catch (err: any) {
               // Network Failure
               if (urlStr.includes('/chat/completions')) {
-                  recordApiCall({ url: urlStr, body: (sendArgs[1] as any)?.body, ok: false, meta: (config as any)?.__sullyMeta, durationMs: Date.now() - fetchStartedAt });
+                  recordApiCall({ url: urlStr, body: (sendArgs[1] as any)?.body, ok: false, meta: (config as any)?.__sullyMeta || ambientMetaAtStart, durationMs: Date.now() - fetchStartedAt });
               }
               setSystemLogs(prev => [{
                   id: `log-${Date.now()}`,
@@ -981,7 +1116,16 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
       console.error = (...args) => {
           originalConsoleError(...args);
           const msg = args.map(a => (a instanceof Error ? a.message : String(a))).join(' ');
-          const detail = args.map(a => (a instanceof Error ? a.stack : '')).join('\n');
+          // detail 只有真拿到堆栈才用堆栈，否则回退完整 msg。
+          // 旧写法 `args.map(a => a instanceof Error ? a.stack : '').join('\n')`
+          // 对「多个非 Error 参数」会产出 "\n"（truthy），把回退短路掉——
+          // 日志面板里只剩被 100 字截断的 message（排查 Embedding 400 这类
+          // 长响应时，关键的服务商完整响应体全丢，detail 只有一个换行符）。
+          const stacks = args
+              .filter((a): a is Error => a instanceof Error)
+              .map(a => a.stack || '')
+              .filter(Boolean)
+              .join('\n');
           if (msg.includes('Warning:')) return;
           setSystemLogs(prev => [{
               id: `log-${Date.now()}-${Math.random()}`,
@@ -989,7 +1133,7 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
               type: 'error',
               source: 'Application',
               message: msg.substring(0, 100),
-              detail: detail || msg
+              detail: stacks || msg
           }, ...prev.slice(0, 49)]);
       };
   }, []);
@@ -1009,6 +1153,12 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
              try {
                  const parsed = JSON.parse(savedThemeStr);
                  loadedTheme = { ...loadedTheme, ...parsed };
+                 // 仅迁移旧系统默认值；用户自定义过的壁纸、文字色和主题色全部保留。
+                 const preserveNostalgia = shouldPreserveLegacyDefaultWallpaper(loadedTheme.wallpaper, loadedTheme.desktopVariant);
+                 if ((!preserveNostalgia && isLegacyDefaultWallpaper(loadedTheme.wallpaper)) || (isPaperWallpaper(loadedTheme.wallpaper) && loadedTheme.wallpaper !== DEFAULT_WALLPAPER)) {
+                     loadedTheme.wallpaper = DEFAULT_WALLPAPER;
+                     loadedTheme = migrateLegacyDefaultPalette(loadedTheme);
+                 }
                  // Strip the legacy Unsplash hard-coded wallpaper, keep user-imported http(s) URLs
                  if (
                      loadedTheme.wallpaper.includes('unsplash') ||
@@ -1020,6 +1170,9 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
                  // 真值在 assets 'wallpaper'，下面会解析覆盖；这里先回退默认避免闪一帧坏图。
                  if (loadedTheme.wallpaper.startsWith('data:') || loadedTheme.wallpaper.startsWith('blob:')) {
                      loadedTheme.wallpaper = defaultTheme.wallpaper;
+                 }
+                 if (loadedTheme.lockWallpaper?.startsWith('data:') || loadedTheme.lockWallpaper?.startsWith('blob:')) {
+                     loadedTheme.lockWallpaper = undefined;
                  }
                  // Deprecated legacy fields are forcibly stripped — they never render again.
                  loadedTheme.launcherWidgetImage = undefined;
@@ -1058,7 +1211,18 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
                 if (assetMap['wallpaper']) {
                     // assets 'wallpaper' 现在存的是指针（blobref 令牌 / 旧 data: / http）。
                     // 解析成可渲染 url（令牌→objectURL；旧 data: 顺手迁移成 Blob）。
-                    loadedTheme.wallpaper = await resolveWallpaperStoredValue(assetMap['wallpaper']);
+                    const legacyAssetWallpaper = isLegacyDefaultWallpaper(assetMap['wallpaper']);
+                    const preserveNostalgia = shouldPreserveLegacyDefaultWallpaper(assetMap['wallpaper'], loadedTheme.desktopVariant);
+                    if ((legacyAssetWallpaper && !preserveNostalgia) || isPaperWallpaper(assetMap['wallpaper'])) {
+                        loadedTheme.wallpaper = DEFAULT_WALLPAPER;
+                        if (legacyAssetWallpaper) loadedTheme = migrateLegacyDefaultPalette(loadedTheme);
+                        await DB.deleteAsset('wallpaper');
+                    } else {
+                        loadedTheme.wallpaper = await resolveWallpaperStoredValue(assetMap['wallpaper'], preserveNostalgia);
+                    }
+                }
+                if (assetMap['lock_wallpaper']) {
+                    loadedTheme.lockWallpaper = await resolveLockWallpaperStoredValue(assetMap['lock_wallpaper']);
                 }
 
                 // Deprecated legacy asset — purge silently so it can never be rendered again.
@@ -1074,20 +1238,23 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
                 const DEPRECATED_WIDGET_SLOTS = new Set(['bl', 'br']);
                 const loadedIcons: Record<string, string> = {};
                 const loadedWidgets: Record<string, string> = {};
-                Object.keys(assetMap).forEach(key => {
+                for (const key of Object.keys(assetMap)) {
                     if (key.startsWith('icon_')) {
                         const appId = key.replace('icon_', '');
-                        loadedIcons[appId] = assetMap[key];
+                        const previous = assetMap[key];
+                        const stored = previous.startsWith('data:') ? await migrateDataUrlToRef(previous) : previous;
+                        loadedIcons[appId] = stored;
+                        if (stored !== previous) await DB.saveAsset(key, stored);
                     }
                     if (key.startsWith('widget_')) {
                         const slot = key.replace('widget_', '');
                         if (DEPRECATED_WIDGET_SLOTS.has(slot)) {
                             void DB.deleteAsset(key);
-                            return;
+                            continue;
                         }
                         loadedWidgets[slot] = assetMap[key];
                     }
-                });
+                }
                 setCustomIcons(loadedIcons);
                 // Strip deprecated slots that may have been imported via beautification packs.
                 if (loadedTheme.launcherWidgets) {
@@ -1244,7 +1411,24 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
             }
         }
 
-        finalChars = finalChars.map(c => normalizeCharacterDefaults(normalizeCharacterImpression(c)));
+        let resetAutoContextCount = 0;
+        let migratedContextCount = 0;
+        finalChars = finalChars.map(c => {
+          const normalized = normalizeCharacterDefaults(normalizeCharacterImpression(c));
+          const migration = migrateCharacterContextRange(normalized);
+          if (migration.migrated) migratedContextCount++;
+          if (migration.resetAutoContext) resetAutoContextCount++;
+          return migration.character;
+        });
+        if (migratedContextCount > 0) {
+          await Promise.all(finalChars.map(c => DB.saveCharacter(c)));
+        }
+        if (resetAutoContextCount > 0) {
+          setTimeout(() => addToast(
+            `上下文范围已升级：${resetAutoContextCount} 个全自动记忆角色已恢复为自适应模式。需要读取更多旧原文时，可在聊天设置中手动调整。`,
+            'info',
+          ), 1200);
+        }
 
         if (finalChars.length > 0) {
           setCharacters(finalChars);
@@ -1327,6 +1511,12 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
   const activeCharIdScheduleRef = useRef(activeCharacterId);
   activeAppRef.current = activeApp;
   activeCharIdScheduleRef.current = activeCharacterId;
+
+  // 当前聊天视图快照 → 模块级 slot（utils/chatGenEvents）。根级 ChatBroadcast 挂在
+  // OSProvider 之外拿不到这两个 state，靠快照判断"用户正看着的会话不弹全局横幅"。
+  useEffect(() => {
+      setChatViewSnapshot(activeApp === AppID.Chat, activeCharacterId ?? null);
+  }, [activeApp, activeCharacterId]);
   // 通话状态（含挂起到后台的通话）——主动消息流程读它来判断"是否正在通话"
   const suspendedCallRef = useRef(suspendedCall);
   suspendedCallRef.current = suspendedCall;
@@ -1548,16 +1738,59 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
           }).catch(() => {});
       };
 
+      // 本地 fetch 聊天回复的全局回落：triggerAI 的异步闭包在 Chat 卸载后继续跑完
+      // 并落库，但它捕获的 setMessages 指向已卸载的实例。这里是它跟当前 UI 的唯一桥：
+      //   - replyArrived（后处理管线全部落库后）→ bump lastMsgTimestamp 让当前挂载的
+      //     Chat 重新 reloadMessages；用户不在该会话时补未读 + toast——与 instant push
+      //     的 'active-msg-received' 行为对齐。
+      //   - replyEnd（finally，含失败路径）→ 只 bump 时间戳，把 catch 里落库的
+      //     错误系统消息也刷出来。
+      const chatReplyArrivedHandler = (e: Event) => {
+          const { charId, charName } = ((e as CustomEvent).detail || {}) as { charId?: string; charName?: string };
+          if (!charId) return;
+          setLastMsgTimestamp(Date.now());
+          const isChattingWithThisChar = activeAppRef.current === AppID.Chat && activeCharIdScheduleRef.current === charId;
+          if (!isChattingWithThisChar) {
+              setUnreadMessages(prev => ({ ...prev, [charId]: (prev[charId] || 0) + 1 }));
+              if (document.visibilityState === 'visible') {
+                  addToast(`${charName || '角色'} 回复了消息`, 'success');
+              }
+          }
+      };
+      const chatReplyEndHandler = () => {
+          setLastMsgTimestamp(Date.now());
+      };
+
+      // 情绪评估失败 → toast 告知（每角色 60s 冷却防刷屏）。评估失败过去只写 console，
+      // 用户侧表现是「情绪徽章闪一下就灭、情绪永不更新、没有任何报错」（真实反馈），
+      // 完全没法自查。事件来源：evaluateEmotionBackground（本地请求失败/空响应）、
+      // applyEmotionEvalRaw（解析全灭/落库失败）、activeMsgRuntime（worker 推回空结果）。
+      const emotionFailToastAt: Record<string, number> = {};
+      const emotionFailHandler = (e: Event) => {
+          const { charId, charName, reason } = ((e as CustomEvent).detail || {}) as { charId?: string; charName?: string; reason?: string };
+          if (!charId) return;
+          const now = Date.now();
+          if (now - (emotionFailToastAt[charId] || 0) < 60_000) return;
+          emotionFailToastAt[charId] = now;
+          addToast(`${charName || '角色'}的情绪评估失败：${reason || '未知原因'}（不影响聊天回复）`, 'error');
+      };
+
       window.addEventListener('active-msg-received', handler);
       window.addEventListener('active-msg-progress', progressHandler);
       window.addEventListener('active-msg-open', openHandler);
       window.addEventListener('emotion-updated', buffSyncHandler);
+      window.addEventListener(CHAT_GEN_EVENTS.replyArrived, chatReplyArrivedHandler);
+      window.addEventListener(CHAT_GEN_EVENTS.replyEnd, chatReplyEndHandler);
+      window.addEventListener(CHAT_GEN_EVENTS.emotionFailed, emotionFailHandler);
       document.addEventListener('visibilitychange', onVisible);
       return () => {
           window.removeEventListener('active-msg-received', handler);
           window.removeEventListener('active-msg-progress', progressHandler);
           window.removeEventListener('active-msg-open', openHandler);
           window.removeEventListener('emotion-updated', buffSyncHandler);
+          window.removeEventListener(CHAT_GEN_EVENTS.replyArrived, chatReplyArrivedHandler);
+          window.removeEventListener(CHAT_GEN_EVENTS.replyEnd, chatReplyEndHandler);
+          window.removeEventListener(CHAT_GEN_EVENTS.emotionFailed, emotionFailHandler);
           document.removeEventListener('visibilitychange', onVisible);
       };
   }, [sendProactiveNativeNotification]);
@@ -1571,6 +1804,11 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
   // Refs to avoid stale closures in proactive callback
   const charactersRef = useRef(characters);
   charactersRef.current = characters;
+
+  // 同步 charId → 角色名 注册表，让 utils 层（群聊背景注入等）能标出真实发言人名。
+  useEffect(() => {
+    setCharNameRegistry(characters);
+  }, [characters]);
   const apiConfigRef = useRef(apiConfig);
   apiConfigRef.current = apiConfig;
 
@@ -1602,18 +1840,15 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
       const drainQueuedProactive = () => {
           const next = proactiveQueueRef.current.shift();
           if (next) {
-              void runProactive(next.charId, next.reason);
+              void runProactive(next.charId);
           }
       };
 
-      const runProactive = async (charId: string, reason?: ProactiveRunReason) => {
+      const runProactive = async (charId: string) => {
           if (proactiveRunningRef.current) {
               const queuedIndex = proactiveQueueRef.current.findIndex(item => item.charId === charId);
               if (queuedIndex < 0) {
-                  proactiveQueueRef.current.push({ charId, reason });
-              } else if (reason?.kind === 'music-track-change') {
-                  // 同一角色排队期间再次收到更具体的换歌事件时，以最新歌曲为准。
-                  proactiveQueueRef.current[queuedIndex] = { charId, reason };
+                  proactiveQueueRef.current.push({ charId });
               }
               return;
           }
@@ -1631,8 +1866,7 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
               return;
           }
 
-          // 换歌判断属于用户刚刚发起的“一起听”交互，不受定时主动消息开关限制。
-          if (reason?.kind !== 'music-track-change' && char.proactiveConfig && !char.proactiveConfig.enabled) {
+          if (char.proactiveConfig && !char.proactiveConfig.enabled) {
               drainQueuedProactive();
               console.log(`🔕 [Proactive/Global] Skipped for ${char.name}: disabled`);
               return;
@@ -1701,9 +1935,7 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
               const justMetOffline = lastRealMsgRaw?.metadata?.source === 'date'
                   && (now.getTime() - lastRealMsgRaw.timestamp) < DATE_AFTERGLOW_MS;
 
-              const hintContent = reason?.kind === 'music-track-change'
-                  ? buildMusicTrackChangeHint(reason.detail, userName)
-                  : justMetOffline
+              const hintContent = justMetOffline
                       ? `[系统提示（非${userName}发言）: 现在是 ${timeStr}。你和${userName}刚刚在线下见过面（如果上下文里有标着 [约会] 的内容，那就是你们见面时发生的事），现在你们暂时分开了，你拿起手机想给${userName}发条消息。请基于刚才的见面来发——可以回味见面里的某个细节、补一句当时没说出口的话、关心${userName}到家了没，或者就是刚分开就有点想念。绝对不要表现得好像很久没联系，更不要对刚才的见面毫不知情。一两句话就好。]`
                       : `[系统提示（非${userName}发言）: 现在是 ${timeStr}。${timeSinceUser ? `${userName}已经 ${timeSinceUser} 没有找你说话了。` : ''}这是系统给你的一次主动发消息机会——${userName}并没有在跟你说话，是你想主动找${userName}。像真人一样随意地发条消息吧，比如：随手拍了张照片想分享、刚看到个有趣的事想说、突然想到个冷知识、吐槽今天的天气/食物/见闻、或者就是单纯想找${userName}聊几句。不要刻意，不要像在"汇报近况"，就像你真的拿起手机随手发了条消息。一两句话就好。${timeSinceUser && parseInt(timeSinceUser) > 2 ? `（${userName}挺久没找你了，你也可以表达想念、好奇${userName}在干嘛、或者小小地抱怨一下。）` : ''}]`;
 
@@ -1717,7 +1949,11 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
 
               // 3. Build prompt & message history — 走和 useChatAI / emotion eval 同一个 helper，
               //    保证三家拿到的"材料"完全一致；区别只在前面追加的"现在主动找用户"那条 hint。
-              const allMsgs = await DB.getRecentMessagesByCharId(charId, char.contextLimit || 500);
+              const proactiveRange = await loadCharacterContextRange(char);
+              if (proactiveRange.userBreakpointExpired) {
+                  updateCharacter(charId, { contextUserStartMessageId: undefined });
+              }
+              const allMsgs = proactiveRange.messages;
               const emojis = await DB.getEmojis();
               const categories = await DB.getEmojiCategories();
 
@@ -1728,7 +1964,7 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
                   char, userProfile: currentUserProfile!, groups: currentGroups,
                   emojis, categories,
                   historyMsgs: allMsgs,
-                  contextLimit: char.contextLimit || 500,
+                  contextLimit: Math.max(1, allMsgs.length),
                   realtimeConfig: currentRealtimeConfig,
                   innerState: cachedInnerState,
                   // 实时音乐播放状态 —— OSContext 在 MusicProvider 上层用不了 useMusic()，
@@ -1783,11 +2019,6 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
               }, 2, 0, { appName: '消息', charId, charName: char.name, purpose: '主动消息' });
 
               // 5. Process & save response
-              if (reason?.kind === 'music-track-change'
-                  && loadMusicPlaybackSnapshot()?.current?.id !== reason.detail.currentSong.id) {
-                  console.log(`🎵 [Proactive/Global] Skipped stale track-change response for ${char.name}`);
-                  return;
-              }
               let aiContent = data.choices?.[0]?.message?.content || '';
               // 思考链抽取 — 与 useChatAI 保持一致:reasoning_content 字段 + 主 content 里的 <think>/<thinking>/<thought> 块,
               // 拼接后挂到本回合首条 assistant 消息的 metadata.thinkingChain
@@ -1814,26 +2045,6 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
               aiContent = aiContent.replace(/\s*\[(?:聊天|通话|约会)\]\s*/g, '\n').trim();
 
               aiContent = normalizeProactiveAiContent(aiContent);
-
-              // 换歌触发只执行 MUSIC_ACTION，不顺带放开主动消息路径里的其他动作。
-              // 卡片由 ChatParser 落库；正文继续走下方原有的主动消息保存流程。
-              let musicActionExecuted = false;
-              const musicActionTagPattern = /\[\[MUSIC_ACTION:(?:join|add|add_new|join_and_add|join_and_add_new)(?:\|[^\]]*)?\]\]/g;
-              const musicActionTags = aiContent.match(musicActionTagPattern);
-              if (reason?.kind === 'music-track-change' && musicActionTags?.length) {
-                  const musicHooks = loadMusicHooks();
-                  if (musicHooks) {
-                      await ChatParser.parseAndExecuteActions(
-                          musicActionTags.join(' '),
-                          charId,
-                          char.name,
-                          () => {},
-                          musicHooks,
-                      );
-                      musicActionExecuted = true;
-                  }
-                  aiContent = aiContent.replace(musicActionTagPattern, '').trim();
-              }
 
               const savedPreviewChunks: string[] = [];
               const baseTimestamp = Date.now();
@@ -1882,43 +2093,62 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
                   const hasTranslationTags = /<翻译>\s*<原文>[\s\S]*?<\/原文>\s*<译文>[\s\S]*?<\/译文>\s*<\/翻译>/.test(aiContent);
 
                   if (hasTranslationTags) {
-                      // 表情独立抽出,放在文本之后发送
-                      const bilingualEmojis: string[] = [];
-                      let bEm;
-                      const bEmojiPat = /\[\[SEND_EMOJI:\s*(.*?)\]\]/g;
-                      while ((bEm = bEmojiPat.exec(aiContent)) !== null) {
-                          const name = bEm[1].trim();
-                          if (!bilingualEmojis.includes(name)) bilingualEmojis.push(name);
-                      }
-                      aiContent = aiContent.replace(/\[\[SEND_EMOJI:\s*.*?\]\]/g, '').trim();
+                      // 表情包按模型写的位置原地插发（与 applyAssistantPostProcessing 双语分支同款修复）。
+                      // 旧实现先把所有 [[SEND_EMOJI:]] 抽走、正文发完后统一追加到最后（还去了重），
+                      // 表现为「翻译模式下角色永远最后才发表情包」。
+                      const sendEmojiBubble = async (name: string): Promise<void> => {
+                          const foundEmoji = emojis.find(e => e.name === name);
+                          if (!foundEmoji?.url) return;
+                          const meta = consumeThinkingMeta();
+                          await DB.saveMessage({
+                              charId,
+                              role: 'assistant',
+                              type: 'emoji',
+                              content: foundEmoji.url,
+                              timestamp: baseTimestamp + offset,
+                              ...(meta ? { metadata: meta } : {}),
+                          });
+                          offset += 1;
+                      };
+                      // 翻译标签之外的普通文本段：splitResponse 按出现顺序拆出文字 / 表情逐条发
+                      const renderPlainSegment = async (segment: string): Promise<void> => {
+                          for (const part of ChatParser.splitResponse(segment)) {
+                              if (part.type === 'emoji') {
+                                  await sendEmojiBubble(part.content);
+                                  continue;
+                              }
+                              const cleaned = ChatParser.sanitize(part.content);
+                              if (!cleaned || !ChatParser.hasDisplayContent(cleaned)) continue;
+                              for (const chunk of ChatParser.chunkText(cleaned)) {
+                                  if (!chunk) continue;
+                                  const meta = consumeThinkingMeta();
+                                  await DB.saveMessage({
+                                      charId,
+                                      role: 'assistant',
+                                      type: 'text',
+                                      content: chunk,
+                                      timestamp: baseTimestamp + offset,
+                                      ...(meta ? { metadata: meta } : {}),
+                                  });
+                                  savedPreviewChunks.push(chunk);
+                                  offset += 1;
+                              }
+                          }
+                      };
 
                       const tagPattern = /<翻译>\s*<原文>([\s\S]*?)<\/原文>\s*<译文>([\s\S]*?)<\/译文>\s*<\/翻译>/g;
                       let lastIndex = 0;
                       let tagMatch;
                       while ((tagMatch = tagPattern.exec(aiContent)) !== null) {
                           const textBefore = aiContent.slice(lastIndex, tagMatch.index).trim();
-                          if (textBefore) {
-                              const cleaned = ChatParser.sanitize(textBefore);
-                              if (cleaned && ChatParser.hasDisplayContent(cleaned)) {
-                                  for (const chunk of ChatParser.chunkText(cleaned)) {
-                                      if (!chunk) continue;
-                                      const meta = consumeThinkingMeta();
-                                      await DB.saveMessage({
-                                          charId,
-                                          role: 'assistant',
-                                          type: 'text',
-                                          content: chunk,
-                                          timestamp: baseTimestamp + offset,
-                                          ...(meta ? { metadata: meta } : {}),
-                                      });
-                                      savedPreviewChunks.push(chunk);
-                                      offset += 1;
-                                  }
-                              }
-                          }
+                          if (textBefore) await renderPlainSegment(textBefore);
 
-                          const originalText = ChatParser.sanitize(tagMatch[1].trim());
-                          const translatedText = ChatParser.sanitize(tagMatch[2].trim());
+                          // 混进 <原文>/<译文> 里的表情标签剥出来，紧跟这条双语气泡之后发
+                          const inlineEmojis: string[] = [];
+                          const stripInlineEmoji = (s: string): string =>
+                              s.replace(/\[\[SEND_EMOJI:\s*(.*?)\]\]/g, (_m, n) => { inlineEmojis.push(String(n).trim()); return ''; });
+                          const originalText = ChatParser.sanitize(stripInlineEmoji(tagMatch[1]).trim());
+                          const translatedText = ChatParser.sanitize(stripInlineEmoji(tagMatch[2]).trim());
                           if (originalText || translatedText) {
                               const biContent = originalText && translatedText
                                   ? `${originalText}\n%%BILINGUAL%%\n${translatedText}`
@@ -1935,46 +2165,13 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
                               savedPreviewChunks.push(originalText || translatedText);
                               offset += 1;
                           }
+                          for (const name of inlineEmojis) await sendEmojiBubble(name);
 
                           lastIndex = tagMatch.index + tagMatch[0].length;
                       }
 
                       const textAfter = aiContent.slice(lastIndex).trim();
-                      if (textAfter) {
-                          const cleaned = ChatParser.sanitize(textAfter.replace(/<\/?翻译>|<\/?原文>|<\/?译文>/g, '').trim());
-                          if (cleaned && ChatParser.hasDisplayContent(cleaned)) {
-                              for (const chunk of ChatParser.chunkText(cleaned)) {
-                                  if (!chunk) continue;
-                                  const meta = consumeThinkingMeta();
-                                  await DB.saveMessage({
-                                      charId,
-                                      role: 'assistant',
-                                      type: 'text',
-                                      content: chunk,
-                                      timestamp: baseTimestamp + offset,
-                                      ...(meta ? { metadata: meta } : {}),
-                                  });
-                                  savedPreviewChunks.push(chunk);
-                                  offset += 1;
-                              }
-                          }
-                      }
-
-                      for (const emojiName of bilingualEmojis) {
-                          const foundEmoji = emojis.find(e => e.name === emojiName);
-                          if (foundEmoji?.url) {
-                              const meta = consumeThinkingMeta();
-                              await DB.saveMessage({
-                                  charId,
-                                  role: 'assistant',
-                                  type: 'emoji',
-                                  content: foundEmoji.url,
-                                  timestamp: baseTimestamp + offset,
-                                  ...(meta ? { metadata: meta } : {}),
-                              });
-                              offset += 1;
-                          }
-                      }
+                      if (textAfter) await renderPlainSegment(textAfter.replace(/<\/?翻译>|<\/?原文>|<\/?译文>/g, '').trim());
                   } else {
                       const responseParts = ChatParser.splitResponse(aiContent);
 
@@ -2029,10 +2226,10 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
                   }
               }
 
-              if (offset > 0 || musicActionExecuted) {
+              if (offset > 0) {
                   const previewSource = savedPreviewChunks.join(' ').trim();
                   const preview = previewSource.replace(/\s+/g, ' ').trim().slice(0, 120)
-                      || (musicActionExecuted ? `${char.name} 回应了新歌` : `${char.name} sent a proactive message`);
+                      || `${char.name} sent a proactive message`;
 
                   // 6. Notify OS for unread badge + toast
                   window.dispatchEvent(new CustomEvent('proactive-message-sent', {
@@ -2056,15 +2253,6 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
       ProactiveChat.onTrigger((charId: string) => {
           void runProactive(charId);
       });
-
-      const onMusicTrackChanged = (event: Event) => {
-          const detail = (event as CustomEvent<MusicTrackChangeDetail>).detail;
-          if (!detail?.currentSong || !Array.isArray(detail.charIds)) return;
-          for (const charId of new Set(detail.charIds)) {
-              void runProactive(charId, { kind: 'music-track-change', detail });
-          }
-      };
-      window.addEventListener(MUSIC_TRACK_CHANGED_EVENT, onMusicTrackChanged);
 
       // 「彼方」自主登入 —— 独立调度，复用同一批 refs 拿最新状态
       const runVR = async (charId: string, room?: string, letterId?: string) => {
@@ -2166,14 +2354,13 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
           ProactiveChat.onTrigger(() => {});
           VRScheduler.onTrigger(() => {});
           WorldScheduler.onTrigger(() => {});
-          window.removeEventListener(MUSIC_TRACK_CHANGED_EVENT, onMusicTrackChanged);
           window.removeEventListener('world-reroll-request', onRerollRequest as EventListener);
       };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isDataLoaded]);
 
   const updateTheme = async (updates: Partial<OSTheme>) => {
-    const { wallpaper, launcherWidgetImage, launcherWidgets, desktopDecorations, customFont, ...styleUpdates } = updates;
+    const { wallpaper, lockWallpaper, launcherWidgetImage, launcherWidgets, desktopDecorations, customFont, ...styleUpdates } = updates;
     // Legacy slots are banned — never let them enter state, regardless of caller intent.
     const sanitizedWidgets = launcherWidgets !== undefined
         ? Object.fromEntries(Object.entries(launcherWidgets).filter(([k]) => k !== 'bl' && k !== 'br'))
@@ -2191,7 +2378,13 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
     // theme.wallpaper 在内存里始终是能直接喂 CSS 的值（objectURL / http / 渐变），
     // 不是 blobref 令牌。
     if (wallpaper !== undefined) {
-        newTheme.wallpaper = await resolveWallpaperStoredValue(wallpaper);
+        const legacyWallpaper = isLegacyDefaultWallpaper(wallpaper);
+        const preserveNostalgia = shouldPreserveLegacyDefaultWallpaper(wallpaper, newTheme.desktopVariant);
+        newTheme.wallpaper = await resolveWallpaperStoredValue(wallpaper, preserveNostalgia);
+        if (legacyWallpaper && !preserveNostalgia) Object.assign(newTheme, migrateLegacyDefaultPalette(newTheme));
+    }
+    if ('lockWallpaper' in updates) {
+        newTheme.lockWallpaper = await resolveLockWallpaperStoredValue(lockWallpaper);
     }
     setTheme(newTheme);
 
@@ -2255,6 +2448,7 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
     // blob: objectURL 是本次会话临时的，重启后失效——不能进 LS，清空让加载路径从 assets 重新解析。
     const lsTheme = { ...newTheme };
     if (lsTheme.wallpaper && (lsTheme.wallpaper.startsWith('data:') || lsTheme.wallpaper.startsWith('blob:'))) lsTheme.wallpaper = '';
+    if (lsTheme.lockWallpaper && (lsTheme.lockWallpaper.startsWith('data:') || lsTheme.lockWallpaper.startsWith('blob:'))) lsTheme.lockWallpaper = undefined;
     // Banned legacy field — never persist.
     lsTheme.launcherWidgetImage = undefined;
     // Strip data URIs and deprecated slots from widgets for LS
@@ -2413,7 +2607,9 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
       description: '点击编辑设定...',
       systemPrompt: '',
       memories: [],
-      contextLimit: 500,
+      contextLimit: DEFAULT_MANUAL_CONTEXT_LIMIT,
+      contextRangeMode: 'manual',
+      contextRangePolicyVersion: CONTEXT_RANGE_POLICY_VERSION,
       emotionConfig: { enabled: true },
     };
     setCharacters(prev => [...prev, newChar]);
@@ -2608,7 +2804,17 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
   const updateUserProfile = async (updates: Partial<UserProfile>) => { setUserProfile(prev => { const next = { ...prev, ...updates }; DB.saveUserProfile(next); return next; }); };
   const addCustomTheme = async (theme: ChatTheme) => { setCustomThemes(prev => { const exists = prev.find(t => t.id === theme.id); if (exists) return prev.map(t => t.id === theme.id ? theme : t); return [...prev, theme]; }); await DB.saveTheme(theme); };
   const removeCustomTheme = async (id: string) => { setCustomThemes(prev => prev.filter(t => t.id !== id)); await DB.deleteTheme(id); };
-  const setCustomIcon = async (appId: string, iconUrl: string | undefined) => { setCustomIcons(prev => { const next = { ...prev }; if (iconUrl) next[appId] = iconUrl; else delete next[appId]; return next; }); if (iconUrl) { await DB.saveAsset(`icon_${appId}`, iconUrl); } else { await DB.deleteAsset(`icon_${appId}`); } };
+  const setCustomIcon = async (appId: string, iconUrl: string | undefined) => {
+      const stored = iconUrl?.startsWith('data:') ? await migrateDataUrlToRef(iconUrl) : iconUrl;
+      setCustomIcons(prev => {
+          const next = { ...prev };
+          if (stored) next[appId] = stored;
+          else delete next[appId];
+          return next;
+      });
+      if (stored) await DB.saveAsset(`icon_${appId}`, stored);
+      else await DB.deleteAsset(`icon_${appId}`);
+  };
   const addToast = (message: string, type: Toast['type'] = 'info') => { const id = Date.now().toString(); setToasts(prev => [...prev, { id, message, type }]); setTimeout(() => { setToasts(prev => prev.filter(t => t.id !== id)); }, 3000); };
   const showError = (title: string, details: string) => { setErrorDialog({ title, details }); };
   const dismissError = () => { setErrorDialog(null); };
@@ -2620,6 +2826,9 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
       const presetTheme: OSTheme = { ...theme };
       if (presetTheme.wallpaper && presetTheme.wallpaper.startsWith('blob:')) {
           presetTheme.wallpaper = (await DB.getAsset('wallpaper')) || '';
+      }
+      if (presetTheme.lockWallpaper?.startsWith('blob:')) {
+          presetTheme.lockWallpaper = (await DB.getAsset('lock_wallpaper')) || undefined;
       }
       const preset: AppearancePreset = {
           id: `ap_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
@@ -2648,13 +2857,25 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
       }
       // 壁纸改存 Blob：把预设里的指针（blobref 令牌 / 旧 data:）落库并解析成 objectURL 再进 state。
       if (sanitizedPresetTheme.wallpaper !== undefined && typeof sanitizedPresetTheme.wallpaper === 'string') {
-          sanitizedPresetTheme.wallpaper = await resolveWallpaperStoredValue(sanitizedPresetTheme.wallpaper);
+          const legacyWallpaper = isLegacyDefaultWallpaper(sanitizedPresetTheme.wallpaper);
+          const preserveNostalgia = shouldPreserveLegacyDefaultWallpaper(
+              sanitizedPresetTheme.wallpaper,
+              sanitizedPresetTheme.desktopVariant,
+          );
+          sanitizedPresetTheme.wallpaper = await resolveWallpaperStoredValue(sanitizedPresetTheme.wallpaper, preserveNostalgia);
+          if (legacyWallpaper && !preserveNostalgia) {
+              Object.assign(sanitizedPresetTheme, migrateLegacyDefaultPalette(sanitizedPresetTheme));
+          }
+      }
+      if ('lockWallpaper' in sanitizedPresetTheme) {
+          sanitizedPresetTheme.lockWallpaper = await resolveLockWallpaperStoredValue(sanitizedPresetTheme.lockWallpaper);
       }
       // Apply theme
       setTheme(sanitizedPresetTheme);
       // 写 LS 前必须剥 data URI / blob: objectURL，否则 base64 壁纸撑爆 quota、blob: 重启即失效
       const lsTheme: any = { ...sanitizedPresetTheme };
       if (lsTheme.wallpaper && typeof lsTheme.wallpaper === 'string' && (lsTheme.wallpaper.startsWith('data:') || lsTheme.wallpaper.startsWith('blob:'))) lsTheme.wallpaper = '';
+      if (lsTheme.lockWallpaper && typeof lsTheme.lockWallpaper === 'string' && (lsTheme.lockWallpaper.startsWith('data:') || lsTheme.lockWallpaper.startsWith('blob:'))) lsTheme.lockWallpaper = undefined;
       lsTheme.launcherWidgetImage = undefined;
       if (lsTheme.launcherWidgets) {
           const cleanWidgets: Record<string, string> = {};
@@ -2681,10 +2902,13 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
       applyCustomFont(preset.theme.customFont);
       // Apply custom icons if present
       if (preset.customIcons) {
-          setCustomIcons(preset.customIcons);
+          const persistedIcons: Record<string, string> = {};
           for (const [appId, iconUrl] of Object.entries(preset.customIcons)) {
-              await DB.saveAsset(`icon_${appId}`, iconUrl);
+              const stored = iconUrl.startsWith('data:') ? await migrateDataUrlToRef(iconUrl) : iconUrl;
+              persistedIcons[appId] = stored;
+              await DB.saveAsset(`icon_${appId}`, stored);
           }
+          setCustomIcons(persistedIcons);
       }
       // Apply chat themes if present
       if (preset.chatThemes) {
@@ -2724,6 +2948,7 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
   // 已保存的外观预设不动，用户随时还能切回去。
   const resetAppearance = async () => {
       try {
+          await resolveLockWallpaperStoredValue(undefined);
           setTheme(defaultTheme);
           applyCustomFont(undefined);
 
@@ -2738,6 +2963,7 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
               const id = asset.id;
               if (
                   id === 'wallpaper' ||
+                  id === 'lock_wallpaper' ||
                   id === 'launcherWidgetImage' ||
                   id === 'custom_font_data' ||
                   id.startsWith('widget_') ||
@@ -2804,7 +3030,7 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
           raw = JSON.parse(text);
       }
       if (raw.type !== 'sully_appearance_preset') throw new Error('无效的外观预设文件');
-      const preset: AppearancePreset = {
+      const preset = await migrateAppearancePresetBlobRefs({
           id: `ap_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
           name: raw.name || '导入的预设',
           createdAt: Date.now(),
@@ -2812,7 +3038,7 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
           customIcons: raw.customIcons,
           chatThemes: raw.chatThemes,
           chatLayout: raw.chatLayout,
-      };
+      } as AppearancePreset);
       setAppearancePresets(prev => [preset, ...prev]);
       await DB.saveAsset(`appearance_preset_${preset.id}`, JSON.stringify(preset));
       addToast(`已导入预设「${preset.name}」`, 'success');
@@ -3121,9 +3347,15 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
                       const ptr = await DB.getAsset('wallpaper'); // blobref 令牌 / 旧 data: / http
                       (backupData.theme as any).wallpaper = ptr || '';
                   }
+                  const lockWp = (backupData.theme as any).lockWallpaper;
+                  if (typeof lockWp === 'string' && lockWp.startsWith('blob:')) {
+                      const ptr = await DB.getAsset('lock_wallpaper');
+                      (backupData.theme as any).lockWallpaper = ptr || undefined;
+                  }
                   await resolveBlobRefsDeep(backupData.theme);
               }
               if (backupData.roomCustomAssets) await resolveBlobRefsDeep(backupData.roomCustomAssets);
+              if (backupData.customIcons) await resolveBlobRefsDeep(backupData.customIcons);
               if (backupData.appearancePresets) await resolveBlobRefsDeep(backupData.appearancePresets);
 
               if (backupData.socialAppData?.userProfile) processObject(backupData.socialAppData.userProfile);
@@ -3412,29 +3644,7 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
       }
   };
 
-  const previewCsySystem = async (fileOrJson: File | string): Promise<CsyMigrationReport> => {
-      let raw: unknown;
-      if (typeof fileOrJson === 'string') {
-          raw = JSON.parse(fileOrJson);
-      } else if (!fileOrJson.name.toLowerCase().endsWith('.zip')) {
-          raw = JSON.parse(await fileOrJson.text());
-      } else {
-          const JSZip = await loadJSZip();
-          const zip = await JSZip.loadAsync(fileOrJson);
-          if (zip.file('manifest.json')) {
-              throw new Error('这是一份 SullyOS 分片备份，不是 CSY-OS 的 data.json 备份。');
-          }
-          const dataFile = zip.file('data.json');
-          if (!dataFile) throw new Error('CSY-OS 备份损坏：缺少 data.json。');
-          raw = JSON.parse(await dataFile.async('string'));
-      }
-      return inspectCsyBackup(raw);
-  };
-
-  const importSystem = async (
-      fileOrJson: File | string,
-      options: { source?: 'sully' | 'csy' } = {},
-  ): Promise<void> => {
+  const importSystem = async (fileOrJson: File | string): Promise<void> => {
       const sourceName = typeof fileOrJson === 'string' ? 'json' : fileOrJson.name;
       const sourceSize = typeof fileOrJson === 'string'
           ? (typeof Blob !== 'undefined' ? new Blob([fileOrJson]).size : fileOrJson.length)
@@ -3502,7 +3712,6 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
       showImportProgress('parsing', '正在解析备份文件...', 1, { current: '解析备份文件', sourceSize });
       try {
           let data: FullBackupData;
-          let csyReport: CsyMigrationReport | undefined;
           let zip: JSZipLike | null = null;
 
           if (typeof fileOrJson === 'string') {
@@ -3553,15 +3762,9 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
               }
           }
 
-          if (options.source === 'csy') {
-              if (zip?.file('manifest.json')) {
-                  throw new Error('选择的文件是 SullyOS 备份，不需要走 CSY-OS 迁移入口。');
-              }
-              showImportProgress('converting', '正在转换 CSY-OS 数据...', 32, { current: '转换向量记忆与角色配置' });
-              const prepared = prepareCsyMigration(data);
-              data = prepared.data;
-              csyReport = prepared.report;
-          }
+          // 必须发生在 restoreAssetsInPlace / DB.importFullData 之前：不受支持的第三方
+          // 备份一旦命中特征就整包拒绝，不能出现“导入了一半才报错”的状态。
+          assertSupportedSullyBackup(data);
 
           const hadAssetStoreBackup = data.assets !== undefined;
           const hadCustomIconsBackup = data.customIcons !== undefined;
@@ -3699,13 +3902,19 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
               }
               if (data.customIcons) {
                   for (const [appId, iconUrl] of Object.entries(data.customIcons)) {
-                      await DB.saveAsset(`icon_${appId}`, iconUrl);
+                      const stored = iconUrl.startsWith('data:') ? await migrateDataUrlToRef(iconUrl) : iconUrl;
+                      await DB.saveAsset(`icon_${appId}`, stored);
                   }
               }
               if (data.appearancePresets) {
+                  const cache = new Map<string, string>();
+                  const migratedPresets: AppearancePreset[] = [];
                   for (const preset of data.appearancePresets) {
-                      await DB.saveAsset(`appearance_preset_${preset.id}`, JSON.stringify(preset));
+                      const migrated = await migrateAppearancePresetBlobRefs(preset, cache);
+                      migratedPresets.push(migrated);
+                      await DB.saveAsset(`appearance_preset_${migrated.id}`, JSON.stringify(migrated));
                   }
+                  data.appearancePresets = migratedPresets;
               }
           }
 
@@ -3822,21 +4031,45 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
               const loadedIcons: Record<string, string> = {};
               const loadedPresets: AppearancePreset[] = [];
               if (Array.isArray(assets)) {
-                  assets.forEach(a => {
-                      if (a.id.startsWith('icon_')) loadedIcons[a.id.replace('icon_', '')] = a.data;
+                  for (const a of assets) {
+                      if (a.id.startsWith('icon_')) {
+                          const stored = a.data.startsWith('data:') ? await migrateDataUrlToRef(a.data) : a.data;
+                          loadedIcons[a.id.replace('icon_', '')] = stored;
+                          if (stored !== a.data) await DB.saveAsset(a.id, stored);
+                      }
                       if (a.id.startsWith('appearance_preset_')) {
                           try {
                               loadedPresets.push(JSON.parse(a.data));
                           } catch {}
                       }
-                  });
+                  }
               }
               setCustomIcons(loadedIcons);
               loadedPresets.sort((a, b) => b.createdAt - a.createdAt);
               setAppearancePresets(loadedPresets);
           }
 
-          if (chars.length > 0) setCharacters(chars.map(c => normalizeCharacterDefaults(normalizeCharacterImpression(c))));
+          if (chars.length > 0) {
+              let importedAutoContextCount = 0;
+              let importedContextMigrated = false;
+              const normalizedChars = chars.map(c => {
+                  const normalized = normalizeCharacterDefaults(normalizeCharacterImpression(c));
+                  const migration = migrateCharacterContextRange(normalized);
+                  if (migration.migrated) importedContextMigrated = true;
+                  if (migration.resetAutoContext) importedAutoContextCount++;
+                  return migration.character;
+              });
+              if (importedContextMigrated) {
+                  await Promise.all(normalizedChars.map(c => DB.saveCharacter(c)));
+              }
+              setCharacters(normalizedChars);
+              if (importedAutoContextCount > 0) {
+                  setTimeout(() => addToast(
+                      `导入的旧设置已升级：${importedAutoContextCount} 个全自动记忆角色已使用自适应上下文。`,
+                      'info',
+                  ), 600);
+              }
+          }
           if (groupsList.length > 0) setGroups(groupsList);
           if (themes.length > 0) setCustomThemes(themes);
           if (user) setUserProfile(user);
@@ -3846,12 +4079,7 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
           
           setSysOperation({ status: 'idle', message: '', progress: 100 });
           clearImportInProgress();
-          addToast(
-              csyReport
-                  ? `CSY-OS 迁移完成：${csyReport.vectorMemories} 条记忆，${csyReport.reusableVectors} 条向量已复用。系统即将重启...`
-                  : '恢复成功，系统即将重启...',
-              'success',
-          );
+          addToast('恢复成功，系统即将重启...', 'success');
           setTimeout(() => window.location.reload(), 1500);
 
       } catch (e: any) {
@@ -3870,9 +4098,6 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
           throw new Error(`恢复失败: ${msg}`);
       }
   };
-
-  const importCsySystem = (fileOrJson: File | string): Promise<void> =>
-      importSystem(fileOrJson, { source: 'csy' });
 
   const resetSystem = async () => { try { await DB.deleteDB(); localStorage.clear(); window.location.reload(); } catch (e) { console.error(e); addToast('重置失败，请手动清除浏览器数据', 'error'); } };
   const openApp = (appId: AppID) => setActiveApp(appId);
@@ -3999,8 +4224,6 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
     listCloudBackups,
     exportSystem,
     importSystem,
-    previewCsySystem,
-    importCsySystem,
     resetSystem,
     sysOperation,
     systemLogs,

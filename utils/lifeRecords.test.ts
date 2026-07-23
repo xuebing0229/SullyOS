@@ -213,6 +213,47 @@ describe('executeLifeDirectives 代记指令', () => {
         const starts = (await DB.getAllLifeRecords()).filter(r => r.module === 'period' && r.kind === 'start');
         expect(starts).toHaveLength(1);
     });
+
+    it('start → 同日 end → 模型再发 START：同日兜底判重，不再重复入库（用户实报）', async () => {
+        // 沿用上个用例写入的今日 start；补一条今日 end，把状态机推进「已不在经期」的盲区——
+        // 旧逻辑此时会放行重复 start，真重复入库。
+        const charC = mkChar({ name: 'C' });
+        await executeLifeDirectives('[[LIFE:PERIOD_END]]', charC, noToast);
+        const st = computePeriodStatus(await DB.getAllLifeRecords(), null, lifeToday());
+        expect(st.inPeriod).toBe(false);
+
+        const charD = mkChar({ name: 'D' });
+        await executeLifeDirectives('[[LIFE:PERIOD_START]]', charD, noToast);
+        const starts = (await DB.getAllLifeRecords()).filter(r => r.module === 'period' && r.kind === 'start');
+        expect(starts).toHaveLength(1);
+        const msgs = await DB.getMessagesByCharId(charD.id, true);
+        expect(msgs.find((m: Message) => m.type === 'life_card')!.metadata.duplicate).toBe(true);
+    });
+
+    it('EXERCISE 同日同活动、时长写法不同：判重不重复入库（用户实报）', async () => {
+        const charE = mkChar({ name: 'E' });
+        await executeLifeDirectives('[[LIFE:EXERCISE|跑步|30分钟]]', charE, noToast);
+        // 模型下一轮换个时长写法 / 干脆省略时长 —— 旧判据要求时长逐字一致，全都漏网
+        const charF = mkChar({ name: 'F' });
+        await executeLifeDirectives('[[LIFE:EXERCISE|跑步|半小时]]', charF, noToast);
+        await executeLifeDirectives('[[LIFE:EXERCISE|跑步]]', charF, noToast);
+        const runs = (await DB.getAllLifeRecords()).filter(r => r.module === 'exercise' && r.payload.activity === '跑步');
+        expect(runs).toHaveLength(1);
+        const msgs = await DB.getMessagesByCharId(charF.id, true);
+        expect(msgs.filter((m: Message) => m.type === 'life_card' && m.metadata.duplicate)).toHaveLength(2);
+
+        // 不同活动照常入库，不受影响
+        await executeLifeDirectives('[[LIFE:EXERCISE|瑜伽]]', charF, noToast);
+        const yoga = (await DB.getAllLifeRecords()).filter(r => r.module === 'exercise' && r.payload.activity === '瑜伽');
+        expect(yoga).toHaveLength(1);
+    });
+
+    it('注入的代记说明包含「一件事只记一次」防重复明示', async () => {
+        const char = mkChar();
+        const s = await buildLifeRecordInjection(char, '洛洛');
+        expect(s).toContain('一件事只记一次');
+        expect(s).toContain('已经记过了');
+    });
 });
 
 describe('全局隐藏模块（长按页签隐藏）', () => {

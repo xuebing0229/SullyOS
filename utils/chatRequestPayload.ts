@@ -23,7 +23,7 @@ import { buildLuckinMiniAppContextBlock, buildLuckinChatSystemBlock } from './lu
 import type { LuckinMiniAppSnapshot, LuckinChatState } from './luckinToolBridge';
 import { isMcpChatAvailable } from './mcpClient';
 import { buildMcpSystemBlock, MCP_TAIL_REMINDER } from './mcpToolBridge';
-import type { MusicCfg, Song, LyricLine, MusicPlaybackSnapshot } from '../context/MusicContext';
+import type { MusicCfg, Song, LyricLine, MusicPlaybackSnapshot, RecentTrackChange } from '../context/MusicContext';
 import { isPromptBuildSkipped, isSystemMessageMergeEnabled } from './devDebug';
 import { mergeSystemMessages } from './systemMessageMerge';
 import { injectWorldbookDepthEntries, resolveWorldbookEntries } from './worldbook';
@@ -69,6 +69,8 @@ export interface BuildChatPayloadInput {
     musicCfg?: MusicCfg;
     /** 备选：传一份原始播放快照，helper 内部按主路径同样的逻辑算 listening 三件套 */
     musicSnapshot?: MusicPlaybackSnapshot | null;
+    /** 最近一次一起听途中换歌的记录（React 主路径显式传；snapshot 路径从快照里取） */
+    recentTrackChange?: RecentTrackChange | null;
 
     // 模式开关
     translationConfig?: TranslationConfig | { enabled: boolean; sourceLang: string; targetLang: string };
@@ -78,6 +80,13 @@ export interface BuildChatPayloadInput {
     luckinMiniSnap?: LuckinMiniAppSnapshot;
     /** 瑞幸聊天点单模式 (点"瑞一杯"激活, 角色直接调真实工具) */
     luckinChat?: LuckinChatState;
+    /**
+     * 把历史里的多模态图片消息（content 数组 + image_url）压平成纯文本占位。
+     * 彼方/小小窝等复用聊天历史、但配了独立 API 的场景必须开：目标模型可能不支持
+     * 视觉输入（DeepSeek 等对 image_url 直接 400），且这些纯文本情景里 base64 图片
+     * 只是把上下文撑爆的噪声（与群聊注入"不要把媒体当文本塞"同一约定）。
+     */
+    stripImages?: boolean;
 }
 
 export interface BuildChatPayloadResult {
@@ -138,6 +147,25 @@ function deriveListeningFromSnapshot(
     return { userListeningContext, isListeningTogether, musicCfg: cfg };
 }
 
+/** 换歌记录多久内算"刚刚"——超过就不再向 char 提起（一首歌的量级） */
+const TRACK_CHANGE_FRESH_MS = 10 * 60 * 1000;
+
+/**
+ * 把原始换歌记录折算成"该 char 这一轮是否需要察觉换歌"。
+ * 命中条件：char 换歌那刻在一起听名单里、还没重新加入、且换歌发生在刚才。
+ * 导出仅为单测。
+ */
+export function deriveRecentTrackSwitchForChar(
+    record: RecentTrackChange | null | undefined,
+    charId: string,
+    isListeningTogether: boolean,
+): { songName: string; artists: string } | null {
+    if (!record || isListeningTogether) return null;
+    if (!record.charIds.includes(charId)) return null;
+    if (Date.now() - record.at > TRACK_CHANGE_FRESH_MS) return null;
+    return { songName: record.previousSong.name, artists: record.previousSong.artists };
+}
+
 /**
  * 剥离历史里旧的双语标签: `%%BILINGUAL%%` 形态整条在标记处截断 (只留原文侧),
  * `<翻译>` XML 形态只留 <原文>。导出仅为单测 — 引用头绝不能混入 %%BILINGUAL%%
@@ -155,6 +183,24 @@ export function cleanApiMessages(apiMessages: Array<{ role: string; content: any
             c = c.replace(/<翻译>\s*<原文>([\s\S]*?)<\/原文>\s*<译文>[\s\S]*?<\/译文>\s*<\/翻译>/g, '$1').trim();
         }
         return { ...msg, content: c };
+    });
+}
+
+/**
+ * 把 buildMessageHistory 产出的多模态图片消息压平成纯文本：保留 text 部分
+ * （里面已带 `[User sent an image]` 占位与时间戳），丢弃 image_url 部分。
+ * 与 buildMessageHistory 的"图片数据已丢失"分支产出完全同形。
+ * 导出仅为单测。
+ */
+export function flattenImageContentParts(apiMessages: Array<{ role: string; content: any }>): Array<{ role: string; content: any }> {
+    return apiMessages.map((msg) => {
+        if (!Array.isArray(msg.content)) return msg;
+        const text = msg.content
+            .filter((part: any) => part?.type === 'text')
+            .map((part: any) => part.text || '')
+            .join('\n')
+            .trim();
+        return { ...msg, content: text || '[图片]' };
     });
 }
 
@@ -187,7 +233,7 @@ export async function buildChatRequestPayload(input: BuildChatPayloadInput): Pro
 
     if (isPromptBuildSkipped()) {
         const { apiMessages } = ChatPrompts.buildMessageHistory(historyMsgs, contextLimit, char, userProfile, emojis);
-        const cleanedApiMessages = cleanApiMessages(apiMessages);
+        const cleanedApiMessages = cleanApiMessages(input.stripImages ? flattenImageContentParts(apiMessages) : apiMessages);
         console.warn('[DevDebug] Prompt Build skipped: sending chat history without system prompt injection.');
         return {
             systemPrompt: '',
@@ -213,12 +259,16 @@ export async function buildChatRequestPayload(input: BuildChatPayloadInput): Pro
     let userListeningContext = input.userListeningContext;
     let isListeningTogether = input.isListeningTogether;
     let musicCfg = input.musicCfg;
+    let recentTrackChange = input.recentTrackChange;
     if (userListeningContext === undefined && input.musicSnapshot !== undefined) {
         const derived = deriveListeningFromSnapshot(input.musicSnapshot, char.id);
         userListeningContext = derived.userListeningContext;
         isListeningTogether = derived.isListeningTogether;
         musicCfg = derived.musicCfg ?? musicCfg;
+        if (recentTrackChange === undefined) recentTrackChange = input.musicSnapshot?.recentTrackChange ?? null;
     }
+    // 换歌察觉：char 换歌那刻在一起听、还没重新加入 → 下一轮回复里注入"歌切了"的提示
+    const recentTrackSwitch = deriveRecentTrackSwitchForChar(recentTrackChange, char.id, !!isListeningTogether);
 
     // ── 3. buildSystemPromptParts 核心（三段式） ──────────
     // stable → 消息数组第一条 system（前缀稳定，吃 prompt cache）；
@@ -231,6 +281,7 @@ export async function buildChatRequestPayload(input: BuildChatPayloadInput): Pro
         userListeningContext ?? null,
         !!isListeningTogether,
         musicCfg,
+        recentTrackSwitch,
     );
     let systemPrompt = parts.stable;
     let volatileTail = parts.volatileState;
@@ -285,8 +336,8 @@ export async function buildChatRequestPayload(input: BuildChatPayloadInput): Pro
     // ── 7. 历史消息构造 ───────────────────────────────────
     const { apiMessages } = ChatPrompts.buildMessageHistory(historyMsgs, contextLimit, char, userProfile, emojis);
 
-    // ── 8. 剥离历史里旧的双语标签 ─────────────────────────
-    const cleanedApiMessages = cleanApiMessages(apiMessages);
+    // ── 8. 剥离历史里旧的双语标签（stripImages 时先压平 image_url → 纯文本占位） ──
+    const cleanedApiMessages = cleanApiMessages(input.stripImages ? flattenImageContentParts(apiMessages) : apiMessages);
     const resolvedWorldbookEntries = resolveWorldbookEntries(
         char.mountedWorldbooks || [],
         cleanedApiMessages,

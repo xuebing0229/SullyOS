@@ -129,7 +129,8 @@ setAppPayloadWarmer((id: AppID) => { const c = APP_BY_ID[id]; if (c) warmLazy(c)
 
 import { Like520Controller, shouldShowLike520Popup } from './Like520Event';
 import { UpdateNotificationController, shouldShowUpdateNotification } from './UpdateNotificationEvent';
-import { WorkerUpdateReminderController, shouldShowWorkerUpdateReminder } from './WorkerUpdateReminderEvent';
+import { WorkerUpdateReminderController, shouldShowWorkerUpdateReminder, rearmWorkerUpdateReminder } from './WorkerUpdateReminderEvent';
+import { loadInstantConfig, probeInstantWorkerVersion } from '../utils/instantPushClient';
 import { BackupReminderController } from './BackupReminderEvent';
 import { shouldShowBackupReminder, markBackupReminderShown } from '../utils/backupReminder';
 import { formatBytes } from '../utils/format';
@@ -591,6 +592,29 @@ const PhoneShell: React.FC = () => {
     if (shouldShowWorkerUpdateReminder()) setShowWorkerUpdateReminder(true);
   }, [showDisclaimer, showImportRecoveryPrompt, showAuthorLetter, showUpdateNotification, showLike520Popup, isDataLoaded]);
 
+  // 部署漂移自检：启动后异步 GET {workerUrl}/version（每 24h 最多一次）。
+  // 常量比对只能发现「前端更新了」，发现不了「用户 seen 过但实际没部署 / 部署的是更老的包」——
+  // 前端托管自动更新、worker 停在用户上次贴代码那天，这种漂移正是 instant 各类
+  // 「时灵时不灵」反馈的温床。确认 worker 有应答且版本不对（reachable && !ok）才重新
+  // 武装提醒；网络不通/没配不算数，贪睡窗口照常生效，不会轰炸。
+  useEffect(() => {
+    if (!isDataLoaded) return;
+    const cfg = loadInstantConfig();
+    if (!cfg.enabled || !cfg.workerUrl) return;
+    const PROBE_AT_KEY = 'sullyos_worker_version_probe_at';
+    try {
+      const last = Number(localStorage.getItem(PROBE_AT_KEY) || 0);
+      if (Date.now() - last < 86_400_000) return;
+    } catch { /* ignore */ }
+    void probeInstantWorkerVersion(cfg).then((r) => {
+      try { localStorage.setItem(PROBE_AT_KEY, String(Date.now())); } catch { /* ignore */ }
+      if (!r.ok && r.reachable) {
+        rearmWorkerUpdateReminder();
+        if (shouldShowWorkerUpdateReminder()) setShowWorkerUpdateReminder(true);
+      }
+    }).catch(() => { /* 探测失败不打扰 */ });
+  }, [isDataLoaded]);
+
   // 「该备份啦」提醒 — local-first 数据只在本机，隔 N 天（默认 7，可在设置里改）没导出就弹一次
   const [showBackupReminder, setShowBackupReminder] = useState(false);
   useEffect(() => {
@@ -694,6 +718,7 @@ const PhoneShell: React.FC = () => {
   };
 
   const bgImageValue = getBgStyle(theme.wallpaper);
+  const lockBgImageValue = getBgStyle(theme.lockWallpaper || theme.wallpaper);
   const contentColor = theme.contentColor || '#ffffff';
   const acnhSkin = theme.skin === 'animalcrossing'; // 动森彩蛋：锁屏换暖色草地点缀
 
@@ -712,7 +737,7 @@ const PhoneShell: React.FC = () => {
             unlock();
         }}
         className="relative w-full h-full bg-cover bg-center cursor-pointer overflow-hidden group font-light select-none overscroll-none"
-        style={{ backgroundImage: bgImageValue, color: contentColor, animation: 'lockReveal 600ms ease-out both' }}
+        style={{ backgroundImage: lockBgImageValue, color: contentColor, animation: 'lockReveal 600ms ease-out both' }}
       >
         {/* 锁屏柔和淡入：与开机「世界入场」退场衔接；body 背景本就是壁纸，故是无缝融入而非硬切。 */}
         <style>{`@keyframes lockReveal{from{opacity:0}to{opacity:1}}`}</style>

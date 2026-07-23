@@ -40,10 +40,16 @@ import {
 } from '../utils/streamPreview';
 import { ActiveMsgStore } from '../utils/activeMsgStore';
 import { applyEmotionEvalRaw, extractAssistantText } from '../utils/emotionApply';
+import { announceChatGen, CHAT_GEN_EVENTS } from '../utils/chatGenEvents';
 import { shouldRequestAmbient, buildAmbientEvalSection } from '../utils/roomAmbient';
 import { isEmotionEvalSkipped } from '../utils/devDebug';
 import { runAiRequest, sha256Hex } from '../utils/aiRequestManager';
 import { recordApiCall } from '../utils/apiCallLog';
+import {
+    computeContextRangeSnapshot,
+    getMemoryPalaceHighWaterMarkForContext,
+    loadCharacterContextRange,
+} from '../utils/chatContextRange';
 
 // ─── 情绪评估（副API，fire & forget）───
 
@@ -318,6 +324,10 @@ export async function evaluateEmotionBackground(
     api: { baseUrl: string; apiKey: string; model: string; stream?: boolean },
     round?: { conversationId: string; userMessageId: string; assistantMessageId: string; forceRefresh?: boolean }
 ): Promise<string | null> {
+    // 全局横幅「xx 正在感受…」（ChatBroadcast）。这里是所有本地评估路径的汇聚点
+    // （主链路 fire & forget / post-push 补跑 / OSContext 主动消息），在函数级
+    // start/finally 派发一次即可全覆盖；instant 模式的 worker 评估另行点灯。
+    announceChatGen(CHAT_GEN_EVENTS.emotionStart, { charId: charData.id, charName: charData.name });
     try {
         const ambientSection = shouldRequestAmbient(charData.id) ? buildAmbientEvalSection(charData) : '';
         const prompt = buildEmotionEvalPrompt(charData, userProfile, mainSystemPrompt, apiMessages, true, ambientSection);
@@ -328,55 +338,43 @@ export async function evaluateEmotionBackground(
             'Authorization': `Bearer ${api.apiKey || 'sk-none'}`
         };
 
-        const requestBody = {
+        const evalBody = {
             model: api.model,
             messages: [{ role: 'user', content: prompt }],
             temperature: 0.85,
-                // 显式给足输出额度: 部分代理不传 max_tokens 时默认很小 (1k~2k), eval 的
-                // injection+innerState 很长, 会被截断成半截 JSON → buff 静默丢失.
-                max_tokens: 8000,
-                // 跟随全局流式开关（响应由 safeFetchJson 透明拼装，下游 JSON 解析不变）。
-                // 好处: ①评估动辄生成 4~5k token、跑 30~46s，非流式最容易撞网关超时；
-                // ②中转若按流式/非流式分渠道池，评估与主聊天落同一池，行为可对比。
-            stream: !!api.stream,
-            ...(api.stream ? { stream_options: { include_usage: true } } : {}),
+            // 显式给足输出额度: 部分代理不传 max_tokens 时默认很小 (1k~2k), eval 的
+            // injection+innerState 很长, 会被截断成半截 JSON → buff 静默丢失.
+            max_tokens: 8000,
         };
-        const managed = await runAiRequest({
-            kind: 'emotion',
-            request: {
-                characterId: charData.id,
-                conversationId: round?.conversationId || charData.id,
-                userMessageId: round?.userMessageId || 'unknown-user',
-                assistantMessageId: round?.assistantMessageId || 'unknown-assistant',
-                model: api.model,
-                promptVersion: 'emotion-incremental-v1',
-                body: requestBody,
-            },
-            provider: baseUrl,
-            model: api.model,
-            promptVersion: 'emotion-incremental-v1',
-            forceRefresh: !!round?.forceRefresh,
-            metadata: {
-                charId: charData.id,
-                conversationId: round?.conversationId || charData.id,
-                userMessageId: round?.userMessageId,
-                assistantMessageId: round?.assistantMessageId,
-            },
-            shouldCache: (response: any) => !!extractAssistantText(response?.choices?.[0]?.message),
-            execute: () => safeFetchJson(`${baseUrl}/chat/completions`, {
-                method: 'POST', headers, body: JSON.stringify(requestBody),
-            }, 2, 0, { appName: '消息', charId: charData.id, charName: charData.name, purpose: '情绪评估' }),
-        });
-        const data = managed.value;
-        if (!managed.networkRequest) {
-            recordApiCall({
-                url: `${baseUrl}/chat/completions`, body: requestBody, ok: true, response: data,
-                durationMs: Math.round(managed.durationMs), source: managed.source, cacheHit: true,
-                networkRequest: false, requestHash: managed.key, requestChars: JSON.stringify(requestBody).length,
-                meta: { appName: '消息', charId: charData.id, charName: charData.name, purpose: '情绪评估' },
-            });
+        const evalMeta = { appName: '消息', charId: charData.id, charName: charData.name, purpose: '情绪评估' };
+        let data: any;
+        try {
+            data = await safeFetchJson(`${baseUrl}/chat/completions`, {
+                method: 'POST',
+                headers,
+                body: JSON.stringify({
+                    ...evalBody,
+                    // 跟随全局流式开关（响应由 safeFetchJson 透明拼装，下游 JSON 解析不变）。
+                    // 好处: ①评估动辄生成 4~5k token、跑 30~46s，非流式最容易撞网关超时；
+                    // ②中转若按流式/非流式分渠道池，评估与主聊天落同一池，行为可对比。
+                    stream: !!api.stream,
+                    ...(api.stream ? { stream_options: { include_usage: true } } : {}),
+                })
+            }, 2, 0, evalMeta);
+        } catch (e: any) {
+            if (!api.stream) throw e;
+            // 流式自愈: 个别中转/模型对 stream / stream_options 直接 4xx。主聊天的透明流式
+            // 升级层有「用升级前原 body 重发」的回退 (OSContext), 但评估请求自带 stream:true
+            // 不经过升级层, 没有这层兜底 —— 这里补上同等待遇: 非流式重发一次, 行为退回
+            // 「评估跟随流式开关」(32c7be7) 之前。评估失败过去被静默吞掉, 用户只看到
+            // 情绪徽章闪一下就灭、情绪永不更新 (真实反馈), 这类形状问题必须能自愈。
+            console.warn('🎭 [Emotion] streamed eval failed, retrying non-stream:', e?.message);
+            data = await safeFetchJson(`${baseUrl}/chat/completions`, {
+                method: 'POST',
+                headers,
+                body: JSON.stringify({ ...evalBody, stream: false })
+            }, 1, 0, evalMeta);
         }
-        console.log(`🗃️ [AI cache] kind=emotion source=${managed.source} key=${managed.key.slice(0, 12)} network=${managed.networkRequest ? 'yes' : 'no'}`);
 
         // 排查贩子降级路由用：把评估实际落到的后端和 token 计数打出来，
         // 和主聊天的 🔢 [Token Usage] 一对比就能看出哪个请求被挤进了备用渠道。
@@ -389,12 +387,22 @@ export async function evaluateEmotionBackground(
                 finish_reason: data.choices?.[0]?.finish_reason,
                 has_message: !!data.choices?.[0]?.message,
             }));
+            announceChatGen(CHAT_GEN_EVENTS.emotionFailed, {
+                charId: charData.id, charName: charData.name,
+                reason: `评估模型没有输出内容 (finish_reason: ${data.choices?.[0]?.finish_reason ?? '?'})`,
+            });
             return null;
         }
         return await applyEmotionEvalRaw(raw, charData);
     } catch (e: any) {
         console.warn('🎭 [Emotion] Evaluation failed:', e.message);
+        announceChatGen(CHAT_GEN_EVENTS.emotionFailed, {
+            charId: charData.id, charName: charData.name,
+            reason: e?.message || '请求失败',
+        });
         return null;
+    } finally {
+        announceChatGen(CHAT_GEN_EVENTS.emotionEnd, { charId: charData.id, charName: charData.name });
     }
 }
 
@@ -526,9 +534,11 @@ export const useChatAI = ({
         const charIdAtMount = char.id;
 
         const runEvalForPushedChar = async (): Promise<void> => {
+            // The listener is keyed by character ID, but settings may change without remounting it.
+            const evalChar = charRef.current?.id === charIdAtMount ? charRef.current : char;
             // 双 gate: 跟 line 613 一致 (schedule feature on + emotionConfig enabled).
             // 关掉的话还是要 clear pending, 否则下次 mount 反复尝试.
-            if (!isScheduleFeatureOn(char) || !char.emotionConfig?.enabled) {
+            if (!isScheduleFeatureOn(evalChar) || !evalChar.emotionConfig?.enabled) {
                 try { await ActiveMsgStore.clearPendingEmotionEval(charIdAtMount); } catch { /* ignore */ }
                 return;
             }
@@ -539,14 +549,17 @@ export const useChatAI = ({
                 return;
             }
             // 评估跟随全局流式开关（与 triggerAI 路径同口径；专用情绪 API 自带 stream 时以它为准）
-            const emotionApi = (char.emotionConfig.api?.baseUrl)
-                ? { ...char.emotionConfig.api, stream: (char.emotionConfig.api as any).stream ?? !!(deps.apiConfig.stream ?? false) }
+            const emotionApi = (evalChar.emotionConfig.api?.baseUrl)
+                ? { ...evalChar.emotionConfig.api, stream: (evalChar.emotionConfig.api as any).stream ?? !!(deps.apiConfig.stream ?? false) }
                 : { baseUrl: deps.apiConfig.baseUrl, apiKey: deps.apiConfig.apiKey, model: deps.apiConfig.model, stream: !!(deps.apiConfig.stream ?? false) };
 
             try {
-                // 重新从 DB 拉 history (push msg 此刻已经在 DB 里, activeMsgRuntime 在 dispatch
-                // 事件前已 await saveMessage). limit 200 跟 sendMessage line 543 同等级别.
-                const contextMsgs = await DB.getRecentMessagesByCharId(charIdAtMount, 200);
+                // 重新从 DB 拉与主聊天一致的「自适应/拉杆最大范围 + 用户断点」。
+                const pushedRange = await loadCharacterContextRange(evalChar);
+                const contextMsgs = pushedRange.messages;
+                if (pushedRange.userBreakpointExpired && updateCharacter) {
+                    updateCharacter(charIdAtMount, { contextUserStartMessageId: undefined });
+                }
 
                 // 跟 sendMessage line 553 同一个 helper, 同一份 ctx → emotion eval 看到的 systemPrompt
                 // + cleanedApiMessages 跟 主 API 调用看到的几乎完全一致 (差别仅在 music live snapshot 时序).
@@ -555,13 +568,13 @@ export const useChatAI = ({
                 const luckinMiniSnap = deps.luckinMiniAppRef?.current;
                 const luckinMiniOpen = !!luckinMiniSnap?.open;
                 const payload = await buildChatRequestPayload({
-                    char,
+                    char: evalChar,
                     userProfile: deps.userProfile,
                     groups: deps.groups,
                     emojis: deps.emojis,
                     categories: deps.categories,
                     historyMsgs: contextMsgs,
-                    contextLimit: 200,
+                    contextLimit: Math.max(1, contextMsgs.length),
                     realtimeConfig: deps.realtimeConfig,
                     innerState: deps.evolvedNarrative || undefined,
                     musicSnapshot: {
@@ -571,10 +584,11 @@ export const useChatAI = ({
                         activeLyricIdx: deps.music.activeLyricIdx,
                         listeningTogetherWith: deps.music.listeningTogetherWith,
                         cfg: deps.music.cfg,
+                        recentTrackChange: deps.music.recentTrackChange,
                     },
                     translationConfig: deps.translationConfig,
-                    htmlMode: { enabled: !!(char as any).htmlModeEnabled, customPrompt: (char as any).htmlModeCustomPrompt },
-                    thinkingChain: { enabled: !!(char as any).showThinkingChain, customPrompt: (char as any).thinkingChainCustomPrompt },
+                    htmlMode: { enabled: !!(evalChar as any).htmlModeEnabled, customPrompt: (evalChar as any).htmlModeCustomPrompt },
+                    thinkingChain: { enabled: !!(evalChar as any).showThinkingChain, customPrompt: (evalChar as any).thinkingChainCustomPrompt },
                     mcdMiniSnap: mcdMiniOpen ? mcdMiniSnap : undefined,
                     luckinMiniSnap: luckinMiniOpen ? luckinMiniSnap : undefined,
                 });
@@ -586,7 +600,7 @@ export const useChatAI = ({
 
                 setEmotionStatus('evaluating');
                 const innerState = await evaluateEmotionBackground(
-                    char, deps.userProfile, payload.systemPrompt, payload.cleanedApiMessages, emotionApi,
+                    evalChar, deps.userProfile, payload.systemPrompt, payload.cleanedApiMessages, emotionApi,
                 );
                 if (innerState) setEvolvedNarrative(innerState);
                 // 成功后清 pending. 失败不清 → 下次 mount drain 重试.
@@ -675,9 +689,11 @@ export const useChatAI = ({
         onInstantPosted?: () => void,
         opts?: { skipEmotionInjection?: boolean; forceRefresh?: boolean },
     ) => {
-        if (isTyping || !char) return;
+        // 早退路径也要熄「发送准备中」灯: caller (Chat.tsx) 是先 setInstantSendingActive(true)
+        // 再调 triggerAI 的, 这里 return 掉而不通知的话指示灯会永远亮着。
+        if (isTyping || !char) { onInstantPosted?.(); return; }
         const effectiveApi = overrideApiConfig || apiConfig;
-        if (!effectiveApi.baseUrl) { alert("请先在设置中配置 API URL"); return; }
+        if (!effectiveApi.baseUrl) { alert("请先在设置中配置 API URL"); onInstantPosted?.(); return; }
 
         // 重 roll（回溯重生）时不带入上一轮的情绪余波：清掉 buff 注入（buffInjection/activeBuffs）和
         // 意识流（innerState/evolvedNarrative），让主回复与情绪评估两边都从干净状态独立重新生成——
@@ -693,6 +709,10 @@ export const useChatAI = ({
         setStreamingBubbles([]);
         setStreamingThinking('');
         setRecallStatus('');
+        // 全局横幅「xx 正在回应…」（ChatBroadcast）。isTyping 等 UI 状态随 Chat 卸载
+        // 一起销毁，但这个异步闭包会继续跑完并落库——横幅靠 window 事件与组件生命周期
+        // 解耦，用户切走 Chat 也能看到生成还活着。finally 里派发 end（两条路径都经过）。
+        announceChatGen(CHAT_GEN_EVENTS.replyStart, { charId: char.id, charName: char.name });
 
         // Keep the Service Worker alive while we make potentially long AI calls
         await KeepAlive.start();
@@ -710,20 +730,29 @@ export const useChatAI = ({
                 finally { perfStages[label] = Math.round(performance.now() - t0); }
             };
 
-            // 0.9 历史消息加载: AI 上下文以 DB 最新状态为准.
-            // 刚保存消息后 React state 可能还是旧快照; 每次触发都读最近 contextLimit 条,
-            // 避免自动回复 / 手动触发在时序边界漏掉刚写入的消息或派生卡片。
-            const limit = char.contextLimit || 500;
-            const fullHistoryPromise: Promise<Message[] | null> = char.id
-                ? DB.getRecentMessagesByCharId(char.id, limit).catch(e => {
-                    console.error('Failed to load full history from DB, using React state:', e);
-                    return null;
-                })
-                : Promise.resolve(null);
-            const fullHistory = await stageT('dbHistory', fullHistoryPromise);
+            // 0.9 历史消息加载：最大范围与记忆宫殿水位线彻底解耦。
+            // adaptive 从 HWM 之后开始；manual 忽略 HWM 读取最近 N 条完整原文；
+            // 用户断点只可在最大范围内继续收窄，越界后自动失效。
+            const contextRange = char.id
+                ? await stageT('dbHistory', loadCharacterContextRange(char).catch(e => {
+                    console.error('Failed to load context range from DB, using React state:', e);
+                    // 即便 DB 读取失败，降级路径也必须继续遵守水位线/拉杆硬上限，不能把 React
+                    // 缓存里的更早消息意外送回模型。
+                    return computeContextRangeSnapshot(
+                        currentMsgs,
+                        char,
+                        getMemoryPalaceHighWaterMarkForContext(char.id),
+                    );
+                }))
+                : null;
+            if (contextRange?.userBreakpointExpired && updateCharacter) {
+                updateCharacter(char.id, { contextUserStartMessageId: undefined });
+            }
+            const fullHistory = contextRange?.messages || null;
             const contextMsgs = fullHistory || currentMsgs;
+            const limit = Math.max(1, fullHistory ? fullHistory.length : (char.contextLimit || 500));
             if (fullHistory) {
-                console.log(`📊 [Context] Loaded ${fullHistory.length} msgs from DB (React state had ${currentMsgs.length}, contextLimit=${limit})`);
+                console.log(`📊 [Context] Loaded ${fullHistory.length} msgs from DB (React state had ${currentMsgs.length}, mode=${contextRange?.mode}, maxStart=${contextRange?.maxRangeStartMessageId ?? 'none'}, effectiveStart=${contextRange?.effectiveStartMessageId ?? 'none'})`);
             }
 
             // 1. 构造完整 chat 请求载荷（memoryPalace 召回 + system prompt + 双语 / HTML / 思考链 / MCD + 历史）
@@ -768,6 +797,7 @@ export const useChatAI = ({
                 })(),
                 isListeningTogether: !!(music.current && music.playing && music.listeningTogetherWith.includes(char.id)),
                 musicCfg: music.cfg,
+                recentTrackChange: music.recentTrackChange,
                 translationConfig,
                 htmlMode: { enabled: !!(char as any).htmlModeEnabled, customPrompt: (char as any).htmlModeCustomPrompt },
                 thinkingChain: { enabled: !!(char as any).showThinkingChain, customPrompt: (char as any).thinkingChainCustomPrompt },
@@ -867,11 +897,22 @@ export const useChatAI = ({
             // 或安全超时 (worker 旧/失败/前端被杀) 时熄灭.
             if (instantEmotionEval) {
                 setEmotionStatus('evaluating');
+                // 全局横幅同步点灯; 熄灭信号是 worker 推回后 activeMsgRuntime 的
+                // 'instant-emotion-done' (ChatBroadcast 直接监听) + 横幅自身 TTL 兜底,
+                // 都不依赖本 hook 存活 —— 用户切走 Chat 也能正常熄灭。
+                announceChatGen(CHAT_GEN_EVENTS.emotionStart, { charId: char.id, charName: char.name });
                 if (instantEmotionTimerRef.current) clearTimeout(instantEmotionTimerRef.current);
                 instantEmotionTimerRef.current = setTimeout(() => {
                     setEmotionStatus('');
                     instantEmotionTimerRef.current = null;
-                }, 90_000);  // 安全网: 正常情况下 worker 推回 emotion_update 会 fire 'instant-emotion-done' 提前熄灭; 只在 worker 被杀/推送丢失时兜底.
+                    // 超时无回音最常见的原因是用户部署的 worker 版本过旧（不支持情绪评估、
+                    // 压根不会推 emotion_update），其次是 worker 被杀/推送丢失。过去这里
+                    // 静默熄灯, 用户只看到「情绪永远不更新」—— 给一条可操作的提示。
+                    announceChatGen(CHAT_GEN_EVENTS.emotionFailed, {
+                        charId: char.id, charName: char.name,
+                        reason: '云端情绪评估超时无回音——worker 可能是旧版（不支持情绪评估），请到 设置→Instant 消息设置 更新 worker 后重试',
+                    });
+                }, 90_000);  // 安全网: 正常情况下 worker 推回 emotion_update 会 fire 'instant-emotion-done' 提前熄灭; 只在 worker 旧版/被杀/推送丢失时兜底.
             }
 
             // 发送前汇总计时
@@ -1014,6 +1055,11 @@ export const useChatAI = ({
                     } else {
                         addToast(`Instant Push: ${errMsg}`, 'error');
                     }
+                }
+                // 发送失败/取消 → worker 不会跑情绪评估, 'instant-emotion-done' 永不到达,
+                // 主动熄灭全局横幅 (否则要等 TTL 兜底)。
+                if (!instantResult.ok && instantEmotionEval) {
+                    announceChatGen(CHAT_GEN_EVENTS.emotionEnd, { charId: char.id, charName: char.name });
                 }
                 return;
             }
@@ -1579,6 +1625,12 @@ export const useChatAI = ({
                 directives: [],
             });
 
+            // 本地路径回复已全部落库。OSContext 监听这个事件 bump lastMsgTimestamp——
+            // 当前挂载的 Chat（可能是切走又切回后新 mount 的实例，本闭包的 setMessages
+            // 对它已失效）会重新 reloadMessages；用户不在该会话时补未读 + toast。
+            // instant 路径不发：它的落库回落走 'active-msg-received'（activeMsgRuntime）。
+            announceChatGen(CHAT_GEN_EVENTS.replyArrived, { charId: char.id, charName: char.name });
+
         } catch (e: any) {
             // 注意: 这个 catch 兜的是「拿到 API 响应之后」的整条后处理管线 (applyAssistantPostProcessing,
             // 13 步)。这里抛错多半不是网络问题, 而是解析/正则/落库异常。别再叫"连接中断"误导排查。
@@ -1597,6 +1649,14 @@ export const useChatAI = ({
         } finally {
             KeepAlive.stop();
             setIsTyping(false);
+            // 全局横幅熄灭（成功/失败/instant 均经过这里；OSContext 同时借它兜底刷新，
+            // 覆盖 catch 里落库的错误系统消息）。
+            announceChatGen(CHAT_GEN_EVENTS.replyEnd, { charId: char.id, charName: char.name });
+            // 兜底熄「发送准备中」灯 (幂等, 正常路径 deliver() 前已熄过)。不加的话
+            // config-missing / subscription-failed / 拼 context 阶段 throw 这些没走到
+            // POST 的路径都不会调 onInstantPosted, 头部「发送中…」徽章会卡死到刷新
+            // —— 2026-07 安卓用户实测: 订阅失败弹了错, 但三个小点到角色回复了都不消失。
+            onInstantPosted?.();
             setStreamingBubbles([]);  // 错误/中断路径兜底清预览
             setStreamingThinking('');
             setRecallStatus('');

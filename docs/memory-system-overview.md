@@ -97,6 +97,10 @@
 
 ### 三、检索逻辑（Retrieval Pipeline）
 
+**查询源清洗（querySanitizer.ts）**：query 构建前先过 `sanitizeQuerySourceMessages`——图片/表情包/语音消息整条剔除（图片 content 是几万字符的 base64 data URI，进 embedding 批量请求会把 token 总量顶爆，硅基流动直接 400 code 20015），卡片类消息经 `normalizeMessageContent` 翻成可读文本，文本里的 data URI 也一律剥离。入库管线的 `isMessageSemanticallyRelevant` 是同一口径。
+
+**Embedding 请求防线（embedding.ts）**：单条截断 4000 字符（防单条超 8192 token）；按批内字符预算（6000）+ 条数上限（10）切批（防「每条合法、合批总量超限」类 400）；批量仍被 400 拒时自动降级为逐条向量化并把完整错误响应写进 console.error 日志，逐条后仍失败会在报错里指明第几条、多长、内容开头。**保险丝触发必有用户可见提示**：截断、降级成功（"已恢复、结果完整"）都走 console.error 进设置里的日志面板（面板只捕获 error 通道），有测试钉死不许静默。
+
 ```
 最近3条消息(≤500字) → 查询构建
         ↓
