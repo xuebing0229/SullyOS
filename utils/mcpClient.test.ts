@@ -16,7 +16,7 @@ import {
     MCP_REQUEST_TIMEOUT_MS,
     type McpServerConfig,
 } from './mcpClient';
-import { buildMcpOpenAITools, buildMcpRejectedToolsFallbackBody, buildMcpTextFallbackBody, formatMcpToolResult, MCP_RESULT_MAX_CHARS, sanitizeMcpLeadInText, shouldRetryMcpWithoutTools, stripTextFakedMcpCalls } from './mcpToolBridge';
+import { buildMcpOpenAITools, buildMcpRejectedToolsFallbackBody, buildMcpTextFallbackBody, extractMcpImageUrls, formatMcpToolResult, MCP_RESULT_MAX_CHARS, sanitizeMcpLeadInText, shouldRetryMcpWithoutTools, stripTextFakedMcpCalls } from './mcpToolBridge';
 import { completeGroupChatWithMcp } from './groupChat/mcp';
 
 const mkServer = (over: Partial<McpServerConfig>): McpServerConfig => ({
@@ -104,6 +104,22 @@ describe('formatMcpToolResult', () => {
         const cyclic: any = {};
         cyclic.self = cyclic;
         expect(formatMcpToolResult(cyclic)).toBe('[object Object]');
+    });
+    it('能从结构化字段、Markdown 和普通文本中提取图片 URL 并去重', () => {
+        const one = 'https://mcp.example.com/images/a.png';
+        const two = 'https://mcp.example.com/images/b.webp?token=public';
+        expect(extractMcpImageUrls({
+            url: one,
+            markdown: `![生成图](${one})`,
+            content: [{ type: 'text', text: `Direct URL: ${two}\n普通页面 https://example.com/page` }],
+        })).toEqual([one, two]);
+    });
+    it('忽略非 HTTP 和没有图片扩展名的地址', () => {
+        expect(extractMcpImageUrls({
+            url: 'file:///tmp/a.png',
+            page: 'https://example.com/view?id=1',
+            text: 'https://example.com/readme.txt',
+        })).toEqual([]);
     });
 });
 

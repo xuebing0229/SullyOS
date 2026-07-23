@@ -76,13 +76,63 @@ const buildToolDescription = (server: McpServerConfig, t: McpToolDef, multi: boo
  * 会全量重发消息，真有兆级 JSON 混进来会直接 4xx 或 token 起飞。
  */
 export const MCP_RESULT_MAX_CHARS = 20000;
-
 export const formatMcpToolResult = (data: any): string => {
     let s: string;
     try { s = typeof data === 'string' ? data : JSON.stringify(data); } catch { s = String(data); }
     return s.length > MCP_RESULT_MAX_CHARS
         ? `${s.slice(0, MCP_RESULT_MAX_CHARS)}…[结果过长已截断, 全文共 ${s.length} 字符]`
         : s;
+};
+
+/**
+ * 从通用 MCP 工具结果中提取可直接展示的远程图片 URL。
+ *
+ * MCP 没有强制所有生图服务器使用同一种返回形状：有的返回 structuredContent.url，
+ * 有的只在 text content 里给 Markdown 图片或 Direct URL。这里同时递归扫描结构化值和
+ * 字符串，随后由聊天层落成原生 type=image 消息；这样不依赖模型复述 Markdown，也不
+ * 会被 MessageItem 的 Markdown Lite 把 ![alt](url) 清理成纯文字。
+ */
+const MCP_IMAGE_EXT_RE = /\.(?:png|jpe?g|webp|gif|avif)(?:[?#][^\s"'<>)]*)?$/i;
+const MCP_MARKDOWN_IMAGE_RE = /!\[[^\]]*\]\((https?:\/\/[^\s)]+)\)/gi;
+const MCP_HTTP_URL_RE = /https?:\/\/[^\s"'<>]+/gi;
+const cleanMcpUrl = (value: string): string => value.trim().replace(/[),.;!?，。；！？]+$/g, '');
+const isLikelyMcpImageUrl = (value: string): boolean => {
+    try {
+        const parsed = new URL(value);
+        return /^https?:$/.test(parsed.protocol) && MCP_IMAGE_EXT_RE.test(`${parsed.pathname}${parsed.search}${parsed.hash}`);
+    } catch {
+        return false;
+    }
+};
+export const extractMcpImageUrls = (data: any): string[] => {
+    const found = new Set<string>();
+    const seen = new Set<any>();
+    const add = (candidate: string) => {
+        const cleaned = cleanMcpUrl(candidate);
+        if (isLikelyMcpImageUrl(cleaned)) found.add(cleaned);
+    };
+    const scanText = (text: string) => {
+        MCP_MARKDOWN_IMAGE_RE.lastIndex = 0;
+        for (const match of text.matchAll(MCP_MARKDOWN_IMAGE_RE)) add(match[1]);
+        MCP_HTTP_URL_RE.lastIndex = 0;
+        for (const match of text.matchAll(MCP_HTTP_URL_RE)) add(match[0]);
+    };
+    const walk = (value: any, depth: number) => {
+        if (value == null || depth > 8) return;
+        if (typeof value === 'string') { scanText(value); return; }
+        if (typeof value !== 'object' || seen.has(value)) return;
+        seen.add(value);
+        if (Array.isArray(value)) {
+            value.forEach(item => walk(item, depth + 1));
+            return;
+        }
+        for (const [key, child] of Object.entries(value)) {
+            if (typeof child === 'string' && /^(?:url|image|image_url|imageUrl|src|markdown)$/i.test(key)) add(child);
+            walk(child, depth + 1);
+        }
+    };
+    walk(data, 0);
+    return [...found];
 };
 
 // ========== 提示词 ==========
