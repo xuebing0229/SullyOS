@@ -16,7 +16,7 @@ import TheaterPlayer from '../components/schedule/TheaterPlayer';
 import { formatMessageWithTime, normalizeMessageContent } from '../utils/messageFormat';
 import { getRoomLabel } from '../utils/memoryPalace/types';
 import { XhsMcpClient, extractNotesFromMcpData, normalizeNote } from '../utils/xhsMcpClient';
-import { extractWebpageContent, detectFirstUrl, isXhsUrl, extractXhsNoteId, expandShortUrl, type ExtractedWebpage } from '../utils/webpageExtractor';
+import { extractWebpageContent, detectFirstUrl, detectXhsShortUrl, isXhsUrl, extractXhsNoteId, expandShortUrl, type ExtractedWebpage } from '../utils/webpageExtractor';
 import { isVideoShareUrl, parseVideoShareUrl } from '../utils/videoParser';
 import { isDevDebugAvailable } from '../utils/devDebug';
 import { resolveLifeRecordCard } from '../utils/lifeRecords';
@@ -1022,18 +1022,16 @@ const Chat: React.FC = () => {
             let xhsCardCreated = false;
             let webpageCardCreated = false;
             const xhsFullNoteId = extractXhsNoteId(text);
-            // 路径宽松接收 '-' / '_'，兼容小红书后续调整短链格式；尾部中文标点不吞入 URL。
-            const xhsShortMatch = text.match(/(?:https?:\/\/)?(?:www\.)?xhslink\.com\/[A-Za-z0-9/_-]+/i);
-            if (xhsFullNoteId || xhsShortMatch) {
+            // 同时识别桌面/旧版 xhslink.com 与手机版新版 xhslink.cn。
+            const xhsShortUrl = detectXhsShortUrl(text);
+            if (xhsFullNoteId || xhsShortUrl) {
                 let noteId = xhsFullNoteId || '';
                 let xsecToken = text.match(/xsec_token=([^&\s]+)/)?.[1];
                 let shortLinkError = '';
-                // 短链（xhslink.com）不含 id/token —— 先经 sfworker 展开成真实链接再提取。
-                if (!noteId && xhsShortMatch) {
+                // 短链（xhslink.com / xhslink.cn）不含 id/token —— 先经 sfworker 展开成真实链接再提取。
+                if (!noteId && xhsShortUrl) {
                     try {
-                        // 正则可能匹配到不带协议头的裸链接，补上 https 再展开（否则 new URL 报 Invalid URL）。
-                        const shortUrl = /^https?:\/\//i.test(xhsShortMatch[0]) ? xhsShortMatch[0] : `https://${xhsShortMatch[0]}`;
-                        const finalUrl = await expandShortUrl(shortUrl);
+                        const finalUrl = await expandShortUrl(xhsShortUrl);
                         noteId = extractXhsNoteId(finalUrl) || '';
                         xsecToken = xsecToken || finalUrl.match(/xsec_token=([^&\s]+)/)?.[1];
                         if (isDevDebugAvailable()) console.log('[卡片调试] 小红书短链展开 →', finalUrl, '| noteId =', noteId);
@@ -1117,7 +1115,7 @@ const Chat: React.FC = () => {
             // 视频平台链接（抖音/B站/快手…）Jina 基本抓不到东西（SPA+登录墙），
             // 优先走 apizero 视频解析拿标题/作者/封面/热度；失败降级回通用网页抓取。
             const sharedUrl = detectFirstUrl(text);
-            if (sharedUrl && !isXhsUrl(sharedUrl) && !(xhsFullNoteId || xhsShortMatch)) {
+            if (sharedUrl && !isXhsUrl(sharedUrl) && !(xhsFullNoteId || xhsShortUrl)) {
                 let webpage: ExtractedWebpage | null = null;
                 if (isVideoShareUrl(sharedUrl)) {
                     try {

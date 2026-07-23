@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { detectFirstUrl, isXhsUrl, extractXhsNoteId, parseWebpageHtml, extractWebpageContent } from './webpageExtractor';
+import { detectFirstUrl, detectXhsShortUrl, isXhsUrl, extractXhsNoteId, parseWebpageHtml, extractWebpageContent } from './webpageExtractor';
 
 describe('detectFirstUrl', () => {
   it('从一句话里揪出 http(s) 链接', () => {
@@ -26,10 +26,28 @@ describe('isXhsUrl', () => {
   it('识别小红书域名（已有专门 MCP 路径，网页抓取要避开）', () => {
     expect(isXhsUrl('https://www.xiaohongshu.com/explore/abc')).toBe(true);
     expect(isXhsUrl('https://xhslink.com/xxx')).toBe(true);
+    expect(isXhsUrl('http://xhslink.cn/o/3hJ4anvedNl')).toBe(true);
     expect(isXhsUrl('https://www.rednote.com/explore/abc')).toBe(true);
     expect(isXhsUrl('https://example.com')).toBe(false);
     expect(isXhsUrl('https://rednote.com.example.com/explore/abc')).toBe(false);
     expect(isXhsUrl('https://fake-rednote.com/explore/abc')).toBe(false);
+  });
+});
+
+describe('detectXhsShortUrl', () => {
+  it('识别手机版 xhslink.cn 完整分享文案', () => {
+    const text = '办公室的领导看着不苟言笑 http://xhslink.cn/o/3hJ4anvedNl 存下链接，去【小红书】阅读全文~';
+    expect(detectXhsShortUrl(text)).toBe('http://xhslink.cn/o/3hJ4anvedNl');
+  });
+
+  it('继续兼容 xhslink.com 和不带协议的短链', () => {
+    expect(detectXhsShortUrl('https://xhslink.com/a/AbC_123-xy')).toBe('https://xhslink.com/a/AbC_123-xy');
+    expect(detectXhsShortUrl('看看 xhslink.cn/o/AbC123')).toBe('https://xhslink.cn/o/AbC123');
+  });
+
+  it('不接受相似恶意域名', () => {
+    expect(detectXhsShortUrl('https://xhslink.cn.example.com/o/AbC123')).toBeNull();
+    expect(detectXhsShortUrl('https://fake-xhslink.cn/o/AbC123')).toBeNull();
   });
 });
 
