@@ -17,6 +17,10 @@ import type { Anticipation, MigrationProgress, DigestResult, MemoryLink, EventBo
 import { confirmExportSafety } from '../utils/exportGuard';
 import type { Message } from '../types';
 import { CharacterGroupFilterBar, filterCharactersByGroup, GROUP_FILTER_ALL } from '../components/character/CharacterGroupFilter';
+import {
+    CONTEXT_RANGE_POLICY_VERSION,
+    DEFAULT_MANUAL_CONTEXT_LIMIT,
+} from '../utils/chatContextRange';
 
 /** 手动总结面板：每页渲染多少条聊天记录（翻页，避免一次性塞几百条 DOM 卡顿） */
 const RANGE_PAGE_SIZE = 100;
@@ -1092,7 +1096,13 @@ export default function MemoryPalaceApp() {
         } else {
             // 关闭 palace 必然连带关闭全自动记忆；同时清空残留的向量召回注入，
             // 否则旧的 memoryPalaceInjection 会被 saveCharacter 持久化并继续注入 prompt。
-            updateCharacter(charId, { memoryPalaceEnabled: false, autoArchiveEnabled: false, memoryPalaceInjection: undefined } as any);
+            updateCharacter(charId, {
+                memoryPalaceEnabled: false,
+                autoArchiveEnabled: false,
+                memoryPalaceInjection: undefined,
+                contextRangeMode: 'manual',
+                contextRangePolicyVersion: CONTEXT_RANGE_POLICY_VERSION,
+            } as any);
         }
     };
 
@@ -1102,7 +1112,11 @@ export default function MemoryPalaceApp() {
         if (!target) return;
 
         if (!on) {
-            updateCharacter(charId, { autoArchiveEnabled: false } as any);
+            updateCharacter(charId, {
+                autoArchiveEnabled: false,
+                contextRangeMode: 'manual',
+                contextRangePolicyVersion: CONTEXT_RANGE_POLICY_VERSION,
+            } as any);
             addToast('已关闭全自动记忆（palace 向量化仍在正常运行）', 'info');
             return;
         }
@@ -1118,7 +1132,13 @@ export default function MemoryPalaceApp() {
             return;
         }
 
-        updateCharacter(charId, { autoArchiveEnabled: true } as any);
+        updateCharacter(charId, {
+            autoArchiveEnabled: true,
+            contextRangeMode: 'adaptive',
+            contextRangePolicyVersion: CONTEXT_RANGE_POLICY_VERSION,
+            contextLimit: DEFAULT_MANUAL_CONTEXT_LIMIT,
+            contextUserStartMessageId: undefined,
+        } as any);
 
         // 统计未同步消息数并决定是否立即追平历史
         // 口径必须和 pipeline 的缓冲区定义一致：排除热区（最后 200 条），

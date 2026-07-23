@@ -43,6 +43,11 @@ import { applyEmotionEvalRaw, extractAssistantText } from '../utils/emotionApply
 import { announceChatGen, CHAT_GEN_EVENTS } from '../utils/chatGenEvents';
 import { shouldRequestAmbient, buildAmbientEvalSection } from '../utils/roomAmbient';
 import { isEmotionEvalSkipped } from '../utils/devDebug';
+import {
+    computeContextRangeSnapshot,
+    getMemoryPalaceHighWaterMarkForContext,
+    loadCharacterContextRange,
+} from '../utils/chatContextRange';
 
 // ─── 情绪评估（副API，fire & forget）───
 
@@ -520,9 +525,11 @@ export const useChatAI = ({
         const charIdAtMount = char.id;
 
         const runEvalForPushedChar = async (): Promise<void> => {
+            // The listener is keyed by character ID, but settings may change without remounting it.
+            const evalChar = charRef.current?.id === charIdAtMount ? charRef.current : char;
             // 双 gate: 跟 line 613 一致 (schedule feature on + emotionConfig enabled).
             // 关掉的话还是要 clear pending, 否则下次 mount 反复尝试.
-            if (!isScheduleFeatureOn(char) || !char.emotionConfig?.enabled) {
+            if (!isScheduleFeatureOn(evalChar) || !evalChar.emotionConfig?.enabled) {
                 try { await ActiveMsgStore.clearPendingEmotionEval(charIdAtMount); } catch { /* ignore */ }
                 return;
             }
@@ -533,14 +540,17 @@ export const useChatAI = ({
                 return;
             }
             // 评估跟随全局流式开关（与 triggerAI 路径同口径；专用情绪 API 自带 stream 时以它为准）
-            const emotionApi = (char.emotionConfig.api?.baseUrl)
-                ? { ...char.emotionConfig.api, stream: (char.emotionConfig.api as any).stream ?? !!(deps.apiConfig.stream ?? false) }
+            const emotionApi = (evalChar.emotionConfig.api?.baseUrl)
+                ? { ...evalChar.emotionConfig.api, stream: (evalChar.emotionConfig.api as any).stream ?? !!(deps.apiConfig.stream ?? false) }
                 : { baseUrl: deps.apiConfig.baseUrl, apiKey: deps.apiConfig.apiKey, model: deps.apiConfig.model, stream: !!(deps.apiConfig.stream ?? false) };
 
             try {
-                // 重新从 DB 拉 history (push msg 此刻已经在 DB 里, activeMsgRuntime 在 dispatch
-                // 事件前已 await saveMessage). limit 200 跟 sendMessage line 543 同等级别.
-                const contextMsgs = await DB.getRecentMessagesByCharId(charIdAtMount, 200);
+                // 重新从 DB 拉与主聊天一致的「自适应/拉杆最大范围 + 用户断点」。
+                const pushedRange = await loadCharacterContextRange(evalChar);
+                const contextMsgs = pushedRange.messages;
+                if (pushedRange.userBreakpointExpired && updateCharacter) {
+                    updateCharacter(charIdAtMount, { contextUserStartMessageId: undefined });
+                }
 
                 // 跟 sendMessage line 553 同一个 helper, 同一份 ctx → emotion eval 看到的 systemPrompt
                 // + cleanedApiMessages 跟 主 API 调用看到的几乎完全一致 (差别仅在 music live snapshot 时序).
@@ -549,13 +559,13 @@ export const useChatAI = ({
                 const luckinMiniSnap = deps.luckinMiniAppRef?.current;
                 const luckinMiniOpen = !!luckinMiniSnap?.open;
                 const payload = await buildChatRequestPayload({
-                    char,
+                    char: evalChar,
                     userProfile: deps.userProfile,
                     groups: deps.groups,
                     emojis: deps.emojis,
                     categories: deps.categories,
                     historyMsgs: contextMsgs,
-                    contextLimit: 200,
+                    contextLimit: Math.max(1, contextMsgs.length),
                     realtimeConfig: deps.realtimeConfig,
                     innerState: deps.evolvedNarrative || undefined,
                     musicSnapshot: {
@@ -568,8 +578,8 @@ export const useChatAI = ({
                         recentTrackChange: deps.music.recentTrackChange,
                     },
                     translationConfig: deps.translationConfig,
-                    htmlMode: { enabled: !!(char as any).htmlModeEnabled, customPrompt: (char as any).htmlModeCustomPrompt },
-                    thinkingChain: { enabled: !!(char as any).showThinkingChain, customPrompt: (char as any).thinkingChainCustomPrompt },
+                    htmlMode: { enabled: !!(evalChar as any).htmlModeEnabled, customPrompt: (evalChar as any).htmlModeCustomPrompt },
+                    thinkingChain: { enabled: !!(evalChar as any).showThinkingChain, customPrompt: (evalChar as any).thinkingChainCustomPrompt },
                     mcdMiniSnap: mcdMiniOpen ? mcdMiniSnap : undefined,
                     luckinMiniSnap: luckinMiniOpen ? luckinMiniSnap : undefined,
                 });
@@ -581,7 +591,7 @@ export const useChatAI = ({
 
                 setEmotionStatus('evaluating');
                 const innerState = await evaluateEmotionBackground(
-                    char, deps.userProfile, payload.systemPrompt, payload.cleanedApiMessages, emotionApi,
+                    evalChar, deps.userProfile, payload.systemPrompt, payload.cleanedApiMessages, emotionApi,
                 );
                 if (innerState) setEvolvedNarrative(innerState);
                 // 成功后清 pending. 失败不清 → 下次 mount drain 重试.
@@ -711,20 +721,29 @@ export const useChatAI = ({
                 finally { perfStages[label] = Math.round(performance.now() - t0); }
             };
 
-            // 0.9 历史消息加载: AI 上下文以 DB 最新状态为准.
-            // 刚保存消息后 React state 可能还是旧快照; 每次触发都读最近 contextLimit 条,
-            // 避免自动回复 / 手动触发在时序边界漏掉刚写入的消息或派生卡片。
-            const limit = char.contextLimit || 500;
-            const fullHistoryPromise: Promise<Message[] | null> = char.id
-                ? DB.getRecentMessagesByCharId(char.id, limit).catch(e => {
-                    console.error('Failed to load full history from DB, using React state:', e);
-                    return null;
-                })
-                : Promise.resolve(null);
-            const fullHistory = await stageT('dbHistory', fullHistoryPromise);
+            // 0.9 历史消息加载：最大范围与记忆宫殿水位线彻底解耦。
+            // adaptive 从 HWM 之后开始；manual 忽略 HWM 读取最近 N 条完整原文；
+            // 用户断点只可在最大范围内继续收窄，越界后自动失效。
+            const contextRange = char.id
+                ? await stageT('dbHistory', loadCharacterContextRange(char).catch(e => {
+                    console.error('Failed to load context range from DB, using React state:', e);
+                    // 即便 DB 读取失败，降级路径也必须继续遵守水位线/拉杆硬上限，不能把 React
+                    // 缓存里的更早消息意外送回模型。
+                    return computeContextRangeSnapshot(
+                        currentMsgs,
+                        char,
+                        getMemoryPalaceHighWaterMarkForContext(char.id),
+                    );
+                }))
+                : null;
+            if (contextRange?.userBreakpointExpired && updateCharacter) {
+                updateCharacter(char.id, { contextUserStartMessageId: undefined });
+            }
+            const fullHistory = contextRange?.messages || null;
             const contextMsgs = fullHistory || currentMsgs;
+            const limit = Math.max(1, fullHistory ? fullHistory.length : (char.contextLimit || 500));
             if (fullHistory) {
-                console.log(`📊 [Context] Loaded ${fullHistory.length} msgs from DB (React state had ${currentMsgs.length}, contextLimit=${limit})`);
+                console.log(`📊 [Context] Loaded ${fullHistory.length} msgs from DB (React state had ${currentMsgs.length}, mode=${contextRange?.mode}, maxStart=${contextRange?.maxRangeStartMessageId ?? 'none'}, effectiveStart=${contextRange?.effectiveStartMessageId ?? 'none'})`);
             }
 
             // 1. 构造完整 chat 请求载荷（memoryPalace 召回 + system prompt + 双语 / HTML / 思考链 / MCD + 历史）

@@ -89,9 +89,50 @@ export function detectFirstUrl(text: string): string | null {
   return m[0].replace(/[.,;:!?'")\]]+$/, '');
 }
 
+const XHS_NOTE_PATH_RE = /^\/(?:discovery\/item|explore|item)\/([a-f0-9]{24})(?:[/?#]|$)/i;
+
+function isXhsHostname(hostname: string): boolean {
+  const host = hostname.toLowerCase().replace(/\.$/, '');
+  return ['xiaohongshu.com', 'xhslink.com', 'rednote.com']
+    .some(domain => host === domain || host.endsWith(`.${domain}`));
+}
+
 /** XHS 链接已有专门的 MCP 卡片路径，网页抓取要避开它，免得抢同一条消息。 */
 export function isXhsUrl(url: string): boolean {
-  return /xiaohongshu\.com|xhslink\.com/i.test(url);
+  try {
+    const parsed = new URL(/^https?:\/\//i.test(url) ? url : `https://${url}`);
+    return isXhsHostname(parsed.hostname);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 从完整分享文案或单个链接中提取小红书笔记 ID。
+ * 同时支持国内域名 xiaohongshu.com 和新版国际域名 rednote.com；
+ * xhslink.com 短链没有 ID，需先 expandShortUrl 后再调用本函数。
+ */
+export function extractXhsNoteId(text: string): string | null {
+  if (!text) return null;
+
+  const candidates: string[] = [...(text.match(/https?:\/\/[^\s，。！？；、"'《》()（）【】]+/ig) || [])];
+  const naked = text.match(/(?:^|[\s，。！？；、"'《》()（）【】])((?:www\.)?(?:xiaohongshu\.com|rednote\.com)\/[^\s，。！？；、"'《》()（）【】]+)/i)?.[1];
+  if (naked) candidates.push(`https://${naked}`);
+
+  for (const candidate of candidates) {
+    try {
+      const parsed = new URL(candidate.replace(/[.,;:!?'")\]]+$/, ''));
+      const host = parsed.hostname.toLowerCase().replace(/\.$/, '');
+      const isNoteHost = ['xiaohongshu.com', 'rednote.com']
+        .some(domain => host === domain || host.endsWith(`.${domain}`));
+      if (!isNoteHost) continue;
+      const noteId = parsed.pathname.match(XHS_NOTE_PATH_RE)?.[1];
+      if (noteId) return noteId;
+    } catch {
+      // 忽略文案里的坏链接，继续检查下一个 URL。
+    }
+  }
+  return null;
 }
 
 /**
