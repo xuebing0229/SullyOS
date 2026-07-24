@@ -14,7 +14,6 @@ import { FISH_VOICE_ACTING_GUIDE } from './fishAudioTts';
 import { getTtsProvider, getVoicePromptOverride } from './ttsProvider';
 import { resolveCharTimeZone, nowInTimeZone } from './timezone';
 import { buildLifeRecordInjection } from './lifeRecords';
-import { appendTurnContext } from './turnContext';
 import { getCharNameById } from './charNameRegistry';
 import { getLocalDateKey } from './localDate';
 import { getLocalDailySchedule } from './dailySchedule';
@@ -1204,10 +1203,6 @@ ${userProfile.name} 给你反馈时，别当成约束，当成信任——ta 在
                     content = `${timeStr} ${normalizeMessageContent(m, char?.name || '你', userProfile?.name || '用户')}`;
                 }
                 else content = `${timeStr} ${sourceTag} ${content}`;
-
-                if (m.role === 'user' && typeof m.metadata?.aiTurnContext === 'string') {
-                    content = appendTurnContext(content, m.metadata.aiTurnContext);
-                }
 
                 return { role: m.role, content };
             }),

@@ -809,14 +809,6 @@ export const useChatAI = ({
             const cleanedApiMessages = payload.cleanedApiMessages;
             const fullMessages = payload.fullMessages;
             const promptBuildSkipped = payload.flags.promptBuildSkipped;
-            const latestUserForTurnContext = [...contextMsgs].reverse().find(message => message.role === 'user');
-            if (latestUserForTurnContext && payload.currentTurnContext
-                && latestUserForTurnContext.metadata?.aiTurnContext !== payload.currentTurnContext) {
-                await DB.updateMessageMetadata(latestUserForTurnContext.id, previous => ({
-                    ...(previous || {}),
-                    aiTurnContext: payload.currentTurnContext,
-                }));
-            }
             if (payload.flags.mcdActive) {
                 console.log(`🍔 [MCD-MiniApp] 注入协同点餐上下文 step=${mcdMiniSnap?.step} cartItems=${mcdMiniSnap?.cart?.length || 0} menuItems=${mcdMiniSnap?.menuMeals ? Object.keys(mcdMiniSnap.menuMeals).length : 0} nutrition=${mcdMiniSnap?.nutritionData ? mcdMiniSnap.nutritionData.length : 0}字`);
             }
