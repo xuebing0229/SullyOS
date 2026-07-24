@@ -28,7 +28,6 @@ import { isPromptBuildSkipped, isSystemMessageMergeEnabled } from './devDebug';
 import { mergeSystemMessages } from './systemMessageMerge';
 import { injectWorldbookDepthEntries, resolveWorldbookEntries } from './worldbook';
 import { normalizeTranslationLangLabel } from './translationLang';
-import { appendTurnContext } from './turnContext';
 
 export interface UserListeningContext {
     songName: string;
@@ -96,8 +95,6 @@ export interface BuildChatPayloadResult {
     cleanedApiMessages: Array<{ role: string; content: any }>;
     /** [system, ...cleanedApiMessages, 末尾 bilingual reminder?] —— 主 API 直接发这个 */
     fullMessages: Array<{ role: string; content: any }>;
-    /** 本轮实时状态快照；调用方把它持久绑定到当前 user 消息，供后续逐字回放。 */
-    currentTurnContext?: string;
     /** 调试用：bilingual / mcd 是否实际注入 */
     flags: {
         bilingualActive: boolean;
@@ -214,8 +211,8 @@ export function flattenImageContentParts(apiMessages: Array<{ role: string; cont
  *   5. volatileTail = volatileState + 麦当劳/瑞幸/瑞一杯实时快照块
  *   6. stable += 通用 MCP 工具块（工具清单持久化，变化慢）
  *   7. volatileTail += recencyTail（总纲+「回到你自己」钢印，永远最后）
- *   8. 将 volatileTail 绑定到本轮 user 消息；旧轮次从 metadata 原样回放
- *   9. fullMessages = [stable system, ...cleanedApiMessages]
+ *   8. fullMessages = [stable system, ...cleanedApiMessages, volatileTail system]
+ *   9. fullMessages.push（末尾双语 reminder / MCP reminder）
  *
  * 设计动机：稳定前缀不含分钟级时间戳/召回/buff → 中转的 prompt 前缀缓存能跨轮命中
  * （TTFT 直降）；易变状态贴着生成点，时间/情绪拿到最强 recency 注意力。
@@ -391,31 +388,22 @@ export async function buildChatRequestPayload(input: BuildChatPayloadInput): Pro
     // 思考链/点单块拼在钢印之后、模型开口前最后读到的是格式说明书的问题。
     volatileTail += parts.recencyTail;
 
-    // 独立的动态尾消息会占住下一轮新增 assistant/user 的插入点，使前缀缓存永远
-    // 停在旧历史末端。把快照绑定到本轮 user 并永久回放，旧轮次才是不可变前缀。
-    const persistedCurrentSnapshot = [...historyMsgs].reverse()
-        .find(message => message.role === 'user')?.metadata?.aiTurnContext;
-    let currentTurnContext = typeof persistedCurrentSnapshot === 'string' && persistedCurrentSnapshot.trim()
-        ? persistedCurrentSnapshot
-        : volatileTail;
-    if (!persistedCurrentSnapshot && bilingualActive) {
-        currentTurnContext += `\n\n[Reminder: 每句话必须用 <翻译><原文>...</原文><译文>...</译文></翻译> 标签包裹。一句一个标签。绝对不能省略。]`;
-    }
-    if (!persistedCurrentSnapshot && mcpChatActive) currentTurnContext += `\n\n${MCP_TAIL_REMINDER}`;
-
-    const historyWithCurrentSnapshot = messagesWithWorldbookDepth.map(message => ({ ...message }));
-    for (let i = historyWithCurrentSnapshot.length - 1; i >= 0; i--) {
-        if (historyWithCurrentSnapshot[i].role !== 'user') continue;
-        historyWithCurrentSnapshot[i] = {
-            ...historyWithCurrentSnapshot[i],
-            content: appendTurnContext(historyWithCurrentSnapshot[i].content, currentTurnContext),
-        };
-        break;
-    }
+    // 动态状态只服务当前请求，不写入消息 metadata，也不随历史永久回放。
+    // 旧数据库里即使残留 aiTurnContext，buildMessageHistory 也会忽略它。
     const fullMessages: Array<{ role: string; content: any }> = [
         { role: 'system', content: systemPrompt },
-        ...historyWithCurrentSnapshot,
+        ...messagesWithWorldbookDepth,
+        { role: 'system', content: volatileTail },
     ];
+    if (bilingualActive) {
+        fullMessages.push({
+            role: 'system',
+            content: `[Reminder: 每句话必须用 <翻译><原文>...</原文><译文>...</译文></翻译> 标签包裹。一句一个标签。绝对不能省略。]`,
+        });
+    }
+    if (mcpChatActive) {
+        fullMessages.push({ role: 'system', content: MCP_TAIL_REMINDER });
+    }
 
     // Dev 开关：多条 system 合并成开头一条，A/B 对照中转适配层对多 system 的计量行为。
     let finalMessages = fullMessages;
@@ -430,7 +418,6 @@ export async function buildChatRequestPayload(input: BuildChatPayloadInput): Pro
         systemPrompt: systemPrompt + volatileTail,
         cleanedApiMessages: messagesWithWorldbookDepth,
         fullMessages: finalMessages,
-        currentTurnContext,
         flags: { bilingualActive, mcdActive, luckinActive, luckinChatActive, mcpChatActive, htmlActive, thinkingActive, promptBuildSkipped: false },
     };
 }
