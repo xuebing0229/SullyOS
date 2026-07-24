@@ -397,8 +397,11 @@ describe('MCP 聊天链路不悬挂', () => {
         });
         expect(body.tools).toBeUndefined();
         expect(body.tool_choice).toBeUndefined();
-        expect(body.messages.at(-1).content).toContain('ask_question(repoName*:string, question*:string)');
+        expect(body.messages.at(-1).content).toContain('ask_question(repoName*:string');
+        expect(body.messages.at(-1).content).toContain('question*:string');
         expect(body.messages.at(-1).content).toContain('[DeepWiki] 查询 GitHub 仓库文档');
+        expect(body.messages.at(-1).content).toContain('你确实拥有这些工具');
+        expect(body.messages.at(-1).content).toContain('绝对不要回复“我没有工具”');
     });
 
     it('远端 MCP 请求不结束时会超时返回失败，不会永久占住 isTyping', async () => {

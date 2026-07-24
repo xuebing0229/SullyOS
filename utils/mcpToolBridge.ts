@@ -228,19 +228,36 @@ export const buildMcpTextFallbackBody = (baseReqBody: any, messages: any[]): any
 /** tools 被中转拒绝时，把最小 schema 仅作为本轮兼容说明交给正文调用兜底。 */
 export const buildMcpRejectedToolsFallbackBody = (baseReqBody: any): any => {
     const followBody = buildMcpTextFallbackBody(baseReqBody, baseReqBody.messages || []);
-    const signatures = (baseReqBody.tools || []).map((tool: any) => {
+    const toolSpecs = (baseReqBody.tools || []).map((tool: any) => {
         const fn = tool?.function || {};
         const schema = fn.parameters || {};
         const required = new Set(Array.isArray(schema.required) ? schema.required : []);
-        const args = Object.entries(schema.properties || {}).map(([name, def]: [string, any]) =>
-            `${name}${required.has(name) ? '*' : ''}:${def?.type || 'any'}`,
+        const properties = Object.entries(schema.properties || {}).map(([name, def]: [string, any]) => ({
+            name,
+            type: def?.type || 'any',
+            required: required.has(name),
+            description: typeof def?.description === 'string' ? def.description.trim() : '',
+            enum: Array.isArray(def?.enum) ? def.enum : undefined,
+        }));
+        return {
+            name: fn.name,
+            description: typeof fn.description === 'string' ? fn.description.trim() : '',
+            properties,
+        };
+    }).filter((tool: any) => tool.name);
+    const lines = toolSpecs.map((tool: any) => {
+        const args = tool.properties.map((arg: any) =>
+            `${arg.name}${arg.required ? '*' : ''}:${arg.type}${arg.enum ? `=${arg.enum.join('|')}` : ''}${arg.description ? `（${arg.description}）` : ''}`,
         );
-        const description = typeof fn.description === 'string' ? fn.description.trim() : '';
-        return `- ${fn.name}(${args.join(', ')})${description ? `：${description}` : ''}`;
-    }).filter(Boolean);
+        return `- ${tool.name}(${args.join(', ')})${tool.description ? `：${tool.description}` : ''}`;
+    });
+    const singleTool = toolSpecs.length === 1 ? toolSpecs[0] : null;
+    const deterministicExample = singleTool
+        ? `\n当用户明确要求使用 ${singleTool.name}，或用户意图与它的描述直接匹配时，你拥有并且必须使用它。请只输出一行：\n${singleTool.name}({${singleTool.properties.map((arg: any) => `"${arg.name}":${arg.required ? `"<${arg.description || arg.name}>"` : `"<可选>"`}`).join(',')}})`
+        : '';
     followBody.messages = [...followBody.messages, {
         role: 'system',
-        content: `[MCP 兼容模式：当前 API 中转拒绝 function calling 参数。必须根据下方工具的来源、描述和参数选择真正匹配用户意图的工具，禁止因为名字看起来通用就乱选。本轮如果需要工具，请只输出一行 tool_name({"参数":"值"})，系统会代为执行后把结果给你；没有收到系统返回前不要声称工具已经成功，也不要自行编造结果。* 表示必填参数。\n${signatures.join('\n')}]`,
+        content: `[MCP 文字兼容模式已开启。注意：下列工具已经真实连接到客户端，你确实拥有这些工具；绝对不要回复“我没有工具”或“无法调用”。用户请求与某个工具匹配时，必须调用，不要改成口头描述。调用时只输出一行严格格式 tool_name({"参数":"值"})，不要加代码块、解释、道歉或其他文字；客户端会识别并执行。没有收到客户端返回前，不得声称成功。* 表示必填参数。\n${lines.join('\n')}${deterministicExample}]`,
     }];
     return followBody;
 };
