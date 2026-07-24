@@ -3655,6 +3655,7 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
       let lastCurrent = '解析备份文件';
       let lastCurrentFile: string | undefined;
       let lastCurrentFileSize: number | undefined;
+      let cleanedLegacyTurnContextCount = 0;
 
       const buildImportMessage = (headline: string, update: ImportProgressUpdate = {}) => {
           const lines = [headline];
@@ -3873,6 +3874,9 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
                       itemTotal: progress.itemTotal,
                   });
               },
+              onLegacyTurnContextCleaned: count => {
+                  cleanedLegacyTurnContextCount = count;
+              },
           });
           
           showImportProgress('settings', '正在恢复系统设置...', 92, { current: '系统设置', currentFile: '' });
@@ -4079,7 +4083,12 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
           
           setSysOperation({ status: 'idle', message: '', progress: 100 });
           clearImportInProgress();
-          addToast('恢复成功，系统即将重启...', 'success');
+          addToast(
+              cleanedLegacyTurnContextCount > 0
+                  ? `恢复成功，已清理 ${cleanedLegacyTurnContextCount} 条旧上下文快照，系统即将重启...`
+                  : '恢复成功，系统即将重启...',
+              'success',
+          );
           setTimeout(() => window.location.reload(), 1500);
 
       } catch (e: any) {

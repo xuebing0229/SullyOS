@@ -810,6 +810,42 @@ export const DB = {
       });
   },
 
+  /**
+   * 清除旧 Fork 写进消息 metadata 的 aiTurnContext 快照。
+   * 只删除该单一字段；正文、其它 metadata、引用和媒体信息均保持不变。
+   * 幂等：没有该字段时只扫描不写入，可在每次备份导入后安全执行。
+   */
+  cleanupLegacyTurnContextSnapshots: async (): Promise<number> => {
+      const db = await openDB();
+      if (!db.objectStoreNames.contains(STORE_MESSAGES)) return 0;
+      return new Promise((resolve, reject) => {
+          const transaction = db.transaction(STORE_MESSAGES, 'readwrite');
+          const store = transaction.objectStore(STORE_MESSAGES);
+          const request = store.openCursor();
+          let cleaned = 0;
+
+          request.onsuccess = () => {
+              const cursor = request.result;
+              if (!cursor) return;
+              const message = cursor.value as Message;
+              const metadata = (message as any).metadata;
+              if (metadata && typeof metadata === 'object'
+                  && Object.prototype.hasOwnProperty.call(metadata, 'aiTurnContext')) {
+                  const nextMetadata = { ...metadata };
+                  delete nextMetadata.aiTurnContext;
+                  (message as any).metadata = Object.keys(nextMetadata).length > 0 ? nextMetadata : undefined;
+                  cursor.update(message);
+                  cleaned += 1;
+              }
+              cursor.continue();
+          };
+          request.onerror = () => reject(request.error || transaction.error);
+          transaction.oncomplete = () => resolve(cleaned);
+          transaction.onerror = () => reject(transaction.error || new Error('legacy turn context cleanup failed'));
+          transaction.onabort = () => reject(transaction.error || new Error('legacy turn context cleanup aborted'));
+      });
+  },
+
   clearMessages: async (charId: string): Promise<void> => {
     const db = await openDB();
     return new Promise((resolve, reject) => {
@@ -2698,6 +2734,8 @@ export const DB = {
               itemDone?: number;
               itemTotal?: number;
           }) => void;
+          /** 导入落库完成后，报告清除了多少条旧 aiTurnContext 快照。 */
+          onLegacyTurnContextCleaned?: (count: number) => void;
       } = {}
   ): Promise<void> => {
       const db = await openDB();
@@ -3313,5 +3351,10 @@ export const DB = {
           data.bankState = undefined as any;
           data.bankDollhouse = undefined as any;
       }, (data.bankState ? 1 : 0) + (data.bankDollhouse ? 1 : 0));
+
+      // 所有完整/云端/分片备份最终都走 importFullData：在统一出口清理旧 Fork
+      // 遗留的逐轮上下文快照，避免恢复备份后无效 metadata 再次落回本机。
+      const cleanedLegacySnapshots = await DB.cleanupLegacyTurnContextSnapshots();
+      options.onLegacyTurnContextCleaned?.(cleanedLegacySnapshots);
   }
 };
