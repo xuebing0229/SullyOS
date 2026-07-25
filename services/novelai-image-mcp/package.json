@@ -1,0 +1,22 @@
+{
+  "name": "novelai-compatible-image-mcp",
+  "version": "0.3.0",
+  "private": true,
+  "description": "A configurable NovelAI-compatible Streamable HTTP MCP server for SullyOS.",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node src/server.mjs",
+    "dev": "node --watch --env-file=.env src/server.mjs",
+    "test": "node --test",
+    "check": "node --check src/profiles.mjs && node --check src/config.mjs && node --check src/storage.mjs && node --check src/upstream.mjs && node --check src/server.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.29.0",
+    "express": "^5.1.0",
+    "fflate": "^0.8.2",
+    "zod": "^4.0.0"
+  }
+}
