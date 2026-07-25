@@ -83,6 +83,16 @@ if (!["allow", "english-only"].includes(profile.promptLanguagePolicy)) {
   throw new Error("PROMPT_LANGUAGE_POLICY must be allow or english-only");
 }
 
+const upstreamImageDelivery = optional(
+  "UPSTREAM_IMAGE_DELIVERY",
+  "auto"
+).toLowerCase();
+if (!["auto", "direct", "proxy"].includes(upstreamImageDelivery)) {
+  throw new Error(
+    "UPSTREAM_IMAGE_DELIVERY must be auto, direct, or proxy"
+  );
+}
+
 const requestImageFormat = optional("REQUEST_IMAGE_FORMAT", "webp").toLowerCase();
 if (!["png", "webp"].includes(requestImageFormat)) {
   throw new Error("REQUEST_IMAGE_FORMAT must be png or webp");
@@ -125,6 +135,7 @@ export const config = Object.freeze({
   upstreamBodyOverrides: jsonObject("UPSTREAM_BODY_OVERRIDES_JSON"),
   upstreamParameterOverrides: jsonObject("UPSTREAM_PARAMETER_OVERRIDES_JSON"),
   upstreamResponseMode: profile.responseMode,
+  upstreamImageDelivery,
   upstreamAccept: profile.accept,
   upstreamTimeoutMs: positiveInteger("UPSTREAM_TIMEOUT_MS", 180_000),
   upstreamParamsVersion: positiveInteger("UPSTREAM_PARAMS_VERSION", 3),

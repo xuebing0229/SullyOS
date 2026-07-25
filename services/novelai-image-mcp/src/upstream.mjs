@@ -320,17 +320,25 @@ function extractFirstImageFromZip(buffer) {
   throw new Error("The upstream ZIP response contained no supported image");
 }
 
-async function fetchRemoteImage(urlValue, config, requestId) {
+function resolveRemoteImageUrl(urlValue, config) {
   let url;
   try {
     url = new URL(urlValue, config.upstreamBaseUrl);
   } catch {
     throw new Error("The upstream returned an invalid image URL");
   }
-
-  if (!["https:", "http:"].includes(url.protocol)) {
-    throw new Error("The upstream returned a non-HTTP image URL");
+  if (url.protocol !== "https:") {
+    throw new Error("Direct upstream image URLs must use HTTPS");
   }
+  return url;
+}
+
+function canReturnDirectImageUrl(url, config) {
+  return url.origin === new URL(config.upstreamBaseUrl).origin;
+}
+
+async function fetchRemoteImage(urlValue, config, requestId) {
+  const url = resolveRemoteImageUrl(urlValue, config);
 
   const upstreamOrigin = new URL(config.upstreamBaseUrl).origin;
   const headers =
@@ -399,12 +407,16 @@ export async function parseUpstreamResponse({
   }
 
   const forcedMode = config.upstreamResponseMode;
+  const requireDirectUrl = config.upstreamImageDelivery === "direct";
 
   if (
     forcedMode === "image" ||
     contentType.startsWith("image/") ||
     detectImageFormat(buffer, contentType)
   ) {
+    if (requireDirectUrl) {
+      throw new Error("The upstream did not return an image URL");
+    }
     const format = detectImageFormat(buffer, contentType);
     if (!format) throw new Error("Upstream response is not a supported image");
     return { imageBuffer: buffer, format, seed: fallbackSeed };
@@ -415,6 +427,9 @@ export async function parseUpstreamResponse({
     contentType.includes("zip") ||
     isZip(buffer)
   ) {
+    if (requireDirectUrl) {
+      throw new Error("The upstream did not return an image URL");
+    }
     return {
       ...extractFirstImageFromZip(buffer),
       seed: fallbackSeed
@@ -437,6 +452,9 @@ export async function parseUpstreamResponse({
       const seed = extracted.seed ?? fallbackSeed;
 
       if (extracted.candidate?.type === "base64") {
+        if (requireDirectUrl) {
+          throw new Error("The upstream did not return an image URL");
+        }
         return {
           ...decodeBase64Image(extracted.candidate.value),
           seed
@@ -444,12 +462,30 @@ export async function parseUpstreamResponse({
       }
 
       if (extracted.candidate?.type === "url") {
+        const remoteUrl = resolveRemoteImageUrl(
+          extracted.candidate.value,
+          config
+        );
+        const directAllowed = canReturnDirectImageUrl(remoteUrl, config);
+
+        if (config.upstreamImageDelivery === "direct") {
+          if (!directAllowed) {
+            throw new Error(
+              "Direct image delivery only permits same-origin HTTPS URLs"
+            );
+          }
+          return { imageUrl: remoteUrl.href, seed };
+        }
+
+        if (
+          config.upstreamImageDelivery === "auto" &&
+          directAllowed
+        ) {
+          return { imageUrl: remoteUrl.href, seed };
+        }
+
         return {
-          ...(await fetchRemoteImage(
-            extracted.candidate.value,
-            config,
-            requestId
-          )),
+          ...(await fetchRemoteImage(remoteUrl.href, config, requestId)),
           seed
         };
       }

@@ -73,3 +73,18 @@ deployment uses `/var/lib/novelai-image-mcp`, matching its write sandbox.
 The service supports common JSON base64, JSON/NDJSON image URL, raw image,
 and ZIP responses. Relative image URLs are resolved against the configured upstream. Images are saved locally and returned to SullyOS as temporary HTTPS
 URLs.
+
+
+## Image delivery mode
+
+Select image delivery through configuration; no JavaScript edits are required:
+
+```env
+UPSTREAM_IMAGE_DELIVERY=auto
+```
+
+- `auto` (default): directly return a same-origin HTTPS image URL; otherwise save and proxy the image locally.
+- `direct`: require a same-origin HTTPS image URL and never download it through this service.
+- `proxy`: always download URL responses and save them locally, like ZIP, base64, and raw image responses.
+
+This keeps one MCP tool while allowing URL-capable and binary-only upstreams to be switched using environment settings.

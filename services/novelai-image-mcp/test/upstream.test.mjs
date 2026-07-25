@@ -233,3 +233,86 @@ test("streaming NDJSON with a relative success URL is parsed", async () => {
     globalThis.fetch = originalFetch;
   }
 });
+
+
+test("image delivery auto returns same-origin HTTPS URLs directly", async () => {
+  const response = new Response(
+    JSON.stringify({ url: "/img/direct.png", seed: 31 }),
+    { status: 200, headers: { "content-type": "application/json" } }
+  );
+
+  const parsed = await parseUpstreamResponse({
+    response,
+    config: { ...baseConfig, upstreamImageDelivery: "auto" },
+    requestId: "abc",
+    fallbackSeed: 1
+  });
+
+  assert.equal(parsed.imageUrl, "https://api.example.com/img/direct.png");
+  assert.equal(parsed.imageBuffer, undefined);
+  assert.equal(parsed.seed, 31);
+});
+
+test("image delivery proxy downloads same-origin URL responses", async () => {
+  const originalFetch = globalThis.fetch;
+  let called = false;
+  globalThis.fetch = async () => {
+    called = true;
+    return new Response(PNG_1X1, {
+      status: 200,
+      headers: { "content-type": "image/png" }
+    });
+  };
+
+  try {
+    const response = new Response(
+      JSON.stringify({ url: "/img/proxy.png" }),
+      { status: 200, headers: { "content-type": "application/json" } }
+    );
+    const parsed = await parseUpstreamResponse({
+      response,
+      config: { ...baseConfig, upstreamImageDelivery: "proxy" },
+      requestId: "abc",
+      fallbackSeed: 2
+    });
+    assert.equal(called, true);
+    assert.equal(parsed.format, "png");
+    assert.ok(Buffer.isBuffer(parsed.imageBuffer));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("image delivery direct rejects binary-only responses", async () => {
+  const response = new Response(PNG_1X1, {
+    status: 200,
+    headers: { "content-type": "image/png" }
+  });
+
+  await assert.rejects(
+    parseUpstreamResponse({
+      response,
+      config: { ...baseConfig, upstreamImageDelivery: "direct" },
+      requestId: "abc",
+      fallbackSeed: 3
+    }),
+    /did not return an image URL/
+  );
+});
+
+test("image delivery direct rejects cross-origin image URLs", async () => {
+  const response = new Response(
+    JSON.stringify({ url: "https://cdn.example.net/image.png" }),
+    { status: 200, headers: { "content-type": "application/json" } }
+  );
+
+  await assert.rejects(
+    parseUpstreamResponse({
+      response,
+      config: { ...baseConfig, upstreamImageDelivery: "direct" },
+      requestId: "abc",
+      fallbackSeed: 4
+    }),
+    /same-origin HTTPS/
+  );
+});

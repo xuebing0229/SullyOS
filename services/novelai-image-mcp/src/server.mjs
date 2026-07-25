@@ -161,13 +161,16 @@ function createMcpServer() {
           generateUpstreamImage({ config, request })
         );
 
-        const saved = await saveGeneratedImage({
-          imageDir: config.imageDir,
-          buffer: generated.imageBuffer,
-          format: generated.format,
-          ttlMs: config.imageTtlMs,
-          publicBaseUrl: config.publicBaseUrl
-        });
+        const saved = generated.imageUrl
+          ? null
+          : await saveGeneratedImage({
+              imageDir: config.imageDir,
+              buffer: generated.imageBuffer,
+              format: generated.format,
+              ttlMs: config.imageTtlMs,
+              publicBaseUrl: config.publicBaseUrl
+            });
+        const imageUrl = generated.imageUrl ?? saved.url;
 
         log("info", "image_generated", {
           correlationId: generated.requestId,
@@ -178,8 +181,9 @@ function createMcpServer() {
           height: request.dimensions.height,
           steps,
           seed: generated.seed,
-          format: generated.format,
-          fileName: saved.fileName
+          delivery: generated.imageUrl ? "direct" : "proxy",
+          ...(generated.format ? { format: generated.format } : {}),
+          ...(saved ? { fileName: saved.fileName } : {})
         });
 
         return {
@@ -188,11 +192,11 @@ function createMcpServer() {
               type: "text",
               text: [
                 "Image generated successfully.",
-                `Image URL: ${saved.url}`,
+                `Image URL: ${imageUrl}`,
                 `Seed: ${generated.seed}`,
                 `Model: ${request.modelId}`,
                 `Size: ${request.dimensions.width}x${request.dimensions.height}`,
-                `Expires at: ${saved.expiresAt}`,
+                ...(saved ? [`Expires at: ${saved.expiresAt}`] : []),
                 "Show the image URL to the user. Do not expose or invent base64 data."
               ].join("\n")
             }
