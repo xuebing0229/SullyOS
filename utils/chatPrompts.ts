@@ -977,16 +977,19 @@ ${userProfile.name} 给你反馈时，别当成约束，当成信任——ta 在
                 }
                 
                 if (m.type === 'image') {
-                     // 向下兼容：如果图片数据缺失（例如只导入了文字备份），不要把空 URL 发给 API，否则会报错无法回应
-                     const hasImageData = typeof m.content === 'string' && (m.content.startsWith('data:') || m.content.startsWith('http'));
+                     // 新发送的 GIF：界面保留动画，视觉模型只接收 metadata 中的首帧 JPEG。
+                     const modelImage = typeof m.metadata?.visionImageDataUrl === 'string'
+                         ? m.metadata.visionImageDataUrl
+                         : m.content;
+                     const hasImageData = typeof modelImage === 'string' && (modelImage.startsWith('data:') || modelImage.startsWith('http'));
                      let textPart = hasImageData
-                         ? `${timeStr} [User sent an image]`
+                         ? `${timeStr} [User sent an image${m.metadata?.isAnimatedGif ? ' (animated GIF; showing its first frame)' : ''}]`
                          : `${timeStr} [User sent an image, but the image data is no longer available]`;
                      if (index === historySlice.length - 1 && timeGapHint && m.role === 'user') textPart += `\n\n${timeGapHint}`;
                      if (!hasImageData) {
                          return { role: m.role, content: textPart };
                      }
-                     return { role: m.role, content: [{ type: "text", text: textPart }, { type: "image_url", image_url: { url: m.content } }] };
+                     return { role: m.role, content: [{ type: 'text', text: textPart }, { type: 'image_url', image_url: { url: modelImage } }] };
                 }
                 
                 if (index === historySlice.length - 1 && timeGapHint && m.role === 'user') content = `${content}\n\n${timeGapHint}`; 

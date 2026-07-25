@@ -4,6 +4,7 @@ import { useOS } from '../context/OSContext';
 import { DB } from '../utils/db';
 import { Message, MessageType, MemoryFragment, Emoji, EmojiCategory, DailySchedule, ScheduleSlot } from '../types';
 import { processImage } from '../utils/file';
+import { prepareChatImageForSend } from '../utils/chatImage';
 import { safeResponseJson, extractContent } from '../utils/safeApi';
 import { buildChatFineTuneCss, mergeChatFineTune } from '../utils/chatFineTuneCss';
 import ChatFineTunePanel from '../components/chat/ChatFineTunePanel';
@@ -1256,9 +1257,15 @@ const Chat: React.FC = () => {
 
     const handleImageSelect = async (file: File) => {
         try {
-            const base64 = await processImage(file, { maxWidth: 600, quality: 0.6, forceJpeg: true });
+            const prepared = await prepareChatImageForSend(file);
             setShowPanel('none');
-            await handleSendText(base64, 'image');
+            await handleSendText(
+                prepared.displayDataUrl,
+                'image',
+                prepared.isAnimatedGif
+                    ? { visionImageDataUrl: prepared.visionDataUrl, isAnimatedGif: true }
+                    : undefined,
+            );
         } catch (err: any) {
             addToast(err.message || '图片处理失败', 'error');
         }
