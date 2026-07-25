@@ -25,6 +25,7 @@ import VersionInfo from '../components/settings/VersionInfo';
 import { LoyalUserRecruitmentController } from '../components/LoyalUserRecruitmentEvent';
 import { isPushVapidReady } from '../utils/pushVapid';
 import ApiCallLogModal from '../components/settings/ApiCallLogModal';
+import ImageGenerationSettings from '../components/settings/ImageGenerationSettings';
 import { DB } from '../utils/db';
 import { getBackupReminderState, setBackupReminderIntervalDays, daysSinceLastBackup, BACKUP_REMINDER_MIN_DAYS, BACKUP_REMINDER_MAX_DAYS } from '../utils/backupReminder';
 
@@ -2007,6 +2008,20 @@ const Settings: React.FC = () => {
                     小红书
                 </div>
             </div>
+        </SettingsSection>
+
+        {/* 内置生图：内部仍复用 MCP，但不在通用 MCP 列表制造重复项目。 */}
+        <SettingsSection
+            title="生图功能"
+            icon={
+                <div className="p-2 bg-fuchsia-100/60 rounded-xl text-fuchsia-600">
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-4 h-4">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="m2.25 15.75 5.159-5.159a2.25 2.25 0 0 1 3.182 0l5.159 5.159m-1.5-1.5 1.409-1.409a2.25 2.25 0 0 1 3.182 0l2.909 2.909m-18 3.75h16.5a1.5 1.5 0 0 0 1.5-1.5V6a1.5 1.5 0 0 0-1.5-1.5H3.75A1.5 1.5 0 0 0 2.25 6v12a1.5 1.5 0 0 0 1.5 1.5Z" />
+                    </svg>
+                </div>
+            }
+        >
+            <ImageGenerationSettings addToast={addToast} />
         </SettingsSection>
 
         {/* MCP 工具服务器（高级玩法）—— 通用外接工具，独立于实时感知 */}

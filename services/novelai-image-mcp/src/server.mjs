@@ -5,11 +5,9 @@ import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 
-import { config } from "./config.mjs";
-import {
-  buildUpstreamRequest,
-  generateUpstreamImage
-} from "./upstream.mjs";
+import { bootstrapRuntimeConfig, staticConfig } from "./config.mjs";
+import { createNovelRuntimeConfigStore, toUpstreamConfig } from "./runtime-config.mjs";
+import { buildUpstreamRequest, generateUpstreamImage } from "./upstream.mjs";
 import {
   cleanupExpiredImages,
   initializeImageStorage,
@@ -18,356 +16,244 @@ import {
 } from "./storage.mjs";
 
 const SERVICE_NAME = "novelai-compatible-image-mcp";
-const SERVICE_VERSION = "0.3.0";
+const SERVICE_VERSION = "0.4.0";
+const runtimeStore = createNovelRuntimeConfigStore({
+  filePath: staticConfig.runtimeConfigFile,
+  bootstrap: bootstrapRuntimeConfig,
+  allowInsecureUpstream: staticConfig.allowInsecureUpstream
+});
 
 function log(level, event, fields = {}) {
-  console.log(
-    JSON.stringify({
-      time: new Date().toISOString(),
-      level,
-      service: SERVICE_NAME,
-      event,
-      ...fields
-    })
-  );
+  console.log(JSON.stringify({ time: new Date().toISOString(), level, service: SERVICE_NAME, event, ...fields }));
 }
-
 function safeErrorLogFields(error) {
-  const message = error?.message ?? "";
+  const message = String(error?.message || "");
   const correlationId = message.match(/correlation ID ([a-f0-9]{16})/i)?.[1];
-  return {
-    errorName: error?.name || "Error",
-    ...(correlationId ? { correlationId } : {})
-  };
+  return { errorName: error?.name || "Error", ...(correlationId ? { correlationId } : {}) };
 }
-
-function secureTokenEquals(actual, expected) {
-  const actualBuffer = Buffer.from(actual);
-  const expectedBuffer = Buffer.from(expected);
-  return (
-    actualBuffer.length === expectedBuffer.length &&
-    timingSafeEqual(actualBuffer, expectedBuffer)
-  );
+function secureEquals(actual, expected) {
+  const left = Buffer.from(actual); const right = Buffer.from(expected);
+  return left.length === right.length && timingSafeEqual(left, right);
 }
-
-function requireMcpBearerToken(req, res, next) {
-  const authorization = req.get("authorization") || "";
-  const match = authorization.match(/^Bearer\s+(.+)$/i);
+function requireBearer(req, res, next) {
+  const match = (req.get("authorization") || "").match(/^Bearer\s+(.+)$/i);
   const supplied = match?.[1]?.trim() || "";
-
-  if (!supplied || !secureTokenEquals(supplied, config.mcpBearerToken)) {
-    res.setHeader(
-      "WWW-Authenticate",
-      'Bearer realm="novelai-compatible-image-mcp"'
-    );
-    return res.status(401).json({
-      error: "unauthorized",
-      message: "A valid MCP Bearer token is required"
-    });
+  if (!supplied || !secureEquals(supplied, staticConfig.mcpBearerToken)) {
+    res.setHeader("WWW-Authenticate", 'Bearer realm="novelai-compatible-image-mcp"');
+    return res.status(401).json({ error: "unauthorized" });
   }
   next();
 }
-
-function mcpMethodNotAllowed(res) {
-  return res.status(405).json({
-    jsonrpc: "2.0",
-    error: {
-      code: -32000,
-      message: "Method not allowed. Use Streamable HTTP POST."
-    },
-    id: null
-  });
+function methodNotAllowed(res) {
+  return res.status(405).json({ jsonrpc: "2.0", error: { code: -32000, message: "Method not allowed. Use Streamable HTTP POST." }, id: null });
 }
-
 let generationTail = Promise.resolve();
 function serializeGeneration(task) {
-  const next = generationTail.then(task, task);
-  generationTail = next.catch(() => {});
-  return next;
+  const next = generationTail.then(task, task); generationTail = next.catch(() => {}); return next;
+}
+async function materialize(generated) {
+  if (generated.imageUrl) return { imageUrl: generated.imageUrl, saved: null };
+  const saved = await saveGeneratedImage({
+    imageDir: staticConfig.imageDir,
+    buffer: generated.imageBuffer,
+    format: generated.format,
+    ttlMs: staticConfig.imageTtlMs,
+    publicBaseUrl: staticConfig.publicBaseUrl
+  });
+  return { imageUrl: saved.url, saved };
+}
+async function effectiveUpstreamConfig(runtimeOverride) {
+  const runtime = runtimeOverride ?? await runtimeStore.load();
+  const config = toUpstreamConfig(runtime, staticConfig);
+  if (!config.upstreamApiKey && config.upstreamAuthHeader) {
+    throw new Error("The upstream API key has not been configured");
+  }
+  return { runtime, config };
 }
 
 function createMcpServer() {
-  const server = new McpServer({
-    name: SERVICE_NAME,
-    version: SERVICE_VERSION
-  });
-
+  const server = new McpServer({ name: SERVICE_NAME, version: SERVICE_VERSION });
   server.registerTool(
     "novelai_generate_image",
     {
-      title: "NovelAI-compatible Generate Image",
+      title: "NovelAI Generate Image",
       description:
-        "Generate one image through the configured NovelAI-compatible API station. Prompt language and exact model support depend on that station. Returns a temporary HTTPS image URL, never base64.",
+        "Generate one anime/illustration image through the configured NovelAI-compatible API. Prefer this tool for anime characters, positive/negative tags, seed, steps, guidance, and NovelAI V4 prompts. When the user explicitly asks for GPT image generation, do not use this tool.",
       inputSchema: {
-        prompt: z
-          .string()
-          .min(1)
-          .max(5000)
-          .describe(
-            "Image prompt. It is forwarded as-is unless the server is configured for English-only prompts."
-          ),
-        undesired_content: z
-          .string()
-          .max(3000)
-          .optional()
-          .default("")
-          .describe("Optional additional negative prompt."),
+        prompt: z.string().min(1).max(5000),
+        undesired_content: z.string().max(3000).optional().default(""),
         model: z.enum(["full", "curated"]).optional().default("full"),
-        size: z
-          .enum(["portrait", "landscape", "square"])
-          .optional()
-          .default("portrait"),
-        seed: z
-          .number()
-          .int()
-          .min(0)
-          .max(4_294_967_295)
-          .optional(),
+        size: z.enum(["portrait", "landscape", "square"]).optional().default("portrait"),
+        seed: z.number().int().min(0).max(4_294_967_295).optional(),
         steps: z.number().int().min(1).max(50).optional().default(23),
         guidance: z.number().min(1).max(10).optional().default(5),
-        uc_preset: z
-          .enum(["heavy", "light", "human", "none"])
-          .optional()
-          .default("heavy"),
+        uc_preset: z.enum(["heavy", "light", "human", "none"]).optional().default("heavy"),
         quality_tags: z.boolean().optional().default(true)
       }
     },
-    async ({
-      prompt,
-      undesired_content,
-      model,
-      size,
-      seed,
-      steps,
-      guidance,
-      uc_preset,
-      quality_tags
-    }) => {
+    async (args) => {
       try {
+        const { runtime, config } = await effectiveUpstreamConfig();
         const request = buildUpstreamRequest({
-          prompt,
-          undesiredContent: undesired_content,
-          model,
-          size,
-          seed,
-          steps,
-          guidance,
-          ucPreset: uc_preset,
-          qualityTags: quality_tags,
+          prompt: args.prompt,
+          undesiredContent: args.undesired_content,
+          model: args.model,
+          size: args.size,
+          seed: args.seed,
+          steps: args.steps,
+          guidance: args.guidance,
+          ucPreset: args.uc_preset,
+          qualityTags: args.quality_tags,
           config
         });
-
-        const generated = await serializeGeneration(() =>
-          generateUpstreamImage({ config, request })
-        );
-
-        const saved = generated.imageUrl
-          ? null
-          : await saveGeneratedImage({
-              imageDir: config.imageDir,
-              buffer: generated.imageBuffer,
-              format: generated.format,
-              ttlMs: config.imageTtlMs,
-              publicBaseUrl: config.publicBaseUrl
-            });
-        const imageUrl = generated.imageUrl ?? saved.url;
-
+        const generated = await serializeGeneration(() => generateUpstreamImage({ config, request }));
+        const { imageUrl, saved } = await materialize(generated);
         log("info", "image_generated", {
           correlationId: generated.requestId,
-          modelPreset: model,
+          profile: runtime.profile,
+          upstreamHost: new URL(runtime.baseUrl).host,
+          modelPreset: args.model,
           upstreamModel: request.modelId,
-          size,
-          width: request.dimensions.width,
-          height: request.dimensions.height,
-          steps,
+          size: args.size,
           seed: generated.seed,
           delivery: generated.imageUrl ? "direct" : "proxy",
-          ...(generated.format ? { format: generated.format } : {}),
           ...(saved ? { fileName: saved.fileName } : {})
         });
-
         return {
-          content: [
-            {
-              type: "text",
-              text: [
-                "Image generated successfully.",
-                `Image URL: ${imageUrl}`,
-                `Seed: ${generated.seed}`,
-                `Model: ${request.modelId}`,
-                `Size: ${request.dimensions.width}x${request.dimensions.height}`,
-                ...(saved ? [`Expires at: ${saved.expiresAt}`] : []),
-                "Show the image URL to the user. Do not expose or invent base64 data."
-              ].join("\n")
-            }
-          ]
+          structuredContent: {
+            imageUrl,
+            seed: generated.seed,
+            model: request.modelId,
+            size: `${request.dimensions.width}x${request.dimensions.height}`,
+            ...(saved ? { expiresAt: saved.expiresAt } : {})
+          },
+          content: [{ type: "text", text: [
+            "Image generated successfully.",
+            `Image URL: ${imageUrl}`,
+            `Seed: ${generated.seed}`,
+            `Model: ${request.modelId}`,
+            `Size: ${request.dimensions.width}x${request.dimensions.height}`,
+            ...(saved ? [`Expires at: ${saved.expiresAt}`] : []),
+            "Show the image to the user and continue speaking in character."
+          ].join("\n") }]
         };
       } catch (error) {
         log("error", "generation_failed", safeErrorLogFields(error));
-
-        return {
-          isError: true,
-          content: [
-            {
-              type: "text",
-              text: `Image generation failed: ${error?.message ?? String(error)}`
-            }
-          ]
-        };
+        return { isError: true, content: [{ type: "text", text: `Image generation failed: ${error?.message || String(error)}` }] };
       }
     }
   );
-
   return server;
 }
 
-await initializeImageStorage(config.imageDir);
-const initiallyRemoved = await cleanupExpiredImages(
-  config.imageDir,
-  config.imageTtlMs
-);
-if (initiallyRemoved > 0) {
-  log("info", "startup_cleanup", { removed: initiallyRemoved });
-}
-
+await initializeImageStorage(staticConfig.imageDir);
+await runtimeStore.load();
+const initiallyRemoved = await cleanupExpiredImages(staticConfig.imageDir, staticConfig.imageTtlMs);
+if (initiallyRemoved) log("info", "startup_cleanup", { removed: initiallyRemoved });
 const cleanupTimer = setInterval(async () => {
   try {
-    const removed = await cleanupExpiredImages(
-      config.imageDir,
-      config.imageTtlMs
-    );
-    if (removed > 0) log("info", "scheduled_cleanup", { removed });
-  } catch (error) {
-    log("error", "cleanup_failed", safeErrorLogFields(error));
-  }
-}, 60 * 60 * 1000);
+    const removed = await cleanupExpiredImages(staticConfig.imageDir, staticConfig.imageTtlMs);
+    if (removed) log("info", "scheduled_cleanup", { removed });
+  } catch (error) { log("error", "cleanup_failed", safeErrorLogFields(error)); }
+}, 3_600_000);
 cleanupTimer.unref();
 
 const app = express();
 app.disable("x-powered-by");
-
 app.use((req, res, next) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader(
-    "Access-Control-Allow-Methods",
-    "POST, GET, DELETE, OPTIONS"
-  );
-  res.setHeader(
-    "Access-Control-Allow-Headers",
-    "Content-Type, Accept, Authorization, Mcp-Session-Id, MCP-Protocol-Version, Last-Event-ID, XBY-APIKEY"
-  );
+  res.setHeader("Access-Control-Allow-Methods", "POST, GET, PUT, DELETE, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Accept, Authorization, Mcp-Session-Id, MCP-Protocol-Version, Last-Event-ID, XBY-APIKEY");
   res.setHeader("Access-Control-Expose-Headers", "Mcp-Session-Id");
   res.setHeader("Access-Control-Max-Age", "86400");
   res.setHeader("X-Content-Type-Options", "nosniff");
-
   if (req.method === "OPTIONS") return res.sendStatus(204);
   next();
 });
-
 app.use(express.json({ limit: "1mb" }));
+app.get("/healthz", (req, res) => res.json({ status: "ok", service: SERVICE_NAME, version: SERVICE_VERSION }));
 
-app.get("/healthz", (req, res) => {
-  res.setHeader("Cache-Control", "no-store");
-  res.json({
-    status: "ok",
-    service: SERVICE_NAME,
-    version: SERVICE_VERSION
-  });
+app.get("/config", requireBearer, async (req, res, next) => {
+  try { res.setHeader("Cache-Control", "no-store"); res.json(runtimeStore.toPublic(await runtimeStore.load())); }
+  catch (error) { next(error); }
+});
+app.put("/config", requireBearer, async (req, res, next) => {
+  try { res.setHeader("Cache-Control", "no-store"); res.json(runtimeStore.toPublic(await runtimeStore.update(req.body))); }
+  catch (error) {
+    if (error?.code === "REVISION_CONFLICT") return res.status(409).json({ error: "revision_conflict", message: error.message, currentRevision: error.currentRevision });
+    next(error);
+  }
+});
+app.post("/config/test", requireBearer, async (req, res, next) => {
+  try {
+    const runtime = await runtimeStore.preview(req.body || {});
+    const { config } = await effectiveUpstreamConfig(runtime);
+    if ((req.body?.mode || "validate") === "validate") {
+      return res.json({
+        ok: true,
+        message: config.upstreamApiKey || !config.upstreamAuthHeader ? "Configuration is valid" : "Configuration is valid, but no API key is configured",
+        profile: runtime.profile,
+        upstreamHost: new URL(runtime.baseUrl).host,
+        apiKeyConfigured: Boolean(config.upstreamApiKey)
+      });
+    }
+    const request = buildUpstreamRequest({
+      prompt: "1girl, solo, simple white background, upper body, high quality",
+      undesiredContent: "text, watermark",
+      model: "full",
+      size: "portrait",
+      steps: 8,
+      guidance: 5,
+      ucPreset: "light",
+      qualityTags: true,
+      config
+    });
+    const generated = await serializeGeneration(() => generateUpstreamImage({ config, request }));
+    const { imageUrl, saved } = await materialize(generated);
+    res.json({ ok: true, message: "A real upstream image was generated successfully", imageUrl, ...(saved ? { expiresAt: saved.expiresAt } : {}) });
+  } catch (error) { next(error); }
 });
 
 app.get("/images/:fileName", async (req, res) => {
-  const filePath = resolvePublicImagePath(
-    config.imageDir,
-    req.params.fileName
-  );
+  const filePath = resolvePublicImagePath(staticConfig.imageDir, req.params.fileName);
   if (!filePath) return res.sendStatus(404);
-
-  try {
-    await access(filePath);
-  } catch {
-    return res.sendStatus(404);
-  }
-
+  try { await access(filePath); } catch { return res.sendStatus(404); }
   res.setHeader("Cache-Control", "public, max-age=3600, immutable");
   res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
   return res.sendFile(filePath);
 });
-
-app.post("/mcp", requireMcpBearerToken, async (req, res) => {
+app.post("/mcp", requireBearer, async (req, res) => {
   res.setHeader("Cache-Control", "no-store");
   const mcpServer = createMcpServer();
-  const transport = new StreamableHTTPServerTransport({
-    sessionIdGenerator: undefined
-  });
-
-  try {
-    await mcpServer.connect(transport);
-    await transport.handleRequest(req, res, req.body);
-  } catch (error) {
+  const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+  try { await mcpServer.connect(transport); await transport.handleRequest(req, res, req.body); }
+  catch (error) {
     log("error", "mcp_request_failed", safeErrorLogFields(error));
-
-    if (!res.headersSent) {
-      res.status(500).json({
-        jsonrpc: "2.0",
-        error: {
-          code: -32603,
-          message: "Internal server error"
-        },
-        id: null
-      });
-    }
+    if (!res.headersSent) res.status(500).json({ jsonrpc: "2.0", error: { code: -32603, message: "Internal server error" }, id: null });
   } finally {
-    res.on("close", () => {
-      Promise.allSettled([
-        transport.close(),
-        mcpServer.close()
-      ]).catch(() => {});
-    });
+    res.on("close", () => Promise.allSettled([transport.close(), mcpServer.close()]).catch(() => {}));
   }
 });
-
-app.get("/mcp", requireMcpBearerToken, (req, res) =>
-  mcpMethodNotAllowed(res)
-);
-app.delete("/mcp", requireMcpBearerToken, (req, res) =>
-  mcpMethodNotAllowed(res)
-);
-
+app.get("/mcp", requireBearer, (req, res) => methodNotAllowed(res));
+app.delete("/mcp", requireBearer, (req, res) => methodNotAllowed(res));
 app.use((error, req, res, next) => {
   log("error", "http_error", safeErrorLogFields(error));
   if (res.headersSent) return next(error);
-  res.status(500).json({ error: "internal_server_error" });
+  res.status(400).json({ error: "request_failed", message: error?.message || "Request failed" });
 });
 
-const httpServer = app.listen(config.port, config.host, () => {
+const httpServer = app.listen(staticConfig.port, staticConfig.host, async () => {
+  const runtime = await runtimeStore.load();
   log("info", "server_started", {
-    host: config.host,
-    port: config.port,
-    publicBaseUrl: config.publicBaseUrl,
-    upstreamProfile: config.upstreamProfile,
-    upstreamHost: new URL(config.upstreamBaseUrl).host,
-    upstreamPath: config.upstreamGeneratePath,
-    imageDir: config.imageDir,
-    imageTtlHours: config.imageTtlMs / 3_600_000
+    host: staticConfig.host,
+    port: staticConfig.port,
+    publicBaseUrl: staticConfig.publicBaseUrl,
+    profile: runtime.profile,
+    upstreamHost: new URL(runtime.baseUrl).host,
+    imageDir: staticConfig.imageDir
   });
 });
-
-httpServer.on("error", (error) => {
-  log("fatal", "server_start_failed", safeErrorLogFields(error));
-  process.exit(1);
-});
-
-async function shutdown(signal) {
-  log("info", "shutdown_started", { signal });
-  clearInterval(cleanupTimer);
-  httpServer.close((error) => {
-    if (error) {
-      log("error", "shutdown_failed", safeErrorLogFields(error));
-      process.exit(1);
-    }
-    process.exit(0);
-  });
-}
-
+httpServer.on("error", (error) => { log("fatal", "server_start_failed", safeErrorLogFields(error)); process.exit(1); });
+function shutdown(signal) { log("info", "shutdown_started", { signal }); clearInterval(cleanupTimer); httpServer.close((error) => process.exit(error ? 1 : 0)); }
 process.on("SIGINT", () => shutdown("SIGINT"));
 process.on("SIGTERM", () => shutdown("SIGTERM"));

@@ -1,0 +1,33 @@
+# SullyOS GPT Image MCP
+
+A standalone Streamable HTTP MCP for `gpt-image-2` and OpenAI-compatible image APIs.
+
+Public routing is intentionally split:
+
+- MCP: `https://ag.apixb.top/mcp` (keeps the existing SullyOS endpoint)
+- control/config: `https://ag.apixb.top/gpt-image/config`
+- temporary images: `https://ag.apixb.top/gpt-image/images/<random>.<ext>`
+
+The normal mode always calls:
+
+```text
+POST {Base URL}/images/generations
+Authorization: Bearer <API key>
+```
+
+Custom mode can change the generation path, auth header/prefix, request field paths,
+extra JSON body, and response URL/base64 paths. It does not execute user-supplied JavaScript.
+
+Runtime configuration is stored as a mode-0600 JSON file. `GET /config` never returns the
+full upstream API key. Omitting `apiKey` on `PUT /config` keeps the old key.
+
+## Local development
+
+```bash
+cp .env.example .env
+set -a; . ./.env; set +a
+npm install
+npm run check
+npm test
+npm start
+```

@@ -1,3 +1,4 @@
+import { getBuiltinImageMcpServers } from './builtinImageMcp';
 /**
  * 通用 MCP 客户端 (Model Context Protocol, Streamable HTTP)
  *
@@ -46,6 +47,8 @@ export interface McpServerConfig {
      */
     charIds?: string[];
     updatedAt: number;
+    /** 内置能力生成的隐藏服务器，不出现在通用 MCP 编辑列表。 */
+    builtin?: boolean;
 }
 
 export interface McpToolResult {
@@ -100,7 +103,7 @@ export const createMcpServer = (name: string, url: string): McpServerConfig => (
  * 的调用点不会泄漏绑定服务器的工具。
  */
 export const getEnabledMcpServers = (charId?: string): McpServerConfig[] =>
-    loadMcpServers().filter(s =>
+    [...getBuiltinImageMcpServers(), ...loadMcpServers()].filter(s =>
         s.enabled && s.url && (s.tools?.length || 0) > 0 &&
         (!s.charIds?.length || (charId != null && s.charIds.includes(charId))),
     );

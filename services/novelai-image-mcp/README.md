@@ -1,6 +1,21 @@
 # NovelAI-compatible Image MCP for SullyOS
 
-This build has three presets so normal use does not require editing many fields.
+This service supports three upstream presets and runtime configuration from the SullyOS settings page.
+
+
+## Runtime configuration from SullyOS
+
+Environment variables are bootstrap defaults only. The built-in **Settings → Image generation → NovelAI** panel uses the bearer-protected endpoints below:
+
+```text
+GET  /config
+PUT  /config
+POST /config/test
+```
+
+The upstream API key is stored only in `RUNTIME_CONFIG_FILE` on the server. The file is written atomically with mode `0600`; `GET /config` returns only `apiKeyConfigured` and a masked `apiKeyHint`. Updates support `expectedRevision` conflict protection. Omitting `apiKey` keeps the existing key, while `clearApiKey: true` explicitly removes it.
+
+The phone stores the MCP bearer token used to access this service, but it never receives or stores the upstream API key.
 
 ## Official NovelAI
 
@@ -67,17 +82,18 @@ npm test
 npm run dev
 ```
 
-For local development, you may override `IMAGE_DIR=./data/images`. The systemd
-deployment uses `/var/lib/novelai-image-mcp`, matching its write sandbox.
+For local development, you may override `IMAGE_DIR=./data/images` and
+`RUNTIME_CONFIG_FILE=./data/config.json`. The systemd deployment keeps both under
+`/var/lib/novelai-image-mcp`, matching its write sandbox.
 
 The service supports common JSON base64, JSON/NDJSON image URL, raw image,
-and ZIP responses. Relative image URLs are resolved against the configured upstream. Images are saved locally and returned to SullyOS as temporary HTTPS
-URLs.
+and ZIP responses. Relative image URLs are resolved against the configured upstream. Images can either be returned as safe same-origin HTTPS URLs or saved locally and
+returned to SullyOS as temporary HTTPS URLs, according to the selected delivery mode.
 
 
 ## Image delivery mode
 
-Select image delivery through configuration; no JavaScript edits are required:
+Select image delivery in the SullyOS settings page or through bootstrap configuration; no JavaScript edits are required:
 
 ```env
 UPSTREAM_IMAGE_DELIVERY=auto

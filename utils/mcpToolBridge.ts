@@ -149,6 +149,15 @@ export const buildMcpSystemBlock = (userName: string = '用户', charId?: string
         const names = (s.tools || []).map(t => t.name).join('、');
         return `- ${s.name}: ${names}`;
     });
+    const hasGptImage = servers.some(s => (s.tools || []).some(t => t.name === 'generate_image'));
+    const hasNovelAi = servers.some(s => (s.tools || []).some(t => t.name === 'novelai_generate_image'));
+    const imageRules = hasGptImage || hasNovelAi ? `
+**生图工具选择**:
+${hasGptImage ? '- `generate_image`：自然语言、写实、海报、物品、风景、通用图片。' : ''}
+${hasNovelAi ? '- `novelai_generate_image`：二次元、标签提示词、负面提示词、Seed/Steps/Guidance、NovelAI 风格控制。' : ''}
+- 用户明确说“用 GPT 画/生图”时必须用 GPT 工具；明确说“用 NovelAI 画/生图”时必须用 NovelAI 工具。
+- 用户未指定时再按画面类型判断；不要为了展示能力同时调用两套引擎。
+` : '';
     return `
 
 ---
@@ -158,7 +167,7 @@ export const buildMcpSystemBlock = (userName: string = '用户', charId?: string
 
 可用工具来源:
 ${lines.join('\n')}
-
+${imageRules}
 **使用纪律**:
 - 需要时直接调工具（系统会自动执行并把结果给你），不需要时正常聊天，**别硬找理由调工具**。
 - 工具必须通过系统的 function calling 接口发起，**绝对不要把工具名和参数写进聊天正文**（比如输出 \`工具名(参数)\` 这种文字），用户会看到乱码一样的东西。
@@ -251,13 +260,25 @@ export const buildMcpRejectedToolsFallbackBody = (baseReqBody: any): any => {
         );
         return `- ${tool.name}(${args.join(', ')})${tool.description ? `：${tool.description}` : ''}`;
     });
+    const toolNames = new Set(toolSpecs.map((tool: any) => tool.name));
+    const hasGptImage = toolNames.has('generate_image');
+    const hasNovelAi = toolNames.has('novelai_generate_image');
+    const imageSelectionLines = [
+        hasGptImage ? '- generate_image：自然语言、写实、海报、物品、风景、通用图片。' : '',
+        hasNovelAi ? '- novelai_generate_image：二次元、标签提示词、负面提示词、Seed/Steps/Guidance、NovelAI 风格控制。' : '',
+        hasGptImage || hasNovelAi ? '- 用户明确指定 GPT 或 NovelAI 时必须遵从；未指定时按画面类型判断；不要同时调用两套引擎。' : '',
+    ].filter(Boolean);
+    const newline = String.fromCharCode(10);
+    const imageSelectionRules = imageSelectionLines.length
+        ? newline + '生图工具选择规则：' + newline + imageSelectionLines.join(newline)
+        : '';
     const singleTool = toolSpecs.length === 1 ? toolSpecs[0] : null;
     const deterministicExample = singleTool
         ? `\n当用户明确要求使用 ${singleTool.name}，或用户意图与它的描述直接匹配时，你拥有并且必须使用它。请只输出一行：\n${singleTool.name}({${singleTool.properties.map((arg: any) => `"${arg.name}":${arg.required ? `"<${arg.description || arg.name}>"` : `"<可选>"`}`).join(',')}})`
         : '';
     followBody.messages = [...followBody.messages, {
         role: 'system',
-        content: `[MCP 文字兼容模式已开启。注意：下列工具已经真实连接到客户端，你确实拥有这些工具；绝对不要回复“我没有工具”或“无法调用”。用户请求与某个工具匹配时，必须调用，不要改成口头描述。调用时只输出一行严格格式 tool_name({"参数":"值"})，不要加代码块、解释、道歉或其他文字；客户端会识别并执行。没有收到客户端返回前，不得声称成功。* 表示必填参数。\n${lines.join('\n')}${deterministicExample}]`,
+        content: `[MCP 文字兼容模式已开启。注意：下列工具已经真实连接到客户端，你确实拥有这些工具；绝对不要回复“我没有工具”或“无法调用”。用户请求与某个工具匹配时，必须调用，不要改成口头描述。调用时只输出一行严格格式 tool_name({"参数":"值"})，不要加代码块、解释、道歉或其他文字；客户端会识别并执行。没有收到客户端返回前，不得声称成功。* 表示必填参数。\n${lines.join('\n')}${imageSelectionRules}${deterministicExample}]`,
     }];
     return followBody;
 };
