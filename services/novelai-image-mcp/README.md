@@ -70,6 +70,6 @@ npm run dev
 For local development, you may override `IMAGE_DIR=./data/images`. The systemd
 deployment uses `/var/lib/novelai-image-mcp`, matching its write sandbox.
 
-The service still supports common JSON base64, image URL, raw image, and ZIP
-responses. Images are saved locally and returned to SullyOS as temporary HTTPS
+The service supports common JSON base64, JSON/NDJSON image URL, raw image,
+and ZIP responses. Relative image URLs are resolved against the configured upstream. Images are saved locally and returned to SullyOS as temporary HTTPS
 URLs.

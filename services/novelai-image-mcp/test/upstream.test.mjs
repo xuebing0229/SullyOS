@@ -190,3 +190,46 @@ test("JSON image URL responses are downloaded without leaking auth to a foreign 
     globalThis.fetch = originalFetch;
   }
 });
+
+
+test("streaming NDJSON with a relative success URL is parsed", async () => {
+  const originalFetch = globalThis.fetch;
+  let requestedUrl;
+  let receivedHeaders;
+  globalThis.fetch = async (url, options) => {
+    requestedUrl = String(url);
+    receivedHeaders = options?.headers;
+    return new Response(PNG_1X1, {
+      status: 200,
+      headers: { "content-type": "image/png" }
+    });
+  };
+
+  try {
+    const response = new Response(
+      [
+        JSON.stringify({ status: "queued", position: 1 }),
+        JSON.stringify({ status: "running" }),
+        JSON.stringify({ status: "success", url: "/img/result.png" })
+      ].join("\n") + "\n",
+      {
+        status: 200,
+        headers: { "content-type": "application/x-ndjson" }
+      }
+    );
+
+    const parsed = await parseUpstreamResponse({
+      response,
+      config: baseConfig,
+      requestId: "abc",
+      fallbackSeed: 19
+    });
+
+    assert.equal(parsed.format, "png");
+    assert.equal(parsed.seed, 19);
+    assert.equal(requestedUrl, "https://api.example.com/img/result.png");
+    assert.equal(receivedHeaders.Authorization, "Bearer test-key");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

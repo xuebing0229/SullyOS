@@ -269,6 +269,40 @@ function extractSeed(body, fallback) {
   return candidates.find(Number.isInteger) ?? fallback;
 }
 
+function parseJsonOrNdjson(buffer) {
+  const text = buffer.toString("utf8").trim();
+  if (!text) return [];
+
+  try {
+    return [JSON.parse(text)];
+  } catch {
+    const records = [];
+    for (const line of text.split(/\r?\n/)) {
+      if (!line.trim()) continue;
+      try {
+        records.push(JSON.parse(line));
+      } catch {
+        return [];
+      }
+    }
+    return records;
+  }
+}
+
+function extractCandidateFromRecords(records) {
+  let selected = null;
+  let seed;
+
+  for (const record of records) {
+    const candidate = extractJsonCandidate(record);
+    if (candidate) selected = candidate;
+    const recordSeed = extractSeed(record, undefined);
+    if (Number.isInteger(recordSeed)) seed = recordSeed;
+  }
+
+  return { candidate: selected, seed };
+}
+
 function extractFirstImageFromZip(buffer) {
   let archive;
   try {
@@ -289,7 +323,7 @@ function extractFirstImageFromZip(buffer) {
 async function fetchRemoteImage(urlValue, config, requestId) {
   let url;
   try {
-    url = new URL(urlValue);
+    url = new URL(urlValue, config.upstreamBaseUrl);
   } catch {
     throw new Error("The upstream returned an invalid image URL");
   }
@@ -393,28 +427,26 @@ export async function parseUpstreamResponse({
     contentType.includes("json") ||
     contentType.startsWith("text/")
   ) {
-    let body;
-    try {
-      body = JSON.parse(buffer.toString("utf8"));
-    } catch {
-      if (forcedMode === "json") {
-        throw new Error("Upstream response was not valid JSON");
-      }
-      body = null;
+    const records = parseJsonOrNdjson(buffer);
+    if (records.length === 0 && forcedMode === "json") {
+      throw new Error("Upstream response was not valid JSON or NDJSON");
     }
 
-    if (body) {
-      const candidate = extractJsonCandidate(body);
-      const seed = extractSeed(body, fallbackSeed);
+    if (records.length > 0) {
+      const extracted = extractCandidateFromRecords(records);
+      const seed = extracted.seed ?? fallbackSeed;
 
-      if (candidate?.type === "base64") {
-        return { ...decodeBase64Image(candidate.value), seed };
+      if (extracted.candidate?.type === "base64") {
+        return {
+          ...decodeBase64Image(extracted.candidate.value),
+          seed
+        };
       }
 
-      if (candidate?.type === "url") {
+      if (extracted.candidate?.type === "url") {
         return {
           ...(await fetchRemoteImage(
-            candidate.value,
+            extracted.candidate.value,
             config,
             requestId
           )),
