@@ -4,6 +4,14 @@ import { useOS } from '../context/OSContext';
 import { DB } from '../utils/db';
 import { Message, MessageType, MemoryFragment, Emoji, EmojiCategory, DailySchedule, ScheduleSlot } from '../types';
 import { processImage } from '../utils/file';
+import {
+    allocateUniqueEmojiName,
+    limitEmojiImportBatch,
+    makePendingEmojiImport,
+    normalizeEmojiName,
+    prepareEmojiImage,
+    type PendingEmojiImportItem,
+} from '../utils/emojiImport';
 import { safeResponseJson, extractContent } from '../utils/safeApi';
 import { buildChatFineTuneCss, mergeChatFineTune } from '../utils/chatFineTuneCss';
 import ChatFineTunePanel from '../components/chat/ChatFineTunePanel';
@@ -143,6 +151,10 @@ const Chat: React.FC = () => {
     const [transferAmt, setTransferAmt] = useState('');
     const [transferNote, setTransferNote] = useState('');
     const [emojiImportText, setEmojiImportText] = useState('');
+    const [pendingEmojiImports, setPendingEmojiImports] = useState<PendingEmojiImportItem[]>([]);
+    const [isPreparingEmojiFiles, setIsPreparingEmojiFiles] = useState(false);
+    const [isSavingEmojiFiles, setIsSavingEmojiFiles] = useState(false);
+    const [emojiImportCategoryId, setEmojiImportCategoryId] = useState<string>('default');
     const [settingsContextLimit, setSettingsContextLimit] = useState(500);
     const [settingsContextRangeMode, setSettingsContextRangeMode] = useState<ContextRangeMode>('manual');
     const [settingsHideSysLogs, setSettingsHideSysLogs] = useState(false);
@@ -1273,7 +1285,7 @@ const Chat: React.FC = () => {
             case 'chrome-css': setModalType('chrome-css'); break;
             case 'chrome-sound': setModalType('chrome-sound'); break;
             case 'fine-tune': setShowPanel('none'); setFineTuneOpen(true); setFineTunePanelOpen(true); break;
-            case 'emoji-import': setModalType('emoji-import'); break;
+            case 'emoji-import': setEmojiImportCategoryId(activeCategory); setModalType('emoji-import'); break;
             case 'send-emoji': if (payload) handleSendText(payload.url, 'emoji'); break;
             case 'delete-emoji-req': setSelectedEmoji(payload); setModalType('delete-emoji'); break;
             case 'emoji-options': setSelectedEmoji(payload); setModalType('emoji-options'); break;
@@ -1738,7 +1750,7 @@ const Chat: React.FC = () => {
     const handleImportEmoji = async () => {
         if (!emojiImportText.trim()) return;
         const lines = emojiImportText.split('\n');
-        const targetCatId = activeCategory === 'default' ? undefined : activeCategory;
+        const targetCatId = emojiImportCategoryId === 'default' ? undefined : emojiImportCategoryId;
 
         for (const line of lines) {
             const parts = line.split('--');
@@ -1751,9 +1763,132 @@ const Chat: React.FC = () => {
             }
         }
         await loadEmojiData();
+        setPendingEmojiImports([]);
+        setEmojiImportCategoryId('default');
         setModalType('none');
         setEmojiImportText('');
         addToast('表情包导入成功', 'success');
+    };
+
+    const createEmojiDraftId = () => {
+        try {
+            if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
+        } catch { /* ignore */ }
+        return `emoji-draft-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    };
+
+    const handlePrepareEmojiFiles = async (incomingFiles: File[]) => {
+        if (isPreparingEmojiFiles || isSavingEmojiFiles || incomingFiles.length === 0) return;
+
+        const { accepted, ignoredCount } = limitEmojiImportBatch(
+            incomingFiles,
+            pendingEmojiImports.length,
+        );
+        if (ignoredCount > 0) {
+            addToast(`当前待确认批次最多 30 张，已忽略后面的 ${ignoredCount} 张`, 'info');
+        }
+        if (accepted.length === 0) return;
+
+        const preparedDrafts: PendingEmojiImportItem[] = [];
+        const failures: string[] = [];
+        setIsPreparingEmojiFiles(true);
+        try {
+            // 手机上逐张处理，避免几十个 Canvas 同时解码造成内存尖峰。
+            for (const file of accepted) {
+                try {
+                    const prepared = await prepareEmojiImage(file);
+                    preparedDrafts.push(
+                        makePendingEmojiImport(prepared, file.name, createEmojiDraftId()),
+                    );
+                } catch (error: any) {
+                    failures.push(error?.message || `${file.name}：处理失败`);
+                }
+            }
+
+            if (preparedDrafts.length > 0) {
+                setPendingEmojiImports(prev => [...prev, ...preparedDrafts]);
+            }
+            if (failures.length > 0) {
+                addToast(
+                    preparedDrafts.length > 0
+                        ? `已载入 ${preparedDrafts.length} 张，${failures.length} 张失败：${failures[0]}`
+                        : failures[0],
+                    preparedDrafts.length > 0 ? 'info' : 'error',
+                );
+            }
+        } finally {
+            setIsPreparingEmojiFiles(false);
+        }
+    };
+
+    const handlePendingEmojiNameChange = (id: string, name: string) => {
+        setPendingEmojiImports(prev => prev.map(item =>
+            item.id === id ? { ...item, name: name.slice(0, 40) } : item
+        ));
+    };
+
+    const handleRemovePendingEmoji = (id: string) => {
+        if (isSavingEmojiFiles) return;
+        setPendingEmojiImports(prev => prev.filter(item => item.id !== id));
+    };
+
+    const handleCloseEmojiImport = () => {
+        if (isPreparingEmojiFiles || isSavingEmojiFiles) return;
+        setPendingEmojiImports([]);
+        setEmojiImportCategoryId('default');
+        setModalType('none');
+    };
+
+    const handleConfirmEmojiFiles = async () => {
+        if (isPreparingEmojiFiles || isSavingEmojiFiles || pendingEmojiImports.length === 0) return;
+
+        const blank = pendingEmojiImports.find(item => !normalizeEmojiName(item.name));
+        if (blank) {
+            addToast(`请给「${blank.originalFileName}」填写表情名称`, 'error');
+            return;
+        }
+
+        const targetCatId = emojiImportCategoryId === 'default' ? undefined : emojiImportCategoryId;
+        const occupiedNames = new Set(emojis.map(emoji => emoji.name));
+        const savedIds = new Set<string>();
+        const failures: string[] = [];
+        let autoRenamedCount = 0;
+
+        setIsSavingEmojiFiles(true);
+        try {
+            for (const item of pendingEmojiImports) {
+                try {
+                    const requestedName = normalizeEmojiName(item.name);
+                    const finalName = allocateUniqueEmojiName(requestedName, occupiedNames);
+                    if (finalName !== requestedName) autoRenamedCount += 1;
+                    await DB.saveEmoji(finalName, item.dataUrl, targetCatId);
+                    savedIds.add(item.id);
+                } catch (error: any) {
+                    failures.push(error?.message || `${item.name}：保存失败`);
+                }
+            }
+
+            if (savedIds.size > 0) await loadEmojiData();
+            setPendingEmojiImports(prev => prev.filter(item => !savedIds.has(item.id)));
+
+            if (failures.length === 0) {
+                setEmojiImportCategoryId('default');
+                setModalType('none');
+                addToast(
+                    autoRenamedCount > 0
+                        ? `已添加 ${savedIds.size} 个表情，${autoRenamedCount} 个同名项已自动加序号`
+                        : `已添加 ${savedIds.size} 个表情`,
+                    'success',
+                );
+            } else {
+                addToast(
+                    `已添加 ${savedIds.size} 个，${failures.length} 个保存失败：${failures[0]}`,
+                    savedIds.size > 0 ? 'info' : 'error',
+                );
+            }
+        } finally {
+            setIsSavingEmojiFiles(false);
+        }
     };
 
     const handleDeleteCategory = async () => {
@@ -2916,6 +3051,14 @@ const Chat: React.FC = () => {
 
                 onTransfer={() => { if(transferAmt) handleSendText(`[转账]`, 'transfer', { amount: transferAmt, note: transferNote.trim() || undefined, status: 'pending' }); setTransferNote(''); setModalType('none'); }}
                 onImportEmoji={handleImportEmoji}
+                pendingEmojiImports={pendingEmojiImports}
+                onPrepareEmojiFiles={handlePrepareEmojiFiles}
+                onPendingEmojiNameChange={handlePendingEmojiNameChange}
+                onRemovePendingEmoji={handleRemovePendingEmoji}
+                onConfirmEmojiFiles={handleConfirmEmojiFiles}
+                onCloseEmojiImport={handleCloseEmojiImport}
+                isPreparingEmojiFiles={isPreparingEmojiFiles}
+                isSavingEmojiFiles={isSavingEmojiFiles}
                 onSaveSettings={saveSettings} onBgUpload={handleBgUpload} onRemoveBg={() => updateCharacter(char.id, { chatBackground: undefined })}
                 onClearHistory={handleClearHistory} onArchive={handleFullArchive}
                 onCreatePrompt={createNewPrompt} onEditPrompt={editSelectedPrompt} onSavePrompt={handleSavePrompt} onDeletePrompt={handleDeletePrompt}
