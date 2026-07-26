@@ -400,7 +400,7 @@ export async function evaluateEmotionBackground(
             });
             return null;
         }
-        return await applyEmotionEvalRaw(raw, charData);
+        return await applyEmotionEvalRaw(raw, charData, userProfile.name);
     } catch (e: any) {
         console.warn('🎭 [Emotion] Evaluation failed:', e.message);
         announceChatGen(CHAT_GEN_EVENTS.emotionFailed, {

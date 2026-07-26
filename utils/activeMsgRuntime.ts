@@ -451,7 +451,12 @@ const flushInboxToChatImpl = async () => {
           const chars = await DB.getAllCharacters();
           const ch = chars.find((c) => c.id === message.charId);
           if (ch) {
-            const innerState = await applyEmotionEvalRaw(String(emotionRaw), ch);
+            const userProfile = await DB.getUserProfile();
+            const innerState = await applyEmotionEvalRaw(
+              String(emotionRaw),
+              ch,
+              userProfile?.name,
+            );
             if (innerState) {
               window.dispatchEvent(new CustomEvent('emotion-innerstate-updated', {
                 detail: { charId: message.charId, innerState },
