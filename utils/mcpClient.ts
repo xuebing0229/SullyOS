@@ -49,6 +49,8 @@ export interface McpServerConfig {
     updatedAt: number;
     /** 内置能力生成的隐藏服务器，不出现在通用 MCP 编辑列表。 */
     builtin?: boolean;
+    /** 单次 HTTP/SSE 请求超时；未设置时使用通用 MCP 默认值。 */
+    requestTimeoutMs?: number;
 }
 
 export interface McpToolResult {
@@ -64,6 +66,16 @@ const MCP_PROTOCOL_VERSION = '2024-11-05';
 // 远端 MCP / 用户自建代理都可能保持连接不结束。不能让一次 tools/call
 // 永久卡住整条聊天链路（外层 isTyping 只有等 Promise 结束后才会清掉）。
 export const MCP_REQUEST_TIMEOUT_MS = 60_000;
+/** 只允许内置生图服务器覆盖超时；普通/用户导入的 MCP 始终保持 60 秒。 */
+export const getMcpRequestTimeoutMs = (
+    server: Pick<McpServerConfig, 'id' | 'builtin' | 'requestTimeoutMs'>,
+): number => {
+    const configured = server.requestTimeoutMs;
+    const isBuiltinImage = server.builtin === true && server.id.startsWith('builtin_image_');
+    return isBuiltinImage && Number.isFinite(configured) && configured! > 0
+        ? Math.round(configured!)
+        : MCP_REQUEST_TIMEOUT_MS;
+};
 
 // ========== 服务器配置 (持久化在 localStorage) ==========
 
@@ -285,8 +297,9 @@ const post = async (
     const headers = buildMcpRequestHeaders(server, session.sessionId);
 
     let resp: Response;
+    const requestTimeoutMs = getMcpRequestTimeoutMs(server);
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), MCP_REQUEST_TIMEOUT_MS);
+    const timeoutId = setTimeout(() => controller.abort(), requestTimeoutMs);
     try {
         try {
             resp = await fetch(buildMcpFetchUrl(server), {
@@ -294,7 +307,7 @@ const post = async (
             });
         } catch (e: any) {
             if (controller.signal.aborted) {
-                throw new Error(`MCP 请求超时（${Math.round(MCP_REQUEST_TIMEOUT_MS / 1000)} 秒）`);
+                throw new Error(`MCP 请求超时（${Math.round(requestTimeoutMs / 1000)} 秒）`);
             }
             // 直连时 fetch 抛 TypeError 十有八九是 CORS，把排查方向直接告诉用户
             const hint = server.proxyUrl
@@ -309,7 +322,7 @@ const post = async (
             try { return await resp.text(); }
             catch (e) {
                 if (controller.signal.aborted) {
-                    throw new Error(`MCP 请求超时（${Math.round(MCP_REQUEST_TIMEOUT_MS / 1000)} 秒）`);
+                    throw new Error(`MCP 请求超时（${Math.round(requestTimeoutMs / 1000)} 秒）`);
                 }
                 throw e;
             }
@@ -338,7 +351,7 @@ const post = async (
             return { response: parseResp(text, ct) };
         } catch (e) {
             if (controller.signal.aborted) {
-                throw new Error(`MCP 请求超时（${Math.round(MCP_REQUEST_TIMEOUT_MS / 1000)} 秒）`);
+                throw new Error(`MCP 请求超时（${Math.round(requestTimeoutMs / 1000)} 秒）`);
             }
             throw e;
         }

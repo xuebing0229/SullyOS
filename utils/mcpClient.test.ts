@@ -14,10 +14,12 @@ import {
     callMcpTool,
     normalizeMcpToolArguments,
     MCP_REQUEST_TIMEOUT_MS,
+    getMcpRequestTimeoutMs,
     type McpServerConfig,
 } from './mcpClient';
 import { buildMcpOpenAITools, buildMcpRejectedToolsFallbackBody, buildMcpTextFallbackBody, extractMcpImageUrls, formatMcpToolResult, MCP_RESULT_MAX_CHARS, sanitizeMcpLeadInText, shouldRetryMcpWithoutTools, stripTextFakedMcpCalls } from './mcpToolBridge';
 import { completeGroupChatWithMcp } from './groupChat/mcp';
+import { BUILTIN_IMAGE_MCP_REQUEST_TIMEOUT_MS, getBuiltinImageMcpServers } from './builtinImageMcp';
 
 const mkServer = (over: Partial<McpServerConfig>): McpServerConfig => ({
     ...createMcpServer('测试', 'https://mcp.example.com/mcp'),
@@ -34,6 +36,23 @@ beforeEach(() => {
 afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();
+});
+
+describe('MCP request timeout selection', () => {
+    it('普通 MCP 固定使用 60 秒，即使导入配置伪造了覆盖值', () => {
+        expect(getMcpRequestTimeoutMs(mkServer({ requestTimeoutMs: 240_000 }))).toBe(MCP_REQUEST_TIMEOUT_MS);
+        expect(getMcpRequestTimeoutMs(mkServer({ builtin: true, requestTimeoutMs: 240_000 }))).toBe(MCP_REQUEST_TIMEOUT_MS);
+    });
+
+    it('两个内置生图 MCP 都使用 240 秒', () => {
+        const servers = getBuiltinImageMcpServers();
+        expect(servers).toHaveLength(2);
+        for (const server of servers) {
+            expect(server.builtin).toBe(true);
+            expect(server.requestTimeoutMs).toBe(BUILTIN_IMAGE_MCP_REQUEST_TIMEOUT_MS);
+            expect(getMcpRequestTimeoutMs(server)).toBe(BUILTIN_IMAGE_MCP_REQUEST_TIMEOUT_MS);
+        }
+    });
 });
 
 describe('buildMcpFetchUrl', () => {
@@ -431,6 +450,45 @@ describe('MCP 聊天链路不悬挂', () => {
         const pending = callMcpTool(server, 'search', { q: 'react' });
         await vi.advanceTimersByTimeAsync(MCP_REQUEST_TIMEOUT_MS);
         await expect(pending).resolves.toMatchObject({ success: false, error: expect.stringContaining('MCP 请求超时') });
+    });
+
+    it('内置生图 MCP 在 60 秒时不会提前中断，并在 240 秒超时', async () => {
+        vi.useFakeTimers();
+        const server = mkServer({
+            id: 'builtin_image_gpt-image',
+            builtin: true,
+            requestTimeoutMs: BUILTIN_IMAGE_MCP_REQUEST_TIMEOUT_MS,
+        });
+        vi.spyOn(globalThis, 'fetch').mockImplementation((_url, init) => {
+            const req = JSON.parse(String(init?.body || '{}'));
+            if (req.method === 'initialize') {
+                return Promise.resolve(new Response(JSON.stringify({ jsonrpc: '2.0', id: req.id, result: {} }), {
+                    status: 200, headers: { 'Content-Type': 'application/json' },
+                }));
+            }
+            if (req.method === 'notifications/initialized') {
+                return Promise.resolve(new Response('', { status: 202 }));
+            }
+            return Promise.resolve({
+                ok: true,
+                status: 200,
+                headers: new Headers({ 'Content-Type': 'text/event-stream' }),
+                text: () => new Promise((_resolve, reject) => {
+                    init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+                }),
+            } as Response);
+        });
+
+        let settled = false;
+        const pending = callMcpTool(server, 'generate_image', { prompt: 'slow image' })
+            .finally(() => { settled = true; });
+        await vi.advanceTimersByTimeAsync(MCP_REQUEST_TIMEOUT_MS);
+        expect(settled).toBe(false);
+        await vi.advanceTimersByTimeAsync(BUILTIN_IMAGE_MCP_REQUEST_TIMEOUT_MS - MCP_REQUEST_TIMEOUT_MS);
+        await expect(pending).resolves.toMatchObject({
+            success: false,
+            error: expect.stringContaining('240 秒'),
+        });
     });
 
     it('SSE 收到当前 JSON-RPC 结果后立即返回，不等待服务器关闭长连接', async () => {

@@ -66,6 +66,7 @@ export interface NovelAiRemoteConfig {
 export type ImageRemoteConfig = GptImageRemoteConfig | NovelAiRemoteConfig;
 
 const SETTINGS_KEY = 'aetheros.imageGeneration.builtin.v1';
+export const BUILTIN_IMAGE_MCP_REQUEST_TIMEOUT_MS = 240_000;
 
 const DEFAULTS: BuiltinImageSettings = {
     version: 1,
@@ -155,6 +156,7 @@ export function getBuiltinImageMcpServers(): McpServerConfig[] {
             tools: binding.tools,
             updatedAt: binding.updatedAt,
             builtin: true,
+            requestTimeoutMs: BUILTIN_IMAGE_MCP_REQUEST_TIMEOUT_MS,
         } satisfies McpServerConfig;
     });
 }
