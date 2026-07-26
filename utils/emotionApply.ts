@@ -25,6 +25,29 @@ export function getLastInnerState(charId: string): string {
     } catch { return ''; }
 }
 
+const INTERNAL_USER_LABEL_FALLBACK = '对方';
+const USER_NARRATIVE_FOLLOWERS = '(?:说|表示|告诉|问|回答|回复|觉得|认为|想|希望|担心|喜欢|讨厌|看|听|做|给|让|叫|称|提到|沉默|离开|回来|正在|已经|没有|还|又|会|要|能|可以|应该|可能|似乎|仿佛|的|对|与|和|向|把|被|在|从|为|令|使)';
+const USER_NARRATIVE_PRECEDERS = '(问|看着|等待|想起|回应|回复|告诉|靠近|面对|在意|寻找|安慰|拥抱|注视)';
+
+/**
+ * 清理情绪 JSON 叙事字段中的内部身份标签。
+ * 仅对传入的字符串值工作，不扫描原始 JSON，因此不会修改字段名。
+ * 中文没有天然单词边界：通过叙事动词/介词和标点边界识别人物称呼，避免误伤
+ * 「用户体验」「用户协议」「用户设置」「用户档案」等普通产品词组。
+ */
+export function replaceInternalUserLabel(text: string, userName?: string): string {
+    if (typeof text !== 'string' || !text) return text;
+    const replacement = userName?.trim() || INTERNAL_USER_LABEL_FALLBACK;
+    return text
+        .replace(new RegExp(`用户(?=${USER_NARRATIVE_FOLLOWERS})`, 'g'), replacement)
+        .replace(new RegExp(`${USER_NARRATIVE_PRECEDERS}用户`, 'g'), `$1${replacement}`)
+        .replace(/用户(?=$|[\s，。！？；：、）】”’])/g, replacement)
+        .replace(new RegExp('\\bthe\\s+user\\b\\s*(?=[\\u3400-\\u9fff，。！？；：、）】”’]|$)', 'gi'), replacement)
+        .replace(new RegExp('\\bthe\\s+user\\b', 'gi'), replacement)
+        .replace(new RegExp('\\bUser\\b\\s*(?=[\\u3400-\\u9fff，。！？；：、）】”’]|$)', 'g'), replacement)
+        .replace(new RegExp('\\bUser\\b', 'g'), replacement);
+}
+
 // 情绪评估结果「解析 + 落 buff」的共用实现.
 //
 // 原本内联在 hooks/useChatAI.ts 的 evaluateEmotionBackground 里. 提取出来是为了让两条路径共用:
@@ -352,6 +375,7 @@ export function extractAssistantText(message: any): string {
 export async function applyEmotionEvalRaw(
     rawText: string,
     charData: CharacterProfile,
+    userName?: string,
 ): Promise<string | null> {
     try {
         const result = parseEmotionEvalOutput(rawText || '');
@@ -369,7 +393,7 @@ export async function applyEmotionEvalRaw(
         }
 
         const innerStateOut = (typeof result.innerState === 'string' && result.innerState.trim())
-            ? result.innerState.trim()
+            ? replaceInternalUserLabel(result.innerState.trim(), userName)
             : null;
 
         if (innerStateOut) {
@@ -398,8 +422,13 @@ export async function applyEmotionEvalRaw(
 
         // buffs 数组在场 → 完整更新 (数组为空 = 模型主动清空, 尊重).
         // buffs 缺失但 injection 在场 (抢救场景) → 保留旧 buffs, 只换 injection.
-        const sanitizedBuffs = hasBuffArray ? sanitizeBuffs(result.buffs) : (charData.activeBuffs || []);
-        const buffInjection = hasInjection ? result.injection! : (hasBuffArray ? '' : (charData.buffInjection || ''));
+        const sanitizedBuffs = (hasBuffArray ? sanitizeBuffs(result.buffs) : (charData.activeBuffs || []))
+            .map(buff => typeof buff.description === 'string'
+                ? { ...buff, description: replaceInternalUserLabel(buff.description, userName) }
+                : buff);
+        const buffInjection = hasInjection
+            ? replaceInternalUserLabel(result.injection!, userName)
+            : (hasBuffArray ? '' : (charData.buffInjection || ''));
         const updated: CharacterProfile = {
             ...charData,
             activeBuffs: sanitizedBuffs,

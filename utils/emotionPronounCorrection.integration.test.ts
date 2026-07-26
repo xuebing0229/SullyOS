@@ -82,4 +82,49 @@ describe('情绪称谓纠错集成链路', () => {
         expect(saved.buffInjection).toContain('他一直没有回复');
         expect(saved.buffInjection).not.toContain('她一直没有回复');
     });
+
+    it('落库前将叙事中的内部“用户”标签替换为当前用户名', async () => {
+        const evalRaw = JSON.stringify({
+            changed: true,
+            buffs: [{
+                id: 'buff_internal_label',
+                name: 'noticed',
+                label: '被夸奖后的触动',
+                intensity: 2,
+                description: '用户说她很漂亮，User 似乎很认真。',
+            }],
+            injection: 'the user 的夸奖让她有些动摇，用户还在等回应。',
+            innerState: '用户说她很漂亮，我该怎么回答 the user？',
+        });
+
+        const innerState = await applyEmotionEvalRaw(evalRaw, char, maleProfile.name);
+        const saved = saveCharacter.mock.calls[0][0];
+
+        expect(saved.activeBuffs?.[0].description).toBe('测试用户说她很漂亮，测试用户似乎很认真。');
+        expect(saved.buffInjection).toBe('测试用户的夸奖让她有些动摇，测试用户还在等回应。');
+        expect(innerState).toBe('测试用户说她很漂亮，我该怎么回答 测试用户？');
+    });
+
+    it('姓名为空时回退“对方”，自然称呼与普通产品词组保持不变', async () => {
+        const evalRaw = JSON.stringify({
+            changed: true,
+            buffs: [{
+                id: 'buff_natural_reference',
+                name: 'steady',
+                label: '平稳',
+                intensity: 1,
+                description: 'ta没有离开，对方也没有生气；用户体验和用户设置保持原样。',
+            }],
+            injection: '已经叫了名字，ta和对方都不需要修改。',
+            innerState: '用户说会留下。',
+        });
+
+        const innerState = await applyEmotionEvalRaw(evalRaw, char, '   ');
+        const saved = saveCharacter.mock.calls[0][0];
+
+        expect(saved.activeBuffs?.[0].description).toBe('ta没有离开，对方也没有生气；用户体验和用户设置保持原样。');
+        expect(saved.buffInjection).toBe('已经叫了名字，ta和对方都不需要修改。');
+        expect(innerState).toBe('对方说会留下。');
+    });
+
 });

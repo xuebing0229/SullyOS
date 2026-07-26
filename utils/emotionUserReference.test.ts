@@ -61,6 +61,17 @@ describe('buildEmotionUserReferenceSection', () => {
         expect(section).toContain('不得根据姓名、头像、说话方式');
     });
 
+    it('明确禁止把内部身份标签写入最终叙事字段', () => {
+        const section = buildEmotionUserReferenceSection(
+            makeUser('请自然称呼我。'),
+            makeChar(),
+        );
+
+        expect(section).toContain('绝对禁止使用「用户」「User」「the user」称呼本人');
+        expect(section).toContain('优先使用当前用户姓名「测试用户」');
+        expect(section).toContain('不得把系统内部身份标签「用户 / User / the user」原样写入');
+    });
+
     it('限制档案和旧 injection 长度，避免情绪请求意外膨胀', () => {
         const section = buildEmotionUserReferenceSection(
             makeUser('甲'.repeat(6000)),
