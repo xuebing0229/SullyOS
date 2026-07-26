@@ -26,6 +26,7 @@ import { LoyalUserRecruitmentController } from '../components/LoyalUserRecruitme
 import { isPushVapidReady } from '../utils/pushVapid';
 import ApiCallLogModal from '../components/settings/ApiCallLogModal';
 import ImageGenerationSettings from '../components/settings/ImageGenerationSettings';
+import OrphanImageCleanupCard from '../components/settings/OrphanImageCleanupCard';
 import { DB } from '../utils/db';
 import { getBackupReminderState, setBackupReminderIntervalDays, daysSinceLastBackup, BACKUP_REMINDER_MIN_DAYS, BACKUP_REMINDER_MAX_DAYS } from '../utils/backupReminder';
 
@@ -1362,6 +1363,8 @@ const Settings: React.FC = () => {
                         : ` 上次备份是在 ${backupDaysAgo} 天前。`}
                 </p>
             </div>
+
+            <OrphanImageCleanupCard addToast={addToast} />
 
             <button onClick={handleCleanupResidue} disabled={isCleaningResidue} className="w-full py-3 mb-2 bg-amber-50 border border-amber-100 text-amber-600 rounded-xl text-xs font-bold flex items-center justify-center gap-2 active:scale-95 transition-all disabled:opacity-50">
                 {isCleaningResidue ? '正在扫描…' : '一键清理表情包残留'}
