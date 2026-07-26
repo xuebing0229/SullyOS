@@ -3028,6 +3028,7 @@ export const DB = {
               activeSkinSetId: media.activeSkinSetId || c.activeSkinSetId,
               customDateSprites: media.customDateSprites || c.customDateSprites,
               spriteConfig: media.spriteConfig || c.spriteConfig,
+              novelAiReference: media.novelAiReference || c.novelAiReference,
               chatBackground: media.backgrounds?.chat || c.chatBackground,
               dateBackground: media.backgrounds?.date || c.dateBackground,
               roomConfig: c.roomConfig ? {

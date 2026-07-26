@@ -6,6 +6,7 @@ import {
   assertPromptPolicy,
   buildUpstreamHeaders,
   buildUpstreamRequest,
+  correlationId,
   parseUpstreamResponse
 } from "../src/upstream.mjs";
 
@@ -14,6 +15,9 @@ const PNG_1X1 = Buffer.from(
   "base64"
 );
 
+test("correlation IDs are exactly six alphanumeric characters", () => {
+  for (let index = 0; index < 256; index += 1) assert.match(correlationId(), /^[A-Za-z0-9]{6}$/);
+});
 const baseConfig = {
   upstreamAccept: "application/json",
   upstreamExtraHeaders: {},
@@ -315,4 +319,20 @@ test("image delivery direct rejects cross-origin image URLs", async () => {
     }),
     /same-origin HTTPS/
   );
+});
+
+
+test("precise reference fields are applied after parameter overrides", () => {
+  const imageBuffer = Buffer.from("reference");
+  const result = buildUpstreamRequest({
+    prompt: "1girl",
+    config: {
+      ...baseConfig,
+      upstreamParameterOverrides: { director_reference_strength_values: [0.01] }
+    },
+    preciseReference: { imageBuffer, type: "character", strength: 0.75, fidelity: 0.85 }
+  });
+  assert.deepEqual(result.payload.parameters.director_reference_strength_values, [0.75]);
+  assert.deepEqual(result.payload.parameters.director_reference_secondary_strength_values, [0.15]);
+  assert.deepEqual(result.payload.parameters.director_reference_images, [imageBuffer.toString("base64")]);
 });

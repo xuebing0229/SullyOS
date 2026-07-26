@@ -1,5 +1,6 @@
 import { safeResponseJson } from '../safeApi';
 import { callMcpTool, getMcpUseNativeTools } from '../mcpClient';
+import { prepareBuiltinImageToolArguments } from '../novelAiReference';
 import {
     buildMcpOpenAITools,
     buildMcpRejectedToolsFallbackBody,
@@ -104,7 +105,8 @@ export async function completeGroupChatWithMcp(options: GroupMcpCompletionOption
                 continue;
             }
             options.onStatus?.(`正在调用 MCP 工具：${exposedName}…`);
-            const result = await callMcpTool(hit.server, hit.toolName, args);
+            const preparedArgs = await prepareBuiltinImageToolArguments({ server: hit.server, toolName: hit.toolName, args, character: null });
+            const result = await callMcpTool(hit.server, hit.toolName, preparedArgs);
             conversationMessages.push({
                 role: 'tool',
                 tool_call_id: toolCall.id,
@@ -134,7 +136,8 @@ export async function completeGroupChatWithMcp(options: GroupMcpCompletionOption
         options.onStatus?.(`正在调用 MCP 工具：${calls.map(call => call.exposedName).join('、')}…`);
         const results: string[] = [];
         for (const call of calls) {
-            const result = await callMcpTool(call.server, call.toolName, call.args);
+            const preparedArgs = await prepareBuiltinImageToolArguments({ server: call.server, toolName: call.toolName, args: call.args, character: null });
+            const result = await callMcpTool(call.server, call.toolName, preparedArgs);
             results.push(result.success
                 ? `工具 ${call.exposedName} 成功。结果: ${formatMcpToolResult(result.data)}`
                 : `工具 ${call.exposedName} 失败: ${result.error}`);

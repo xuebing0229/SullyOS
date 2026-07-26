@@ -1,5 +1,6 @@
 import { timingSafeEqual } from "node:crypto";
 import { access } from "node:fs/promises";
+import path from "node:path";
 import express from "express";
 import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -8,6 +9,8 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { bootstrapRuntimeConfig, staticConfig } from "./config.mjs";
 import { createNovelRuntimeConfigStore, toUpstreamConfig } from "./runtime-config.mjs";
 import { buildUpstreamRequest, generateUpstreamImage } from "./upstream.mjs";
+import { createReferenceStore } from "./reference-store.mjs";
+import { isNovelAiV45Model, preciseReferenceUnsupportedMessage } from "./precise-reference.mjs";
 import {
   cleanupExpiredImages,
   initializeImageStorage,
@@ -22,13 +25,16 @@ const runtimeStore = createNovelRuntimeConfigStore({
   bootstrap: bootstrapRuntimeConfig,
   allowInsecureUpstream: staticConfig.allowInsecureUpstream
 });
+const referenceStore = createReferenceStore({
+  directory: path.join(staticConfig.imageDir, "references")
+});
 
 function log(level, event, fields = {}) {
   console.log(JSON.stringify({ time: new Date().toISOString(), level, service: SERVICE_NAME, event, ...fields }));
 }
 function safeErrorLogFields(error) {
   const message = String(error?.message || "");
-  const correlationId = message.match(/correlation ID ([a-f0-9]{16})/i)?.[1];
+  const correlationId = message.match(/correlation ID ([A-Za-z0-9]{6})/)?.[1];
   return { errorName: error?.name || "Error", ...(correlationId ? { correlationId } : {}) };
 }
 function secureEquals(actual, expected) {
@@ -88,12 +94,24 @@ function createMcpServer() {
         steps: z.number().int().min(1).max(50).optional().default(23),
         guidance: z.number().min(1).max(10).optional().default(5),
         uc_preset: z.enum(["heavy", "light", "human", "none"]).optional().default("heavy"),
-        quality_tags: z.boolean().optional().default(true)
+        quality_tags: z.boolean().optional().default(true),
+        reference_id: z.string().regex(/^[a-f0-9]{64}$/).optional().describe("SullyOS-managed private reference slot. Never invent or expose it."),
+        reference_type: z.enum(["character", "style", "character&style"]).optional().default("character"),
+        reference_strength: z.number().min(0).max(1).optional().default(0.75),
+        reference_fidelity: z.number().min(0).max(1).optional().default(0.85)
       }
     },
     async (args) => {
       try {
         const { runtime, config } = await effectiveUpstreamConfig();
+        let preciseReference = null;
+        if (args.reference_id) {
+          const upstreamModel = args.model === "curated" ? config.upstreamModelCurated : config.upstreamModelFull;
+          if (!isNovelAiV45Model(upstreamModel)) throw new Error("NovelAI Precise Reference is only supported by V4.5 Full/Curated models");
+          const stored = await referenceStore.readImage(args.reference_id);
+          if (!stored) throw new Error("The character reference image is missing on the MCP server. Reopen the character settings and sync it again.");
+          preciseReference = { imageBuffer: stored.buffer, type: args.reference_type, strength: args.reference_strength, fidelity: args.reference_fidelity };
+        }
         const request = buildUpstreamRequest({
           prompt: args.prompt,
           undesiredContent: args.undesired_content,
@@ -104,9 +122,16 @@ function createMcpServer() {
           guidance: args.guidance,
           ucPreset: args.uc_preset,
           qualityTags: args.quality_tags,
+          preciseReference,
           config
         });
-        const generated = await serializeGeneration(() => generateUpstreamImage({ config, request }));
+        let generated;
+        try {
+          generated = await serializeGeneration(() => generateUpstreamImage({ config, request }));
+        } catch (error) {
+          if (preciseReference && /(400|422|director_reference|reference.*unsupported|unknown field)/i.test(String(error?.message || ""))) throw new Error(preciseReferenceUnsupportedMessage());
+          throw error;
+        }
         const { imageUrl, saved } = await materialize(generated);
         log("info", "image_generated", {
           correlationId: generated.requestId,
@@ -117,6 +142,8 @@ function createMcpServer() {
           size: args.size,
           seed: generated.seed,
           delivery: generated.imageUrl ? "direct" : "proxy",
+          referenceUsed: Boolean(preciseReference),
+          ...(preciseReference ? { referenceType: preciseReference.type } : {}),
           ...(saved ? { fileName: saved.fileName } : {})
         });
         return {
@@ -125,6 +152,7 @@ function createMcpServer() {
             seed: generated.seed,
             model: request.modelId,
             size: `${request.dimensions.width}x${request.dimensions.height}`,
+            referenceUsed: Boolean(preciseReference),
             ...(saved ? { expiresAt: saved.expiresAt } : {})
           },
           content: [{ type: "text", text: [
@@ -147,6 +175,7 @@ function createMcpServer() {
 }
 
 await initializeImageStorage(staticConfig.imageDir);
+await referenceStore.initialize();
 await runtimeStore.load();
 const initiallyRemoved = await cleanupExpiredImages(staticConfig.imageDir, staticConfig.imageTtlMs);
 if (initiallyRemoved) log("info", "startup_cleanup", { removed: initiallyRemoved });
@@ -162,9 +191,9 @@ const app = express();
 app.disable("x-powered-by");
 app.use((req, res, next) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "POST, GET, PUT, DELETE, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Accept, Authorization, Mcp-Session-Id, MCP-Protocol-Version, Last-Event-ID, XBY-APIKEY");
-  res.setHeader("Access-Control-Expose-Headers", "Mcp-Session-Id");
+  res.setHeader("Access-Control-Allow-Methods", "POST, GET, HEAD, PUT, DELETE, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Accept, Authorization, Mcp-Session-Id, MCP-Protocol-Version, Last-Event-ID, XBY-APIKEY, X-Reference-Sha256");
+  res.setHeader("Access-Control-Expose-Headers", "Mcp-Session-Id, X-Reference-Sha256, X-Reference-Updated-At");
   res.setHeader("Access-Control-Max-Age", "86400");
   res.setHeader("X-Content-Type-Options", "nosniff");
   if (req.method === "OPTIONS") return res.sendStatus(204);
@@ -172,6 +201,29 @@ app.use((req, res, next) => {
 });
 app.use(express.json({ limit: "1mb" }));
 app.get("/healthz", (req, res) => res.json({ status: "ok", service: SERVICE_NAME, version: SERVICE_VERSION }));
+function setReferenceHeaders(res, metadata) {
+  res.setHeader("Cache-Control", "no-store");
+  res.setHeader("X-Reference-Sha256", metadata.sha256);
+  res.setHeader("X-Reference-Updated-At", String(metadata.updatedAt));
+}
+app.head("/references/:slotId", requireBearer, async (req, res, next) => {
+  try { const metadata = await referenceStore.getMetadata(req.params.slotId); if (!metadata) return res.sendStatus(404); setReferenceHeaders(res, metadata); return res.sendStatus(200); } catch (error) { next(error); }
+});
+app.get("/references/:slotId", requireBearer, async (req, res, next) => {
+  try { const metadata = await referenceStore.getMetadata(req.params.slotId); if (!metadata) return res.sendStatus(404); setReferenceHeaders(res, metadata); return res.json(metadata); } catch (error) { next(error); }
+});
+app.put("/references/:slotId", requireBearer, express.raw({ type: "image/png", limit: "20mb" }), async (req, res, next) => {
+  try {
+    if (!Buffer.isBuffer(req.body)) return res.status(415).json({ error: "unsupported_media_type", message: "Content-Type must be image/png" });
+    const result = await referenceStore.put(req.params.slotId, req.body, req.get("X-Reference-Sha256") || "");
+    setReferenceHeaders(res, result.metadata);
+    return res.status(result.existed ? 200 : 201).json(result.metadata);
+  } catch (error) { next(error); }
+});
+app.delete("/references/:slotId", requireBearer, async (req, res, next) => {
+  try { await referenceStore.remove(req.params.slotId); return res.sendStatus(204); } catch (error) { next(error); }
+});
+
 
 app.get("/config", requireBearer, async (req, res, next) => {
   try { res.setHeader("Cache-Control", "no-store"); res.json(runtimeStore.toPublic(await runtimeStore.load())); }
@@ -239,7 +291,8 @@ app.delete("/mcp", requireBearer, (req, res) => methodNotAllowed(res));
 app.use((error, req, res, next) => {
   log("error", "http_error", safeErrorLogFields(error));
   if (res.headersSent) return next(error);
-  res.status(400).json({ error: "request_failed", message: error?.message || "Request failed" });
+  const status = Number.isInteger(error?.statusCode) ? error.statusCode : 400;
+  res.status(status).json({ error: status === 413 ? "payload_too_large" : "request_failed", message: error?.message || "Request failed" });
 });
 
 const httpServer = app.listen(staticConfig.port, staticConfig.host, async () => {

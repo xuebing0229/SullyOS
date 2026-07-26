@@ -2,6 +2,7 @@
 import React, { createContext, useContext, useEffect, useState, useRef, useCallback } from 'react';
 import { APIConfig, AppID, OSTheme, VirtualTime, CharacterProfile, CharacterGroup, ChatTheme, Toast, FullBackupData, UserProfile, ApiPreset, GroupProfile, SystemLog, Worldbook, NovelBook, SongSheet, Message, RealtimeConfig, AppearancePreset, CloudBackupConfig, CloudBackupFile } from '../types';
 import { DB } from '../utils/db';
+import { deleteRemoteNovelAiReference, stripNovelAiReferenceForTextOnlyBackup } from '../utils/novelAiReference';
 import { modelRejectsSamplingParams, stripSamplingParams, isSamplingParamError } from '../utils/samplingParamCompat';
 import { extractImagesInPlace, deepCloneForExport } from '../utils/backupExport';
 import { isBlobRef, getBlobForRef, migrateDataUrlToRef, migrateAppearancePresetBlobRefs, resolveBlobRefsDeep, BLOBREF_PREFIX, deleteBlobRefIfUnreferenced } from '../utils/blobRef';
@@ -2622,8 +2623,10 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
   };
   const updateCharacter = async (id: string, updates: Partial<CharacterProfile> | ((prev: CharacterProfile) => Partial<CharacterProfile>)) => { setCharacters(prev => { const updated = prev.map(c => c.id === id ? normalizeCharacterImpression({ ...c, ...(typeof updates === 'function' ? updates(c) : updates) }) : c); const target = updated.find(c => c.id === id); if (target) DB.saveCharacter(target); return updated; }); };
   const deleteCharacter = async (id: string) => {
+    const deletedCharacter = characters.find(character => character.id === id);
     setCharacters(prev => { const remaining = prev.filter(c => c.id !== id); if (remaining.length > 0 && activeCharacterId === id) { setActiveCharacterId(remaining[0].id); } return remaining; });
     await DB.deleteCharacter(id);
+    if (deletedCharacter?.novelAiReference) void deleteRemoteNovelAiReference(deletedCharacter.novelAiReference).catch(() => {});
     // 表情分类不随角色级联删除会留下「幽灵专属包」：单聊面板被可见性过滤掉（删不掉），
     // 群聊面板/提示词却还能看到。删完角色顺手按剩余角色清一次残留（详见 DB.cleanupEmojiResidue）。
     try {
@@ -3465,6 +3468,9 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
               if (noImageStores.has(storeName)) {
                   processedData = rawData;
               } else if (mode === 'text_only') {
+                  if (storeName === 'characters' && Array.isArray(rawData)) {
+                      rawData = rawData.map(stripNovelAiReferenceForTextOnlyBackup);
+                  }
                   processedData = Array.isArray(rawData) && rawData.length > 200
                       ? await processArrayChunked(rawData, stripBase64)
                       : stripBase64(rawData);
@@ -3494,6 +3500,7 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
                               activeSkinSetId: c.activeSkinSetId,
                               customDateSprites: c.customDateSprites,
                               spriteConfig: c.spriteConfig,
+                              novelAiReference: c.novelAiReference,
                               roomItems: c.roomConfig?.items?.reduce((acc: any, item: any) => {
                                   if (item.image && (item.image.startsWith('data:') || item.image.startsWith(BLOBREF_PREFIX))) {
                                       acc[item.id] = item.image;

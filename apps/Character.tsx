@@ -27,6 +27,7 @@ import { toMountedWorldbook } from '../utils/worldbook';
 import { stripSensitiveCardFields } from '../utils/characterCard';
 import { confirmExportSafety } from '../utils/exportGuard';
 import { sortCharacterGroups, GROUP_FILTER_UNGROUPED } from '../components/character/CharacterGroupFilter';
+import NovelAiReferenceSettings from '../components/character/NovelAiReferenceSettings';
 
 // ── 神经链接 · 列表页视觉件（淡紫留白风）────────────────────
 // 之前的「星点 + 玻璃饰带 + 华丽头像框」看久了眼花、低端机也重绘卡。
@@ -1319,6 +1320,13 @@ ${isInitialGeneration ? `
                                     placeholder="在这个世界里，魔法是存在的..."
                                 />
                            </div>
+
+                           <NovelAiReferenceSettings
+                               characterId={formData.id}
+                               value={formData.novelAiReference}
+                               onChange={(next) => handleChange('novelAiReference', next)}
+                               addToast={addToast}
+                           />
 
                            {/* 时间感知 & 时区：三个独立开关，可任意组合（聊天时间感知 / 自定义时区 / 线下时间感知） */}
                            <div className="bg-white rounded-3xl p-4 shadow-sm border border-slate-100 space-y-4">

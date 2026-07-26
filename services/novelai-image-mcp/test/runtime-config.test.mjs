@@ -28,3 +28,19 @@ test('official profile fixes official host and keeps key secret', async () => {
     assert.equal(effective.upstreamModelFull, 'nai-diffusion-4-5-full');
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
+
+
+test('switching from custom to official resets profile fields and keeps the key', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'nai-switch-'));
+  try {
+    const store = createNovelRuntimeConfigStore({ filePath: path.join(dir, 'config.json'), bootstrap, allowInsecureUpstream: false });
+    const custom = await store.update({ expectedRevision: 0, patch: { profile: 'custom', baseUrl: 'https://love.auroralove.cc', generatePath: '/generate-direct', authHeader: 'X-API-Key', authPrefix: '', modelFull: 'legacy-full' }, apiKey: 'TEST_KEEP_KEY' });
+    const official = await store.update({ expectedRevision: custom.revision, patch: { profile: 'official' } });
+    assert.equal(official.baseUrl, 'https://image.novelai.net');
+    assert.equal(official.generatePath, '/ai/generate-image');
+    assert.equal(official.authHeader, 'Authorization');
+    assert.equal(official.authPrefix, 'Bearer');
+    assert.equal(official.modelFull, 'nai-diffusion-4-5-full');
+    assert.equal(official.apiKey, 'TEST_KEEP_KEY');
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});

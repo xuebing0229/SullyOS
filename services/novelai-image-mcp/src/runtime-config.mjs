@@ -116,7 +116,9 @@ export function createNovelRuntimeConfigStore({ filePath, bootstrap, allowInsecu
   }
   function merge(current, payload) {
     const patch = isObject(payload?.patch) ? payload.patch : {};
-    const next = { ...current, ...patch, apiKey: current.apiKey };
+    const requestedProfile = String(patch.profile ?? current.profile).trim().toLowerCase();
+    const profileDefaults = requestedProfile !== current.profile ? UPSTREAM_PROFILES[requestedProfile] : null;
+    const next = { ...current, ...(profileDefaults ?? {}), ...patch, apiKey: current.apiKey };
     if (payload?.clearApiKey === true) next.apiKey = "";
     if (typeof payload?.apiKey === "string" && payload.apiKey.trim()) next.apiKey = payload.apiKey.trim();
     return normalizeNovelRuntimeConfig(next, bootstrap, { allowInsecureUpstream });

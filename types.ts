@@ -2085,6 +2085,20 @@ export interface CharMusicProfile {
     updatedAt: number;
 }
 
+export type NovelAiReferenceType = 'character' | 'style' | 'character&style';
+
+export interface NovelAiPreciseReferenceConfig {
+  enabled: boolean;
+  imageRef: string;
+  imageSha256: string;
+  slotId: string;
+  type: NovelAiReferenceType;
+  strength: number;
+  fidelity: number;
+  sourceName?: string;
+  updatedAt: number;
+}
+
 export interface CharacterProfile {
   id: string;
   name: string;
@@ -2092,6 +2106,8 @@ export interface CharacterProfile {
   description: string;
   systemPrompt: string;
   worldview?: string;
+  /** NovelAI V4.5 精密参照；图片使用本机 blobref，服务器仅缓存随机槽位。 */
+  novelAiReference?: NovelAiPreciseReferenceConfig;
   /** 角色分组：指向 CharacterGroup.id；空或指向已删分组 = 未分组。仅本地组织用，不随角色卡导出 */
   groupId?: string;
   memories: MemoryFragment[];
@@ -3169,6 +3185,7 @@ export interface FullBackupData {
         activeSkinSetId?: string;
         customDateSprites?: string[];
         spriteConfig?: SpriteConfig;
+        novelAiReference?: NovelAiPreciseReferenceConfig;
         roomItems?: Record<string, string>;
         backgrounds?: { chat?: string; date?: string; roomWall?: string; roomFloor?: string };
     }[];

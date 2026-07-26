@@ -1,5 +1,6 @@
 import { randomBytes, randomInt } from "node:crypto";
 import { unzipSync } from "fflate";
+import { applyPreciseReference } from "./precise-reference.mjs";
 
 export const SIZE_PRESETS = Object.freeze({
   portrait: { width: 832, height: 1216 },
@@ -20,8 +21,11 @@ const UC_PRESETS = Object.freeze({
 const CJK_PATTERN =
   /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
 
-function correlationId() {
-  return randomBytes(8).toString("hex");
+export function correlationId() {
+  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+  let result = "";
+  for (let index = 0; index < 6; index += 1) result += chars[randomInt(0, chars.length)];
+  return result;
 }
 
 function joinPromptParts(...parts) {
@@ -82,6 +86,7 @@ export function buildUpstreamRequest({
   guidance = 5,
   ucPreset = "heavy",
   qualityTags = true,
+  preciseReference = null,
   config
 }) {
   assertPromptPolicy(prompt, config.promptLanguagePolicy);
@@ -101,7 +106,7 @@ export function buildUpstreamRequest({
     undesiredContent
   );
 
-  const parameters = {
+  let parameters = {
     params_version: config.upstreamParamsVersion,
     width: dimensions.width,
     height: dimensions.height,
@@ -137,6 +142,10 @@ export function buildUpstreamRequest({
     },
     ...config.upstreamParameterOverrides
   };
+
+  if (preciseReference) {
+    parameters = applyPreciseReference(parameters, preciseReference);
+  }
 
   const basePayload = {
     action: "generate",

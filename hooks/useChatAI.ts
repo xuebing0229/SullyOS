@@ -27,6 +27,7 @@ import { callMcpTool, getMcpUseNativeTools, type McpToolResult } from '../utils/
 import { buildMcpOpenAITools, buildMcpRejectedToolsFallbackBody, buildMcpTextFallbackBody, extractTextFakedMcpCalls, formatMcpToolResult, sanitizeMcpLeadInText, shouldRetryMcpWithoutTools, stripTextFakedMcpCalls, type FakedMcpCall } from '../utils/mcpToolBridge';
 import { buildChatRequestPayload } from '../utils/chatRequestPayload';
 import { persistMcpGeneratedImages } from '../utils/mcpImagePersistence';
+import { prepareBuiltinImageToolArguments, sanitizeNovelAiReferenceToolArguments } from '../utils/novelAiReference';
 import {
     isInstantConfigReady,
     sendInstantPushAndAwaitReply,
@@ -1431,9 +1432,12 @@ export const useChatAI = ({
                         if (mcpHit) {
                             setSearchStatus(`正在调用 MCP 工具：${fname}...`);
                             let mcpResult: any;
-                            try { mcpResult = await callMcpTool(mcpHit.server, mcpHit.toolName, args); }
+                            try {
+                                const preparedArgs = await prepareBuiltinImageToolArguments({ server: mcpHit.server, toolName: mcpHit.toolName, args, character: char });
+                                mcpResult = await callMcpTool(mcpHit.server, mcpHit.toolName, preparedArgs);
+                            }
                             catch (e: any) { mcpResult = { success: false, error: e?.message || String(e) }; }
-                            if (mcpResult.success) await persistMcpImages(mcpResult, { id: mcpHit.server.id, name: mcpHit.server.name }, mcpHit.toolName, args);
+                            if (mcpResult.success) await persistMcpImages(mcpResult, { id: mcpHit.server.id, name: mcpHit.server.name }, mcpHit.toolName, sanitizeNovelAiReferenceToolArguments(args));
                             const mcpMsg = mcpResult.success
                                 ? `工具 ${fname} 成功。结果: ${formatMcpToolResult(mcpResult.data)}`
                                 : `工具 ${fname} 失败: ${mcpResult.error}`;
@@ -1522,9 +1526,12 @@ export const useChatAI = ({
                     for (const call of faked) {
                         try { executedSig.add(`${call.exposedName}|${JSON.stringify(call.args)}`); } catch { /* ignore */ }
                         let r: any;
-                        try { r = await callMcpTool(call.server, call.toolName, call.args); }
+                        try {
+                            const preparedArgs = await prepareBuiltinImageToolArguments({ server: call.server, toolName: call.toolName, args: call.args, character: char });
+                            r = await callMcpTool(call.server, call.toolName, preparedArgs);
+                        }
                         catch (e: any) { r = { success: false, error: e?.message || String(e) }; }
-                        if (r.success) await persistMcpImages(r, { id: call.server.id, name: call.server.name }, call.toolName, call.args);
+                        if (r.success) await persistMcpImages(r, { id: call.server.id, name: call.server.name }, call.toolName, sanitizeNovelAiReferenceToolArguments(call.args));
                         results.push(r.success
                             ? `工具 ${call.exposedName} 执行成功, 结果: ${formatMcpToolResult(r.data)}`
                             : `工具 ${call.exposedName} 执行失败: ${r.error}`);
