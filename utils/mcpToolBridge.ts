@@ -8,7 +8,7 @@
  * 工具循环本体在 hooks/useChatAI.ts（对标 luckinChat 循环）。
  */
 
-import { getEnabledMcpServers, type McpServerConfig, type McpToolDef } from './mcpClient';
+import { getEnabledMcpServers, type McpServerConfig, type McpToolDef, type McpToolResult } from './mcpClient';
 
 export interface OpenAIMcpTool {
     type: 'function';
@@ -84,56 +84,116 @@ export const formatMcpToolResult = (data: any): string => {
         : s;
 };
 
-/**
- * 从通用 MCP 工具结果中提取可直接展示的远程图片 URL。
- *
- * MCP 没有强制所有生图服务器使用同一种返回形状：有的返回 structuredContent.url，
- * 有的只在 text content 里给 Markdown 图片或 Direct URL。这里同时递归扫描结构化值和
- * 字符串，随后由聊天层落成原生 type=image 消息；这样不依赖模型复述 Markdown，也不
- * 会被 MessageItem 的 Markdown Lite 把 ![alt](url) 清理成纯文字。
- */
-const MCP_IMAGE_EXT_RE = /\.(?:png|jpe?g|webp|gif|avif)(?:[?#][^\s"'<>)]*)?$/i;
-const MCP_MARKDOWN_IMAGE_RE = /!\[[^\]]*\]\((https?:\/\/[^\s)]+)\)/gi;
-const MCP_HTTP_URL_RE = /https?:\/\/[^\s"'<>]+/gi;
-const cleanMcpUrl = (value: string): string => value.trim().replace(/[),.;!?，。；！？]+$/g, '');
-const isLikelyMcpImageUrl = (value: string): boolean => {
-    try {
-        const parsed = new URL(value);
-        return /^https?:$/.test(parsed.protocol) && MCP_IMAGE_EXT_RE.test(`${parsed.pathname}${parsed.search}${parsed.hash}`);
-    } catch {
-        return false;
+/** MCP 图片候选：可信结构化 URL 或标准 base64 图片。 */
+export type McpImageCandidate =
+    | { kind: 'url'; url: string; mimeType?: string; trusted: boolean }
+    | { kind: 'base64'; data: string; mimeType: string; trusted: true };
+
+const IMAGE_URL_EXT_RE = /\.(?:png|jpe?g|webp|gif|avif|bmp)(?:[?#].*)?$/i;
+const HTTP_URL_RE = /^https?:\/\/[^\s<>"']+$/i;
+const DATA_IMAGE_RE = /^data:(image\/[^;,]+);base64,(.+)$/i;
+
+const isExplicitImageKey = (key: string): boolean =>
+    /^(?:image|img|picture|photo)(?:_?url|_?uri|_?src)?$/i.test(key)
+    || /^(?:imageUrl|imageURL|image_url|imageUri|image_uri)$/i.test(key);
+const isImageMime = (value: unknown): value is string =>
+    typeof value === 'string' && /^image\//i.test(value);
+
+const candidateKey = (candidate: McpImageCandidate): string => candidate.kind === 'url'
+    ? `url:${candidate.url}`
+    : `b64:${candidate.mimeType}:${candidate.data.length}:${candidate.data.slice(0, 48)}:${candidate.data.slice(-48)}`;
+export const getMcpImageCandidateKey = candidateKey;
+
+const pushCandidate = (out: McpImageCandidate[], seen: Set<string>, candidate: McpImageCandidate): void => {
+    const key = candidateKey(candidate);
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(candidate);
+};
+
+const scanTextForConservativeUrls = (text: string, out: McpImageCandidate[], seen: Set<string>): void => {
+    const markdownImageRe = /!\[[^\]]*]\((https?:\/\/[^)\s]+)\)/gi;
+    let match: RegExpExecArray | null;
+    while ((match = markdownImageRe.exec(text))) {
+        pushCandidate(out, seen, { kind: 'url', url: match[1], trusted: true });
+    }
+    const urlRe = /https?:\/\/[^\s<>"')\]]+/gi;
+    while ((match = urlRe.exec(text))) {
+        const url = match[0].replace(/[.,;:!?]+$/, '');
+        if (!IMAGE_URL_EXT_RE.test(url)) continue;
+        pushCandidate(out, seen, { kind: 'url', url, trusted: false });
     }
 };
-export const extractMcpImageUrls = (data: any): string[] => {
-    const found = new Set<string>();
-    const seen = new Set<any>();
-    const add = (candidate: string) => {
-        const cleaned = cleanMcpUrl(candidate);
-        if (isLikelyMcpImageUrl(cleaned)) found.add(cleaned);
-    };
-    const scanText = (text: string) => {
-        MCP_MARKDOWN_IMAGE_RE.lastIndex = 0;
-        for (const match of text.matchAll(MCP_MARKDOWN_IMAGE_RE)) add(match[1]);
-        MCP_HTTP_URL_RE.lastIndex = 0;
-        for (const match of text.matchAll(MCP_HTTP_URL_RE)) add(match[0]);
-    };
-    const walk = (value: any, depth: number) => {
-        if (value == null || depth > 8) return;
-        if (typeof value === 'string') { scanText(value); return; }
-        if (typeof value !== 'object' || seen.has(value)) return;
-        seen.add(value);
-        if (Array.isArray(value)) {
-            value.forEach(item => walk(item, depth + 1));
+
+const walkStructuredImageValues = (
+    value: unknown,
+    out: McpImageCandidate[],
+    seenCandidates: Set<string>,
+    visited: WeakSet<object>,
+    keyHint = '',
+    parentMime?: string,
+): void => {
+    if (typeof value === 'string') {
+        const dataMatch = DATA_IMAGE_RE.exec(value);
+        if (dataMatch) {
+            pushCandidate(out, seenCandidates, { kind: 'base64', mimeType: dataMatch[1], data: dataMatch[2], trusted: true });
             return;
         }
-        for (const [key, child] of Object.entries(value)) {
-            if (typeof child === 'string' && /^(?:url|image|image_url|imageUrl|src|markdown)$/i.test(key)) add(child);
-            walk(child, depth + 1);
+        if (HTTP_URL_RE.test(value)) {
+            const trusted = isExplicitImageKey(keyHint) || isImageMime(parentMime) || IMAGE_URL_EXT_RE.test(value);
+            if (trusted) {
+                pushCandidate(out, seenCandidates, {
+                    kind: 'url', url: value,
+                    mimeType: isImageMime(parentMime) ? parentMime : undefined,
+                    trusted: isExplicitImageKey(keyHint) || isImageMime(parentMime),
+                });
+            }
+            return;
         }
-    };
-    walk(data, 0);
-    return [...found];
+        scanTextForConservativeUrls(value, out, seenCandidates);
+        return;
+    }
+    if (!value || typeof value !== 'object') return;
+    if (value instanceof Blob || value instanceof ArrayBuffer || ArrayBuffer.isView(value)) return;
+    if (visited.has(value as object)) return;
+    visited.add(value as object);
+    if (Array.isArray(value)) {
+        value.forEach(item => walkStructuredImageValues(item, out, seenCandidates, visited, keyHint, parentMime));
+        return;
+    }
+    const record = value as Record<string, unknown>;
+    const mime = (isImageMime(record.mimeType) && record.mimeType)
+        || (isImageMime(record.mime_type) && record.mime_type)
+        || (isImageMime(record.contentType) && record.contentType)
+        || (isImageMime(record.content_type) && record.content_type)
+        || parentMime;
+    if (record.type === 'image' && typeof record.data === 'string' && record.data.length > 0) {
+        pushCandidate(out, seenCandidates, { kind: 'base64', data: record.data, mimeType: mime || 'image/png', trusted: true });
+    }
+    for (const [key, child] of Object.entries(record)) {
+        walkStructuredImageValues(child, out, seenCandidates, visited, key, mime);
+    }
 };
+
+export function extractMcpImageCandidates(result: McpToolResult): McpImageCandidate[] {
+    const out: McpImageCandidate[] = [];
+    const seenCandidates = new Set<string>();
+    for (const image of result.images || []) {
+        pushCandidate(out, seenCandidates, { kind: 'base64', data: image.data, mimeType: image.mimeType || 'image/png', trusted: true });
+    }
+    const visited = new WeakSet<object>();
+    if (result.structuredContent !== undefined) walkStructuredImageValues(result.structuredContent, out, seenCandidates, visited);
+    if (result.data !== undefined) walkStructuredImageValues(result.data, out, seenCandidates, visited);
+    if (result.rawText) scanTextForConservativeUrls(result.rawText, out, seenCandidates);
+    return out;
+}
+
+/** 旧接口保留给已有调用方。 */
+export function extractMcpImageUrls(data: any): string[] {
+    return extractMcpImageCandidates({ success: true, data, rawText: typeof data === 'string' ? data : undefined })
+        .filter((candidate): candidate is Extract<McpImageCandidate, { kind: 'url' }> => candidate.kind === 'url')
+        .map(candidate => candidate.url);
+}
 
 // ========== 提示词 ==========
 

@@ -491,6 +491,39 @@ describe('MCP 聊天链路不悬挂', () => {
         });
     });
 
+    it('保留标准 MCP image content，但模型 data 不包含图片 base64', async () => {
+        const server = mkServer({ id: 'standard-image-server' });
+        vi.spyOn(globalThis, 'fetch').mockImplementation((_url, init) => {
+            const req = JSON.parse(String(init?.body || '{}'));
+            if (req.method === 'initialize') {
+                return Promise.resolve(new Response(JSON.stringify({ jsonrpc: '2.0', id: req.id, result: {} }), {
+                    status: 200, headers: { 'Content-Type': 'application/json' },
+                }));
+            }
+            if (req.method === 'notifications/initialized') return Promise.resolve(new Response('', { status: 202 }));
+            return Promise.resolve(new Response(JSON.stringify({
+                jsonrpc: '2.0', id: req.id,
+                result: {
+                    content: [
+                        { type: 'text', text: '{"ok":true}' },
+                        { type: 'image', data: 'BASE64_IMAGE_PAYLOAD', mimeType: 'image/png' },
+                    ],
+                    structuredContent: { imageUrl: 'https://example.test/files/no-extension' },
+                },
+            }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+        });
+
+        const result = await callMcpTool(server, 'search', {});
+        expect(result).toMatchObject({
+            success: true,
+            data: { ok: true },
+            images: [{ data: 'BASE64_IMAGE_PAYLOAD', mimeType: 'image/png' }],
+            structuredContent: { imageUrl: 'https://example.test/files/no-extension' },
+        });
+        expect(JSON.stringify(result.data)).not.toContain('BASE64_IMAGE_PAYLOAD');
+        expect(result.content).toContainEqual(expect.objectContaining({ type: 'image' }));
+    });
+
     it('SSE 收到当前 JSON-RPC 结果后立即返回，不等待服务器关闭长连接', async () => {
         const info = vi.spyOn(console, 'info').mockImplementation(() => {});
         const server = mkServer({ id: 'open-sse-server' });

@@ -53,11 +53,22 @@ export interface McpServerConfig {
     requestTimeoutMs?: number;
 }
 
+export interface McpImageContent {
+    data: string;
+    mimeType: string;
+}
+
 export interface McpToolResult {
     success: boolean;
+    /** 给模型整理工具结果用，不含图片 base64。 */
     data?: any;
     rawText?: string;
     error?: string;
+    /** 保留 MCP 原始结构，供客户端图片持久化。 */
+    content?: any[];
+    structuredContent?: any;
+    images?: McpImageContent[];
+    rawResult?: any;
 }
 
 const MCP_SERVERS_KEY = 'aetheros.mcp.servers';
@@ -532,18 +543,48 @@ export const callMcpTool = async (
         if (!response) return finish({ success: false, error: '空响应' });
         if (response.error) return finish({ success: false, error: `MCP 错误 [${response.error.code}]: ${response.error.message}` });
 
-        const result = response.result;
-        if (result?.content && Array.isArray(result.content)) {
-            const textParts = result.content.filter((c: any) => c?.type === 'text').map((c: any) => c.text || '');
-            const fullText = textParts.join('\n').trim();
-            if (result.isError) return finish({ success: false, error: fullText || 'MCP 工具执行失败', rawText: fullText });
-            try {
-                return finish({ success: true, data: JSON.parse(fullText), rawText: fullText });
-            } catch {
-                return finish({ success: true, data: fullText, rawText: fullText });
-            }
+        const result = response.result ?? response;
+        const content = Array.isArray(result?.content) ? result.content : [];
+        const textParts = content
+            .filter((part: any) => part?.type === 'text' && typeof part.text === 'string')
+            .map((part: any) => part.text);
+        const rawText = textParts.join('\n').trim();
+
+        let parsedText: any = undefined;
+        if (rawText) {
+            try { parsedText = JSON.parse(rawText); }
+            catch { parsedText = rawText; }
         }
-        return finish({ success: true, data: result });
+
+        const structuredContent = result?.structuredContent;
+        const images: McpImageContent[] = content
+            .filter((part: any) => part?.type === 'image' && typeof part.data === 'string' && part.data.length > 0)
+            .map((part: any) => ({
+                data: part.data,
+                mimeType: typeof part.mimeType === 'string' && part.mimeType.startsWith('image/')
+                    ? part.mimeType
+                    : 'image/png',
+            }));
+
+        // 图片 base64 绝不能进入给模型整理结果用的 data。
+        const modelData = parsedText !== undefined
+            ? parsedText
+            : structuredContent !== undefined
+                ? structuredContent
+                : {};
+        const isError = result?.isError === true;
+        return finish({
+            success: !isError,
+            data: modelData,
+            rawText,
+            error: isError
+                ? (rawText || result?.error?.message || result?.message || 'MCP 工具返回错误')
+                : undefined,
+            content,
+            structuredContent,
+            images,
+            rawResult: result,
+        });
     } catch (e: any) {
         return finish({ success: false, error: e?.message || String(e) });
     }
