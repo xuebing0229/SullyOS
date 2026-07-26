@@ -1153,9 +1153,11 @@ const ChatModals: React.FC<ChatModalsProps> = ({
                                 <button
                                     onClick={onToggleScheduleFeature}
                                     aria-label="切换日程与情绪总开关"
-                                    className={`relative w-10 h-6 overflow-hidden rounded-full transition-colors flex-shrink-0 ${isScheduleFeatureEnabled ? 'bg-primary' : 'bg-slate-300'}`}
+                                    className="flex-shrink-0 appearance-none border-0 bg-transparent p-0"
                                 >
-                                    <div className={`absolute top-1 h-4 w-4 rounded-full bg-white shadow-sm transition-[left,right] ${isScheduleFeatureEnabled ? 'right-1' : 'left-1'}`}></div>
+                                    <span className={`flex h-6 w-10 items-center rounded-full p-1 transition-colors ${isScheduleFeatureEnabled ? 'bg-primary' : 'bg-slate-300'}`}>
+                                        <span className={`h-4 w-4 rounded-full bg-white shadow-sm transition-transform ${isScheduleFeatureEnabled ? 'translate-x-4' : ''}`}></span>
+                                    </span>
                                 </button>
                             </div>
                         </div>

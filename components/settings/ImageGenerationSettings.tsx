@@ -45,9 +45,11 @@ const Toggle: React.FC<{ checked: boolean; onChange: (value: boolean) => void; d
         type="button"
         disabled={disabled}
         onClick={() => onChange(!checked)}
-        className={`relative h-6 w-11 shrink-0 overflow-hidden rounded-full transition-colors ${checked ? 'bg-violet-500' : 'bg-slate-200'} ${disabled ? 'opacity-40' : ''}`}
+        className={`shrink-0 appearance-none border-0 bg-transparent p-0 ${disabled ? 'opacity-40' : ''}`}
     >
-        <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-[left,right] ${checked ? 'right-0.5' : 'left-0.5'}`} />
+        <span className={`flex h-6 w-10 items-center rounded-full p-1 transition-colors ${checked ? 'bg-violet-500' : 'bg-slate-200'}`}>
+            <span className={`h-4 w-4 rounded-full bg-white shadow-sm transition-transform ${checked ? 'translate-x-4' : ''}`} />
+        </span>
     </button>
 );
 
