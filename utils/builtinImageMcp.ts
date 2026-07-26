@@ -121,7 +121,9 @@ export function loadBuiltinImageSettings(): BuiltinImageSettings {
 
 export function saveBuiltinImageSettings(settings: BuiltinImageSettings): void {
     localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
-    window.dispatchEvent(new CustomEvent('sullyos:builtin-image-mcp-changed'));
+    if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('sullyos:builtin-image-mcp-changed'));
+    }
 }
 
 export function updateBuiltinImageBinding(
@@ -230,8 +232,9 @@ export async function testBuiltinImageRemoteConfig(
 }
 
 /**
- * Intentionally excluded from the existing unencrypted ZIP backup path.
- * It contains the MCP bearer token. Upstream API keys never reach this file at all.
+ * 内置生图 binding 会随 SullyOS full / text_only 备份导出。
+ * 用户已明确允许 MCP Token 与生图 API Key 进入私人备份。
+ * 仍禁止把密钥写入聊天、Prompt、日志、Git 或错误文本。
  */
 export function clearBuiltinImageSettings(): void {
     localStorage.removeItem(SETTINGS_KEY);
