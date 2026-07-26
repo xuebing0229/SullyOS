@@ -5,6 +5,9 @@ import { DB } from '../utils/db';
 import { modelRejectsSamplingParams, stripSamplingParams, isSamplingParamError } from '../utils/samplingParamCompat';
 import { extractImagesInPlace, deepCloneForExport } from '../utils/backupExport';
 import { isBlobRef, getBlobForRef, migrateDataUrlToRef, migrateAppearancePresetBlobRefs, resolveBlobRefsDeep, BLOBREF_PREFIX, deleteBlobRefIfUnreferenced } from '../utils/blobRef';
+import { externalizeBlobRefsInPlace, restorePortableBlobRefsInPlace } from '../utils/blobBackup';
+import { exportImageGenerationLocalForMode, importImageGenerationLocal } from '../utils/imageGenerationPresets';
+import { importMcpLocal } from '../utils/mcpClient';
 import { LEGACY_DEFAULT_WALLPAPER, isLegacyDefaultWallpaper, shouldPreserveLegacyDefaultWallpaper } from '../utils/wallpaperCompat';
 import { migrateSharkpanAssets } from '../utils/sharkpanAssetMigration';
 import { writeV2Backup, assembleV2Backup, type BackupManifest, type ZipFileWriter, type ZipFileReader } from '../utils/backupFormat';
@@ -3059,6 +3062,13 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
           // is the base64 string itself, value is the assets/* path. For a
           // heavy user with 50 chats sharing a 200KB avatar this trims ~10MB.
           const assetDedupMap = new Map<string, string>();
+          const portableBlobPathById = new Map<string, string>();
+          const externalizePortableBlobs = async (value: unknown): Promise<void> => {
+              await externalizeBlobRefsInPlace(value, {
+                  hasPath: path => Boolean(zip.file(path)),
+                  writeBytes: (path, bytes) => { zip.file(path, bytes); assetCount += 1; },
+              }, portableBlobPathById);
+          };
 
           // Strip Base64 Images (Recursive) - Used for Text Only Mode
           const stripBase64 = (obj: any): any => {
@@ -3186,6 +3196,7 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
               availableModels: (mode === 'text_only' || mode === 'full') ? availableModels : undefined,
               realtimeConfig: (mode === 'text_only' || mode === 'full') ? realtimeConfig : undefined,
               memoryPalaceConfig: (mode === 'text_only' || mode === 'full') ? memoryPalaceConfig : undefined,
+              imageGenerationLocal: exportImageGenerationLocalForMode(mode),
               theme: cloneForInPlace(theme), // Include theme in all modes (text/media)
               customIcons: (mode === 'text_only' || mode === 'media_only' || mode === 'full')
                   ? cloneForInPlace(customIcons)
@@ -3352,11 +3363,11 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
                       const ptr = await DB.getAsset('lock_wallpaper');
                       (backupData.theme as any).lockWallpaper = ptr || undefined;
                   }
-                  await resolveBlobRefsDeep(backupData.theme);
+                  await externalizePortableBlobs(backupData.theme);
               }
-              if (backupData.roomCustomAssets) await resolveBlobRefsDeep(backupData.roomCustomAssets);
-              if (backupData.customIcons) await resolveBlobRefsDeep(backupData.customIcons);
-              if (backupData.appearancePresets) await resolveBlobRefsDeep(backupData.appearancePresets);
+              if (backupData.roomCustomAssets) await externalizePortableBlobs(backupData.roomCustomAssets);
+              if (backupData.customIcons) await externalizePortableBlobs(backupData.customIcons);
+              if (backupData.appearancePresets) await externalizePortableBlobs(backupData.appearancePresets);
 
               if (backupData.socialAppData?.userProfile) processObject(backupData.socialAppData.userProfile);
               if (backupData.socialAppData?.userBg) processObject(backupData.socialAppData.userBg);
@@ -3440,15 +3451,6 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
                   continue;
               }
 
-              // 这些 store 的图片可能存的是 blobref 令牌，媒体/全量模式下先解析回 data:image，
-              // 令后面的 data:→zip 抽取能认得：
-              //  · characters：小屋 roomConfig.wallImage/floorImage/items[].image、sprites.chibi
-              //    （media_only 的 roomItems/backgrounds 提取也依赖已还原成 data:）
-              //  · cc_custom_parts：捏人器自定义部件的 src / shadowSrc
-              if ((storeName === 'characters' || storeName === 'cc_custom_parts') && mode !== 'text_only' && Array.isArray(rawData)) {
-                  for (const c of rawData) await resolveBlobRefsDeep(c);
-              }
-
               // --- MODE SPECIFIC FILTERING ---
 
               if (storeName === 'assets' && Array.isArray(rawData)) {
@@ -3474,6 +3476,10 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
                       rawData = rawData.filter((m: Message) => m.type === 'image' || m.type === 'emoji');
                   }
 
+                  if (!(storeName === 'characters' && mode === 'media_only')) {
+                      await externalizePortableBlobs(rawData);
+                  }
+
                   if (storeName === 'characters' && mode === 'media_only') {
                       // Character Logic: Export ONLY visual assets to mediaAssets array
                       // Do not export the full character array to avoid overwriting text data on import
@@ -3489,7 +3495,7 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
                               customDateSprites: c.customDateSprites,
                               spriteConfig: c.spriteConfig,
                               roomItems: c.roomConfig?.items?.reduce((acc: any, item: any) => {
-                                  if (item.image && item.image.startsWith('data:')) {
+                                  if (item.image && (item.image.startsWith('data:') || item.image.startsWith(BLOBREF_PREFIX))) {
                                       acc[item.id] = item.image;
                                   }
                                   return acc;
@@ -3503,6 +3509,7 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
                           };
                           return processObject(extracted);
                       });
+                      await externalizePortableBlobs(mediaList);
                       backupData.mediaAssets = mediaList;
                       continue; // Skip standard assignment
                   }
@@ -3650,6 +3657,7 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
           ? (typeof Blob !== 'undefined' ? new Blob([fileOrJson]).size : fileOrJson.length)
           : fileOrJson.size;
       const restoredAssetFiles = new Set<string>();
+      const portableBlobRefByPath = new Map<string, string>();
       let totalAssetFiles = 0;
       let lastProgress = 0;
       let lastCurrent = '解析备份文件';
@@ -3773,6 +3781,12 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
 
           const restoreAssetsInPlace = async (root: any, label = '数据'): Promise<void> => {
               if (!zip) return;
+              await restorePortableBlobRefsInPlace(root, {
+                  readBytes: async path => {
+                      const file = zip!.file(path);
+                      return file ? file.async('uint8array') : null;
+                  },
+              }, portableBlobRefByPath);
 
               type Ref = { parent: any; key: string | number; filename: string };
               const refsByFile = new Map<string, Ref[]>();
@@ -3786,7 +3800,7 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
                   if (Array.isArray(node)) {
                       for (let i = 0; i < node.length; i++) {
                           const v = node[i];
-                          if (typeof v === 'string' && v.startsWith('assets/')) {
+                          if (typeof v === 'string' && v.startsWith('assets/') && !v.startsWith('assets/blobrefs/')) {
                               const filename = v.slice('assets/'.length);
                               const refs = refsByFile.get(filename) || [];
                               refs.push({ parent: node, key: i, filename });
@@ -3799,7 +3813,7 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
                       for (const k in node) {
                           if (!Object.prototype.hasOwnProperty.call(node, k)) continue;
                           const v = node[k];
-                          if (typeof v === 'string' && v.startsWith('assets/')) {
+                          if (typeof v === 'string' && v.startsWith('assets/') && !v.startsWith('assets/blobrefs/')) {
                               const filename = v.slice('assets/'.length);
                               const refs = refsByFile.get(filename) || [];
                               refs.push({ parent: node, key: k, filename });
@@ -3889,6 +3903,8 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
           if (data.apiPresets) savePresets(data.apiPresets);
           if (data.realtimeConfig) updateRealtimeConfig(data.realtimeConfig); // 恢复实时感知配置
           if (data.memoryPalaceConfig) updateMemoryPalaceConfig(data.memoryPalaceConfig); // 恢复记忆宫殿全局配置
+          if (data.imageGenerationLocal) importImageGenerationLocal(data.imageGenerationLocal);
+          else if (data.mcpLocal) importMcpLocal(data.mcpLocal); // 兼容旧备份顶层通用 MCP 配置
 
           if (data.customIcons !== undefined || data.appearancePresets !== undefined) {
               await restoreAssetsInPlace(data.customIcons, '应用图标');

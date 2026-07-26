@@ -13,6 +13,11 @@ import {
     type NovelAiRemoteConfig,
 } from '../../utils/builtinImageMcp';
 import { resetMcpSession, testMcpConnection } from '../../utils/mcpClient';
+import {
+    applyImageGenerationPreset, createImageGenerationPreset, deleteImageGenerationPreset,
+    getActiveImageGenerationPreset, getImageGenerationPresets, renameImageGenerationPreset,
+    updateImageGenerationPreset, type ImageGenerationPreset,
+} from '../../utils/imageGenerationPresets';
 
 interface Props {
     addToast: (message: string, type?: 'success' | 'error' | 'info') => void;
@@ -190,6 +195,23 @@ const NovelForm: React.FC<{ config: NovelAiRemoteConfig; onChange: (next: NovelA
     );
 };
 
+const ImagePresetBar: React.FC<{ activePreset: ImageGenerationPreset | null; presets: ImageGenerationPreset[]; busy: boolean; onApply: (preset: ImageGenerationPreset) => void; onCreate: () => void; onUpdate: () => void; onRename: () => void; onDelete: () => void; }> = ({ activePreset, presets, busy, onApply, onCreate, onUpdate, onRename, onDelete }) => (
+    <div className="rounded-xl border border-violet-100 bg-violet-50/60 p-3">
+        <div className="flex items-center gap-2">
+            <select value={activePreset?.id || ''} disabled={busy} onChange={event => { const preset = presets.find(item => item.id === event.target.value); if (preset) onApply(preset); }} className="min-w-0 flex-1 rounded-xl border border-violet-100 bg-white px-3 py-2 text-xs text-slate-700">
+                <option value="">当前配置（未绑定预设）</option>
+                {presets.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
+            </select>
+            <button type="button" disabled={busy} onClick={onCreate} className="shrink-0 rounded-xl bg-violet-500 px-3 py-2 text-[10px] font-bold text-white disabled:opacity-40">保存为预设</button>
+        </div>
+        {activePreset && <div className="mt-2 grid grid-cols-3 gap-2">
+            <button type="button" disabled={busy} onClick={onUpdate} className="rounded-lg bg-white py-2 text-[10px] font-bold text-violet-600">更新</button>
+            <button type="button" disabled={busy} onClick={onRename} className="rounded-lg bg-white py-2 text-[10px] font-bold text-slate-600">重命名</button>
+            <button type="button" disabled={busy} onClick={onDelete} className="rounded-lg bg-white py-2 text-[10px] font-bold text-rose-500">删除</button>
+        </div>}
+    </div>
+);
+
 const EngineCard: React.FC<{
     id: BuiltinImageEngineId;
     title: string;
@@ -203,7 +225,10 @@ const EngineCard: React.FC<{
     const [open, setOpen] = useState(false);
     const [busy, setBusy] = useState(false);
     const [remote, setRemote] = useState<ImageRemoteConfig | null>(null);
-    const [apiKey, setApiKey] = useState('');
+    const [presetRevision, setPresetRevision] = useState(0);
+    const presets = useMemo(() => getImageGenerationPresets(id), [id, presetRevision]);
+    const activePreset = useMemo(() => getActiveImageGenerationPreset(id), [id, presetRevision]);
+    const [apiKey, setApiKey] = useState(() => getActiveImageGenerationPreset(id)?.apiKey || '');
     const [status, setStatus] = useState('');
 
     const updateBinding = (patch: Partial<BuiltinImageBinding>) => {
@@ -232,6 +257,12 @@ const EngineCard: React.FC<{
     };
 
     useEffect(() => {
+        const refresh = () => { setPresetRevision(value => value + 1); const active = getActiveImageGenerationPreset(id); if (active) setApiKey(active.apiKey); };
+        window.addEventListener('sullyos:image-generation-presets-changed', refresh);
+        return () => window.removeEventListener('sullyos:image-generation-presets-changed', refresh);
+    }, [id]);
+
+    useEffect(() => {
         if (open && binding.token && !remote && !busy) void loadRemote();
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [open]);
@@ -246,7 +277,7 @@ const EngineCard: React.FC<{
                 patch,
                 ...(apiKey.trim() ? { apiKey: apiKey.trim() } : {}),
             });
-            setRemote(updated); setApiKey(''); setStatus('✅ 已保存'); addToast(`${title}配置已保存`, 'success');
+            setRemote(updated); setStatus('✅ 已保存'); addToast(`${title}配置已保存`, 'success');
         } catch (error: any) {
             setStatus(`❌ ${error?.message || String(error)}`);
         } finally { setBusy(false); }
@@ -266,6 +297,13 @@ const EngineCard: React.FC<{
             setStatus(`❌ ${error?.message || String(error)}`);
         } finally { setBusy(false); }
     };
+
+    const ensureRemote = (): ImageRemoteConfig => { if (!remote) throw new Error('请先读取服务器配置'); return remote; };
+    const createPreset = () => { try { const name = window.prompt(`给这个${title}配置起个名字`, `${title}预设`); if (name === null) return; createImageGenerationPreset({ name, engineId: id, binding, remoteConfig: ensureRemote(), apiKey }); setPresetRevision(v => v + 1); addToast('生图预设已保存', 'success'); } catch (e: any) { addToast(e?.message || '保存预设失败', 'error'); } };
+    const updatePreset = () => { try { if (!activePreset) throw new Error('当前没有选中的预设'); updateImageGenerationPreset(activePreset.id, { binding, remoteConfig: ensureRemote(), apiKey }); setPresetRevision(v => v + 1); addToast('生图预设已更新', 'success'); } catch (e: any) { addToast(e?.message || '更新预设失败', 'error'); } };
+    const renamePreset = () => { if (!activePreset) return; const name = window.prompt('重命名生图预设', activePreset.name); if (name === null) return; try { renameImageGenerationPreset(activePreset.id, name); setPresetRevision(v => v + 1); } catch (e: any) { addToast(e?.message || '重命名失败', 'error'); } };
+    const removePreset = () => { if (!activePreset) return; deleteImageGenerationPreset(activePreset.id); setPresetRevision(v => v + 1); addToast('生图预设已删除', 'info'); };
+    const applyPreset = async (preset: ImageGenerationPreset) => { setBusy(true); setStatus(`正在应用预设「${preset.name}」…`); try { const result = await applyImageGenerationPreset(preset); setSettings(result.settings); setRemote(result.remote); setApiKey(preset.apiKey); setPresetRevision(v => v + 1); setStatus(`✅ 已应用预设「${preset.name}」`); addToast(`已应用${title}预设`, 'success'); } catch (e: any) { setStatus(`❌ ${e?.message || String(e)}`); } finally { setBusy(false); } };
 
     const setEnabled = async (enabled: boolean) => {
         if (!enabled) { updateBinding({ enabled: false }); return; }
@@ -307,6 +345,7 @@ const EngineCard: React.FC<{
             </div>
             {open && (
                 <div className="space-y-3 border-t border-violet-50 p-4">
+                    <ImagePresetBar activePreset={activePreset} presets={presets} busy={busy} onApply={preset => void applyPreset(preset)} onCreate={createPreset} onUpdate={updatePreset} onRename={renamePreset} onDelete={removePreset} />
                     <BindingAdvanced binding={binding} onChange={updateBinding} />
                     {!remote ? (
                         <button disabled={busy || !binding.token} onClick={() => void loadRemote()} className="w-full rounded-xl bg-violet-500 py-2.5 text-xs font-bold text-white disabled:opacity-40">读取服务器配置</button>
@@ -321,7 +360,7 @@ const EngineCard: React.FC<{
                                 value={apiKey}
                                 onChange={event => setApiKey(event.target.value)}
                                 placeholder={remote.apiKeyConfigured ? `已配置：${remote.apiKeyHint || '••••'}（留空不更换）` : '尚未配置'}
-                                hint="完整密钥只提交到你的日本服务器，不写入聊天、Prompt 或 SullyOS 备份。"
+                                hint="密钥可保存到生图预设，并随完整/纯文字备份恢复。"
                             />
                             <div className="grid grid-cols-2 gap-2">
                                 <button disabled={busy} onClick={() => void testControl(false)} className="rounded-xl border border-violet-200 bg-violet-50 py-2.5 text-xs font-bold text-violet-600 disabled:opacity-40">验证配置</button>
