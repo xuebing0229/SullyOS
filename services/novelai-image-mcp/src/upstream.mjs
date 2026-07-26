@@ -24,7 +24,9 @@ const CJK_PATTERN =
 export function correlationId() {
   const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
   let result = "";
-  for (let index = 0; index < 6; index += 1) result += chars[randomInt(0, chars.length)];
+  for (let index = 0; index < 6; index += 1) {
+    result += chars[randomInt(0, chars.length)];
+  }
   return result;
 }
 
@@ -122,7 +124,9 @@ export function buildUpstreamRequest({
     legacy: false,
     cfg_rescale: 0,
     dynamic_thresholding: false,
-    image_format: config.requestImageFormat,
+    ...(config.upstreamProfile === "official" && config.requestImageFormat
+      ? { image_format: config.requestImageFormat }
+      : {}),
     v4_prompt: {
       caption: {
         base_caption: prompt,
@@ -233,38 +237,62 @@ function decodeBase64Image(value) {
   return { imageBuffer: buffer, format };
 }
 
-function extractJsonCandidate(body) {
-  const base64Candidates = [
-    body?.images?.[0]?.image,
-    body?.images?.[0]?.b64_json,
-    body?.images?.[0]?.base64,
-    body?.data?.[0]?.b64_json,
-    body?.data?.[0]?.image,
-    body?.output?.[0]?.image,
-    body?.image,
-    body?.b64_json,
-    body?.base64
-  ];
+const IMAGE_CONTAINER_KEYS = new Set([
+  "data", "output", "result", "images"
+]);
+const URL_KEYS = new Set(["url", "imageurl", "image_url"]);
+const BASE64_KEYS = new Set(["b64_json", "base64"]);
 
-  for (const value of base64Candidates) {
-    if (typeof value === "string" && value.trim()) {
-      return { type: "base64", value };
-    }
+function looksLikeBase64Image(value) {
+  const compact = value.replace(/\s+/g, "");
+  return compact.length >= 24 && compact.length % 4 === 0 && /^[A-Za-z0-9+/]+={0,2}$/.test(compact);
+}
+
+function imageStringCandidate(value, key = "") {
+  if (typeof value !== "string" || !value.trim()) return null;
+  const text = value.trim();
+  const normalizedKey = key.toLowerCase();
+  if (/^data:image\/(?:png|webp|jpeg|jpg);base64,/i.test(text)) return { type: "base64", value: text };
+  if (URL_KEYS.has(normalizedKey)) return { type: "url", value: text };
+  if (BASE64_KEYS.has(normalizedKey)) return { type: "base64", value: text };
+  if (normalizedKey === "image") {
+    if (/^(?:https:\/\/|\/)/i.test(text)) return { type: "url", value: text };
+    if (looksLikeBase64Image(text)) return { type: "base64", value: text };
   }
+  return null;
+}
 
-  const urlCandidates = [
-    body?.images?.[0]?.url,
-    body?.data?.[0]?.url,
-    body?.output?.[0]?.url,
-    body?.url
-  ];
-
-  for (const value of urlCandidates) {
-    if (typeof value === "string" && value.trim()) {
-      return { type: "url", value };
+function extractJsonCandidate(value, key = "", seen = new Set()) {
+  const direct = imageStringCandidate(value, key);
+  if (direct) return direct;
+  if (!value || typeof value !== "object" || seen.has(value)) return null;
+  seen.add(value);
+  if (Array.isArray(value)) {
+    for (let index = value.length - 1; index >= 0; index -= 1) {
+      const candidate = extractJsonCandidate(value[index], key, seen);
+      if (candidate) return candidate;
     }
+    return null;
   }
-
+  const entries = Object.entries(value);
+  const priority = entries.filter(([name]) => URL_KEYS.has(name.toLowerCase()) || BASE64_KEYS.has(name.toLowerCase()) || name.toLowerCase() === "image");
+  for (const [name, child] of priority) {
+    const candidate = extractJsonCandidate(child, name, seen);
+    if (candidate) return candidate;
+  }
+  const containers = entries.filter(([name]) => IMAGE_CONTAINER_KEYS.has(name.toLowerCase()));
+  for (let index = containers.length - 1; index >= 0; index -= 1) {
+    const [name, child] = containers[index];
+    const candidate = extractJsonCandidate(child, name, seen);
+    if (candidate) return candidate;
+  }
+  const skipped = new Set([...priority, ...containers].map(([name]) => name));
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const [name, child] = entries[index];
+    if (skipped.has(name)) continue;
+    const candidate = extractJsonCandidate(child, name, seen);
+    if (candidate) return candidate;
+  }
   return null;
 }
 
@@ -278,24 +306,73 @@ function extractSeed(body, fallback) {
   return candidates.find(Number.isInteger) ?? fallback;
 }
 
+function summarizeNdjsonRecord(record) {
+  if (!record || typeof record !== "object" || Array.isArray(record)) return { keys: [] };
+  const summary = { keys: Object.keys(record).slice(0, 20) };
+  if (typeof record.type === "string") summary.type = record.type.slice(0, 80);
+  if (typeof record.status === "string") summary.status = record.status.slice(0, 80);
+  return summary;
+}
+
+function isKeepaliveLine(line) {
+  const normalized = line.trim().toLowerCase();
+  return !normalized || normalized.startsWith(":") || normalized === "keepalive" || normalized === "ping" || normalized === "[keepalive]";
+}
+
 function parseJsonOrNdjson(buffer) {
   const text = buffer.toString("utf8").trim();
-  if (!text) return [];
-
+  if (!text) return { records: [], summaries: [], invalidLines: 0 };
   try {
-    return [JSON.parse(text)];
+    const record = JSON.parse(text);
+    return { records: [record], summaries: [summarizeNdjsonRecord(record)], invalidLines: 0 };
   } catch {
     const records = [];
-    for (const line of text.split(/\r?\n/)) {
-      if (!line.trim()) continue;
-      try {
-        records.push(JSON.parse(line));
-      } catch {
-        return [];
-      }
+    let invalidLines = 0;
+    for (const rawLine of text.split(/\r?\n/)) {
+      if (isKeepaliveLine(rawLine)) continue;
+      const trimmed = rawLine.trim();
+      const line = trimmed.startsWith("data:") ? trimmed.slice(5).trim() : trimmed;
+      if (isKeepaliveLine(line)) continue;
+      try { records.push(JSON.parse(line)); }
+      catch { invalidLines += 1; }
     }
-    return records;
+    return { records, summaries: records.map(summarizeNdjsonRecord), invalidLines };
   }
+}
+
+function ndjsonParseError(message, parsed) {
+  const error = new Error(message);
+  error.ndjsonSummary = { records: parsed.summaries.slice(-20), invalidLines: parsed.invalidLines };
+  return error;
+}
+
+function safeTerminalError(records) {
+  for (let index = records.length - 1; index >= 0; index -= 1) {
+    const record = records[index];
+    if (!record || typeof record !== "object" || Array.isArray(record)) continue;
+    const status = String(record.status ?? record.type ?? "").toLowerCase();
+    if (!["error", "failed", "failure"].includes(status)) continue;
+    const candidates = [
+      record.message,
+      record.error,
+      record.data,
+      record.data?.message,
+      record.data?.error,
+      record.result,
+      record.result?.message,
+      record.result?.error
+    ];
+    for (const value of candidates) {
+      if (typeof value !== "string" || !value.trim()) continue;
+      const safe = value
+        .replace(/data:image\/[^;]+;base64,[A-Za-z0-9+/=\s]+/gi, "[image data omitted]")
+        .replace(/[A-Za-z0-9+/]{256,}={0,2}/g, "[large encoded value omitted]")
+        .slice(0, 500);
+      return safe;
+    }
+    return "The upstream reported a terminal error without a message";
+  }
+  return null;
 }
 
 function extractCandidateFromRecords(records) {
@@ -451,13 +528,13 @@ export async function parseUpstreamResponse({
     contentType.includes("json") ||
     contentType.startsWith("text/")
   ) {
-    const records = parseJsonOrNdjson(buffer);
-    if (records.length === 0 && forcedMode === "json") {
-      throw new Error("Upstream response was not valid JSON or NDJSON");
+    const parsed = parseJsonOrNdjson(buffer);
+    if (parsed.records.length === 0 && forcedMode === "json") {
+      throw ndjsonParseError("Upstream response was not valid JSON or NDJSON", parsed);
     }
 
-    if (records.length > 0) {
-      const extracted = extractCandidateFromRecords(records);
+    if (parsed.records.length > 0) {
+      const extracted = extractCandidateFromRecords(parsed.records);
       const seed = extracted.seed ?? fallbackSeed;
 
       if (extracted.candidate?.type === "base64") {
@@ -498,11 +575,21 @@ export async function parseUpstreamResponse({
           seed
         };
       }
+
+      const terminalError = safeTerminalError(parsed.records);
+      if (terminalError) {
+        throw ndjsonParseError(
+          `Upstream generation failed (correlation ID ${requestId}): ${terminalError}`,
+          parsed
+        );
+      }
     }
   }
 
-  throw new Error(
-    `Unsupported upstream response format (content-type: ${contentType || "unknown"})`
+  const parsed = parseJsonOrNdjson(buffer);
+  throw ndjsonParseError(
+    `Unsupported upstream response format (content-type: ${contentType || "unknown"})`,
+    parsed
   );
 }
 

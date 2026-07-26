@@ -16,7 +16,9 @@ const PNG_1X1 = Buffer.from(
 );
 
 test("correlation IDs are exactly six alphanumeric characters", () => {
-  for (let index = 0; index < 256; index += 1) assert.match(correlationId(), /^[A-Za-z0-9]{6}$/);
+  for (let index = 0; index < 256; index += 1) {
+    assert.match(correlationId(), /^[A-Za-z0-9]{6}$/);
+  }
 });
 const baseConfig = {
   upstreamAccept: "application/json",
@@ -65,6 +67,22 @@ test("english-only remains available as an opt-in policy", () => {
     () => assertPromptPolicy("一个女孩", "english-only"),
     /English-only/
   );
+});
+
+test("custom compatible profiles omit image_format for Aurora compatibility", () => {
+  const result = buildUpstreamRequest({
+    prompt: "1girl",
+    config: { ...baseConfig, upstreamProfile: "custom", requestImageFormat: "webp" }
+  });
+  assert.equal(result.payload.parameters.image_format, undefined);
+});
+
+test("official profile retains the configured image_format", () => {
+  const result = buildUpstreamRequest({
+    prompt: "1girl",
+    config: { ...baseConfig, upstreamProfile: "official", requestImageFormat: "webp" }
+  });
+  assert.equal(result.payload.parameters.image_format, "webp");
 });
 
 test("custom model mapping and payload overrides are applied", () => {
@@ -322,17 +340,75 @@ test("image delivery direct rejects cross-origin image URLs", async () => {
 });
 
 
+test("NDJSON progress followed by nested base64 is parsed", async () => {
+  const response = new Response([
+    JSON.stringify({ type: "progress", progress: 20 }),
+    JSON.stringify({ type: "progress", progress: 80 }),
+    JSON.stringify({ type: "result", result: { image: PNG_1X1.toString("base64") } })
+  ].join("\n"), { status: 200, headers: { "content-type": "application/ndjson; charset=utf-8" } });
+  const parsed = await parseUpstreamResponse({ response, config: baseConfig, requestId: "abc123", fallbackSeed: 41 });
+  assert.equal(parsed.format, "png");
+  assert.equal(parsed.seed, 41);
+});
+
+test("NDJSON recursively finds an image URL inside data result output", async () => {
+  const response = new Response([
+    JSON.stringify({ status: "running" }),
+    JSON.stringify({ status: "success", data: { result: { output: [{ image_url: "/img/nested.png" }] } } })
+  ].join("\n"), { status: 200, headers: { "content-type": "application/x-ndjson" } });
+  const parsed = await parseUpstreamResponse({ response, config: { ...baseConfig, upstreamImageDelivery: "auto" }, requestId: "abc123", fallbackSeed: 42 });
+  assert.equal(parsed.imageUrl, "https://api.example.com/img/nested.png");
+  assert.equal(parsed.seed, 42);
+});
+
+test("invalid NDJSON and keepalive lines do not block a later valid result", async () => {
+  const response = new Response([
+    ": keepalive",
+    "not-json-at-all",
+    JSON.stringify({ type: "progress", progress: 50 }),
+    "data: " + JSON.stringify({ status: "success", output: { b64_json: PNG_1X1.toString("base64") } })
+  ].join("\n"), { status: 200, headers: { "content-type": "text/ndjson" } });
+  const parsed = await parseUpstreamResponse({ response, config: baseConfig, requestId: "abc123", fallbackSeed: 43 });
+  assert.equal(parsed.format, "png");
+  assert.equal(parsed.seed, 43);
+});
+
+
+test("NDJSON terminal errors expose a short upstream message instead of format failure", async () => {
+  const response = new Response([
+    JSON.stringify({ status: "running", data: { progress: 80 } }),
+    JSON.stringify({ status: "error", data: { message: "Invalid sampler option" } })
+  ].join("\n"), { status: 200, headers: { "content-type": "application/x-ndjson" } });
+  await assert.rejects(
+    parseUpstreamResponse({ response, config: baseConfig, requestId: "Ab12Cd", fallbackSeed: 1 }),
+    /Upstream generation failed \(correlation ID Ab12Cd\): Invalid sampler option/
+  );
+});
+
+
 test("precise reference fields are applied after parameter overrides", () => {
   const imageBuffer = Buffer.from("reference");
   const result = buildUpstreamRequest({
     prompt: "1girl",
     config: {
       ...baseConfig,
+      upstreamProfile: "custom",
       upstreamParameterOverrides: { director_reference_strength_values: [0.01] }
     },
     preciseReference: { imageBuffer, type: "character", strength: 0.75, fidelity: 0.85 }
   });
+  assert.equal(result.payload.parameters.image_format, undefined);
   assert.deepEqual(result.payload.parameters.director_reference_strength_values, [0.75]);
   assert.deepEqual(result.payload.parameters.director_reference_secondary_strength_values, [0.15]);
   assert.deepEqual(result.payload.parameters.director_reference_images, [imageBuffer.toString("base64")]);
+});
+
+test("custom requests without a reference remain byte-shape compatible", () => {
+  const result = buildUpstreamRequest({
+    prompt: "1girl",
+    config: { ...baseConfig, upstreamProfile: "custom", requestImageFormat: "webp" }
+  });
+  assert.equal(result.payload.parameters.image_format, undefined);
+  assert.equal(Object.keys(result.payload.parameters).some(key => key.startsWith("director_reference")), false);
+  assert.equal(result.payload.parameters.normalize_reference_strength_multiple, undefined);
 });

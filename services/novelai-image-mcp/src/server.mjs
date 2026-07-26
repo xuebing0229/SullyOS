@@ -35,7 +35,15 @@ function log(level, event, fields = {}) {
 function safeErrorLogFields(error) {
   const message = String(error?.message || "");
   const correlationId = message.match(/correlation ID ([A-Za-z0-9]{6})/)?.[1];
-  return { errorName: error?.name || "Error", ...(correlationId ? { correlationId } : {}) };
+  const ndjson = error?.ndjsonSummary;
+  return {
+    errorName: error?.name || "Error",
+    ...(correlationId ? { correlationId } : {}),
+    ...(ndjson ? {
+      ndjsonRecords: Array.isArray(ndjson.records) ? ndjson.records : [],
+      invalidNdjsonLines: Number(ndjson.invalidLines) || 0
+    } : {})
+  };
 }
 function secureEquals(actual, expected) {
   const left = Buffer.from(actual); const right = Buffer.from(expected);
