@@ -7,6 +7,7 @@ import EmotionSettingsPanel from './EmotionSettingsPanel';
 import { isTranslationLangPreset, normalizeTranslationLangLabel, TRANSLATION_LANG_MAX_LENGTH, TRANSLATION_LANG_PRESETS } from '../../utils/translationLang';
 import type { ContextRangeMode, ContextRangeSnapshot } from '../../utils/chatContextRange';
 import type { PendingEmojiImportItem } from '../../utils/emojiImport';
+import TokenImg from '../os/TokenImg';
 
 interface ChatModalsProps {
     modalType: string;
@@ -435,7 +436,7 @@ const ChatModals: React.FC<ChatModalsProps> = ({
                                     >
                                         <div className="h-16 w-16 shrink-0 overflow-hidden rounded-lg bg-slate-100">
                                             <img
-                                                src={item.dataUrl}
+                                                src={item.previewUrl}
                                                 alt=""
                                                 className="h-full w-full object-contain"
                                             />
@@ -996,11 +997,11 @@ const ChatModals: React.FC<ChatModalsProps> = ({
                     {Array.isArray(selectedEmoji) ? (
                         <div className="flex flex-wrap justify-center gap-2 max-h-48 overflow-y-auto no-scrollbar w-full px-2">
                             {selectedEmoji.map((e: any, idx: number) => (
-                                <img key={idx} src={e.url} className="w-16 h-16 object-contain rounded-xl border border-slate-200" />
+                                <TokenImg key={idx} value={e.url} className="w-16 h-16 object-contain rounded-xl border border-slate-200" />
                             ))}
                         </div>
                     ) : (
-                        selectedEmoji && <img src={selectedEmoji.url} className="w-24 h-24 object-contain rounded-xl border" />
+                        selectedEmoji && <TokenImg value={selectedEmoji.url} className="w-24 h-24 object-contain rounded-xl border" />
                     )}
                     <p className="text-center text-sm text-slate-500">
                         {Array.isArray(selectedEmoji) ? `确定要删除这 ${selectedEmoji.length} 个表情包吗？` : "确定要删除这个表情包吗？"}
@@ -1013,7 +1014,7 @@ const ChatModals: React.FC<ChatModalsProps> = ({
                 <div className="flex flex-col items-center gap-4 py-1">
                     {selectedEmoji && !Array.isArray(selectedEmoji) && (
                         <div className="flex flex-col items-center gap-2">
-                            <img src={selectedEmoji.url} className="w-20 h-20 object-contain rounded-xl border border-slate-200" />
+                            <TokenImg value={selectedEmoji.url} className="w-20 h-20 object-contain rounded-xl border border-slate-200" />
                             <span className="text-sm font-medium text-slate-600 max-w-[12rem] truncate">{selectedEmoji.name}</span>
                         </div>
                     )}

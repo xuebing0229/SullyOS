@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
     MAX_EMOJI_IMPORT_FILES,
+    MAX_EMOJI_IMPORT_BATCH_BYTES,
+    MAX_EMOJI_IMPORT_GIFS,
     allocateUniqueEmojiName,
     inferEmojiMime,
     limitEmojiImportBatch,
@@ -16,10 +18,27 @@ describe('emojiImport helpers', () => {
         expect(inferEmojiMime({ name: '动图.GIF', type: '' })).toBe('image/gif');
     });
 
+
+    it('Android 泛化 MIME 会按扩展名回退', () => {
+        expect(inferEmojiMime({ name: '贴贴.png', type: 'application/octet-stream' })).toBe('image/png');
+        expect(inferEmojiMime({ name: '动图.gif', type: 'image/*' })).toBe('image/gif');
+    });
+
+    it('批次同时限制总大小和 GIF 数量', () => {
+        const gifs = Array.from({ length: MAX_EMOJI_IMPORT_GIFS + 2 }, (_, index) => ({
+            name: `${index}.gif`, type: 'image/gif', size: 1024,
+        } as File));
+        const gifResult = limitEmojiImportBatch(gifs);
+        expect(gifResult.accepted).toHaveLength(MAX_EMOJI_IMPORT_GIFS);
+
+        const tooLarge = [{ name: 'large.png', type: 'image/png', size: MAX_EMOJI_IMPORT_BATCH_BYTES + 1 } as File];
+        expect(limitEmojiImportBatch(tooLarge).accepted).toHaveLength(0);
+    });
+
     it('从文件名生成默认名称，之后仍可在预览页修改', () => {
         expect(suggestEmojiName('cat_angry-face.png')).toBe('cat angry face');
         const draft = makePendingEmojiImport(
-            { suggestedName: 'cat angry face', dataUrl: 'data:image/png;base64,AA', isAnimatedGif: false },
+            { suggestedName: 'cat angry face', blob: new Blob(['x'], { type: 'image/png' }), previewUrl: 'blob:test', byteSize: 1, isAnimatedGif: false },
             'cat_angry-face.png',
             'draft-1',
         );

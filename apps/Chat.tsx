@@ -10,6 +10,7 @@ import {
     makePendingEmojiImport,
     normalizeEmojiName,
     prepareEmojiImage,
+    revokePendingEmojiPreview,
     type PendingEmojiImportItem,
 } from '../utils/emojiImport';
 import { safeResponseJson, extractContent } from '../utils/safeApi';
@@ -152,6 +153,9 @@ const Chat: React.FC = () => {
     const [transferNote, setTransferNote] = useState('');
     const [emojiImportText, setEmojiImportText] = useState('');
     const [pendingEmojiImports, setPendingEmojiImports] = useState<PendingEmojiImportItem[]>([]);
+    const pendingEmojiImportsRef = useRef<PendingEmojiImportItem[]>([]);
+    useEffect(() => { pendingEmojiImportsRef.current = pendingEmojiImports; }, [pendingEmojiImports]);
+    useEffect(() => () => { pendingEmojiImportsRef.current.forEach(revokePendingEmojiPreview); }, []);
     const [isPreparingEmojiFiles, setIsPreparingEmojiFiles] = useState(false);
     const [isSavingEmojiFiles, setIsSavingEmojiFiles] = useState(false);
     const [emojiImportCategoryId, setEmojiImportCategoryId] = useState<string>('default');
@@ -1780,12 +1784,13 @@ const Chat: React.FC = () => {
     const handlePrepareEmojiFiles = async (incomingFiles: File[]) => {
         if (isPreparingEmojiFiles || isSavingEmojiFiles || incomingFiles.length === 0) return;
 
+        const pendingBytes = pendingEmojiImports.reduce((sum, item) => sum + item.byteSize, 0);
+        const pendingGifCount = pendingEmojiImports.filter(item => item.isAnimatedGif).length;
         const { accepted, ignoredCount } = limitEmojiImportBatch(
-            incomingFiles,
-            pendingEmojiImports.length,
+            incomingFiles, pendingEmojiImports.length, pendingBytes, pendingGifCount,
         );
         if (ignoredCount > 0) {
-            addToast(`当前待确认批次最多 30 张，已忽略后面的 ${ignoredCount} 张`, 'info');
+            addToast(`受 30 张 / 10 个 GIF / 30MB 批次限制，已忽略 ${ignoredCount} 张`, 'info');
         }
         if (accepted.length === 0) return;
 
@@ -1829,11 +1834,16 @@ const Chat: React.FC = () => {
 
     const handleRemovePendingEmoji = (id: string) => {
         if (isSavingEmojiFiles) return;
-        setPendingEmojiImports(prev => prev.filter(item => item.id !== id));
+        setPendingEmojiImports(prev => {
+            const removed = prev.find(item => item.id === id);
+            if (removed) revokePendingEmojiPreview(removed);
+            return prev.filter(item => item.id !== id);
+        });
     };
 
     const handleCloseEmojiImport = () => {
         if (isPreparingEmojiFiles || isSavingEmojiFiles) return;
+        pendingEmojiImports.forEach(revokePendingEmojiPreview);
         setPendingEmojiImports([]);
         setEmojiImportCategoryId('default');
         setModalType('none');
@@ -1861,8 +1871,10 @@ const Chat: React.FC = () => {
                     const requestedName = normalizeEmojiName(item.name);
                     const finalName = allocateUniqueEmojiName(requestedName, occupiedNames);
                     if (finalName !== requestedName) autoRenamedCount += 1;
-                    await DB.saveEmoji(finalName, item.dataUrl, targetCatId);
+                    const blobId = `emoji_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+                    await DB.saveEmojiBlob(finalName, blobId, item.blob, targetCatId);
                     savedIds.add(item.id);
+                    revokePendingEmojiPreview(item);
                 } catch (error: any) {
                     failures.push(error?.message || `${item.name}：保存失败`);
                 }

@@ -976,8 +976,29 @@ export const DB = {
 
   saveEmoji: async (name: string, url: string, categoryId?: string): Promise<void> => {
     const db = await openDB();
-    const transaction = db.transaction(STORE_EMOJIS, 'readwrite');
-    transaction.objectStore(STORE_EMOJIS).put({ name, url, categoryId });
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction(STORE_EMOJIS, 'readwrite');
+      const request = transaction.objectStore(STORE_EMOJIS).put({ name, url, categoryId });
+      request.onerror = () => reject(request.error);
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error);
+      transaction.onabort = () => reject(transaction.error || new Error('saveEmoji aborted'));
+    });
+  },
+
+  saveEmojiBlob: async (name: string, blobId: string, blob: Blob, categoryId?: string): Promise<string> => {
+    const db = await openDB();
+    const url = `blobref:${blobId}`;
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction([STORE_BLOB_ASSETS, STORE_EMOJIS], 'readwrite');
+      const blobRequest = transaction.objectStore(STORE_BLOB_ASSETS).put({ id: blobId, blob, createdAt: Date.now() });
+      const emojiRequest = transaction.objectStore(STORE_EMOJIS).put({ name, url, categoryId });
+      blobRequest.onerror = () => { try { transaction.abort(); } catch {} };
+      emojiRequest.onerror = () => { try { transaction.abort(); } catch {} };
+      transaction.oncomplete = () => resolve(url);
+      transaction.onerror = () => reject(transaction.error || blobRequest.error || emojiRequest.error);
+      transaction.onabort = () => reject(transaction.error || blobRequest.error || emojiRequest.error || new Error('saveEmojiBlob aborted'));
+    });
   },
 
   deleteEmoji: async (name: string): Promise<void> => {
