@@ -2516,6 +2516,15 @@ export interface GalleryImage {
     reviewTimestamp?: number;
     savedDate?: string; // YYYY-MM-DD format
     chatContext?: string[]; // Recent chat messages at time of save
+    source?: 'manual' | 'chat-upload' | 'mcp-generated';
+    sourceMeta?: {
+        serverId?: string;
+        serverName?: string;
+        toolName?: string;
+        engine?: string;
+        prompt?: string;
+        originalUrl?: string;
+    };
 }
 
 export interface StickerData {

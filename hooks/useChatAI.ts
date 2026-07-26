@@ -23,9 +23,10 @@ import { MCD_PROPOSE_TOOL, autoFixProposalCodesByName } from '../utils/mcdToolBr
 // 瑞幸: 与麦当劳同构, 只读 LuckinMiniApp 快照注入 + propose_cart_items UI 钩子工具
 import { LUCKIN_PROPOSE_TOOL, autoFixProposalCodesByName as autoFixLuckinProposalCodesByName, fetchOpenAIToolsForLuckin, inferCardKind as inferLuckinCardKind } from '../utils/luckinToolBridge';
 import { callLuckinTool } from '../utils/luckinMcpClient';
-import { callMcpTool, getMcpUseNativeTools } from '../utils/mcpClient';
-import { buildMcpOpenAITools, buildMcpRejectedToolsFallbackBody, buildMcpTextFallbackBody, extractMcpImageUrls, extractTextFakedMcpCalls, formatMcpToolResult, sanitizeMcpLeadInText, shouldRetryMcpWithoutTools, stripTextFakedMcpCalls, type FakedMcpCall } from '../utils/mcpToolBridge';
+import { callMcpTool, getMcpUseNativeTools, type McpToolResult } from '../utils/mcpClient';
+import { buildMcpOpenAITools, buildMcpRejectedToolsFallbackBody, buildMcpTextFallbackBody, extractTextFakedMcpCalls, formatMcpToolResult, sanitizeMcpLeadInText, shouldRetryMcpWithoutTools, stripTextFakedMcpCalls, type FakedMcpCall } from '../utils/mcpToolBridge';
 import { buildChatRequestPayload } from '../utils/chatRequestPayload';
+import { persistMcpGeneratedImages } from '../utils/mcpImagePersistence';
 import {
     isInstantConfigReady,
     sendInstantPushAndAwaitReply,
@@ -1152,27 +1153,22 @@ export const useChatAI = ({
 
             // MCP 多阶段展示：工具前的角色文字先落库，最终工具结果回复仍走统一后处理。
             const displayedMcpLeadIns = new Set<string>();
-            const displayedMcpImageUrls = new Set<string>();
-            const persistMcpImages = async (data: any): Promise<number> => {
-                let saved = 0;
-                for (const url of extractMcpImageUrls(data)) {
-                    if (displayedMcpImageUrls.has(url)) continue;
-                    displayedMcpImageUrls.add(url);
-                    try {
-                        await DB.saveMessage({
-                            charId: char.id,
-                            role: 'assistant',
-                            type: 'image',
-                            content: url,
-                            metadata: { mcpGeneratedImage: true },
-                        } as any);
-                        saved++;
-                    } catch (e) {
-                        console.warn('🔌 [MCP] 保存图片消息失败:', e);
-                    }
-                }
-                if (saved) setMessages(await DB.getRecentMessagesByCharId(char.id, 200));
-                return saved;
+            const displayedMcpImageKeys = new Set<string>();
+            const persistMcpImages = async (
+                result: McpToolResult,
+                server: { id: string; name: string } | undefined,
+                toolName: string,
+                toolArgs: Record<string, any>,
+            ): Promise<number> => {
+                const outcome = await persistMcpGeneratedImages({
+                    result, char, server, toolName, toolArgs,
+                    recentMessages: contextMsgs, seenKeys: displayedMcpImageKeys,
+                });
+                if (outcome.persisted > 0) addToast(`已保存 ${outcome.persisted} 张图片到聊天和「${char.name}」相册`, 'success');
+                if (outcome.temporary > 0) addToast(`${outcome.temporary} 张图片仅临时显示，未能保存到本机相册，链接可能失效`, 'warning');
+                if (outcome.failed > 0) addToast(`${outcome.failed} 张图片保存失败`, 'error');
+                if (outcome.persisted || outcome.temporary) setMessages(await DB.getRecentMessagesByCharId(char.id, 200));
+                return outcome.persisted + outcome.temporary;
             };
             const persistMcpLeadIn = async (raw: string, fakedCalls: FakedMcpCall[] = []): Promise<void> => {
                 if (!mcpToolResolve || !raw.trim()) return;
@@ -1431,7 +1427,7 @@ export const useChatAI = ({
                             let mcpResult: any;
                             try { mcpResult = await callMcpTool(mcpHit.server, mcpHit.toolName, args); }
                             catch (e: any) { mcpResult = { success: false, error: e?.message || String(e) }; }
-                            if (mcpResult.success) await persistMcpImages(mcpResult.data);
+                            if (mcpResult.success) await persistMcpImages(mcpResult, { id: mcpHit.server.id, name: mcpHit.server.name }, mcpHit.toolName, args);
                             const mcpMsg = mcpResult.success
                                 ? `工具 ${fname} 成功。结果: ${formatMcpToolResult(mcpResult.data)}`
                                 : `工具 ${fname} 失败: ${mcpResult.error}`;
@@ -1522,7 +1518,7 @@ export const useChatAI = ({
                         let r: any;
                         try { r = await callMcpTool(call.server, call.toolName, call.args); }
                         catch (e: any) { r = { success: false, error: e?.message || String(e) }; }
-                        if (r.success) await persistMcpImages(r.data);
+                        if (r.success) await persistMcpImages(r, { id: call.server.id, name: call.server.name }, call.toolName, call.args);
                         results.push(r.success
                             ? `工具 ${call.exposedName} 执行成功, 结果: ${formatMcpToolResult(r.data)}`
                             : `工具 ${call.exposedName} 执行失败: ${r.error}`);
