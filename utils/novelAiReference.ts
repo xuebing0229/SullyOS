@@ -89,7 +89,7 @@ async function decodeBlob(blob: Blob): Promise<{
     }
 }
 
-function chooseReferenceCanvas(width: number, height: number): { width: number; height: number } {
+export function chooseReferenceCanvas(width: number, height: number): { width: number; height: number } {
     const ratio = width / height;
     if (ratio >= 1.2) return { width: 1536, height: 1024 };
     if (ratio <= 1 / 1.2) return { width: 1024, height: 1536 };

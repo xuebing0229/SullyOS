@@ -4,6 +4,7 @@ import {
     applyManagedNovelAiReferenceArguments,
     clampReferenceUnit,
     createNovelAiReferenceSlotId,
+    chooseReferenceCanvas,
     isNovelAiReferenceType,
     prepareBuiltinImageToolArguments,
     stripNovelAiReferenceForTextOnlyBackup,
@@ -84,6 +85,13 @@ describe('NovelAI 精密参照工具参数', () => {
         const clean = stripNovelAiReferenceForTextOnlyBackup(character);
         expect(clean.novelAiReference).toBeUndefined();
         expect(character.novelAiReference).toBe(reference);
+    });
+
+
+    it('按原图方向选择官方三种参考画布', () => {
+        expect(chooseReferenceCanvas(800, 1200)).toEqual({ width: 1024, height: 1536 });
+        expect(chooseReferenceCanvas(1000, 1000)).toEqual({ width: 1472, height: 1472 });
+        expect(chooseReferenceCanvas(1600, 900)).toEqual({ width: 1536, height: 1024 });
     });
 
 });
