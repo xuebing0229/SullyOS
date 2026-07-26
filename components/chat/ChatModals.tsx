@@ -6,6 +6,8 @@ import ScheduleCard from '../schedule/ScheduleCard';
 import EmotionSettingsPanel from './EmotionSettingsPanel';
 import { isTranslationLangPreset, normalizeTranslationLangLabel, TRANSLATION_LANG_MAX_LENGTH, TRANSLATION_LANG_PRESETS } from '../../utils/translationLang';
 import type { ContextRangeMode, ContextRangeSnapshot } from '../../utils/chatContextRange';
+import type { PendingEmojiImportItem } from '../../utils/emojiImport';
+import TokenImg from '../os/TokenImg';
 
 interface ChatModalsProps {
     modalType: string;
@@ -59,6 +61,14 @@ interface ChatModalsProps {
     // Handlers
     onTransfer: () => void;
     onImportEmoji: () => void;
+    pendingEmojiImports: PendingEmojiImportItem[];
+    onPrepareEmojiFiles: (files: File[]) => Promise<void>;
+    onPendingEmojiNameChange: (id: string, name: string) => void;
+    onRemovePendingEmoji: (id: string) => void;
+    onConfirmEmojiFiles: () => Promise<void>;
+    onCloseEmojiImport: () => void;
+    isPreparingEmojiFiles?: boolean;
+    isSavingEmojiFiles?: boolean;
     onSaveSettings: () => void;
     onBgUpload: (file: File) => void;
     onRemoveBg: () => void;
@@ -230,6 +240,11 @@ const ChatModals: React.FC<ChatModalsProps> = ({
     allHistoryMessages = [],
     contextRangeSnapshot,
     onTransfer, onImportEmoji, onSaveSettings,
+    pendingEmojiImports, onPrepareEmojiFiles,
+    onPendingEmojiNameChange, onRemovePendingEmoji,
+    onConfirmEmojiFiles, onCloseEmojiImport,
+    isPreparingEmojiFiles = false,
+    isSavingEmojiFiles = false,
     onBgUpload, onRemoveBg, onClearHistory,
     onArchive, onCreatePrompt, onEditPrompt, onSavePrompt, onDeletePrompt,
     onSetHistoryStart, onRestoreAdaptiveContext, onJumpToMessageInChat, onEnterSelectionMode, onReplyMessage, onEditMessageStart, onConfirmEditMessage, onDeleteMessage, onCopyMessage, onDeleteEmoji, onDeleteCategory,
@@ -246,6 +261,7 @@ const ChatModals: React.FC<ChatModalsProps> = ({
     apiPresets, onAddApiPreset, onSaveEmotion, onClearBuffs,
 }) => {
     const bgInputRef = useRef<HTMLInputElement>(null);
+    const emojiFileInputRef = useRef<HTMLInputElement>(null);
     const [visibilitySelection, setVisibilitySelection] = useState<Set<string>>(new Set());
     const [historyPage, setHistoryPage] = useState(0);
     const [historySearch, setHistorySearch] = useState('');
@@ -363,13 +379,125 @@ const ChatModals: React.FC<ChatModalsProps> = ({
                 />
             </Modal>
 
-            <Modal 
-                isOpen={modalType === 'emoji-import'} title="表情注入" onClose={() => setModalType('none')}
-                footer={<button onClick={onImportEmoji} className="w-full py-4 bg-primary text-white font-bold rounded-2xl">添加至当前分类</button>}
+            <Modal
+                isOpen={modalType === 'emoji-import'}
+                title="添加表情包"
+                onClose={onCloseEmojiImport}
+                footer={
+                    <button
+                        onClick={onImportEmoji}
+                        disabled={isPreparingEmojiFiles || isSavingEmojiFiles || !emojiImportText.trim()}
+                        className="w-full py-4 bg-primary text-white font-bold rounded-2xl disabled:opacity-40"
+                    >
+                        导入链接到当前分类
+                    </button>
+                }
             >
-                <div className="space-y-3">
+                <div className="space-y-4">
                     <p className="text-xs text-slate-400">表情将导入到你当前选中的分类。</p>
-                    <textarea value={emojiImportText} onChange={e => setEmojiImportText(e.target.value)} placeholder="Name--URL (每行一个)" className="w-full h-40 bg-slate-100 rounded-2xl p-4 resize-none" />
+
+                    <div className="rounded-2xl border border-primary/15 bg-primary/5 p-4">
+                        <div className="text-sm font-bold text-slate-700">从手机相册选择</div>
+                        <p className="mt-1 text-[10px] leading-relaxed text-slate-400">
+                            选完不会立即保存。先预览每张图并改成角色看得懂的名称，再统一添加。
+                        </p>
+                        <button
+                            type="button"
+                            disabled={isPreparingEmojiFiles || isSavingEmojiFiles || pendingEmojiImports.length >= 30}
+                            onClick={() => emojiFileInputRef.current?.click()}
+                            className="mt-3 w-full rounded-xl bg-white py-3 text-sm font-bold text-primary shadow-sm ring-1 ring-primary/15 active:scale-[0.98] disabled:opacity-50"
+                        >
+                            {isPreparingEmojiFiles
+                                ? '正在压缩图片…'
+                                : pendingEmojiImports.length > 0
+                                    ? `继续选择（待确认 ${pendingEmojiImports.length}/30）`
+                                    : '选择图片（可多选）'}
+                        </button>
+                        <input
+                            ref={emojiFileInputRef}
+                            type="file"
+                            className="hidden"
+                            accept="image/*,.png,.jpg,.jpeg,.webp,.gif,.avif,.heic,.heif"
+                            multiple
+                            onChange={(event) => {
+                                const input = event.currentTarget;
+                                const files = Array.from(input.files || []);
+                                input.value = '';
+                                if (files.length > 0) void onPrepareEmojiFiles(files);
+                            }}
+                        />
+
+                        {pendingEmojiImports.length > 0 && (
+                            <div className="mt-4 max-h-[42vh] space-y-3 overflow-y-auto pr-1">
+                                {pendingEmojiImports.map((item, index) => (
+                                    <div
+                                        key={item.id}
+                                        className="flex items-center gap-3 rounded-xl bg-white p-2.5 shadow-sm ring-1 ring-slate-100"
+                                    >
+                                        <div className="h-16 w-16 shrink-0 overflow-hidden rounded-lg bg-slate-100">
+                                            <img
+                                                src={item.previewUrl}
+                                                alt=""
+                                                className="h-full w-full object-contain"
+                                            />
+                                        </div>
+                                        <div className="min-w-0 flex-1">
+                                            <div className="mb-1 truncate text-[10px] text-slate-400">
+                                                {index + 1}. {item.originalFileName}
+                                                {item.isAnimatedGif ? ' · GIF' : ''}
+                                            </div>
+                                            <input
+                                                value={item.name}
+                                                maxLength={40}
+                                                disabled={isSavingEmojiFiles}
+                                                onChange={event => onPendingEmojiNameChange(item.id, event.target.value)}
+                                                placeholder="例如：生气拍桌、偷偷看你、抱抱"
+                                                className="w-full rounded-lg bg-slate-100 px-3 py-2 text-sm font-medium text-slate-700 outline-none focus:ring-2 focus:ring-primary/20 disabled:opacity-60"
+                                            />
+                                        </div>
+                                        <button
+                                            type="button"
+                                            disabled={isSavingEmojiFiles}
+                                            onClick={() => onRemovePendingEmoji(item.id)}
+                                            className="shrink-0 rounded-lg px-2 py-2 text-xs text-red-400 disabled:opacity-40"
+                                        >
+                                            移除
+                                        </button>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+
+                        {pendingEmojiImports.length > 0 && (
+                            <button
+                                type="button"
+                                disabled={
+                                    isPreparingEmojiFiles
+                                    || isSavingEmojiFiles
+                                    || pendingEmojiImports.some(item => !item.name.trim())
+                                }
+                                onClick={() => void onConfirmEmojiFiles()}
+                                className="mt-4 w-full rounded-xl bg-primary py-3 text-sm font-bold text-white active:scale-[0.98] disabled:opacity-40"
+                            >
+                                {isSavingEmojiFiles
+                                    ? '正在保存…'
+                                    : `确认名称并添加 ${pendingEmojiImports.length} 个`}
+                            </button>
+                        )}
+                    </div>
+
+                    <div className="flex items-center gap-3">
+                        <div className="h-px flex-1 bg-slate-100" />
+                        <span className="text-[10px] text-slate-300">或者继续使用图床链接</span>
+                        <div className="h-px flex-1 bg-slate-100" />
+                    </div>
+
+                    <textarea
+                        value={emojiImportText}
+                        onChange={e => setEmojiImportText(e.target.value)}
+                        placeholder="名称--图片URL（每行一个）"
+                        className="h-28 w-full resize-none rounded-2xl bg-slate-100 p-4 text-sm"
+                    />
                 </div>
             </Modal>
 
@@ -869,11 +997,11 @@ const ChatModals: React.FC<ChatModalsProps> = ({
                     {Array.isArray(selectedEmoji) ? (
                         <div className="flex flex-wrap justify-center gap-2 max-h-48 overflow-y-auto no-scrollbar w-full px-2">
                             {selectedEmoji.map((e: any, idx: number) => (
-                                <img key={idx} src={e.url} className="w-16 h-16 object-contain rounded-xl border border-slate-200" />
+                                <TokenImg key={idx} value={e.url} className="w-16 h-16 object-contain rounded-xl border border-slate-200" />
                             ))}
                         </div>
                     ) : (
-                        selectedEmoji && <img src={selectedEmoji.url} className="w-24 h-24 object-contain rounded-xl border" />
+                        selectedEmoji && <TokenImg value={selectedEmoji.url} className="w-24 h-24 object-contain rounded-xl border" />
                     )}
                     <p className="text-center text-sm text-slate-500">
                         {Array.isArray(selectedEmoji) ? `确定要删除这 ${selectedEmoji.length} 个表情包吗？` : "确定要删除这个表情包吗？"}
@@ -886,7 +1014,7 @@ const ChatModals: React.FC<ChatModalsProps> = ({
                 <div className="flex flex-col items-center gap-4 py-1">
                     {selectedEmoji && !Array.isArray(selectedEmoji) && (
                         <div className="flex flex-col items-center gap-2">
-                            <img src={selectedEmoji.url} className="w-20 h-20 object-contain rounded-xl border border-slate-200" />
+                            <TokenImg value={selectedEmoji.url} className="w-20 h-20 object-contain rounded-xl border border-slate-200" />
                             <span className="text-sm font-medium text-slate-600 max-w-[12rem] truncate">{selectedEmoji.name}</span>
                         </div>
                     )}
