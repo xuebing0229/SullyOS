@@ -1,0 +1,27 @@
+[Unit]
+Description=NovelAI-compatible Image MCP for SullyOS
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=novelai-mcp
+Group=novelai-mcp
+WorkingDirectory=/opt/novelai-image-mcp
+EnvironmentFile=/etc/novelai-image-mcp.env
+ExecStart=/usr/bin/node /opt/novelai-image-mcp/src/server.mjs
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=20
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/novelai-image-mcp
+RestrictSUIDSGID=true
+LockPersonality=true
+LimitNOFILE=4096
+
+[Install]
+WantedBy=multi-user.target

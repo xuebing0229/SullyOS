@@ -1,0 +1,20 @@
+{
+  "name": "sullyos-gpt-image-mcp",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "node --watch src/server.mjs",
+    "start": "node src/server.mjs",
+    "check": "node --check src/config.mjs && node --check src/runtime-config.mjs && node --check src/storage.mjs && node --check src/upstream.mjs && node --check src/server.mjs",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.29.0",
+    "express": "^5.1.0",
+    "zod": "^4.0.0"
+  }
+}

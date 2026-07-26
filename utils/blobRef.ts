@@ -28,24 +28,25 @@ export type BlobRef = string & { readonly __blobRef: unique symbol };
 export const isBlobRef = (v: unknown): v is BlobRef =>
     typeof v === 'string' && v.startsWith(BLOBREF_PREFIX);
 
-const idOfRef = (ref: string): string => ref.slice(BLOBREF_PREFIX.length);
-
 let seq = 0;
-const genId = (): string =>
+export const createImageBlobId = (): string =>
     `img_${Date.now().toString(36)}_${(seq++).toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+export const blobRefFromId = (id: string): string => BLOBREF_PREFIX + id;
+export const blobIdFromRef = (ref: string): string | null =>
+    isBlobRef(ref) ? ref.slice(BLOBREF_PREFIX.length) : null;
 
 /** 把 Blob 存进 blob_assets，返回 `blobref:<id>` 令牌。 */
 export async function putImageBlob(blob: Blob): Promise<string> {
-    const id = genId();
-    await DB.putBlobAsset(id, blob);
-    return BLOBREF_PREFIX + id;
+    const id = createImageBlobId();
+    await DB.putBlobAsset(id, blob, Date.now());
+    return blobRefFromId(id);
 }
 
 /** 读取令牌对应的 Blob（非令牌或不存在返回 null）。 */
 export async function getBlobForRef(ref: string): Promise<Blob | null> {
     if (!isBlobRef(ref)) return null;
     try {
-        return await DB.getBlobAsset(idOfRef(ref));
+        return await DB.getBlobAsset(blobIdFromRef(ref)!);
     } catch {
         return null;
     }
@@ -59,7 +60,7 @@ export async function getBlobForRef(ref: string): Promise<Blob | null> {
  */
 export async function deleteBlobRef(ref: string | undefined | null): Promise<void> {
     if (ref && isBlobRef(ref)) {
-        try { await DB.deleteBlobAsset(idOfRef(ref)); } catch { /* ignore */ }
+        try { await DB.deleteBlobAsset(blobIdFromRef(ref)!); } catch { /* ignore */ }
     }
 }
 

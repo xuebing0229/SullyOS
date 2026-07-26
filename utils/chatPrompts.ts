@@ -977,16 +977,22 @@ ${userProfile.name} 给你反馈时，别当成约束，当成信任——ta 在
                 }
                 
                 if (m.type === 'image') {
-                     // 向下兼容：如果图片数据缺失（例如只导入了文字备份），不要把空 URL 发给 API，否则会报错无法回应
-                     const hasImageData = typeof m.content === 'string' && (m.content.startsWith('data:') || m.content.startsWith('http'));
+                     const meta: any = m.metadata || {};
+                     if (m.role === 'assistant' && meta.mcpGeneratedImage) {
+                         const engine = meta.imageEngine ? `，生成引擎：${String(meta.imageEngine).slice(0, 80)}` : '';
+                         const prompt = meta.imagePrompt ? `，当时的提示词摘要：「${String(meta.imagePrompt).slice(0, 300)}」` : '';
+                         return { role: m.role, content: `${timeStr} [你此前生成并发送了一张图片${engine}${prompt}]` };
+                     }
+                     const hasImageData = typeof m.content === 'string'
+                         && (m.content.startsWith('data:') || m.content.startsWith('http://') || m.content.startsWith('https://'));
                      let textPart = hasImageData
                          ? `${timeStr} [User sent an image]`
                          : `${timeStr} [User sent an image, but the image data is no longer available]`;
-                     if (index === historySlice.length - 1 && timeGapHint && m.role === 'user') textPart += `\n\n${timeGapHint}`;
-                     if (!hasImageData) {
-                         return { role: m.role, content: textPart };
-                     }
-                     return { role: m.role, content: [{ type: "text", text: textPart }, { type: "image_url", image_url: { url: m.content } }] };
+                     if (index === historySlice.length - 1 && timeGapHint && m.role === 'user') textPart += `
+
+${timeGapHint}`;
+                     if (!hasImageData) return { role: m.role, content: textPart };
+                     return { role: m.role, content: [{ type: 'text', text: textPart }, { type: 'image_url', image_url: { url: m.content } }] };
                 }
                 
                 if (index === historySlice.length - 1 && timeGapHint && m.role === 'user') content = `${content}\n\n${timeGapHint}`; 

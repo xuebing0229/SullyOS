@@ -1,0 +1,27 @@
+[Unit]
+Description=SullyOS GPT Image MCP
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=gpt-image-mcp
+Group=gpt-image-mcp
+WorkingDirectory=/opt/gpt-image-mcp
+EnvironmentFile=/etc/gpt-image-mcp.env
+ExecStart=/usr/bin/node /opt/gpt-image-mcp/src/server.mjs
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=20
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/gpt-image-mcp
+RestrictSUIDSGID=true
+LockPersonality=true
+LimitNOFILE=4096
+
+[Install]
+WantedBy=multi-user.target

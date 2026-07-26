@@ -5,6 +5,8 @@ import { DB } from '../utils/db';
 import { GalleryImage, CharacterProfile } from '../types';
 import { safeResponseJson } from '../utils/safeApi';
 import ConfirmDialog from '../components/os/ConfirmDialog';
+import BlobImage from '../components/media/BlobImage';
+import { resolveRefToDataUrl } from '../utils/blobRef';
 
 const Gallery: React.FC = () => {
     const { closeApp, characters, apiConfig, addToast } = useOS();
@@ -118,6 +120,8 @@ const Gallery: React.FC = () => {
 
         setIsReviewing(true);
         try {
+            const reviewImageUrl = await resolveRefToDataUrl(selectedImage.url);
+            if (!reviewImageUrl) throw new Error('本机图片数据已丢失');
             // Build context-aware prompt
             const chatContextStr = selectedImage.chatContext?.length
                 ? `\n\nContext: This photo was shared during a conversation. Here's what was being discussed:\n${selectedImage.chatContext.join('\n')}\n\nIMPORTANT: Your comment should feel natural given the conversation context above. Do NOT say things that contradict or are completely unrelated to what was being talked about.`
@@ -143,7 +147,7 @@ CRITICAL: Stay in character. If there's conversation context, your comment shoul
                             {
                                 type: 'image_url',
                                 image_url: {
-                                    url: selectedImage.url
+                                    url: reviewImageUrl
                                 }
                             }
                         ]
@@ -293,7 +297,7 @@ CRITICAL: Stay in character. If there's conversation context, your comment shoul
                 <div className="grid grid-cols-3 gap-1">
                     {images.map(img => (
                         <div key={img.id} onClick={() => handleImageClick(img)} className="aspect-square bg-slate-100 relative cursor-pointer overflow-hidden rounded-sm">
-                            <img src={img.url} className="w-full h-full object-cover hover:scale-105 transition-transform duration-300" loading="lazy" />
+                            <BlobImage src={img.url} alt="" className="w-full h-full object-cover hover:scale-105 transition-transform duration-300" loading="lazy" decoding="async" />
                             {img.review && <div className="absolute top-1.5 right-1.5 w-2 h-2 bg-primary rounded-full ring-2 ring-white shadow-sm"></div>}
                             {img.savedDate && <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/50 to-transparent px-1.5 pb-1 pt-3"><span className="text-[8px] text-white/80 font-mono">{img.savedDate}</span></div>}
                         </div>
@@ -324,7 +328,7 @@ CRITICAL: Stay in character. If there's conversation context, your comment shoul
 
             {/* Main Image */}
             <div className="flex-1 min-h-0 w-full flex items-center justify-center bg-black relative overflow-hidden">
-                <img
+                <BlobImage
                     src={selectedImage.url}
                     className="max-w-full max-h-full object-contain"
                     alt="Detail"

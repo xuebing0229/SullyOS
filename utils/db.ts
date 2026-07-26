@@ -489,6 +489,25 @@ const normalizeWorldRelationships = (world: WorldProfile): WorldProfile => {
     return { ...world, relationships: out };
 };
 
+export interface GeneratedImageBundleInput {
+    blobId: string;
+    blob: Blob;
+    createdAt: number;
+    message: Omit<Message, 'id' | 'timestamp'> & { timestamp?: number };
+    gallery: GalleryImage;
+}
+
+const healMessageHighWaterMarks = (msg: Omit<Message, 'id' | 'timestamp'>, newId: number): void => {
+    try {
+        const staleKeys = [`mp_lastMsgId_${msg.charId}`];
+        if ((msg as any).groupId) staleKeys.push(`mp_lastMsgId_group_${(msg as any).groupId}`);
+        for (const key of staleKeys) {
+            const hwm = parseInt(localStorage.getItem(key) || '0', 10) || 0;
+            if (hwm >= newId) localStorage.removeItem(key);
+        }
+    } catch { /* localStorage unavailable */ }
+};
+
 export const DB = {
   deleteDB: async (): Promise<void> => {
       // 删库前先关掉单例连接, 否则这条还开着的连接会 block 掉 deleteDatabase。
@@ -738,14 +757,7 @@ export const DB = {
             // IndexedDB 被浏览器清过、自增计数器归零，而 localStorage 里的记忆宫殿水位
             // 是清库前残留的。不清掉它，该角色所有新消息都会被 hwm 过滤挡在 AI 上下文
             // 之外（请求只剩 system → 上游 400）。此处直接移除失效水位。
-            try {
-                const staleKeys = [`mp_lastMsgId_${msg.charId}`];
-                if (msg.groupId) staleKeys.push(`mp_lastMsgId_group_${msg.groupId}`);
-                for (const key of staleKeys) {
-                    const hwm = parseInt(localStorage.getItem(key) || '0', 10) || 0;
-                    if (hwm >= newId) localStorage.removeItem(key);
-                }
-            } catch { /* localStorage 不可用时静默跳过 */ }
+            healMessageHighWaterMarks(payload as any, newId);
             resolve(newId);
         };
         request.onerror = () => reject(request.error);
@@ -1232,11 +1244,11 @@ export const DB = {
       });
   },
 
-  putBlobAsset: async (id: string, blob: Blob): Promise<void> => {
+  putBlobAsset: async (id: string, blob: Blob, createdAt: number = Date.now()): Promise<void> => {
       const db = await openDB();
       return new Promise((resolve, reject) => {
           const transaction = db.transaction(STORE_BLOB_ASSETS, 'readwrite');
-          transaction.objectStore(STORE_BLOB_ASSETS).put({ id, blob });
+          transaction.objectStore(STORE_BLOB_ASSETS).put({ id, blob, createdAt });
           transaction.oncomplete = () => resolve();
           transaction.onerror = () => reject(transaction.error);
           transaction.onabort = () => reject(transaction.error || new Error('putBlobAsset aborted'));
@@ -1281,8 +1293,37 @@ export const DB = {
 
   saveGalleryImage: async (img: GalleryImage): Promise<void> => {
       const db = await openDB();
-      const transaction = db.transaction(STORE_GALLERY, 'readwrite');
-      transaction.objectStore(STORE_GALLERY).put(img);
+      return new Promise((resolve, reject) => {
+          const transaction = db.transaction(STORE_GALLERY, 'readwrite');
+          const request = transaction.objectStore(STORE_GALLERY).put(img);
+          request.onerror = () => reject(request.error);
+          transaction.oncomplete = () => resolve();
+          transaction.onerror = () => reject(transaction.error);
+          transaction.onabort = () => reject(transaction.error || new Error('saveGalleryImage aborted'));
+      });
+  },
+
+  saveGeneratedImageBundle: async (input: GeneratedImageBundleInput): Promise<{ messageId: number }> => {
+      const db = await openDB();
+      return new Promise((resolve, reject) => {
+          const tx = db.transaction([STORE_BLOB_ASSETS, STORE_MESSAGES, STORE_GALLERY], 'readwrite');
+          tx.objectStore(STORE_BLOB_ASSETS).put({ id: input.blobId, blob: input.blob, createdAt: input.createdAt });
+          const timestamp = typeof input.message.timestamp === 'number' ? input.message.timestamp : input.createdAt;
+          const { timestamp: _ignoredTimestamp, ...messagePayload } = input.message;
+          const messageRequest = tx.objectStore(STORE_MESSAGES).add({ ...messagePayload, timestamp });
+          let messageId = 0;
+          messageRequest.onsuccess = () => {
+              messageId = messageRequest.result as number;
+              healMessageHighWaterMarks(messagePayload as any, messageId);
+          };
+          messageRequest.onerror = () => { try { tx.abort(); } catch {} };
+          tx.objectStore(STORE_GALLERY).put(input.gallery);
+          tx.oncomplete = () => messageId
+              ? resolve({ messageId })
+              : reject(new Error('generated image transaction completed without message id'));
+          tx.onerror = () => reject(tx.error || new Error('generated image transaction failed'));
+          tx.onabort = () => reject(tx.error || new Error('generated image transaction aborted'));
+      });
   },
 
   getGalleryImages: async (charId?: string): Promise<GalleryImage[]> => {

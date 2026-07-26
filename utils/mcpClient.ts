@@ -1,3 +1,4 @@
+import { getBuiltinImageMcpServers } from './builtinImageMcp';
 /**
  * 通用 MCP 客户端 (Model Context Protocol, Streamable HTTP)
  *
@@ -46,13 +47,28 @@ export interface McpServerConfig {
      */
     charIds?: string[];
     updatedAt: number;
+    /** 内置能力生成的隐藏服务器，不出现在通用 MCP 编辑列表。 */
+    builtin?: boolean;
+    /** 单次 HTTP/SSE 请求超时；未设置时使用通用 MCP 默认值。 */
+    requestTimeoutMs?: number;
+}
+
+export interface McpImageContent {
+    data: string;
+    mimeType: string;
 }
 
 export interface McpToolResult {
     success: boolean;
+    /** 给模型整理工具结果用，不含图片 base64。 */
     data?: any;
     rawText?: string;
     error?: string;
+    /** 保留 MCP 原始结构，供客户端图片持久化。 */
+    content?: any[];
+    structuredContent?: any;
+    images?: McpImageContent[];
+    rawResult?: any;
 }
 
 const MCP_SERVERS_KEY = 'aetheros.mcp.servers';
@@ -61,6 +77,16 @@ const MCP_PROTOCOL_VERSION = '2024-11-05';
 // 远端 MCP / 用户自建代理都可能保持连接不结束。不能让一次 tools/call
 // 永久卡住整条聊天链路（外层 isTyping 只有等 Promise 结束后才会清掉）。
 export const MCP_REQUEST_TIMEOUT_MS = 60_000;
+/** 只允许内置生图服务器覆盖超时；普通/用户导入的 MCP 始终保持 60 秒。 */
+export const getMcpRequestTimeoutMs = (
+    server: Pick<McpServerConfig, 'id' | 'builtin' | 'requestTimeoutMs'>,
+): number => {
+    const configured = server.requestTimeoutMs;
+    const isBuiltinImage = server.builtin === true && server.id.startsWith('builtin_image_');
+    return isBuiltinImage && Number.isFinite(configured) && configured! > 0
+        ? Math.round(configured!)
+        : MCP_REQUEST_TIMEOUT_MS;
+};
 
 // ========== 服务器配置 (持久化在 localStorage) ==========
 
@@ -100,7 +126,7 @@ export const createMcpServer = (name: string, url: string): McpServerConfig => (
  * 的调用点不会泄漏绑定服务器的工具。
  */
 export const getEnabledMcpServers = (charId?: string): McpServerConfig[] =>
-    loadMcpServers().filter(s =>
+    [...getBuiltinImageMcpServers(), ...loadMcpServers()].filter(s =>
         s.enabled && s.url && (s.tools?.length || 0) > 0 &&
         (!s.charIds?.length || (charId != null && s.charIds.includes(charId))),
     );
@@ -282,8 +308,9 @@ const post = async (
     const headers = buildMcpRequestHeaders(server, session.sessionId);
 
     let resp: Response;
+    const requestTimeoutMs = getMcpRequestTimeoutMs(server);
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), MCP_REQUEST_TIMEOUT_MS);
+    const timeoutId = setTimeout(() => controller.abort(), requestTimeoutMs);
     try {
         try {
             resp = await fetch(buildMcpFetchUrl(server), {
@@ -291,7 +318,7 @@ const post = async (
             });
         } catch (e: any) {
             if (controller.signal.aborted) {
-                throw new Error(`MCP 请求超时（${Math.round(MCP_REQUEST_TIMEOUT_MS / 1000)} 秒）`);
+                throw new Error(`MCP 请求超时（${Math.round(requestTimeoutMs / 1000)} 秒）`);
             }
             // 直连时 fetch 抛 TypeError 十有八九是 CORS，把排查方向直接告诉用户
             const hint = server.proxyUrl
@@ -306,7 +333,7 @@ const post = async (
             try { return await resp.text(); }
             catch (e) {
                 if (controller.signal.aborted) {
-                    throw new Error(`MCP 请求超时（${Math.round(MCP_REQUEST_TIMEOUT_MS / 1000)} 秒）`);
+                    throw new Error(`MCP 请求超时（${Math.round(requestTimeoutMs / 1000)} 秒）`);
                 }
                 throw e;
             }
@@ -335,7 +362,7 @@ const post = async (
             return { response: parseResp(text, ct) };
         } catch (e) {
             if (controller.signal.aborted) {
-                throw new Error(`MCP 请求超时（${Math.round(MCP_REQUEST_TIMEOUT_MS / 1000)} 秒）`);
+                throw new Error(`MCP 请求超时（${Math.round(requestTimeoutMs / 1000)} 秒）`);
             }
             throw e;
         }
@@ -516,18 +543,48 @@ export const callMcpTool = async (
         if (!response) return finish({ success: false, error: '空响应' });
         if (response.error) return finish({ success: false, error: `MCP 错误 [${response.error.code}]: ${response.error.message}` });
 
-        const result = response.result;
-        if (result?.content && Array.isArray(result.content)) {
-            const textParts = result.content.filter((c: any) => c?.type === 'text').map((c: any) => c.text || '');
-            const fullText = textParts.join('\n').trim();
-            if (result.isError) return finish({ success: false, error: fullText || 'MCP 工具执行失败', rawText: fullText });
-            try {
-                return finish({ success: true, data: JSON.parse(fullText), rawText: fullText });
-            } catch {
-                return finish({ success: true, data: fullText, rawText: fullText });
-            }
+        const result = response.result ?? response;
+        const content = Array.isArray(result?.content) ? result.content : [];
+        const textParts = content
+            .filter((part: any) => part?.type === 'text' && typeof part.text === 'string')
+            .map((part: any) => part.text);
+        const rawText = textParts.join('\n').trim();
+
+        let parsedText: any = undefined;
+        if (rawText) {
+            try { parsedText = JSON.parse(rawText); }
+            catch { parsedText = rawText; }
         }
-        return finish({ success: true, data: result });
+
+        const structuredContent = result?.structuredContent;
+        const images: McpImageContent[] = content
+            .filter((part: any) => part?.type === 'image' && typeof part.data === 'string' && part.data.length > 0)
+            .map((part: any) => ({
+                data: part.data,
+                mimeType: typeof part.mimeType === 'string' && part.mimeType.startsWith('image/')
+                    ? part.mimeType
+                    : 'image/png',
+            }));
+
+        // 图片 base64 绝不能进入给模型整理结果用的 data。
+        const modelData = parsedText !== undefined
+            ? parsedText
+            : structuredContent !== undefined
+                ? structuredContent
+                : {};
+        const isError = result?.isError === true;
+        return finish({
+            success: !isError,
+            data: modelData,
+            rawText,
+            error: isError
+                ? (rawText || result?.error?.message || result?.message || 'MCP 工具返回错误')
+                : undefined,
+            content,
+            structuredContent,
+            images,
+            rawResult: result,
+        });
     } catch (e: any) {
         return finish({ success: false, error: e?.message || String(e) });
     }
