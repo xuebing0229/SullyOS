@@ -18,6 +18,7 @@ import { exportMcdLocal, importMcdLocal } from './mcdMcpClient';
 import { exportMcpLocal, importMcpLocal } from './mcpClient';
 import { exportWorldHomeLocal, importWorldHomeLocal } from './worldHome/localBackup';
 import { exportDesktopSkinLocal, importDesktopSkinLocal } from './desktopSkinBackup';
+import { applyGalleryReview } from './galleryReview';
 
 const DB_NAME = 'AetherOS_Data';
 // v67：两条并行线各自用掉了 v65/v66（A线: blob_assets + 生活记录；B线: room_plates 门牌 + digest_reports 消化日志），
@@ -1364,22 +1365,35 @@ export const DB = {
       });
   },
 
-  updateGalleryImageReview: async (id: string, review: string): Promise<void> => {
+  updateGalleryImageReview: async (
+      id: string,
+      review: string | null,
+  ): Promise<void> => {
       const db = await openDB();
-      const transaction = db.transaction(STORE_GALLERY, 'readwrite');
-      const store = transaction.objectStore(STORE_GALLERY);
+
       return new Promise((resolve, reject) => {
-          const req = store.get(id);
-          req.onsuccess = () => {
-              const data = req.result as GalleryImage;
-              if (data) {
-                  data.review = review;
-                  data.reviewTimestamp = Date.now();
-                  store.put(data);
-                  resolve();
-              } else reject(new Error('Image not found'));
+          const transaction = db.transaction(STORE_GALLERY, 'readwrite');
+          const store = transaction.objectStore(STORE_GALLERY);
+          const request = store.get(id);
+
+          request.onsuccess = () => {
+              const current = request.result as GalleryImage | undefined;
+              if (!current) {
+                  try { transaction.abort(); } catch {}
+                  reject(new Error('Image not found'));
+                  return;
+              }
+              store.put(applyGalleryReview(current, review));
           };
-          req.onerror = () => reject(req.error);
+          request.onerror = () => {
+              try { transaction.abort(); } catch {}
+          };
+
+          transaction.oncomplete = () => resolve();
+          transaction.onerror = () =>
+              reject(transaction.error || request.error || new Error('updateGalleryImageReview failed'));
+          transaction.onabort = () =>
+              reject(transaction.error || request.error || new Error('updateGalleryImageReview aborted'));
       });
   },
 

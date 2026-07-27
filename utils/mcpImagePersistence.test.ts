@@ -41,6 +41,44 @@ describe('MCP generated image persistence', () => {
         expect(await DB.getBlobAsset(id)).not.toBeNull();
     });
 
+    it('commits review replacement and deletion without dropping gallery metadata', async () => {
+        const original = {
+            id: 'gallery-review-1',
+            charId: 'char-1',
+            url: 'blobref:shared-review-image',
+            timestamp: 100,
+            review: '旧点评',
+            reviewTimestamp: 200,
+            savedDate: '2026-07-27',
+            chatContext: ['保留这段聊天'],
+            source: 'mcp-generated' as const,
+            sourceMeta: {
+                serverId: 'srv',
+                serverName: 'NovelAI',
+                toolName: 'generate_image',
+                prompt: '保留提示词',
+            },
+        };
+        await DB.saveGalleryImage(original);
+
+        await DB.updateGalleryImageReview(original.id, '  新点评  ');
+        const replaced = (await DB.getGalleryImages('char-1'))[0];
+        expect(replaced.review).toBe('新点评');
+        expect(replaced.reviewTimestamp).toBeTypeOf('number');
+        expect(replaced.chatContext).toEqual(original.chatContext);
+        expect(replaced.savedDate).toBe(original.savedDate);
+        expect(replaced.sourceMeta).toEqual(original.sourceMeta);
+
+        await DB.updateGalleryImageReview(original.id, null);
+        const deleted = (await DB.getGalleryImages('char-1'))[0];
+        expect('review' in deleted).toBe(false);
+        expect('reviewTimestamp' in deleted).toBe(false);
+        expect(deleted.url).toBe(original.url);
+        expect(deleted.chatContext).toEqual(original.chatContext);
+        expect(deleted.savedDate).toBe(original.savedDate);
+        expect(deleted.sourceMeta).toEqual(original.sourceMeta);
+    });
+
     it('deleting chat message does not break gallery blob reference', async () => {
         const id = 'img_shared_chat';
         const ref = blobRefFromId(id);

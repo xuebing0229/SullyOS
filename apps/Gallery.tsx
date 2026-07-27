@@ -7,6 +7,8 @@ import { safeResponseJson } from '../utils/safeApi';
 import ConfirmDialog from '../components/os/ConfirmDialog';
 import BlobImage from '../components/media/BlobImage';
 import { resolveRefToDataUrl } from '../utils/blobRef';
+import { saveGalleryImageToDevice } from '../utils/galleryExport';
+import { applyGalleryReview, buildRegeneratedReviewInstruction } from '../utils/galleryReview';
 
 const Gallery: React.FC = () => {
     const { closeApp, characters, apiConfig, addToast } = useOS();
@@ -15,6 +17,7 @@ const Gallery: React.FC = () => {
     const [images, setImages] = useState<GalleryImage[]>([]);
     const [selectedImage, setSelectedImage] = useState<GalleryImage | null>(null);
     const [isReviewing, setIsReviewing] = useState(false);
+    const [isSavingImage, setIsSavingImage] = useState(false);
     const [showChatContext, setShowChatContext] = useState(false);
 
     // Long-press delete state
@@ -109,6 +112,45 @@ const Gallery: React.FC = () => {
         });
     };
 
+    const handleSaveToDevice = async () => {
+        if (!selectedImage || isSavingImage) return;
+        const character = characters.find(item => item.id === selectedImage.charId);
+        setIsSavingImage(true);
+        try {
+            const result = await saveGalleryImageToDevice(
+                selectedImage,
+                character?.name || '未命名角色',
+            );
+            addToast(
+                result.native
+                    ? `已保存到系统相册：${result.displayName}`
+                    : `已开始下载：${result.displayName}`,
+                'success',
+            );
+        } catch (error: any) {
+            console.error('[Gallery Export] failed', error);
+            addToast(error?.message || '保存到手机失败', 'error');
+        } finally {
+            setIsSavingImage(false);
+        }
+    };
+
+    const handleDeleteReview = async () => {
+        if (!selectedImage?.review) return;
+        try {
+            await DB.updateGalleryImageReview(selectedImage.id, null);
+            const updated = applyGalleryReview(selectedImage, null);
+            setSelectedImage(updated);
+            setImages(previous =>
+                previous.map(image => image.id === updated.id ? updated : image),
+            );
+            addToast('点评已删除', 'success');
+        } catch (error: any) {
+            console.error('[Gallery Review] delete failed', error);
+            addToast(error?.message || '删除点评失败', 'error');
+        }
+    };
+
     const handleReview = async () => {
         if (!selectedImage || !activeCharId || !apiConfig.apiKey) {
             addToast('缺少配置或图片信息', 'error');
@@ -131,10 +173,13 @@ const Gallery: React.FC = () => {
                 ? `\nThis photo is from ${selectedImage.savedDate}.`
                 : '';
 
+            const regeneratedInstruction = buildRegeneratedReviewInstruction(
+                selectedImage.review,
+            );
             const systemContent = `You are ${char.name}. ${char.systemPrompt || 'You are a helpful assistant.'}
 Task: The user sent you a photo. Comment on it briefly (1-3 sentences) based on your personality.${dateStr}${chatContextStr}
 Style: Casual, conversational, strictly NO AI-assistant tone. React as if you received this on a chat app.
-CRITICAL: Stay in character. If there's conversation context, your comment should naturally fit that context. Don't say anything that would be bizarre given what you two were just talking about.`;
+CRITICAL: Stay in character. If there's conversation context, your comment should naturally fit that context. Don't say anything that would be bizarre given what you two were just talking about.${regeneratedInstruction}`;
 
             const payload = {
                 model: apiConfig.model,
@@ -202,13 +247,23 @@ CRITICAL: Stay in character. If there's conversation context, your comment shoul
                 throw new Error(`AI 返回内容为空. Raw: ${debugStr.substring(0, 100)}...`);
             }
 
-            await DB.updateGalleryImageReview(selectedImage.id, reviewText);
+            const updatedImage = applyGalleryReview(selectedImage, reviewText);
+            await DB.updateGalleryImageReview(
+                selectedImage.id,
+                updatedImage.review!,
+            );
 
-            const updatedImage = { ...selectedImage, review: reviewText, reviewTimestamp: Date.now() };
             setSelectedImage(updatedImage);
-            setImages(prev => prev.map(img => img.id === selectedImage.id ? updatedImage : img));
+            setImages(previous =>
+                previous.map(image =>
+                    image.id === selectedImage.id ? updatedImage : image,
+                ),
+            );
 
-            addToast('点评生成成功', 'success');
+            addToast(
+                selectedImage.review ? '已重新点评' : '点评生成成功',
+                'success',
+            );
 
         } catch (e: any) {
             console.error('Review Error:', e);
@@ -314,9 +369,23 @@ CRITICAL: Stay in character. If there's conversation context, your comment shoul
                 <button onClick={() => setView('grid')} className="text-white bg-black/40 backdrop-blur-md p-2 rounded-full pointer-events-auto active:scale-95 transition-transform hover:bg-black/60 border border-white/10">
                     <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-6 h-6"><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" /></svg>
                 </button>
-                <button onClick={handleDeleteImage} className="text-white bg-black/40 backdrop-blur-md p-2 rounded-full pointer-events-auto active:scale-95 transition-transform hover:bg-red-600/60 border border-white/10">
-                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-5 h-5"><path strokeLinecap="round" strokeLinejoin="round" d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0" /></svg>
-                </button>
+                <div className="flex items-center gap-2 pointer-events-auto">
+                    <button
+                        onClick={handleSaveToDevice}
+                        disabled={isSavingImage}
+                        className="text-white bg-black/40 backdrop-blur-md px-3 py-2 rounded-full active:scale-95 transition-transform hover:bg-black/60 border border-white/10 disabled:opacity-50 flex items-center gap-1.5"
+                    >
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-4 h-4">
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M7.5 10.5 12 15m0 0 4.5-4.5M12 15V3" />
+                        </svg>
+                        <span className="text-xs font-bold">
+                            {isSavingImage ? '保存中' : '保存'}
+                        </span>
+                    </button>
+                    <button onClick={handleDeleteImage} className="text-white bg-black/40 backdrop-blur-md p-2 rounded-full active:scale-95 transition-transform hover:bg-red-600/60 border border-white/10">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-5 h-5"><path strokeLinecap="round" strokeLinejoin="round" d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0" /></svg>
+                    </button>
+                </div>
             </div>
 
             {/* Date badge */}
@@ -353,10 +422,23 @@ CRITICAL: Stay in character. If there's conversation context, your comment shoul
                                     {showChatContext ? '收起对话' : '当时的对话'}
                                 </button>
                             )}
-                            <button onClick={handleReview} disabled={isReviewing} className="text-[10px] text-white/40 hover:text-primary transition-colors flex items-center gap-1 px-2 py-1 ml-auto">
-                                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-3 h-3"><path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99" /></svg>
-                                {isReviewing ? 'Thinking...' : '重新生成'}
-                            </button>
+                            <div className="ml-auto flex items-center gap-1">
+                                <button
+                                    onClick={handleDeleteReview}
+                                    disabled={isReviewing}
+                                    className="text-[10px] text-rose-300/70 hover:text-rose-300 transition-colors px-2 py-1 disabled:opacity-40"
+                                >
+                                    删除点评
+                                </button>
+                                <button
+                                    onClick={handleReview}
+                                    disabled={isReviewing}
+                                    className="text-[10px] text-white/40 hover:text-primary transition-colors flex items-center gap-1 px-2 py-1 disabled:opacity-40"
+                                >
+                                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-3 h-3"><path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99" /></svg>
+                                    {isReviewing ? '正在点评...' : '重新点评'}
+                                </button>
+                            </div>
                         </div>
                         {/* Chat context expandable */}
                         {showChatContext && selectedImage.chatContext && (
