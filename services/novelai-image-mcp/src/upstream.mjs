@@ -220,12 +220,40 @@ function isZip(buffer) {
   );
 }
 
-function decodeBase64Image(value) {
+async function readResponseBufferLimited(response, maxBytes) {
+  const contentLength = Number(response.headers.get("content-length") || 0);
+  if (contentLength > maxBytes) throw new Error(`Upstream response exceeds ${maxBytes} bytes`);
+  if (!response.body) return Buffer.alloc(0);
+  const reader = response.body.getReader();
+  const chunks = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel();
+        throw new Error(`Upstream response exceeds ${maxBytes} bytes`);
+      }
+      chunks.push(Buffer.from(value));
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return Buffer.concat(chunks, total);
+}
+function assertImageSize(buffer, maxImageBytes) {
+  if (buffer.length <= 0) throw new Error("The upstream returned an empty image");
+  if (buffer.length > maxImageBytes) throw new Error(`Generated image exceeds ${maxImageBytes} bytes`);
+}
+function decodeBase64Image(value, maxImageBytes = Number.MAX_SAFE_INTEGER) {
   const match = value.match(
     /^data:image\/(png|webp|jpeg|jpg);base64,(.+)$/is
   );
   const raw = match ? match[2] : value;
   const buffer = Buffer.from(raw.replace(/\s+/g, ""), "base64");
+  assertImageSize(buffer, maxImageBytes);
   const format = detectImageFormat(
     buffer,
     match ? `image/${match[1]}` : ""
@@ -448,11 +476,20 @@ async function fetchRemoteImage(urlValue, config, requestId) {
   const contentType = (
     response.headers.get("content-type") ?? ""
   ).toLowerCase();
-  const buffer = Buffer.from(await response.arrayBuffer());
+  const buffer = await readResponseBufferLimited(
+    response,
+    Math.min(config.maxUpstreamResponseBytes, config.maxImageBytes)
+  );
   const format = detectImageFormat(buffer, contentType);
-
-  if (format) return { imageBuffer: buffer, format };
-  if (isZip(buffer)) return extractFirstImageFromZip(buffer);
+  if (format) {
+    assertImageSize(buffer, config.maxImageBytes);
+    return { imageBuffer: buffer, format };
+  }
+  if (isZip(buffer)) {
+    const extracted = extractFirstImageFromZip(buffer);
+    assertImageSize(extracted.imageBuffer, config.maxImageBytes);
+    return extracted;
+  }
 
   throw new Error("The generated image URL did not return an image");
 }
@@ -484,7 +521,10 @@ export async function parseUpstreamResponse({
   const contentType = (
     response.headers.get("content-type") ?? ""
   ).toLowerCase();
-  const buffer = Buffer.from(await response.arrayBuffer());
+  const buffer = await readResponseBufferLimited(
+    response,
+    config.maxUpstreamResponseBytes
+  );
 
   if (!response.ok) {
     throw new Error(
@@ -505,6 +545,7 @@ export async function parseUpstreamResponse({
     }
     const format = detectImageFormat(buffer, contentType);
     if (!format) throw new Error("Upstream response is not a supported image");
+    assertImageSize(buffer, config.maxImageBytes);
     return { imageBuffer: buffer, format, seed: fallbackSeed };
   }
 
@@ -516,8 +557,10 @@ export async function parseUpstreamResponse({
     if (requireDirectUrl) {
       throw new Error("The upstream did not return an image URL");
     }
+    const extracted = extractFirstImageFromZip(buffer);
+    assertImageSize(extracted.imageBuffer, config.maxImageBytes);
     return {
-      ...extractFirstImageFromZip(buffer),
+      ...extracted,
       seed: fallbackSeed
     };
   }
@@ -542,7 +585,7 @@ export async function parseUpstreamResponse({
           throw new Error("The upstream did not return an image URL");
         }
         return {
-          ...decodeBase64Image(extracted.candidate.value),
+          ...decodeBase64Image(extracted.candidate.value, config.maxImageBytes),
           seed
         };
       }

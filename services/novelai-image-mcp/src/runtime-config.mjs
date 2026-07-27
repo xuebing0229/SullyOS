@@ -89,6 +89,8 @@ export function toUpstreamConfig(runtime, staticConfig) {
     upstreamImageDelivery: runtime.imageDelivery,
     upstreamAccept: runtime.accept,
     upstreamTimeoutMs: staticConfig.upstreamTimeoutMs,
+    maxImageBytes: staticConfig.maxImageBytes,
+    maxUpstreamResponseBytes: staticConfig.maxUpstreamResponseBytes,
     upstreamParamsVersion: staticConfig.upstreamParamsVersion,
     promptLanguagePolicy: runtime.promptLanguagePolicy,
     requestImageFormat: staticConfig.requestImageFormat

@@ -9,6 +9,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { bootstrapRuntimeConfig, staticConfig } from "./config.mjs";
 import { createNovelRuntimeConfigStore, toUpstreamConfig } from "./runtime-config.mjs";
 import { buildUpstreamRequest, generateUpstreamImage } from "./upstream.mjs";
+import { createPersistentImageJobQueue } from "./jobs.mjs";
 import { createReferenceStore } from "./reference-store.mjs";
 import { isNovelAiV45Model, preciseReferenceUnsupportedMessage } from "./precise-reference.mjs";
 import {
@@ -19,7 +20,7 @@ import {
 } from "./storage.mjs";
 
 const SERVICE_NAME = "novelai-compatible-image-mcp";
-const SERVICE_VERSION = "0.4.0";
+const SERVICE_VERSION = "0.5.0";
 const runtimeStore = createNovelRuntimeConfigStore({
   filePath: staticConfig.runtimeConfigFile,
   bootstrap: bootstrapRuntimeConfig,
@@ -76,121 +77,110 @@ async function materialize(generated) {
   });
   return { imageUrl: saved.url, saved };
 }
-async function effectiveUpstreamConfig(runtimeOverride) {
-  const runtime = runtimeOverride ?? await runtimeStore.load();
+const NOVELAI_TOOL_NAME = "novelai_generate_image";
+const novelAiInputShape = {
+  prompt: z.string().min(1).max(5000),
+  undesired_content: z.string().max(3000).optional().default(""),
+  model: z.enum(["full", "curated"]).optional().default("full"),
+  size: z.enum(["portrait", "landscape", "square"]).optional().default("portrait"),
+  seed: z.number().int().min(0).max(4_294_967_295).optional(),
+  steps: z.number().int().min(1).max(50).optional().default(23),
+  guidance: z.number().min(1).max(10).optional().default(5),
+  uc_preset: z.enum(["heavy", "light", "human", "none"]).optional().default("heavy"),
+  quality_tags: z.boolean().optional().default(true),
+  reference_id: z.string().regex(/^[a-f0-9]{64}$/).optional().describe("SullyOS-managed private reference slot. Never invent or expose it."),
+  reference_type: z.enum(["character", "style", "character&style"]).optional().default("character"),
+  reference_strength: z.number().min(0).max(1).optional().default(0.75),
+  reference_fidelity: z.number().min(0).max(1).optional().default(0.85)
+};
+const novelAiArgumentsSchema = z.object(novelAiInputShape).strict();
+async function effectiveUpstreamConfig(runtimeOverride, { forcePersist = false } = {}) {
+  const runtime = runtimeOverride ? structuredClone(runtimeOverride) : await runtimeStore.load();
   const config = toUpstreamConfig(runtime, staticConfig);
-  if (!config.upstreamApiKey && config.upstreamAuthHeader) {
-    throw new Error("The upstream API key has not been configured");
-  }
+  if (forcePersist) config.upstreamImageDelivery = "proxy";
+  if (!config.upstreamApiKey && config.upstreamAuthHeader) throw new Error("The upstream API key has not been configured");
   return { runtime, config };
 }
-
+async function executeNovelAiGeneration(rawArgs, { runtimeOverride, forcePersist = false } = {}) {
+  const args = novelAiArgumentsSchema.parse(rawArgs);
+  const { runtime, config } = await effectiveUpstreamConfig(runtimeOverride, { forcePersist });
+  let preciseReference = null;
+  if (args.reference_id) {
+    const upstreamModel = args.model === "curated" ? config.upstreamModelCurated : config.upstreamModelFull;
+    if (!isNovelAiV45Model(upstreamModel)) throw new Error("NovelAI Precise Reference is only supported by V4.5 Full/Curated models");
+    const stored = await referenceStore.readImage(args.reference_id);
+    if (!stored) throw new Error("The character reference image is missing on the MCP server. Reopen the character settings and sync it again.");
+    preciseReference = { imageBuffer: stored.buffer, type: args.reference_type, strength: args.reference_strength, fidelity: args.reference_fidelity };
+  }
+  const request = buildUpstreamRequest({
+    prompt: args.prompt, undesiredContent: args.undesired_content, model: args.model,
+    size: args.size, seed: args.seed, steps: args.steps, guidance: args.guidance,
+    ucPreset: args.uc_preset, qualityTags: args.quality_tags, preciseReference, config
+  });
+  let generated;
+  try { generated = await serializeGeneration(() => generateUpstreamImage({ config, request })); }
+  catch (error) {
+    if (preciseReference && /(400|422|director_reference|reference.*unsupported|unknown field)/i.test(String(error?.message || ""))) throw new Error(preciseReferenceUnsupportedMessage());
+    throw error;
+  }
+  const { imageUrl, saved } = await materialize(generated);
+  log("info", "image_generated", {
+    correlationId: generated.requestId, profile: runtime.profile,
+    upstreamHost: new URL(runtime.baseUrl).host, modelPreset: args.model,
+    upstreamModel: request.modelId, size: args.size, seed: generated.seed,
+    delivery: forcePersist ? "background-proxy" : generated.imageUrl ? "direct" : "proxy",
+    referenceUsed: Boolean(preciseReference),
+    ...(preciseReference ? { referenceType: preciseReference.type } : {}),
+    ...(saved ? { fileName: saved.fileName } : {})
+  });
+  return {
+    structuredContent: { imageUrl, seed: generated.seed, model: request.modelId, size: `${request.dimensions.width}x${request.dimensions.height}`, referenceUsed: Boolean(preciseReference), ...(saved ? { expiresAt: saved.expiresAt } : {}) },
+    content: [{ type: "text", text: ["Image generated successfully.", `Image URL: ${imageUrl}`, `Seed: ${generated.seed}`, `Model: ${request.modelId}`, `Size: ${request.dimensions.width}x${request.dimensions.height}`, ...(saved ? [`Expires at: ${saved.expiresAt}`] : []), "Show the image to the user and continue speaking in character."].join("\n") }]
+  };
+}
 function createMcpServer() {
   const server = new McpServer({ name: SERVICE_NAME, version: SERVICE_VERSION });
-  server.registerTool(
-    "novelai_generate_image",
-    {
-      title: "NovelAI Generate Image",
-      description:
-        "Generate one anime/illustration image through the configured NovelAI-compatible API. Prefer this tool for anime characters, positive/negative tags, seed, steps, guidance, and NovelAI V4 prompts. When the user explicitly asks for GPT image generation, do not use this tool.",
-      inputSchema: {
-        prompt: z.string().min(1).max(5000),
-        undesired_content: z.string().max(3000).optional().default(""),
-        model: z.enum(["full", "curated"]).optional().default("full"),
-        size: z.enum(["portrait", "landscape", "square"]).optional().default("portrait"),
-        seed: z.number().int().min(0).max(4_294_967_295).optional(),
-        steps: z.number().int().min(1).max(50).optional().default(23),
-        guidance: z.number().min(1).max(10).optional().default(5),
-        uc_preset: z.enum(["heavy", "light", "human", "none"]).optional().default("heavy"),
-        quality_tags: z.boolean().optional().default(true),
-        reference_id: z.string().regex(/^[a-f0-9]{64}$/).optional().describe("SullyOS-managed private reference slot. Never invent or expose it."),
-        reference_type: z.enum(["character", "style", "character&style"]).optional().default("character"),
-        reference_strength: z.number().min(0).max(1).optional().default(0.75),
-        reference_fidelity: z.number().min(0).max(1).optional().default(0.85)
-      }
-    },
-    async (args) => {
-      try {
-        const { runtime, config } = await effectiveUpstreamConfig();
-        let preciseReference = null;
-        if (args.reference_id) {
-          const upstreamModel = args.model === "curated" ? config.upstreamModelCurated : config.upstreamModelFull;
-          if (!isNovelAiV45Model(upstreamModel)) throw new Error("NovelAI Precise Reference is only supported by V4.5 Full/Curated models");
-          const stored = await referenceStore.readImage(args.reference_id);
-          if (!stored) throw new Error("The character reference image is missing on the MCP server. Reopen the character settings and sync it again.");
-          preciseReference = { imageBuffer: stored.buffer, type: args.reference_type, strength: args.reference_strength, fidelity: args.reference_fidelity };
-        }
-        const request = buildUpstreamRequest({
-          prompt: args.prompt,
-          undesiredContent: args.undesired_content,
-          model: args.model,
-          size: args.size,
-          seed: args.seed,
-          steps: args.steps,
-          guidance: args.guidance,
-          ucPreset: args.uc_preset,
-          qualityTags: args.quality_tags,
-          preciseReference,
-          config
-        });
-        let generated;
-        try {
-          generated = await serializeGeneration(() => generateUpstreamImage({ config, request }));
-        } catch (error) {
-          if (preciseReference && /(400|422|director_reference|reference.*unsupported|unknown field)/i.test(String(error?.message || ""))) throw new Error(preciseReferenceUnsupportedMessage());
-          throw error;
-        }
-        const { imageUrl, saved } = await materialize(generated);
-        log("info", "image_generated", {
-          correlationId: generated.requestId,
-          profile: runtime.profile,
-          upstreamHost: new URL(runtime.baseUrl).host,
-          modelPreset: args.model,
-          upstreamModel: request.modelId,
-          size: args.size,
-          seed: generated.seed,
-          delivery: generated.imageUrl ? "direct" : "proxy",
-          referenceUsed: Boolean(preciseReference),
-          ...(preciseReference ? { referenceType: preciseReference.type } : {}),
-          ...(saved ? { fileName: saved.fileName } : {})
-        });
-        return {
-          structuredContent: {
-            imageUrl,
-            seed: generated.seed,
-            model: request.modelId,
-            size: `${request.dimensions.width}x${request.dimensions.height}`,
-            referenceUsed: Boolean(preciseReference),
-            ...(saved ? { expiresAt: saved.expiresAt } : {})
-          },
-          content: [{ type: "text", text: [
-            "Image generated successfully.",
-            `Image URL: ${imageUrl}`,
-            `Seed: ${generated.seed}`,
-            `Model: ${request.modelId}`,
-            `Size: ${request.dimensions.width}x${request.dimensions.height}`,
-            ...(saved ? [`Expires at: ${saved.expiresAt}`] : []),
-            "Show the image to the user and continue speaking in character."
-          ].join("\n") }]
-        };
-      } catch (error) {
-        log("error", "generation_failed", safeErrorLogFields(error));
-        return { isError: true, content: [{ type: "text", text: `Image generation failed: ${error?.message || String(error)}` }] };
-      }
+  server.registerTool(NOVELAI_TOOL_NAME, {
+    title: "NovelAI Generate Image",
+    description: "Generate one anime/illustration image through the configured NovelAI-compatible API.",
+    inputSchema: novelAiInputShape
+  }, async args => {
+    try { return await executeNovelAiGeneration(args); }
+    catch (error) {
+      log("error", "generation_failed", safeErrorLogFields(error));
+      return { isError: true, content: [{ type: "text", text: `Image generation failed: ${error?.message || String(error)}` }] };
     }
-  );
+  });
   return server;
 }
-
 await initializeImageStorage(staticConfig.imageDir);
 await referenceStore.initialize();
 await runtimeStore.load();
+const backgroundJobQueue = createPersistentImageJobQueue({
+  directory: staticConfig.jobDir,
+  ttlMs: staticConfig.jobTtlMs,
+  maxRetainedJobs: staticConfig.maxRetainedJobs,
+  log,
+  execute: async ({ toolName, arguments: args, executionContext }) => {
+    if (toolName !== NOVELAI_TOOL_NAME) {
+      const error = new Error(`Unsupported background tool: ${toolName}`);
+      error.code = "unsupported_tool";
+      throw error;
+    }
+    return executeNovelAiGeneration(args, { runtimeOverride: executionContext.runtime, forcePersist: true });
+  }
+});
+await backgroundJobQueue.initialize();
 const initiallyRemoved = await cleanupExpiredImages(staticConfig.imageDir, staticConfig.imageTtlMs);
 if (initiallyRemoved) log("info", "startup_cleanup", { removed: initiallyRemoved });
 const cleanupTimer = setInterval(async () => {
   try {
-    const removed = await cleanupExpiredImages(staticConfig.imageDir, staticConfig.imageTtlMs);
-    if (removed) log("info", "scheduled_cleanup", { removed });
+    const [removedImages, removedJobs] = await Promise.all([
+      cleanupExpiredImages(staticConfig.imageDir, staticConfig.imageTtlMs),
+      backgroundJobQueue.cleanup()
+    ]);
+    if (removedImages) log("info", "scheduled_image_cleanup", { removed: removedImages });
+    if (removedJobs) log("info", "scheduled_job_cleanup", { removed: removedJobs });
   } catch (error) { log("error", "cleanup_failed", safeErrorLogFields(error)); }
 }, 3_600_000);
 cleanupTimer.unref();
@@ -282,6 +272,35 @@ app.get("/images/:fileName", async (req, res) => {
   res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
   return res.sendFile(filePath);
 });
+app.post("/jobs", requireBearer, async (req, res, next) => {
+  try {
+    const body = z.object({
+      clientRequestId: z.string().min(8).max(160).regex(/^[A-Za-z0-9._:-]+$/),
+      toolName: z.literal(NOVELAI_TOOL_NAME),
+      arguments: novelAiArgumentsSchema
+    }).strict().parse(req.body);
+    const runtimeSnapshot = await runtimeStore.load();
+    const result = await backgroundJobQueue.enqueue({ ...body, executionContext: { runtime: runtimeSnapshot, revision: runtimeSnapshot.revision } });
+    res.setHeader("Cache-Control", "no-store");
+    res.status(result.created ? 202 : 200).json(result);
+  } catch (error) {
+    if (error?.code === "IDEMPOTENCY_CONFLICT") return res.status(409).json({ error: "idempotency_conflict", message: error.message });
+    next(error);
+  }
+});
+app.get("/jobs/by-client/:clientRequestId", requireBearer, (req, res) => {
+  const job = backgroundJobQueue.getByClientRequestId(req.params.clientRequestId);
+  res.setHeader("Cache-Control", "no-store");
+  if (!job) return res.status(404).json({ error: "job_not_found" });
+  return res.json({ job });
+});
+app.get("/jobs/:jobId", requireBearer, (req, res) => {
+  const job = backgroundJobQueue.getById(req.params.jobId);
+  res.setHeader("Cache-Control", "no-store");
+  if (!job) return res.status(404).json({ error: "job_not_found" });
+  return res.json({ job });
+});
+
 app.post("/mcp", requireBearer, async (req, res) => {
   res.setHeader("Cache-Control", "no-store");
   const mcpServer = createMcpServer();
@@ -315,6 +334,6 @@ const httpServer = app.listen(staticConfig.port, staticConfig.host, async () => 
   });
 });
 httpServer.on("error", (error) => { log("fatal", "server_start_failed", safeErrorLogFields(error)); process.exit(1); });
-function shutdown(signal) { log("info", "shutdown_started", { signal }); clearInterval(cleanupTimer); httpServer.close((error) => process.exit(error ? 1 : 0)); }
+function shutdown(signal) { log("info", "shutdown_started", { signal }); clearInterval(cleanupTimer); backgroundJobQueue.shutdown(); httpServer.close((error) => process.exit(error ? 1 : 0)); }
 process.on("SIGINT", () => shutdown("SIGINT"));
 process.on("SIGTERM", () => shutdown("SIGTERM"));

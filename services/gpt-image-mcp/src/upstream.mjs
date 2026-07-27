@@ -81,11 +81,39 @@ function detectImageFormat(buffer, hintedContentType = "") {
   return null;
 }
 
-function decodeBase64Image(value) {
+async function readResponseBufferLimited(response, maxBytes) {
+  const contentLength = Number(response.headers.get("content-length") || 0);
+  if (contentLength > maxBytes) throw new Error(`Upstream response exceeds ${maxBytes} bytes`);
+  if (!response.body) return Buffer.alloc(0);
+  const reader = response.body.getReader();
+  const chunks = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel();
+        throw new Error(`Upstream response exceeds ${maxBytes} bytes`);
+      }
+      chunks.push(Buffer.from(value));
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return Buffer.concat(chunks, total);
+}
+function assertImageSize(buffer, maxImageBytes) {
+  if (buffer.length <= 0) throw new Error("The upstream returned an empty image");
+  if (buffer.length > maxImageBytes) throw new Error(`Generated image exceeds ${maxImageBytes} bytes`);
+}
+function decodeBase64Image(value, maxImageBytes) {
   const text = String(value || "").trim();
   const match = text.match(/^data:image\/(png|webp|jpeg|jpg);base64,(.+)$/is);
   const raw = match ? match[2] : text;
   const buffer = Buffer.from(raw.replace(/\s+/g, ""), "base64");
+  assertImageSize(buffer, maxImageBytes);
   const format = detectImageFormat(buffer, match ? `image/${match[1]}` : "");
   if (!format || buffer.length < 16) {
     throw new Error("The upstream returned invalid base64 image data");
@@ -228,7 +256,7 @@ function remoteErrorMessage(buffer, contentType) {
   return text.slice(0, 500);
 }
 
-async function fetchRemoteImage(urlValue, config, correlationId, timeoutMs) {
+async function fetchRemoteImage(urlValue, config, correlationId, timeoutMs, maxImageBytes, maxResponseBytes) {
   const url = resolveRemoteImageUrl(urlValue, config);
   const sameOrigin = url.origin === new URL(config.baseUrl).origin;
   const headers = sameOrigin
@@ -240,18 +268,19 @@ async function fetchRemoteImage(urlValue, config, correlationId, timeoutMs) {
     signal: AbortSignal.timeout(timeoutMs)
   });
   const contentType = (response.headers.get("content-type") || "").toLowerCase();
-  const buffer = Buffer.from(await response.arrayBuffer());
+  const buffer = await readResponseBufferLimited(response, Math.min(maxResponseBytes, maxImageBytes));
   if (!response.ok) {
     throw new Error(`Unable to download generated image: HTTP ${response.status}`);
   }
+  assertImageSize(buffer, maxImageBytes);
   const format = detectImageFormat(buffer, contentType);
   if (!format) throw new Error("Generated image URL did not return a supported image");
   return { imageBuffer: buffer, format };
 }
 
-export async function parseUpstreamResponse({ response, config, correlationId, timeoutMs }) {
+export async function parseUpstreamResponse({ response, config, correlationId, timeoutMs, maxImageBytes, maxResponseBytes }) {
   const contentType = (response.headers.get("content-type") || "").toLowerCase();
-  const buffer = Buffer.from(await response.arrayBuffer());
+  const buffer = await readResponseBufferLimited(response, maxResponseBytes);
   if (!response.ok) {
     throw new Error(
       `Upstream rejected the request (${response.status}, correlation ID ${correlationId}): ${remoteErrorMessage(buffer, contentType)}`
@@ -265,6 +294,7 @@ export async function parseUpstreamResponse({ response, config, correlationId, t
       throw new Error("The upstream returned bytes, but imageDelivery is direct");
     }
     if (!format) throw new Error("The upstream response is not a supported image");
+    assertImageSize(buffer, maxImageBytes);
     return { imageBuffer: buffer, format };
   }
 
@@ -276,7 +306,7 @@ export async function parseUpstreamResponse({ response, config, correlationId, t
     if (config.imageDelivery === "direct") {
       throw new Error("The upstream returned base64, but imageDelivery is direct");
     }
-    return decodeBase64Image(candidate.value);
+    return decodeBase64Image(candidate.value, maxImageBytes);
   }
 
   const url = resolveRemoteImageUrl(candidate.value, config);
@@ -290,10 +320,10 @@ export async function parseUpstreamResponse({ response, config, correlationId, t
   if (config.imageDelivery === "auto" && sameOrigin) {
     return { imageUrl: url.toString() };
   }
-  return fetchRemoteImage(url.toString(), config, correlationId, timeoutMs);
+  return fetchRemoteImage(url.toString(), config, correlationId, timeoutMs, maxImageBytes, maxResponseBytes);
 }
 
-export async function generateUpstreamImage({ config, input, timeoutMs }) {
+export async function generateUpstreamImage({ config, input, timeoutMs, maxImageBytes, maxResponseBytes }) {
   const correlationId = requestId();
   const request = buildUpstreamRequest({ ...input, config });
   const response = await fetch(request.url, {
@@ -306,7 +336,9 @@ export async function generateUpstreamImage({ config, input, timeoutMs }) {
     response,
     config,
     correlationId,
-    timeoutMs
+    timeoutMs,
+    maxImageBytes,
+    maxResponseBytes
   });
   return { ...generated, correlationId, upstreamUrl: request.url };
 }

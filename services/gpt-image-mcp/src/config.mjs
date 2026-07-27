@@ -60,7 +60,15 @@ export const staticConfig = Object.freeze({
     optional("RUNTIME_CONFIG_FILE", "./data/config.json")
   ),
   imageDir: path.resolve(optional("IMAGE_DIR", "./data/images")),
-  imageTtlMs: positiveInteger("IMAGE_TTL_HOURS", 24) * 3_600_000,
+  jobDir: path.resolve(optional("JOB_DIR", "./data/jobs")),
+  imageTtlMs: positiveInteger("IMAGE_TTL_HOURS", 96) * 3_600_000,
+  jobTtlMs: positiveInteger("JOB_TTL_HOURS", 72) * 3_600_000,
+  maxRetainedJobs: positiveInteger("MAX_RETAINED_JOBS", 300),
+  maxImageBytes: positiveInteger("MAX_IMAGE_BYTES", 25 * 1024 * 1024),
+  maxUpstreamResponseBytes: positiveInteger(
+    "MAX_UPSTREAM_RESPONSE_BYTES",
+    40 * 1024 * 1024
+  ),
   upstreamTimeoutMs: positiveInteger("UPSTREAM_TIMEOUT_MS", 180_000),
   allowInsecureUpstream: booleanValue("ALLOW_INSECURE_UPSTREAM", false)
 });

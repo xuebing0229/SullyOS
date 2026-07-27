@@ -8,6 +8,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { bootstrapRuntimeConfig, staticConfig } from "./config.mjs";
 import { createRuntimeConfigStore } from "./runtime-config.mjs";
 import { generateUpstreamImage } from "./upstream.mjs";
+import { createPersistentImageJobQueue } from "./jobs.mjs";
 import {
   cleanupExpiredImages,
   initializeImageStorage,
@@ -16,7 +17,7 @@ import {
 } from "./storage.mjs";
 
 const SERVICE_NAME = "sullyos-gpt-image-mcp";
-const SERVICE_VERSION = "1.0.0";
+const SERVICE_VERSION = "1.1.0";
 
 const runtimeStore = createRuntimeConfigStore({
   filePath: staticConfig.runtimeConfigFile,
@@ -88,76 +89,71 @@ async function materializeGeneratedImage(generated) {
   return { imageUrl: saved.url, saved };
 }
 
+const GPT_IMAGE_TOOL_NAME = "generate_image";
+const gptImageInputShape = {
+  prompt: z.string().min(1).max(8000),
+  size: z.enum(["1024x1024", "1536x1024", "1024x1536"]).optional().default("1024x1024"),
+  quality: z.enum(["auto", "low", "medium", "high"]).optional().default("auto"),
+  background: z.enum(["auto", "opaque", "transparent"]).optional().default("auto"),
+  output_format: z.enum(["png", "jpeg", "webp"]).optional().default("png")
+};
+const gptImageArgumentsSchema = z.object(gptImageInputShape).strict();
+async function executeGptImageGeneration(rawArgs, { runtimeOverride, forcePersist = false } = {}) {
+  const args = gptImageArgumentsSchema.parse(rawArgs);
+  const runtime = runtimeOverride ? structuredClone(runtimeOverride) : await runtimeStore.load();
+  const effectiveRuntime = forcePersist ? { ...runtime, imageDelivery: "proxy" } : runtime;
+  const generated = await serializeGeneration(() => generateUpstreamImage({
+    config: effectiveRuntime,
+    input: { prompt: args.prompt, size: args.size, quality: args.quality, background: args.background, outputFormat: args.output_format },
+    timeoutMs: staticConfig.upstreamTimeoutMs,
+    maxImageBytes: staticConfig.maxImageBytes,
+    maxResponseBytes: staticConfig.maxUpstreamResponseBytes
+  }));
+  const { imageUrl, saved } = await materializeGeneratedImage(generated);
+  log("info", "image_generated", {
+    correlationId: generated.correlationId, mode: runtime.mode,
+    upstreamHost: new URL(runtime.baseUrl).host, model: runtime.model,
+    size: args.size, quality: args.quality,
+    delivery: forcePersist ? "background-proxy" : generated.imageUrl ? "direct" : "proxy",
+    ...(saved ? { fileName: saved.fileName } : {})
+  });
+  return {
+    structuredContent: { imageUrl, model: runtime.model, size: args.size, ...(saved ? { expiresAt: saved.expiresAt } : {}) },
+    content: [{ type: "text", text: ["Image generated successfully.", `Image URL: ${imageUrl}`, `Model: ${runtime.model}`, `Size: ${args.size}`, ...(saved ? [`Expires at: ${saved.expiresAt}`] : []), "Show the image to the user and continue speaking in character."].join("\n") }]
+  };
+}
 function createMcpServer() {
   const server = new McpServer({ name: SERVICE_NAME, version: SERVICE_VERSION });
-  server.registerTool(
-    "generate_image",
-    {
-      title: "GPT Image Generate",
-      description:
-        "Generate one general-purpose image with the configured GPT/OpenAI-compatible image API. Prefer this tool for natural-language, realistic, poster, product, scene, or general image requests. When the user explicitly asks for NovelAI, do not use this tool.",
-      inputSchema: {
-        prompt: z.string().min(1).max(8000).describe("Detailed natural-language image instruction."),
-        size: z.enum(["1024x1024", "1536x1024", "1024x1536"]).optional().default("1024x1024"),
-        quality: z.enum(["auto", "low", "medium", "high"]).optional().default("auto"),
-        background: z.enum(["auto", "opaque", "transparent"]).optional().default("auto"),
-        output_format: z.enum(["png", "jpeg", "webp"]).optional().default("png")
-      }
-    },
-    async ({ prompt, size, quality, background, output_format }) => {
-      try {
-        const runtime = await runtimeStore.load();
-        const generated = await serializeGeneration(() =>
-          generateUpstreamImage({
-            config: runtime,
-            input: { prompt, size, quality, background, outputFormat: output_format },
-            timeoutMs: staticConfig.upstreamTimeoutMs
-          })
-        );
-        const { imageUrl, saved } = await materializeGeneratedImage(generated);
-        log("info", "image_generated", {
-          correlationId: generated.correlationId,
-          mode: runtime.mode,
-          upstreamHost: new URL(runtime.baseUrl).host,
-          model: runtime.model,
-          size,
-          quality,
-          delivery: generated.imageUrl ? "direct" : "proxy",
-          ...(saved ? { fileName: saved.fileName } : {})
-        });
-        return {
-          structuredContent: {
-            imageUrl,
-            model: runtime.model,
-            size,
-            ...(saved ? { expiresAt: saved.expiresAt } : {})
-          },
-          content: [{
-            type: "text",
-            text: [
-              "Image generated successfully.",
-              `Image URL: ${imageUrl}`,
-              `Model: ${runtime.model}`,
-              `Size: ${size}`,
-              ...(saved ? [`Expires at: ${saved.expiresAt}`] : []),
-              "Show the image to the user and continue speaking in character."
-            ].join("\n")
-          }]
-        };
-      } catch (error) {
-        log("error", "generation_failed", safeErrorLogFields(error));
-        return {
-          isError: true,
-          content: [{ type: "text", text: `Image generation failed: ${error?.message || String(error)}` }]
-        };
-      }
+  server.registerTool(GPT_IMAGE_TOOL_NAME, {
+    title: "GPT Image Generate",
+    description: "Generate one general-purpose image with the configured GPT/OpenAI-compatible image API.",
+    inputSchema: gptImageInputShape
+  }, async args => {
+    try { return await executeGptImageGeneration(args); }
+    catch (error) {
+      log("error", "generation_failed", safeErrorLogFields(error));
+      return { isError: true, content: [{ type: "text", text: `Image generation failed: ${error?.message || String(error)}` }] };
     }
-  );
+  });
   return server;
 }
-
 await initializeImageStorage(staticConfig.imageDir);
 await runtimeStore.load();
+const backgroundJobQueue = createPersistentImageJobQueue({
+  directory: staticConfig.jobDir,
+  ttlMs: staticConfig.jobTtlMs,
+  maxRetainedJobs: staticConfig.maxRetainedJobs,
+  log,
+  execute: async ({ toolName, arguments: args, executionContext }) => {
+    if (toolName !== GPT_IMAGE_TOOL_NAME) {
+      const error = new Error(`Unsupported background tool: ${toolName}`);
+      error.code = "unsupported_tool";
+      throw error;
+    }
+    return executeGptImageGeneration(args, { runtimeOverride: executionContext.runtime, forcePersist: true });
+  }
+});
+await backgroundJobQueue.initialize();
 const initiallyRemoved = await cleanupExpiredImages(
   staticConfig.imageDir,
   staticConfig.imageTtlMs
@@ -166,11 +162,15 @@ if (initiallyRemoved) log("info", "startup_cleanup", { removed: initiallyRemoved
 
 const cleanupTimer = setInterval(async () => {
   try {
-    const removed = await cleanupExpiredImages(
-      staticConfig.imageDir,
-      staticConfig.imageTtlMs
-    );
-    if (removed) log("info", "scheduled_cleanup", { removed });
+    const [removedImages, removedJobs] = await Promise.all([
+      cleanupExpiredImages(
+        staticConfig.imageDir,
+        staticConfig.imageTtlMs
+      ),
+      backgroundJobQueue.cleanup()
+    ]);
+    if (removedImages) log("info", "scheduled_image_cleanup", { removed: removedImages });
+    if (removedJobs) log("info", "scheduled_job_cleanup", { removed: removedJobs });
   } catch (error) {
     log("error", "cleanup_failed", safeErrorLogFields(error));
   }
@@ -249,7 +249,9 @@ app.post("/config/test", requireBearer, async (req, res, next) => {
           background: "opaque",
           outputFormat: "png"
         },
-        timeoutMs: staticConfig.upstreamTimeoutMs
+        timeoutMs: staticConfig.upstreamTimeoutMs,
+        maxImageBytes: staticConfig.maxImageBytes,
+        maxResponseBytes: staticConfig.maxUpstreamResponseBytes
       })
     );
     const { imageUrl, saved } = await materializeGeneratedImage(generated);
@@ -269,6 +271,35 @@ app.get("/images/:fileName", async (req, res) => {
   res.setHeader("Cache-Control", "public, max-age=3600, immutable");
   res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
   return res.sendFile(filePath);
+});
+
+app.post("/jobs", requireBearer, async (req, res, next) => {
+  try {
+    const body = z.object({
+      clientRequestId: z.string().min(8).max(160).regex(/^[A-Za-z0-9._:-]+$/),
+      toolName: z.literal(GPT_IMAGE_TOOL_NAME),
+      arguments: gptImageArgumentsSchema
+    }).strict().parse(req.body);
+    const runtimeSnapshot = await runtimeStore.load();
+    const result = await backgroundJobQueue.enqueue({ ...body, executionContext: { runtime: runtimeSnapshot, revision: runtimeSnapshot.revision } });
+    res.setHeader("Cache-Control", "no-store");
+    res.status(result.created ? 202 : 200).json(result);
+  } catch (error) {
+    if (error?.code === "IDEMPOTENCY_CONFLICT") return res.status(409).json({ error: "idempotency_conflict", message: error.message });
+    next(error);
+  }
+});
+app.get("/jobs/by-client/:clientRequestId", requireBearer, (req, res) => {
+  const job = backgroundJobQueue.getByClientRequestId(req.params.clientRequestId);
+  res.setHeader("Cache-Control", "no-store");
+  if (!job) return res.status(404).json({ error: "job_not_found" });
+  return res.json({ job });
+});
+app.get("/jobs/:jobId", requireBearer, (req, res) => {
+  const job = backgroundJobQueue.getById(req.params.jobId);
+  res.setHeader("Cache-Control", "no-store");
+  if (!job) return res.status(404).json({ error: "job_not_found" });
+  return res.json({ job });
 });
 
 app.post("/mcp", requireBearer, async (req, res) => {
@@ -326,6 +357,7 @@ httpServer.on("error", (error) => {
 function shutdown(signal) {
   log("info", "shutdown_started", { signal });
   clearInterval(cleanupTimer);
+  backgroundJobQueue.shutdown();
   httpServer.close((error) => process.exit(error ? 1 : 0));
 }
 process.on("SIGINT", () => shutdown("SIGINT"));

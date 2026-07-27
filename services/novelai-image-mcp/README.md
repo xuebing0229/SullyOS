@@ -104,3 +104,9 @@ UPSTREAM_IMAGE_DELIVERY=auto
 - `proxy`: always download URL responses and save them locally, like ZIP, base64, and raw image responses.
 
 This keeps one MCP tool while allowing URL-capable and binary-only upstreams to be switched using environment settings.
+
+## Persistent background image jobs
+
+Authenticated clients can create and recover idempotent jobs through `POST /jobs`, `GET /jobs/:jobId`, and `GET /jobs/by-client/:clientRequestId`. Each job freezes the runtime configuration and API key that were active at creation time. Background execution always forces proxy delivery so the generated image is stored by this service before the phone downloads it. Public job responses never expose the frozen execution context. Precise-reference arguments continue to use the existing private reference store.
+
+Configure `JOB_DIR`, `JOB_TTL_HOURS`, `MAX_RETAINED_JOBS`, `MAX_IMAGE_BYTES`, and `MAX_UPSTREAM_RESPONSE_BYTES`. The supplied systemd unit limits memory and task count for small 2-core/2-GB hosts. `/mcp` remains synchronous for compatibility.

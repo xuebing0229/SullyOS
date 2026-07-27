@@ -23,6 +23,9 @@ ReadWritePaths=/var/lib/novelai-image-mcp
 RestrictSUIDSGID=true
 LockPersonality=true
 LimitNOFILE=4096
+MemoryMax=768M
+MemoryHigh=640M
+TasksMax=128
 
 [Install]
 WantedBy=multi-user.target
