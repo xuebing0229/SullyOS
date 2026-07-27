@@ -1,6 +1,6 @@
 
 import React, { createContext, useContext, useEffect, useState, useRef, useCallback } from 'react';
-import { APIConfig, AppID, OSTheme, VirtualTime, CharacterProfile, CharacterGroup, ChatTheme, Toast, FullBackupData, UserProfile, ApiPreset, GroupProfile, SystemLog, Worldbook, NovelBook, SongSheet, Message, RealtimeConfig, AppearancePreset, CloudBackupConfig, CloudBackupFile } from '../types';
+import { APIConfig, AppID, OSTheme, VirtualTime, CharacterProfile, CharacterGroup, ChatTheme, Toast, FullBackupData, UserProfile, ApiPreset, ApiPricing, GroupProfile, SystemLog, Worldbook, NovelBook, SongSheet, Message, RealtimeConfig, AppearancePreset, CloudBackupConfig, CloudBackupFile } from '../types';
 import { DB } from '../utils/db';
 import { deleteRemoteNovelAiReference, stripNovelAiReferenceForTextOnlyBackup } from '../utils/novelAiReference';
 import { modelRejectsSamplingParams, stripSamplingParams, isSamplingParamError } from '../utils/samplingParamCompat';
@@ -22,7 +22,7 @@ import { runWorldEpisode, rerollWorldCharBeat } from '../utils/worldHome/engine'
 import { migrateWorldDaySegs } from '../utils/worldHome/prompts';
 import { ChatParser } from '../utils/chatParser';
 import { safeFetchJson } from '../utils/safeApi';
-import { getApiCallAmbientContext, recordApiCall, setApiCallAmbientContext } from '../utils/apiCallLog';
+import { captureApiBillingContext, getApiCallAmbientContext, recordApiCall, setApiCallAmbientContext } from '../utils/apiCallLog';
 import { isGlobalStreamEnabled, upgradeChatBodyToStream, assembleUpgradedResponse } from '../utils/streamUpgrade';
 import { rewriteStaleWorkerUrl } from '../utils/proxyWorker';
 import { INSTALLED_APPS } from '../constants';
@@ -58,6 +58,7 @@ import { exportMcdLocal } from '../utils/mcdMcpClient';
 import { exportDesktopSkinLocal } from '../utils/desktopSkinBackup';
 import { assertSupportedSullyBackup } from '../utils/backupImportPolicy';
 import { startBackgroundImageJobMonitor } from '../utils/backgroundImageJobs';
+import { migrateApiCostV1, markApiCostMigrationComplete } from '../utils/apiCostMigration';
 
 interface ProactiveQueueEntry {
   charId: string;
@@ -297,7 +298,10 @@ interface OSContextType {
   
   // API Presets
   apiPresets: ApiPreset[];
-  addApiPreset: (name: string, config: APIConfig) => void;
+  activeApiPresetId: string | null;
+  activateApiPreset: (preset: ApiPreset) => void;
+  addApiPreset: (name: string, config: APIConfig, pricing?: ApiPricing) => void;
+  updateApiPreset: (id: string, patch: Partial<ApiPreset>) => void;
   removeApiPreset: (id: string) => void;
 
   // 实时配置 (天气、新闻、Notion等)
@@ -836,6 +840,7 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
   const [isDataLoaded, setIsDataLoaded] = useState(false);
   const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [apiPresets, setApiPresets] = useState<ApiPreset[]>([]);
+  const [activeApiPresetId, setActiveApiPresetId] = useState<string | null>(() => { try { return localStorage.getItem('os_active_api_preset_id'); } catch { return null; } });
   const [realtimeConfig, setRealtimeConfig] = useState<RealtimeConfig>(defaultRealtimeConfig);
   const [memoryPalaceConfig, setMemoryPalaceConfig] = useState<MemoryPalaceGlobalConfig>(() => {
     try { const s = localStorage.getItem('os_memory_palace_config'); return s ? { ...defaultMemoryPalaceConfig, ...JSON.parse(s) } : defaultMemoryPalaceConfig; } catch { return defaultMemoryPalaceConfig; }
@@ -987,6 +992,9 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
               }
           }
 
+          const billingCapture = urlStr.includes('/chat/completions')
+              ? captureApiBillingContext(urlStr, (sendArgs[1] as any)?.body)
+              : undefined;
           try {
               let response = await originalFetch(...sendArgs);
 
@@ -1041,10 +1049,10 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
                           const durationMs = Date.now() - fetchStartedAt;
                           let parsed: any = undefined;
                           try { parsed = JSON.parse(t); } catch { /* 流式/非 JSON：把原始文本交给 recordApiCall 的 SSE 兜底解析 */ }
-                          recordApiCall({ url: urlStr, body, status, ok, response: parsed, responseText: parsed === undefined ? t : undefined, meta, durationMs });
-                      }).catch(() => recordApiCall({ url: urlStr, body, status, ok, meta, durationMs: Date.now() - fetchStartedAt }));
+                          recordApiCall({ url: urlStr, body, status, ok, response: parsed, responseText: parsed === undefined ? t : undefined, meta, durationMs, billingCapture });
+                      }).catch(() => recordApiCall({ url: urlStr, body, status, ok, meta, durationMs: Date.now() - fetchStartedAt, billingCapture }));
                   } else {
-                      recordApiCall({ url: urlStr, body, status, ok, meta, durationMs: Date.now() - fetchStartedAt });
+                      recordApiCall({ url: urlStr, body, status, ok, meta, durationMs: Date.now() - fetchStartedAt, billingCapture });
                   }
               }
 
@@ -1089,7 +1097,7 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
           } catch (err: any) {
               // Network Failure
               if (urlStr.includes('/chat/completions')) {
-                  recordApiCall({ url: urlStr, body: (sendArgs[1] as any)?.body, ok: false, meta: (config as any)?.__sullyMeta || ambientMetaAtStart, durationMs: Date.now() - fetchStartedAt });
+                  recordApiCall({ url: urlStr, body: (sendArgs[1] as any)?.body, ok: false, meta: (config as any)?.__sullyMeta || ambientMetaAtStart, durationMs: Date.now() - fetchStartedAt, billingCapture });
               }
               setSystemLogs(prev => [{
                   id: `log-${Date.now()}`,
@@ -1324,6 +1332,7 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
         }
 
         await loadSettings();
+        await migrateApiCostV1();
 
         // 老用户库存的鲨盘图链接就地改写成 jsDelivr（幂等、跑一次）。放在读 characters 之前，
         // 让下面 getAllCharacters 拿到的就是改好的数据。见 utils/sharkpanAssetMigration.ts。
@@ -2485,7 +2494,15 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
         addToast('主题没能保存到本地（存储空间可能已满），重启后可能会还原', 'error');
     }
   };
-  const updateApiConfig = (updates: Partial<APIConfig>) => { const newConfig = { ...apiConfig, ...updates }; setApiConfig(newConfig); localStorage.setItem('os_api_config', JSON.stringify(newConfig)); };
+  const updateApiConfig = (updates: Partial<APIConfig>) => {
+      if ('baseUrl' in updates || 'model' in updates || 'apiKey' in updates) {
+          setActiveApiPresetId(null);
+          localStorage.removeItem('os_active_api_preset_id');
+      }
+      const newConfig = { ...apiConfig, ...updates };
+      setApiConfig(newConfig);
+      localStorage.setItem('os_api_config', JSON.stringify(newConfig));
+  };
   const updateRealtimeConfig = (updates: Partial<RealtimeConfig>) => { const newConfig = { ...realtimeConfig, ...updates }; setRealtimeConfig(newConfig); localStorage.setItem('os_realtime_config', JSON.stringify(newConfig)); };
 
   // Cloud Backup functions
@@ -2595,8 +2612,11 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
     localStorage.setItem('os_remote_vector_config', JSON.stringify(newConfig));
   };
   const saveModels = (models: string[]) => { setAvailableModels(models); localStorage.setItem('os_available_models', JSON.stringify(models)); };
-  const addApiPreset = (name: string, config: APIConfig) => { setApiPresets(prev => { const next = [...prev, { id: Date.now().toString(), name, config }]; localStorage.setItem('os_api_presets', JSON.stringify(next)); return next; }); };
-  const removeApiPreset = (id: string) => { setApiPresets(prev => { const next = prev.filter(p => p.id !== id); localStorage.setItem('os_api_presets', JSON.stringify(next)); return next; }); };
+  const persistApiPresets = (next: ApiPreset[]) => { setApiPresets(next); localStorage.setItem('os_api_presets', JSON.stringify(next)); };
+  const activateApiPreset = (preset: ApiPreset) => { updateApiConfig(preset.config); setActiveApiPresetId(preset.id); localStorage.setItem('os_active_api_preset_id', preset.id); };
+  const addApiPreset = (name: string, config: APIConfig, pricing?: ApiPricing) => { const preset={id:Date.now().toString(),name,config,pricing}; persistApiPresets([...apiPresets,preset]); setActiveApiPresetId(preset.id); localStorage.setItem('os_active_api_preset_id',preset.id); };
+  const updateApiPreset = (id: string, patch: Partial<ApiPreset>) => { persistApiPresets(apiPresets.map(p=>p.id===id?{...p,...patch,config:patch.config??p.config}:p)); };
+  const removeApiPreset = (id: string) => { persistApiPresets(apiPresets.filter(p=>p.id!==id)); if(activeApiPresetId===id){setActiveApiPresetId(null);localStorage.removeItem('os_active_api_preset_id');} };
   const savePresets = (presets: ApiPreset[]) => { setApiPresets(presets); localStorage.setItem('os_api_presets', JSON.stringify(presets)); };
   const addCharacter = async () => {
     const name = 'New Character';
@@ -3206,6 +3226,7 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
               version: 3,
               apiConfig: (mode === 'text_only' || mode === 'full') ? apiConfig : undefined,
               apiPresets: (mode === 'text_only' || mode === 'full') ? apiPresets : undefined,
+              apiCostDailySummaries: (mode === 'text_only' || mode === 'full') ? await DB.getApiCostDailySummaries() : undefined,
               availableModels: (mode === 'text_only' || mode === 'full') ? availableModels : undefined,
               realtimeConfig: (mode === 'text_only' || mode === 'full') ? realtimeConfig : undefined,
               memoryPalaceConfig: (mode === 'text_only' || mode === 'full') ? memoryPalaceConfig : undefined,
@@ -3888,6 +3909,7 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
           };
 
           showImportProgress('database', '正在写入数据库...', 50, { current: '准备写入数据库', currentFile: '' });
+          const importedApiCostHistory = data.apiCostDailySummaries !== undefined;
           await DB.importFullData(data, {
               beforeWrite: restoreAssetsInPlace,
               onProgress: progress => {
@@ -3910,6 +3932,7 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
               },
           });
           
+          if (importedApiCostHistory) markApiCostMigrationComplete();
           showImportProgress('settings', '正在恢复系统设置...', 92, { current: '系统设置', currentFile: '' });
           if (data.theme) {
               await restoreAssetsInPlace(data.theme, '系统主题');
@@ -4228,7 +4251,10 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
     availableModels,
     setAvailableModels,
     apiPresets,
+    activeApiPresetId,
+    activateApiPreset,
     addApiPreset,
+    updateApiPreset,
     removeApiPreset,
     realtimeConfig,
     updateRealtimeConfig,

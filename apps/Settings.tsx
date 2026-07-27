@@ -25,6 +25,9 @@ import VersionInfo from '../components/settings/VersionInfo';
 import { LoyalUserRecruitmentController } from '../components/LoyalUserRecruitmentEvent';
 import { isPushVapidReady } from '../utils/pushVapid';
 import ApiCallLogModal from '../components/settings/ApiCallLogModal';
+import ApiPricingEditor from '../components/settings/ApiPricingEditor';
+import type { ApiPricing } from '../types';
+import { backfillUnpricedCallsForPreset } from '../utils/apiCostBackfill';
 import ImageGenerationSettings from '../components/settings/ImageGenerationSettings';
 import OrphanImageCleanupCard from '../components/settings/OrphanImageCleanupCard';
 import { DB } from '../utils/db';
@@ -348,7 +351,7 @@ const Settings: React.FC = () => {
   const {
       apiConfig, updateApiConfig, closeApp, availableModels, setAvailableModels,
       exportSystem, importSystem, addToast, showError, resetSystem,
-      apiPresets, addApiPreset, removeApiPreset,
+      apiPresets, activeApiPresetId, activateApiPreset, addApiPreset, updateApiPreset, removeApiPreset,
       sysOperation, // Get progress state
       realtimeConfig, updateRealtimeConfig, // 实时感知配置
       cloudBackupConfig, updateCloudBackupConfig,
@@ -384,6 +387,9 @@ const Settings: React.FC = () => {
   const [showApiAdvanced, setShowApiAdvanced] = useState(false);
   const [isLoadingModels, setIsLoadingModels] = useState(false);
   const [newPresetName, setNewPresetName] = useState('');
+  const [newPresetPricing, setNewPresetPricing] = useState<ApiPricing>({ mode: 'per_request', pricePerRequestYuan: '' });
+  const [pricingPresetId, setPricingPresetId] = useState<string | null>(null);
+  const [pricingDraft, setPricingDraft] = useState<ApiPricing | undefined>(undefined);
   
   // UI States
   const [showModelModal, setShowModelModal] = useState(false);
@@ -688,6 +694,7 @@ const Settings: React.FC = () => {
       setLocalModel(preset.config.model);
       setLocalStream(preset.config.stream === true);
       setLocalTemperature(typeof preset.config.temperature === 'number' ? preset.config.temperature : 0.85);
+      activateApiPreset(preset);
       // MiniMax / AceStep settings are NOT overwritten by presets — typically one user
       // has only one MiniMax / Replicate account regardless of which LLM preset they use.
       addToast(`已加载配置: ${preset.name}`, 'info');
@@ -704,7 +711,7 @@ const Settings: React.FC = () => {
         model: localModel,
         stream: localStream,
         temperature: localTemperature,
-      });
+      }, newPresetPricing);
       setNewPresetName('');
       setShowPresetModal(false);
       addToast('预设已保存', 'success');
@@ -1535,7 +1542,17 @@ const Settings: React.FC = () => {
                     <div className="flex gap-2 flex-wrap">
                         {apiPresets.map(preset => (
                             <div key={preset.id} className="flex items-center bg-white border border-slate-200 rounded-lg pl-3 pr-1 py-1 shadow-sm">
-                                <span onClick={() => loadPreset(preset)} className="text-xs font-medium text-slate-600 cursor-pointer hover:text-primary mr-2">{preset.name}</span>
+                                <span onClick={() => loadPreset(preset)} className={`text-xs font-medium cursor-pointer hover:text-primary mr-2 ${activeApiPresetId === preset.id ? 'text-emerald-600 font-bold' : 'text-slate-600'}`}>{preset.name}{activeApiPresetId === preset.id ? ' · 当前' : ''}</span>
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        setPricingPresetId(preset.id);
+                                        setPricingDraft(preset.pricing ?? { mode: 'per_request', pricePerRequestYuan: '' });
+                                    }}
+                                    className="rounded-lg bg-emerald-50 px-2.5 py-1 text-[10px] font-bold text-emerald-600 mr-1"
+                                >
+                                    {preset.pricing ? '修改价格' : '设置价格'}
+                                </button>
                                 <button onClick={() => removeApiPreset(preset.id)} className="p-1 rounded-full text-slate-300 hover:bg-red-50 hover:text-red-400 transition-colors">
                                     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-3 h-3"><path d="M6.28 5.22a.75.75 0 0 0-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 1 0 1.06 1.06L10 11.06l3.72 3.72a.75.75 0 1 0 1.06-1.06L11.06 10l3.72-3.72a.75.75 0 0 0-1.06-1.06L10 8.94 6.28 5.22Z" /></svg>
                                 </button>
@@ -2716,7 +2733,35 @@ const Settings: React.FC = () => {
           <div className="space-y-2">
               <label className="text-[10px] font-bold text-slate-400 uppercase">预设名称 (例如: DeepSeek)</label>
               <input value={newPresetName} onChange={e => setNewPresetName(e.target.value)} className="w-full bg-slate-100 rounded-xl px-4 py-3 text-sm focus:outline-primary" autoFocus placeholder="Name..." />
+              <ApiPricingEditor value={newPresetPricing} onChange={setNewPresetPricing} compact />
           </div>
+      </Modal>
+
+      <Modal
+          isOpen={pricingPresetId !== null}
+          title="API 预设价格"
+          onClose={() => { setPricingPresetId(null); setPricingDraft(undefined); }}
+          footer={
+              <button
+                  onClick={() => {
+                      const preset = apiPresets.find(item => item.id === pricingPresetId);
+                      if (!preset || !pricingDraft) return;
+                      const updated = { ...preset, pricing: pricingDraft };
+                      updateApiPreset(preset.id, { pricing: pricingDraft });
+                      setPricingPresetId(null);
+                      setPricingDraft(undefined);
+                      addToast('价格已保存', 'success');
+                      void backfillUnpricedCallsForPreset(updated).then(count => {
+                          if (count > 0) addToast(`已补算最近记录 ${count} 条`, 'info');
+                      });
+                  }}
+                  className="w-full py-3 bg-emerald-500 text-white font-bold rounded-2xl"
+              >
+                  保存价格
+              </button>
+          }
+      >
+          {pricingDraft && <ApiPricingEditor value={pricingDraft} onChange={setPricingDraft} />}
       </Modal>
 
       {/* 强制导出 Modal */}

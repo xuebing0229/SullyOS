@@ -18,6 +18,8 @@ import {
     getActiveImageGenerationPreset, getImageGenerationPresets, renameImageGenerationPreset,
     updateImageGenerationPreset, type ImageGenerationPreset,
 } from '../../utils/imageGenerationPresets';
+import ApiPricingEditor from './ApiPricingEditor';
+import type { ApiPricing } from '../../types';
 
 interface Props {
     addToast: (message: string, type?: 'success' | 'error' | 'info') => void;
@@ -231,6 +233,7 @@ const EngineCard: React.FC<{
     const presets = useMemo(() => getImageGenerationPresets(id), [id, presetRevision]);
     const activePreset = useMemo(() => getActiveImageGenerationPreset(id), [id, presetRevision]);
     const [apiKey, setApiKey] = useState(() => getActiveImageGenerationPreset(id)?.apiKey || '');
+    const [pricing, setPricing] = useState<ApiPricing>(() => getActiveImageGenerationPreset(id)?.pricing ?? { mode: 'per_request', pricePerRequestYuan: '' });
     const [status, setStatus] = useState('');
 
     const updateBinding = (patch: Partial<BuiltinImageBinding>) => {
@@ -259,7 +262,7 @@ const EngineCard: React.FC<{
     };
 
     useEffect(() => {
-        const refresh = () => { setPresetRevision(value => value + 1); const active = getActiveImageGenerationPreset(id); if (active) setApiKey(active.apiKey); };
+        const refresh = () => { setPresetRevision(value => value + 1); const active = getActiveImageGenerationPreset(id); if (active) { setApiKey(active.apiKey); setPricing(active.pricing ?? { mode: 'per_request', pricePerRequestYuan: '' }); } };
         window.addEventListener('sullyos:image-generation-presets-changed', refresh);
         return () => window.removeEventListener('sullyos:image-generation-presets-changed', refresh);
     }, [id]);
@@ -301,11 +304,11 @@ const EngineCard: React.FC<{
     };
 
     const ensureRemote = (): ImageRemoteConfig => { if (!remote) throw new Error('请先读取服务器配置'); return remote; };
-    const createPreset = () => { try { const name = window.prompt(`给这个${title}配置起个名字`, `${title}预设`); if (name === null) return; createImageGenerationPreset({ name, engineId: id, binding, remoteConfig: ensureRemote(), apiKey }); setPresetRevision(v => v + 1); addToast('生图预设已保存', 'success'); } catch (e: any) { addToast(e?.message || '保存预设失败', 'error'); } };
-    const updatePreset = () => { try { if (!activePreset) throw new Error('当前没有选中的预设'); updateImageGenerationPreset(activePreset.id, { binding, remoteConfig: ensureRemote(), apiKey }); setPresetRevision(v => v + 1); addToast('生图预设已更新', 'success'); } catch (e: any) { addToast(e?.message || '更新预设失败', 'error'); } };
+    const createPreset = () => { try { const name = window.prompt(`给这个${title}配置起个名字`, `${title}预设`); if (name === null) return; createImageGenerationPreset({ name, engineId: id, binding, remoteConfig: ensureRemote(), apiKey, pricing }); setPresetRevision(v => v + 1); addToast('生图预设已保存', 'success'); } catch (e: any) { addToast(e?.message || '保存预设失败', 'error'); } };
+    const updatePreset = () => { try { if (!activePreset) throw new Error('当前没有选中的预设'); updateImageGenerationPreset(activePreset.id, { binding, remoteConfig: ensureRemote(), apiKey, pricing }); setPresetRevision(v => v + 1); addToast('生图预设已更新', 'success'); } catch (e: any) { addToast(e?.message || '更新预设失败', 'error'); } };
     const renamePreset = () => { if (!activePreset) return; const name = window.prompt('重命名生图预设', activePreset.name); if (name === null) return; try { renameImageGenerationPreset(activePreset.id, name); setPresetRevision(v => v + 1); } catch (e: any) { addToast(e?.message || '重命名失败', 'error'); } };
     const removePreset = () => { if (!activePreset) return; deleteImageGenerationPreset(activePreset.id); setPresetRevision(v => v + 1); addToast('生图预设已删除', 'info'); };
-    const applyPreset = async (preset: ImageGenerationPreset) => { setBusy(true); setStatus(`正在应用预设「${preset.name}」…`); try { const result = await applyImageGenerationPreset(preset); setSettings(result.settings); setRemote(result.remote); setApiKey(preset.apiKey); setPresetRevision(v => v + 1); setStatus(`✅ 已应用预设「${preset.name}」`); addToast(`已应用${title}预设`, 'success'); } catch (e: any) { setStatus(`❌ ${e?.message || String(e)}`); } finally { setBusy(false); } };
+    const applyPreset = async (preset: ImageGenerationPreset) => { setBusy(true); setStatus(`正在应用预设「${preset.name}」…`); try { const result = await applyImageGenerationPreset(preset); setSettings(result.settings); setRemote(result.remote); setApiKey(preset.apiKey); setPricing(preset.pricing ?? { mode: 'per_request', pricePerRequestYuan: '' }); setPresetRevision(v => v + 1); setStatus(`✅ 已应用预设「${preset.name}」`); addToast(`已应用${title}预设`, 'success'); } catch (e: any) { setStatus(`❌ ${e?.message || String(e)}`); } finally { setBusy(false); } };
 
     const setEnabled = async (enabled: boolean) => {
         if (!enabled) { updateBinding({ enabled: false }); return; }
@@ -348,6 +351,7 @@ const EngineCard: React.FC<{
             {open && (
                 <div className="space-y-3 border-t border-violet-50 p-4">
                     <ImagePresetBar activePreset={activePreset} presets={presets} busy={busy} onApply={preset => void applyPreset(preset)} onCreate={createPreset} onUpdate={updatePreset} onRename={renamePreset} onDelete={removePreset} />
+                    <ApiPricingEditor value={pricing} onChange={setPricing} compact />
                     <BindingAdvanced binding={binding} onChange={updateBinding} />
                     {!remote ? (
                         <button disabled={busy || !binding.token} onClick={() => void loadRemote()} className="w-full rounded-xl bg-violet-500 py-2.5 text-xs font-bold text-white disabled:opacity-40">读取服务器配置</button>

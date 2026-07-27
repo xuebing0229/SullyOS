@@ -1,6 +1,7 @@
 
 export enum AppID {
   Launcher = 'launcher',
+  ApiCost = 'api_cost',
   Settings = 'settings',
   Character = 'character',
   Chat = 'chat',
@@ -372,10 +373,67 @@ export interface InstantPushReasoningBufferEntry {
   receivedAt: number;
 }
 
+export type ApiPricing =
+  | { mode: 'per_request'; pricePerRequestYuan: string }
+  | {
+      mode: 'per_token';
+      inputYuanPerMillion: string;
+      cacheWriteYuanPerMillion: string;
+      cacheReadYuanPerMillion: string;
+      outputYuanPerMillion: string;
+    };
+
+export interface ApiBillingUsage {
+  inputTokens: number;
+  cacheWriteTokens: number;
+  cacheReadTokens: number;
+  outputTokens: number;
+  usageAvailable: boolean;
+}
+
+export interface ApiPricingSnapshot {
+  presetId: string;
+  presetName: string;
+  pricing: ApiPricing;
+}
+
+export type ApiCallCostStatus = 'priced' | 'free_local_cache' | 'free_failed' | 'unpriced';
+export type ApiCallUnpricedReason = 'preset_not_found' | 'preset_ambiguous' | 'pricing_not_configured' | 'usage_missing';
+
+export interface ApiCostBucket {
+  key: string;
+  label: string;
+  costMicros: string;
+  callCount: number;
+}
+
+export interface ApiCostDailySummary {
+  dateKey: string;
+  totalCostMicros: string;
+  pricedCallCount: number;
+  freeCallCount: number;
+  unpricedCallCount: number;
+  byPreset: ApiCostBucket[];
+  byApp: ApiCostBucket[];
+  byPurpose: ApiCostBucket[];
+  updatedAt: number;
+}
+
+export interface ApiCostOverview {
+  todayCostMicros: string;
+  monthCostMicros: string;
+  totalCostMicros: string;
+  todayPricedCalls: number;
+  todayFreeCalls: number;
+  todayUnpricedCalls: number;
+  totalUnpricedCalls: number;
+}
+
 export interface ApiPreset {
   id: string;
   name: string;
   config: APIConfig;
+  pricing?: ApiPricing;
 }
 
 export interface CharacterBuff {
@@ -3117,6 +3175,7 @@ export interface FullBackupData {
     instantPushConfig?: InstantPushConfig;
     pushVapid?: { vapidPublicKey: string; vapidPrivateKey: string; vapidEmail?: string; updatedAt?: number; };
     apiPresets?: ApiPreset[];
+    apiCostDailySummaries?: ApiCostDailySummary[];
     availableModels?: string[];
     realtimeConfig?: RealtimeConfig;  // 实时感知配置（天气/新闻/Notion）
     memoryPalaceConfig?: MemoryPalaceBackupConfig;

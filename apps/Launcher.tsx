@@ -7,6 +7,7 @@ import { DB } from '../utils/db';
 import { CharacterProfile, Anniversary, AppID, DailySchedule } from '../types';
 import { ScheduleHomeWidget, ScheduleFullscreenViewer } from '../components/schedule/ScheduleHomeWidget';
 import NowPlayingSquareWidget from '../components/os/NowPlayingSquareWidget';
+import ApiCostWidget from '../components/os/ApiCostWidget';
 import MobileGameHome from '../components/os/MobileGameHome';
 import TamagotchiHome from '../components/os/TamagotchiHome';
 import { getLocalDailySchedule } from '../utils/dailySchedule';
@@ -1023,6 +1024,7 @@ const Launcher: React.FC = () => {
                             contentColor={contentColor}
                             paper={paper}
                         />
+                        <ApiCostWidget onClick={() => openApp(AppID.ApiCost)} contentColor={contentColor} paper={paper} acnh={acnh} compact />
                         <div className="flex-1">
                             <AppGridPage apps={pageApps} openApp={openApp} acnh={acnh} editing={layoutEditing} />
                         </div>

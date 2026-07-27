@@ -5,6 +5,7 @@ import { isSameCoreModel } from '../../utils/apiCallLog';
 import type { ApiCallLogEntry } from '../../utils/apiCallLog';
 import { clearAiCache } from '../../utils/aiRequestManager';
 import { isSameCoreModel, isFixedPromptBlockLabel } from '../../utils/apiCallLog';
+import { formatYuan } from '../../utils/apiPricing';
 import type { ApiCallLogEntry, PromptBlockStat } from '../../utils/apiCallLog';
 
 interface ApiCallLogModalProps {
@@ -227,6 +228,14 @@ const ApiCallLogModal: React.FC<ApiCallLogModalProps> = ({ isOpen, onClose }) =>
                                         <Field label="耗时" value={e.durationMs >= 1000 ? `${(e.durationMs / 1000).toFixed(1)}s` : `${e.durationMs}ms`} />
                                     )}
                                     <Field label="请求" value={e.networkRequest === false ? '未发网' : '真实发网'} />
+                                    {(e.totalTokens != null || e.promptTokens != null || e.completionTokens != null) && (
+                                        <div className="flex flex-wrap gap-1.5 mb-2">
+                                            <span className="text-[10px] bg-emerald-50 text-emerald-700 px-2 py-1 rounded-lg font-bold">
+                                                {e.costStatus === 'unpriced' ? '未计价' : formatYuan(e.costMicros || '0')}
+                                            </span>
+                                            {e.billingUsage && <span className="text-[10px] bg-violet-50 text-violet-700 px-2 py-1 rounded-lg">普通输入 {e.billingUsage.inputTokens} · 创建缓存 {e.billingUsage.cacheWriteTokens} · 读取缓存 {e.billingUsage.cacheReadTokens} · 输出 {e.billingUsage.outputTokens}</span>}
+                                        </div>
+                                    )}
                                     {(e.totalTokens != null || e.promptTokens != null || e.completionTokens != null) && (
                                         <div className="col-span-2 flex items-baseline gap-1.5 min-w-0">
                                             <span className="text-[10px] text-slate-400 shrink-0">Token</span>

@@ -1,3 +1,6 @@
+import type { ApiBillingUsage, ApiCallCostStatus, ApiCallUnpricedReason, ApiPricingSnapshot, ApiPreset } from '../types';
+import { calculateApiCallCost, matchApiPresetForBilling, normalizeApiBillingUsage, snapshotPricing } from './apiPricing';
+
 /**
  * 全局 API 调用记录（给 设置 → API 调用记录 页面用）。
  *
@@ -77,6 +80,12 @@ export interface ApiCallLogEntry extends ApiCallMeta {
      * fire-and-forget 记录路径里扫一遍请求体算出，不占请求主链路。
      */
     promptBreakdown?: PromptBlockStat[];
+    presetId?: string;
+    billingUsage?: ApiBillingUsage;
+    pricingSnapshot?: ApiPricingSnapshot;
+    costStatus?: ApiCallCostStatus;
+    costMicros?: string;
+    unpricedReason?: ApiCallUnpricedReason;
 }
 
 /** 输入构成里的一块：system prompt 的一个 ### 段落，或聚合后的聊天历史。 */
@@ -88,6 +97,17 @@ export interface PromptBlockStat {
 }
 
 const PRESETS_STORAGE_KEY = 'os_api_presets';
+const ACTIVE_PRESET_KEY = 'os_active_api_preset_id';
+export interface ApiBillingCapture { presetId?: string; presetName: string; pricingSnapshot?: ApiPricingSnapshot; missingPresetReason?: 'preset_not_found' | 'preset_ambiguous'; }
+function loadApiPresets(): ApiPreset[] { try { const raw=localStorage.getItem(PRESETS_STORAGE_KEY); const parsed=raw?JSON.parse(raw):[]; return Array.isArray(parsed)?parsed:[]; } catch { return []; } }
+export function captureApiBillingContext(url:string, body:unknown): ApiBillingCapture {
+ const baseUrl=deriveBaseUrl(url), model=extractModel(body); let activePresetId:string|null=null;
+ try { activePresetId=localStorage.getItem(ACTIVE_PRESET_KEY); } catch {}
+ const matched=matchApiPresetForBilling(loadApiPresets(),{baseUrl,model,activePresetId});
+ if(!matched.preset) return {presetName:resolvePresetName(baseUrl,model),missingPresetReason:matched.reason};
+ return {presetId:matched.preset.id,presetName:matched.preset.name,pricingSnapshot:snapshotPricing(matched.preset)};
+}
+const localDateKey=(timestamp:number):string=>{const d=new Date(timestamp),pad=(v:number)=>String(v).padStart(2,'0');return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;};
 
 /**
  * 环境上下文（兜底用）：很多 App 走的是裸 fetch，调用点无法/来不及传 meta。
@@ -451,10 +471,12 @@ export function recordApiCall(input: {
     networkRequest?: boolean;
     requestHash?: string;
     requestChars?: number;
+    billingCapture?: ApiBillingCapture; entryId?: string; billingUsage?: ApiBillingUsage; presetId?: string; presetName?: string; pricingSnapshot?: ApiPricingSnapshot; modelOverride?: string; baseUrlOverride?: string;
 }): void {
     try {
-        const baseUrl = deriveBaseUrl(input.url);
-        const model = extractModel(input.body);
+        const baseUrl = input.baseUrlOverride ?? deriveBaseUrl(input.url);
+        const model = input.modelOverride ?? extractModel(input.body);
+        const capture = input.billingCapture ?? captureApiBillingContext(input.url, input.body);
         // 显式 meta 优先（safeFetchJson 各调用点传的精确信息）；没有就用环境兜底（裸 fetch）。
         const meta = hasMeta(input.meta) ? input.meta! : ambientMeta;
         // 整包 JSON 直接读；流式响应（response 为空但有原始文本）走 SSE 兜底扫描
@@ -468,10 +490,14 @@ export function recordApiCall(input: {
             if (scanned.usage) responseForExtract = { usage: scanned.usage };
         }
         const usage = extractUsage(responseForExtract);
+        const billingUsage = input.billingUsage ?? normalizeApiBillingUsage(responseForExtract);
+        const pricingSnapshot = input.pricingSnapshot ?? capture.pricingSnapshot;
+        const cost = calculateApiCallCost({ pricingSnapshot, usage: billingUsage, ok: input.ok, networkRequest: input.networkRequest ?? true, cacheHit: input.cacheHit ?? false, missingPresetReason: capture.missingPresetReason });
         const entry: ApiCallLogEntry = {
-            id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            id: input.entryId ?? `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
             timestamp: Date.now(),
-            presetName: resolvePresetName(baseUrl, model),
+            presetId: input.presetId ?? capture.presetId,
+            presetName: input.presetName ?? capture.presetName ?? resolvePresetName(baseUrl, model),
             baseUrl,
             model,
             backendModel,
@@ -482,6 +508,7 @@ export function recordApiCall(input: {
             totalTokens: usage.total,
             cachedTokens: usage.cached,
             cacheMissTokens: usage.miss,
+            billingUsage, pricingSnapshot, costStatus: cost.costStatus, costMicros: cost.costMicros, unpricedReason: cost.unpricedReason,
             source: input.source ?? 'network',
             cacheHit: input.cacheHit ?? false,
             networkRequest: input.networkRequest ?? true,
@@ -496,10 +523,16 @@ export function recordApiCall(input: {
             purpose: meta.purpose,
         };
         // 动态 import 避开 safeApi ↔ db 的潜在加载顺序问题；写库失败静默吞掉。
-        import('./db')
-            .then(({ DB }) => DB.appendApiCallLog(entry))
-            .catch(() => {});
+        import('./db').then(async ({ DB }) => { const inserted = await DB.appendApiCallLog(entry); if (inserted) { const { emitApiCostUpdated } = await import('./apiCostEvents'); emitApiCostUpdated({ dateKey: localDateKey(entry.timestamp), entryId: entry.id }); } }).catch(() => {});
     } catch {
         // best-effort：任何异常都不影响主请求
     }
+}
+
+
+export function recordExternalApiCall(input: { id: string; timestamp?: number; presetId?: string; presetName: string; pricingSnapshot?: ApiPricingSnapshot; baseUrl: string; model: string; ok: boolean; status?: number; durationMs?: number; billingUsage?: ApiBillingUsage; appId?: string; appName?: string; charId?: string; charName?: string; purpose?: string; }): void {
+ const usage=input.billingUsage??{inputTokens:0,cacheWriteTokens:0,cacheReadTokens:0,outputTokens:0,usageAvailable:false};
+ const cost=calculateApiCallCost({pricingSnapshot:input.pricingSnapshot,usage,ok:input.ok,networkRequest:true,cacheHit:false,missingPresetReason:input.presetId?undefined:'preset_not_found'});
+ const entry:ApiCallLogEntry={id:input.id,timestamp:input.timestamp??Date.now(),presetId:input.presetId,presetName:input.presetName,baseUrl:input.baseUrl,model:input.model,ok:input.ok,status:input.status,durationMs:input.durationMs,billingUsage:usage,pricingSnapshot:input.pricingSnapshot,costStatus:cost.costStatus,costMicros:cost.costMicros,unpricedReason:cost.unpricedReason,networkRequest:true,cacheHit:false,source:'network',appId:input.appId,appName:input.appName,charId:input.charId,charName:input.charName,purpose:input.purpose};
+ import('./db').then(async({DB})=>{const inserted=await DB.appendApiCallLog(entry);if(inserted){const{emitApiCostUpdated}=await import('./apiCostEvents');emitApiCostUpdated({dateKey:localDateKey(entry.timestamp),entryId:entry.id});}}).catch(()=>{});
 }

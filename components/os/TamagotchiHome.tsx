@@ -18,6 +18,7 @@ import { isDevDebugAvailable, subscribeDevDebugAvailability } from '../../utils/
 import { SCHEMES, hsl, schemePreview, type TgStyle } from './gotchiScheme';
 import { getLocalDailySchedule } from '../../utils/dailySchedule';
 import { useLocalDateKey } from '../../hooks/useLocalDateKey';
+import ApiCostWidget from './ApiCostWidget';
 
 // ===== 电子宠物主题（tamagotchi skin）=====
 // 桌面不再是「放图标的手机」，而是一台华丽丽的二次元养成机：屏幕主体是角色
@@ -1266,6 +1267,10 @@ const TamagotchiHome: React.FC = () => {
                     <FloorPhone unread={charUnread} open={phoneOpen} msgs={stat.recent}
                         onToggle={() => setPhoneOpen(v => !v)}
                         onChat={() => { setPhoneOpen(false); openChat(); }} />
+
+                    <div className="absolute inset-x-4 z-[39]" style={{ bottom: 'calc(var(--safe-bottom, 0px) + 7.4rem)' }}>
+                        <ApiCostWidget compact onClick={() => openApp(AppID.ApiCost)} contentColor={PAL.grape} />
+                    </div>
 
                     {/* 观察旁白（点家具后出现，贴在 dock 上方） */}
                     {observation && (

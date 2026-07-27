@@ -54,6 +54,7 @@ const warmLazy = (Comp: PreloadableLazy): void => {
 };
 
 const Settings = lazyApp(() => import('../apps/Settings'));
+const ApiCost = lazyApp(() => import('../apps/ApiCost'));
 const Character = lazyApp(() => import('../apps/Character'));
 const Chat = lazyApp(() => import('../apps/Chat'));
 const GroupChat = lazyApp(() => import('../apps/GroupChat'));
@@ -800,6 +801,7 @@ const PhoneShell: React.FC = () => {
   const renderApp = () => {
     switch (activeApp) {
       case AppID.Settings: return <Settings />;
+      case AppID.ApiCost: return <ApiCost />;
       case AppID.Character: return <Character />;
       case AppID.Chat: return <Chat />;
       case AppID.GroupChat: return <GroupChat />; 

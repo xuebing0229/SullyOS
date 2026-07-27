@@ -8,6 +8,7 @@ import { getMobileGameArt } from './mobilegameArt';
 import { SCHEMES, hsl, schemePreview, type TgStyle } from './gotchiScheme';
 import { getChibi } from '../../utils/vrWorld/chibi';
 import { isDevDebugAvailable, subscribeDevDebugAvailability } from '../../utils/devDebug';
+import ApiCostWidget from './ApiCostWidget';
 
 // ===== 手游主题（mobilegame skin）=====
 // 风格：梦幻粉紫二次元手游首页（照搬参考图）。浅粉紫底 + 深紫文字 + 粉色强调，
@@ -328,6 +329,9 @@ const MobileGameHome: React.FC = () => {
                     </div>
                 </div>
                 <div className="h-px mt-2" style={{ background: `linear-gradient(90deg, ${PAL.lilac}, transparent)`, opacity: 0.5 }} />
+                <div className="mt-3">
+                    <ApiCostWidget compact onClick={() => openApp(AppID.ApiCost)} contentColor={PAL.grape} />
+                </div>
 
                 {/* ===== 🎨 界面配色面板（经典 + 12 方案，含暗色；点外面关闭）===== */}
                 {mgPaletteOpen && (

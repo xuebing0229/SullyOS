@@ -9,8 +9,10 @@ import {
     LifeSimState, HandbookEntry, Tracker, TrackerEntry, HotNewsSnapshot,
     LifeRecord, MedPlan, LifeRecordSettings, CharacterGroup,
     VRWorldNovel, VRNovelAnnotation, CustomCreatorPart, VRMusicRoomState, VRGuestbookState, VRScript, VRStagedPlay, VRLetter,
+    ApiCallUnpricedReason, ApiCostBucket, ApiCostDailySummary, ApiCostOverview,
     WorldProfile, WorldEpisode
 } from '../types';
+import type { ApiCallLogEntry } from './apiCallLog';
 import { exportPostOfficeLocal, importPostOfficeLocal } from './vrWorld/postOffice';
 import { exportSignalLocal, importSignalLocal } from './vrWorld/signal';
 import { exportLuckinLocal, importLuckinLocal } from './luckinMcpClient';
@@ -25,7 +27,8 @@ const DB_NAME = 'AetherOS_Data';
 // 合并后统一推到 67——建表全部走幂等的 if(!contains)，任一侧的 v66 老库升级时都会补齐缺的那组表。
 // v68：character_groups 角色分组（神经链接"文件夹"，见 types.ts CharacterGroup）。
 // v69：AI 精确响应缓存（聊天/情绪），带过期与 LRU 清理索引。
-const DB_VERSION = 69;
+// v70：API 每日消费永久汇总。
+const DB_VERSION = 70;
 
 const STORE_CHARACTERS = 'characters';
 const STORE_CHAR_GROUPS = 'character_groups'; // 角色分组定义（角色通过 groupId 指向；与群聊 groups 无关）
@@ -74,6 +77,7 @@ const STORE_VR_PRESETS = 'vr_presets';            // 剧院·用户自定义写�
 const STORE_VR_LETTERS = 'vr_letters';            // 邮局信件（本地存档 + 待寄出/待回复队列）
 const STORE_VR_SETTINGS = 'vr_settings';          // 彼方设置单例：独立 API（id='api'）+ 调用记录（id='apilog'）
 const STORE_API_CALL_LOG = 'api_call_log';        // 全局 API 调用记录单例（id='log'，保留近 5 天）
+const STORE_API_COST_DAILY = 'api_cost_daily';
 export const STORE_AI_RESPONSE_CACHE = 'ai_response_cache';
 const STORE_WORLDS = 'worlds';                    // 家园·世界定义（成员/NPC/居住/关系/模式）
 const STORE_WORLD_EPISODES = 'world_episodes';    // 家园·演绎历史（每轮一条，index worldId）
@@ -301,6 +305,7 @@ export const openDB = (): Promise<IDBDatabase> => {
       }
       createStore(STORE_VR_SETTINGS, { keyPath: 'id' });
       createStore(STORE_API_CALL_LOG, { keyPath: 'id' });
+      createStore(STORE_API_COST_DAILY, { keyPath: 'dateKey' });
       if (!db.objectStoreNames.contains(STORE_AI_RESPONSE_CACHE)) {
           const aiCache = db.createObjectStore(STORE_AI_RESPONSE_CACHE, { keyPath: 'key' });
           aiCache.createIndex('expiresAt', 'expiresAt', { unique: false });
@@ -508,6 +513,12 @@ const healMessageHighWaterMarks = (msg: Omit<Message, 'id' | 'timestamp'>, newId
         }
     } catch { /* localStorage unavailable */ }
 };
+
+const localDateKey=(timestamp:number):string=>{const d=new Date(timestamp),pad=(v:number)=>String(v).padStart(2,'0');return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;};
+const safeBigInt=(v:unknown):bigint=>{try{return BigInt(String(v??'0'));}catch{return 0n;}};
+const emptyApiCostSummary=(dateKey:string):ApiCostDailySummary=>({dateKey,totalCostMicros:'0',pricedCallCount:0,freeCallCount:0,unpricedCallCount:0,byPreset:[],byApp:[],byPurpose:[],updatedAt:Date.now()});
+const addBucketCost=(items:ApiCostBucket[],key:string,label:string,costMicros:string):ApiCostBucket[]=>{const i=items.findIndex(x=>x.key===key);if(i<0)return [...items,{key,label,costMicros,callCount:1}];const next=[...items],cur=next[i];next[i]={...cur,label:label||cur.label,costMicros:(safeBigInt(cur.costMicros)+safeBigInt(costMicros)).toString(),callCount:cur.callCount+1};return next;};
+export const applyEntryToDailySummary=(original:ApiCostDailySummary|undefined,entry:ApiCallLogEntry):ApiCostDailySummary=>{const dateKey=localDateKey(entry.timestamp);let x={...(original??emptyApiCostSummary(dateKey)),byPreset:[...(original?.byPreset??[])],byApp:[...(original?.byApp??[])],byPurpose:[...(original?.byPurpose??[])],updatedAt:Date.now()};if(entry.costStatus==='priced'){const c=entry.costMicros??'0';x.totalCostMicros=(safeBigInt(x.totalCostMicros)+safeBigInt(c)).toString();x.pricedCallCount++;x.byPreset=addBucketCost(x.byPreset,entry.presetId??`name:${entry.presetName||entry.baseUrl||'未识别 API'}`,entry.presetName||entry.baseUrl||'未识别 API',c);x.byApp=addBucketCost(x.byApp,entry.appId??`name:${entry.appName||'其他 App'}`,entry.appName||'其他 App',c);x.byPurpose=addBucketCost(x.byPurpose,entry.purpose||'未标注用途',entry.purpose||'未标注用途',c);}else if(entry.costStatus==='free_local_cache'||entry.costStatus==='free_failed'){x.freeCallCount++;}else{x.unpricedCallCount++;}return x;};
 
 export const DB = {
   deleteDB: async (): Promise<void> => {
@@ -2424,24 +2435,79 @@ export const DB = {
       });
   },
 
-  appendApiCallLog: async (entry: any): Promise<void> => {
-      const db = await openDB();
-      if (!db.objectStoreNames.contains(STORE_API_CALL_LOG)) return;
-      const read = (): Promise<any[]> => new Promise((resolve) => {
-          const tx = db.transaction(STORE_API_CALL_LOG, 'readonly');
-          const req = tx.objectStore(STORE_API_CALL_LOG).get('log');
-          req.onsuccess = () => resolve(req.result?.entries ?? []);
-          req.onerror = () => resolve([]);
-      });
-      const cur = await read();
-      cur.unshift(entry);
-      const cutoff = Date.now() - API_CALL_LOG_MAX_AGE_MS;
-      const pruned = cur
-          .filter((e) => (e?.timestamp ?? 0) > cutoff)
-          .slice(0, API_CALL_LOG_MAX_ENTRIES);
-      const tx = db.transaction(STORE_API_CALL_LOG, 'readwrite');
-      tx.objectStore(STORE_API_CALL_LOG).put({ id: 'log', entries: pruned });
+  appendApiCallLog: async (entry: ApiCallLogEntry): Promise<boolean> => {
+      const db=await openDB(); if(!db.objectStoreNames.contains(STORE_API_CALL_LOG)) return false;
+      const stores=db.objectStoreNames.contains(STORE_API_COST_DAILY)?[STORE_API_CALL_LOG,STORE_API_COST_DAILY]:[STORE_API_CALL_LOG];
+      const tx=db.transaction(stores,'readwrite'), logStore=tx.objectStore(STORE_API_CALL_LOG), costStore=stores.length>1?tx.objectStore(STORE_API_COST_DAILY):null;
+      const logReq=logStore.get('log'), dayReq=costStore?.get(localDateKey(entry.timestamp)); let logReady=false,dayReady=!dayReq,inserted=false,queued=false,record:any={id:'log',entries:[]},day:ApiCostDailySummary|undefined;
+      const write=()=>{if(queued||!logReady||!dayReady)return;queued=true;const cur=Array.isArray(record.entries)?record.entries:[];if(cur.some((x:any)=>x?.id===entry.id))return;inserted=true;const cutoff=Date.now()-API_CALL_LOG_MAX_AGE_MS;logStore.put({id:'log',entries:[entry,...cur].filter((x:any)=>(x?.timestamp??0)>cutoff).slice(0,API_CALL_LOG_MAX_ENTRIES)});costStore?.put(applyEntryToDailySummary(day,entry));};
+      logReq.onsuccess=()=>{logReady=true;record=logReq.result??record;write();};logReq.onerror=()=>{logReady=true;write();};if(dayReq){dayReq.onsuccess=()=>{dayReady=true;day=dayReq.result;write();};dayReq.onerror=()=>{dayReady=true;write();};}
+      return new Promise((resolve,reject)=>{tx.oncomplete=()=>resolve(inserted);tx.onerror=()=>reject(tx.error);tx.onabort=()=>reject(tx.error??new Error('API cost transaction aborted'));});
   },
+
+  applyApiCallCostBackfill: async (
+      entryId: string,
+      patch: Pick<ApiCallLogEntry, 'presetId' | 'presetName' | 'billingUsage' | 'pricingSnapshot' | 'costStatus' | 'costMicros' | 'unpricedReason'>,
+  ): Promise<boolean> => {
+      const db = await openDB();
+      if (!db.objectStoreNames.contains(STORE_API_CALL_LOG) || !db.objectStoreNames.contains(STORE_API_COST_DAILY)) return false;
+      const tx = db.transaction([STORE_API_CALL_LOG, STORE_API_COST_DAILY], 'readwrite');
+      const logStore = tx.objectStore(STORE_API_CALL_LOG);
+      const costStore = tx.objectStore(STORE_API_COST_DAILY);
+      const logRequest = logStore.get('log');
+      let changed = false;
+      logRequest.onsuccess = () => {
+          const record = logRequest.result ?? { id: 'log', entries: [] };
+          const entries: ApiCallLogEntry[] = Array.isArray(record.entries) ? record.entries : [];
+          const index = entries.findIndex(entry => entry.id === entryId);
+          if (index < 0) return;
+          const current = entries[index];
+          if (current.costStatus && current.costStatus !== 'unpriced') return;
+          const updated: ApiCallLogEntry = { ...current, ...patch };
+          const dateKey = localDateKey(updated.timestamp);
+          const dayRequest = costStore.get(dateKey);
+          dayRequest.onsuccess = () => {
+              let summary = dayRequest.result ?? emptyApiCostSummary(dateKey);
+              if (current.costStatus === 'unpriced') summary = { ...summary, unpricedCallCount: Math.max(0, (summary.unpricedCallCount ?? 0) - 1) };
+              entries[index] = updated;
+              logStore.put({ id: 'log', entries });
+              costStore.put(applyEntryToDailySummary(summary, updated));
+              changed = true;
+          };
+      };
+      return new Promise((resolve, reject) => {
+          tx.oncomplete = () => resolve(changed);
+          tx.onerror = () => reject(tx.error);
+          tx.onabort = () => reject(tx.error ?? new Error('API cost backfill transaction aborted'));
+      });
+  },
+
+  replaceApiCallLogAndRebuildCost: async (entries: ApiCallLogEntry[]): Promise<void> => {
+      const db = await openDB();
+      if (!db.objectStoreNames.contains(STORE_API_CALL_LOG) || !db.objectStoreNames.contains(STORE_API_COST_DAILY)) return;
+      const tx = db.transaction([STORE_API_CALL_LOG, STORE_API_COST_DAILY], 'readwrite');
+      const logStore = tx.objectStore(STORE_API_CALL_LOG);
+      const costStore = tx.objectStore(STORE_API_COST_DAILY);
+      const cutoff = Date.now() - API_CALL_LOG_MAX_AGE_MS;
+      const pruned = entries.filter(entry => (entry.timestamp ?? 0) > cutoff).sort((a, b) => b.timestamp - a.timestamp).slice(0, API_CALL_LOG_MAX_ENTRIES);
+      logStore.put({ id: 'log', entries: pruned });
+      costStore.clear();
+      const summaries = new Map<string, ApiCostDailySummary>();
+      for (const entry of pruned) {
+          const key = localDateKey(entry.timestamp);
+          summaries.set(key, applyEntryToDailySummary(summaries.get(key), entry));
+      }
+      for (const summary of summaries.values()) costStore.put(summary);
+      return new Promise((resolve, reject) => {
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => reject(tx.error);
+          tx.onabort = () => reject(tx.error ?? new Error('API cost rebuild transaction aborted'));
+      });
+  },
+
+  getApiCostDailySummaries: async (startDateKey?: string, endDateKey?: string): Promise<ApiCostDailySummary[]> => { const db=await openDB(); if(!db.objectStoreNames.contains(STORE_API_COST_DAILY))return []; return new Promise(resolve=>{const tx=db.transaction(STORE_API_COST_DAILY,'readonly'),req=tx.objectStore(STORE_API_COST_DAILY).getAll();req.onsuccess=()=>resolve((req.result??[]).filter((x:ApiCostDailySummary)=>(!startDateKey||x.dateKey>=startDateKey)&&(!endDateKey||x.dateKey<=endDateKey)).sort((a:ApiCostDailySummary,b:ApiCostDailySummary)=>a.dateKey.localeCompare(b.dateKey)));req.onerror=()=>resolve([]);}); },
+  getApiCostOverview: async (): Promise<ApiCostOverview> => { const all=await DB.getApiCostDailySummaries(); const today=localDateKey(Date.now()),month=today.slice(0,7),t=all.find(x=>x.dateKey===today);return {todayCostMicros:t?.totalCostMicros??'0',monthCostMicros:all.filter(x=>x.dateKey.startsWith(month)).reduce((a,x)=>(safeBigInt(a)+safeBigInt(x.totalCostMicros)).toString(),'0'),totalCostMicros:all.reduce((a,x)=>(safeBigInt(a)+safeBigInt(x.totalCostMicros)).toString(),'0'),todayPricedCalls:t?.pricedCallCount??0,todayFreeCalls:t?.freeCallCount??0,todayUnpricedCalls:t?.unpricedCallCount??0,totalUnpricedCalls:all.reduce((a,x)=>a+x.unpricedCallCount,0)}; },
+  clearApiCostHistory: async (): Promise<void> => { const db=await openDB(); if(db.objectStoreNames.contains(STORE_API_COST_DAILY))db.transaction(STORE_API_COST_DAILY,'readwrite').objectStore(STORE_API_COST_DAILY).clear(); },
 
   clearApiCallLog: async (): Promise<void> => {
       const db = await openDB();
@@ -2836,6 +2902,7 @@ export const DB = {
           STORE_LIFE_SETTINGS,
           STORE_HOTNEWS,
           STORE_VR_NOVELS, STORE_VR_ANNOTATIONS, STORE_CC_PARTS, STORE_VR_MUSIC, STORE_VR_GUESTBOOK, STORE_VR_SCRIPTS, STORE_VR_PLAYS, STORE_VR_PRESETS, STORE_VR_LETTERS, STORE_VR_SETTINGS,
+          STORE_API_COST_DAILY,
           STORE_WORLDS, STORE_WORLD_EPISODES,
           'memory_nodes', 'memory_vectors', 'memory_links', 'topic_boxes', 'anticipations', 'event_boxes',
           'room_plates', 'digest_reports',
@@ -3428,6 +3495,12 @@ export const DB = {
           data.bankState = undefined as any;
           data.bankDollhouse = undefined as any;
       }, (data.bankState ? 1 : 0) + (data.bankDollhouse ? 1 : 0));
+
+      // 所有完整/云端/分片备份最终都走 importFullData：在统一出口清理旧 Fork
+      await runSection('API 消费历史', data.apiCostDailySummaries !== undefined, async () => {
+          await clearAndAdd(STORE_API_COST_DAILY, data.apiCostDailySummaries, 'API 消费历史', false);
+          data.apiCostDailySummaries = undefined as any;
+      }, data.apiCostDailySummaries?.length || 0);
 
       // 所有完整/云端/分片备份最终都走 importFullData：在统一出口清理旧 Fork
       // 遗留的逐轮上下文快照，避免恢复备份后无效 metadata 再次落回本机。
