@@ -9,6 +9,7 @@ export interface PersistMcpImageInput {
     result: McpToolResult; char: CharacterProfile; server?: Pick<McpServerConfig, 'id' | 'name'>;
     toolName: string; toolArgs?: Record<string, any>; recentMessages?: Message[]; seenKeys?: Set<string>;
     extraMessageMetadata?: Record<string, unknown>; extraGallerySourceMeta?: Record<string, unknown>;
+    allowTemporaryUrlFallback?: boolean;
 }
 export interface PersistMcpImageOutput { persisted: number; temporary: number; failed: number; errors: string[]; }
 
@@ -106,7 +107,7 @@ export async function persistMcpGeneratedImages(input: PersistMcpImageInput): Pr
             output.persisted++;
         } catch(error) {
             const message=error instanceof Error?error.message:String(error); output.errors.push(message);
-            if(candidate.kind==='url') { try { await saveTemporaryUrlMessage(candidate,input,error); output.temporary++; continue; } catch(e) { output.errors.push(e instanceof Error?e.message:String(e)); } }
+            if(candidate.kind==='url' && input.allowTemporaryUrlFallback !== false) { try { await saveTemporaryUrlMessage(candidate,input,error); output.temporary++; continue; } catch(e) { output.errors.push(e instanceof Error?e.message:String(e)); } }
             output.failed++;
         }
     }

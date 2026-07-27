@@ -1819,6 +1819,8 @@ export interface DateState {
     isNovelMode: boolean;
     timestamp: number;
     peekStatus: string;
+    /** 当前见面由一键 CG 生成的临时背景；清除后回落到角色默认背景。 */
+    meetingCgBackground?: import('./utils/meetingCg').MeetingCgBackground;
     /** 当前批次解析出的观测数据（开了 OBSERVE 才有），用于恢复会话时回填 HUD */
     observation?: DateObservation;
 }

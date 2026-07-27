@@ -7,7 +7,21 @@ import DateSettings from './DateSettings';
 import ObserveHUD from './ObserveHUD';
 import { extractObservation, hasObservation } from '../../utils/datePrompts';
 import { pickDateFallbackSprite } from '../../utils/dateSprites';
-import { isBlobRef } from '../../utils/blobRef';
+import { isBlobRef, useBlobRefUrl } from '../../utils/blobRef';
+import { getBuiltinImageMcpServers, loadBuiltinImageSettings } from '../../utils/builtinImageMcp';
+import { callMcpTool } from '../../utils/mcpClient';
+import { persistMcpGeneratedImages } from '../../utils/mcpImagePersistence';
+import { prepareBuiltinImageToolArguments } from '../../utils/novelAiReference';
+import {
+    buildMeetingCgPrompt,
+    getMeetingCgButtonLabel,
+    makeMeetingCgBackground,
+    normalizeMcpImageResult,
+    prepareMeetingCgArguments,
+    resolveMeetingCgEngine,
+    type MeetingCgBackground,
+    type MeetingCgEngine,
+} from '../../utils/meetingCg';
 import { clearDateResumeAttempt } from '../../utils/dateSessionRecovery';
 import { cleanTextForTts, VALID_EMOTIONS } from '../../utils/minimaxTts';
 import { synthesizeSpeech, characterHasVoice } from '../../utils/ttsRouter';
@@ -131,6 +145,13 @@ const DateSession: React.FC<DateSessionProps> = ({
     // Core VN State
     const [isNovelMode, setIsNovelMode] = useState(false);
     const [bgImage, setBgImage] = useState<string>(char.dateBackground || '');
+    const [meetingCgBackground, setMeetingCgBackground] = useState<MeetingCgBackground | null>(initialState?.meetingCgBackground || null);
+    const [isGeneratingMeetingCg, setIsGeneratingMeetingCg] = useState(false);
+    const meetingCgLockRef = useRef(false);
+    const mountedRef = useRef(true);
+    const cgBackgroundUrl = useBlobRefUrl(meetingCgBackground?.imageUrl);
+    const defaultBackgroundUrl = useBlobRefUrl(bgImage);
+    const effectiveBackgroundUrl = cgBackgroundUrl || defaultBackgroundUrl;
     const [currentSprite, setCurrentSprite] = useState<string>('');
     const [spriteConfig, setSpriteConfig] = useState(char.spriteConfig || { scale: 1, x: 0, y: 0 });
     
@@ -149,6 +170,7 @@ const DateSession: React.FC<DateSessionProps> = ({
     const [input, setInput] = useState('');
     const [showInputBox, setShowInputBox] = useState(false);
     const [isTyping, setIsTyping] = useState(false); // Waiting for API
+    useEffect(() => () => { mountedRef.current = false; }, []);
     const [isShowingOpening, setIsShowingOpening] = useState(!initialState); // True until first user interaction
     const [showExitModal, setShowExitModal] = useState(false);
     
@@ -355,6 +377,7 @@ const DateSession: React.FC<DateSessionProps> = ({
             // Resume — 防御性回填：老快照 / 落库竞态可能缺字段，缺数组兜底成 []，
             // 否则后续 dialogueQueue.length 等取值会抛异常连累整个会话渲染。
             setBgImage(initialState.bgImage || '');
+            setMeetingCgBackground(initialState.meetingCgBackground || null);
             // 老快照可能存了 blobref 令牌当立绘（chibi 误兜底期间落库的），不能直接喂 <img>，洗成头像
             const resumedSprite = initialState.currentSprite || '';
             setCurrentSprite(isBlobRef(resumedSprite) ? (char.avatar || '') : resumedSprite);
@@ -580,6 +603,7 @@ const DateSession: React.FC<DateSessionProps> = ({
         isNovelMode,
         timestamp: Date.now(),
         peekStatus,
+        meetingCgBackground: meetingCgBackground || undefined,
         observation: observation || undefined,
     });
 
@@ -701,13 +725,115 @@ const DateSession: React.FC<DateSessionProps> = ({
     // Determine if we can reroll (last message is assistant)
     const canReroll = messages.length > 0 && messages[messages.length - 1].role === 'assistant';
 
+    const handleGenerateMeetingCg = async (requestedEngine?: MeetingCgEngine) => {
+        if (meetingCgLockRef.current) return;
+        meetingCgLockRef.current = true;
+        setIsGeneratingMeetingCg(true);
+        setShowMenu(false);
+        setShowVoiceLangPicker(false);
+        try {
+            const settings = loadBuiltinImageSettings();
+            const resolved = resolveMeetingCgEngine({
+                gptEnabled: settings.engines['gpt-image'].enabled,
+                novelaiEnabled: settings.engines.novelai.enabled,
+                preferred: 'gpt',
+            }, requestedEngine);
+            const serverId = resolved.engine === 'gpt'
+                ? 'builtin_image_gpt-image'
+                : 'builtin_image_novelai';
+            const server = getBuiltinImageMcpServers().find(item => item.id === serverId && item.enabled);
+            if (!server) throw new Error(`${resolved.engine === 'gpt' ? 'GPT' : 'NovelAI'} 生图当前未启用。`);
+            const recentMessages = messages.slice(-6);
+            const built = buildMeetingCgPrompt(resolved.engine, {
+                id: char.id,
+                name: char.name,
+                description: char.description,
+                systemPrompt: char.systemPrompt,
+            }, {
+                scene: observation?.detail || peekStatus || currentText,
+                mood: observation?.state,
+                location: observation?.place,
+                timeLabel: observation?.time,
+                lastMessages: recentMessages.slice(-3).map(message => `${message.role === 'user' ? userProfile.name || '用户' : char.name}: ${message.content}`),
+            }, Boolean(meetingCgBackground));
+            const toolName = resolved.engine === 'gpt' ? 'generate_image' : 'novelai_generate_image';
+            const rawArgs: Record<string, any> = resolved.engine === 'gpt'
+                ? { prompt: built.prompt, size: '1024x1536', quality: 'high', background: 'opaque', output_format: 'png' }
+                : { prompt: built.prompt, undesired_content: 'text, watermark, speech bubble, UI, logo', model: 'full', size: 'portrait', steps: 23, guidance: 5, uc_preset: 'heavy', quality_tags: true };
+            const preparedArgs = await prepareMeetingCgArguments(
+                resolved.engine,
+                rawArgs,
+                args => prepareBuiltinImageToolArguments({ server, toolName, args, character: char }),
+            );
+            const result = await callMcpTool(server, toolName, preparedArgs);
+            if (!result.success) throw new Error(result.error || '见面 CG 生成失败');
+            normalizeMcpImageResult(result);
+            const meetingCgToken = `meeting_cg_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+            const outcome = await persistMcpGeneratedImages({
+                result,
+                char,
+                server: { id: server.id, name: server.name },
+                toolName,
+                toolArgs: preparedArgs,
+                recentMessages,
+                allowTemporaryUrlFallback: false,
+                extraMessageMetadata: { meetingCgGenerated: true, meetingCgToken },
+                extraGallerySourceMeta: { meetingCgGenerated: true, meetingCgToken, promptSummary: built.summary },
+            });
+            if (outcome.persisted <= 0) {
+                throw new Error(outcome.errors[0] || '见面 CG 保存到相册失败');
+            }
+                const savedMessages = await DB.getRecentMessagesByCharId(char.id, 200, true);
+            const imageMessage = [...savedMessages].reverse().find(message => message.metadata?.meetingCgToken === meetingCgToken);
+            if (!imageMessage?.content || !isBlobRef(imageMessage.content)) {
+                throw new Error('见面 CG 已保存，但未找到本地图片引用');
+            }
+            const background = makeMeetingCgBackground({
+                imageUrl: imageMessage.content,
+                imageMessageId: imageMessage.id,
+                galleryImageId: imageMessage.metadata?.galleryImageId,
+                engine: resolved.engine,
+                promptSummary: built.summary,
+            });
+            if (mountedRef.current) setMeetingCgBackground(background);
+            updateCharacter(char.id, {
+                savedDateState: {
+                    ...buildCurrentState(),
+                    meetingCgBackground: background,
+                    timestamp: Date.now(),
+                },
+            });
+            addToast('见面 CG 已生成并设为背景', 'success');
+        } catch (error: any) {
+            console.error('[Meeting CG] failed', error);
+            addToast(error?.message || '见面 CG 生成失败', 'error');
+        } finally {
+            meetingCgLockRef.current = false;
+            if (mountedRef.current) setIsGeneratingMeetingCg(false);
+        }
+    };
+
+    const handleResetMeetingCgBackground = () => {
+        setMeetingCgBackground(null);
+        updateCharacter(char.id, {
+            savedDateState: {
+                ...buildCurrentState(),
+                meetingCgBackground: undefined,
+                timestamp: Date.now(),
+            },
+        });
+        setShowMenu(false);
+        setShowVoiceLangPicker(false);
+        addToast('已恢复默认见面背景', 'success');
+    };
+
     return (
         <div className="h-full w-full relative bg-black overflow-hidden font-sans select-none" onClick={handleScreenClick}>
             
             {/* Background Layer */}
             <div 
                 className={`absolute inset-0 bg-cover bg-center transition-all duration-1000 ${isNovelMode ? 'blur-xl opacity-30' : 'opacity-80'}`} 
-                style={{ backgroundImage: bgImage ? `url(${bgImage})` : 'none' }}
+                style={{ backgroundImage: effectiveBackgroundUrl ? `url(${effectiveBackgroundUrl})` : 'none' }}
             ></div>
 
             {/* Menu Layer — 常驻只留「输入」+「菜单」两钮，其余操作收进带文字标签的下拉菜单 */}
@@ -727,6 +853,19 @@ const DateSession: React.FC<DateSessionProps> = ({
 
                 {showMenu && (
                     <div className="flex flex-col items-end gap-1.5 animate-fade-in" onClick={(e) => e.stopPropagation()}>
+                        <button
+                            onClick={() => void handleGenerateMeetingCg()}
+                            disabled={isGeneratingMeetingCg}
+                            className="h-9 px-3.5 rounded-full flex items-center gap-2 text-xs font-bold border shadow-lg active:scale-95 transition-all bg-violet-500/70 backdrop-blur-md border-violet-200/30 text-white hover:bg-violet-500 disabled:opacity-60 disabled:active:scale-100"
+                        >
+                            <span>✦</span>
+                            {getMeetingCgButtonLabel(Boolean(meetingCgBackground), isGeneratingMeetingCg)}
+                        </button>
+                        <div className="flex gap-1">
+                            <button disabled={isGeneratingMeetingCg} onClick={() => void handleGenerateMeetingCg('gpt')} className="h-7 px-2.5 rounded-full text-[10px] font-bold bg-black/40 border border-white/15 text-white/75 disabled:opacity-50">GPT</button>
+                            <button disabled={isGeneratingMeetingCg} onClick={() => void handleGenerateMeetingCg('novelai')} className="h-7 px-2.5 rounded-full text-[10px] font-bold bg-black/40 border border-white/15 text-white/75 disabled:opacity-50">NovelAI</button>
+                            {meetingCgBackground && <button disabled={isGeneratingMeetingCg} onClick={handleResetMeetingCgBackground} className="h-7 px-2.5 rounded-full text-[10px] font-bold bg-black/40 border border-white/15 text-white/75 disabled:opacity-50">默认背景</button>}
+                        </div>
                         {!isTyping && canReroll && (
                             <button onClick={() => { setShowMenu(false); setShowVoiceLangPicker(false); handleRerollClick(); }} className="h-9 px-3.5 rounded-full flex items-center gap-2 text-xs font-bold border shadow-lg active:scale-95 transition-all bg-black/40 backdrop-blur-md border-white/15 text-white hover:bg-white/20">
                                 <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-4 h-4"><path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99" /></svg>
