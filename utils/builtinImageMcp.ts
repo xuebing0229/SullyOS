@@ -153,6 +153,7 @@ export function getBuiltinImageMcpServers(): McpServerConfig[] {
             id: `builtin_image_${id}`,
             name: names[id],
             url: binding.mcpUrl,
+            controlBaseUrl: binding.controlBaseUrl,
             token: binding.token,
             enabled: binding.enabled,
             tools: binding.tools,

@@ -23,7 +23,8 @@ import { MCD_PROPOSE_TOOL, autoFixProposalCodesByName } from '../utils/mcdToolBr
 // 瑞幸: 与麦当劳同构, 只读 LuckinMiniApp 快照注入 + propose_cart_items UI 钩子工具
 import { LUCKIN_PROPOSE_TOOL, autoFixProposalCodesByName as autoFixLuckinProposalCodesByName, fetchOpenAIToolsForLuckin, inferCardKind as inferLuckinCardKind } from '../utils/luckinToolBridge';
 import { callLuckinTool } from '../utils/luckinMcpClient';
-import { callMcpTool, getMcpUseNativeTools, type McpToolResult } from '../utils/mcpClient';
+import { getMcpUseNativeTools, type McpToolResult } from '../utils/mcpClient';
+import { BACKGROUND_IMAGE_JOB_EVENT, callMcpToolWithBackgroundImage } from '../utils/backgroundImageJobs';
 import { buildMcpOpenAITools, buildMcpRejectedToolsFallbackBody, buildMcpTextFallbackBody, extractTextFakedMcpCalls, formatMcpToolResult, sanitizeMcpLeadInText, shouldRetryMcpWithoutTools, stripTextFakedMcpCalls, type FakedMcpCall } from '../utils/mcpToolBridge';
 import { buildChatRequestPayload } from '../utils/chatRequestPayload';
 import { persistMcpGeneratedImages } from '../utils/mcpImagePersistence';
@@ -468,6 +469,19 @@ export const useChatAI = ({
     // 流结束后由 applyAssistantPostProcessing 正常落库渲染，预览随即清空 —— 只影响体感，不改持久化。
     const [streamingBubbles, setStreamingBubbles] = useState<string[]>([]);
     const [streamingThinking, setStreamingThinking] = useState('');
+
+    useEffect(() => {
+        if (!char) return;
+        const handleBackgroundImageJob = (event: Event) => {
+            const detail = (event as CustomEvent).detail;
+            if (!detail || detail.type !== 'completed' || detail.charId !== char.id) return;
+            void DB.getRecentMessagesByCharId(char.id, 200).then(setMessages).catch(error => {
+                console.warn('[BackgroundImage] refresh messages failed', error);
+            });
+        };
+        window.addEventListener(BACKGROUND_IMAGE_JOB_EVENT, handleBackgroundImageJob);
+        return () => window.removeEventListener(BACKGROUND_IMAGE_JOB_EVENT, handleBackgroundImageJob);
+    }, [char?.id, setMessages]);
     const [recallStatus, setRecallStatus] = useState<string>('');
     const [searchStatus, setSearchStatus] = useState<string>('');
     const [diaryStatus, setDiaryStatus] = useState<string>('');
@@ -1434,10 +1448,11 @@ export const useChatAI = ({
                             let mcpResult: any;
                             try {
                                 const preparedArgs = await prepareBuiltinImageToolArguments({ server: mcpHit.server, toolName: mcpHit.toolName, args, character: char });
-                                mcpResult = await callMcpTool(mcpHit.server, mcpHit.toolName, preparedArgs);
+                                mcpResult = await callMcpToolWithBackgroundImage(mcpHit.server, mcpHit.toolName, preparedArgs, { charId: char.id });
                             }
                             catch (e: any) { mcpResult = { success: false, error: e?.message || String(e) }; }
-                            if (mcpResult.success) await persistMcpImages(mcpResult, { id: mcpHit.server.id, name: mcpHit.server.name }, mcpHit.toolName, sanitizeNovelAiReferenceToolArguments(args));
+                            if (mcpResult.backgroundJob) addToast('图片已转入后台生成，切换应用不会中断', 'info');
+                            if (mcpResult.success && !mcpResult.backgroundJob) await persistMcpImages(mcpResult, { id: mcpHit.server.id, name: mcpHit.server.name }, mcpHit.toolName, sanitizeNovelAiReferenceToolArguments(args));
                             const mcpMsg = mcpResult.success
                                 ? `工具 ${fname} 成功。结果: ${formatMcpToolResult(mcpResult.data)}`
                                 : `工具 ${fname} 失败: ${mcpResult.error}`;
@@ -1528,10 +1543,11 @@ export const useChatAI = ({
                         let r: any;
                         try {
                             const preparedArgs = await prepareBuiltinImageToolArguments({ server: call.server, toolName: call.toolName, args: call.args, character: char });
-                            r = await callMcpTool(call.server, call.toolName, preparedArgs);
+                            r = await callMcpToolWithBackgroundImage(call.server, call.toolName, preparedArgs, { charId: char.id });
                         }
                         catch (e: any) { r = { success: false, error: e?.message || String(e) }; }
-                        if (r.success) await persistMcpImages(r, { id: call.server.id, name: call.server.name }, call.toolName, sanitizeNovelAiReferenceToolArguments(call.args));
+                        if (r.backgroundJob) addToast('图片已转入后台生成，切换应用不会中断', 'info');
+                        if (r.success && !r.backgroundJob) await persistMcpImages(r, { id: call.server.id, name: call.server.name }, call.toolName, sanitizeNovelAiReferenceToolArguments(call.args));
                         results.push(r.success
                             ? `工具 ${call.exposedName} 执行成功, 结果: ${formatMcpToolResult(r.data)}`
                             : `工具 ${call.exposedName} 执行失败: ${r.error}`);

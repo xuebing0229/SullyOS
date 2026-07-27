@@ -57,6 +57,7 @@ import { exportLuckinLocal } from '../utils/luckinMcpClient';
 import { exportMcdLocal } from '../utils/mcdMcpClient';
 import { exportDesktopSkinLocal } from '../utils/desktopSkinBackup';
 import { assertSupportedSullyBackup } from '../utils/backupImportPolicy';
+import { startBackgroundImageJobMonitor } from '../utils/backgroundImageJobs';
 
 interface ProactiveQueueEntry {
   charId: string;
@@ -2822,6 +2823,15 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
       else await DB.deleteAsset(`icon_${appId}`);
   };
   const addToast = (message: string, type: Toast['type'] = 'info') => { const id = Date.now().toString(); setToasts(prev => [...prev, { id, message, type }]); setTimeout(() => { setToasts(prev => prev.filter(t => t.id !== id)); }, 3000); };
+  const addToastRef = useRef(addToast);
+  useEffect(() => { addToastRef.current = addToast; }, [addToast]);
+  useEffect(() => startBackgroundImageJobMonitor({
+    onCompleted: () => {
+      setLastMsgTimestamp(Date.now());
+      addToastRef.current('后台图片已生成，已保存到聊天和相册', 'success');
+    },
+    onFailed: job => addToastRef.current(job.lastError || '后台生图失败', 'error'),
+  }), []);
   const showError = (title: string, details: string) => { setErrorDialog({ title, details }); };
   const dismissError = () => { setErrorDialog(null); };
 

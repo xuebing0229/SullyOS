@@ -29,6 +29,8 @@ export interface McpServerConfig {
     id: string;
     name: string;
     url: string;
+    /** 内置生图服务控制接口根地址；通用 MCP 不填写。 */
+    controlBaseUrl?: string;
     /** Bearer Token，可选（Authorization: Bearer <token>） */
     token?: string;
     /** 额外请求头，可选（例如 X-API-Key / XBY-APIKEY） */
@@ -69,6 +71,13 @@ export interface McpToolResult {
     structuredContent?: any;
     images?: McpImageContent[];
     rawResult?: any;
+    backgroundJob?: {
+        localJobId: string;
+        clientRequestId: string;
+        remoteJobId?: string;
+        status: 'submitting' | 'queued' | 'running';
+        engineId: 'gpt-image' | 'novelai';
+    };
 }
 
 const MCP_SERVERS_KEY = 'aetheros.mcp.servers';

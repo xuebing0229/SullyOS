@@ -8,6 +8,7 @@ export const MAX_MCP_IMAGE_BYTES = 25 * 1024 * 1024;
 export interface PersistMcpImageInput {
     result: McpToolResult; char: CharacterProfile; server?: Pick<McpServerConfig, 'id' | 'name'>;
     toolName: string; toolArgs?: Record<string, any>; recentMessages?: Message[]; seenKeys?: Set<string>;
+    extraMessageMetadata?: Record<string, unknown>; extraGallerySourceMeta?: Record<string, unknown>;
 }
 export interface PersistMcpImageOutput { persisted: number; temporary: number; failed: number; errors: string[]; }
 
@@ -80,6 +81,7 @@ const saveTemporaryUrlMessage = async (candidate: Extract<McpImageCandidate,{kin
         mcpGeneratedImage:true,persistedLocally:false,temporaryRemoteUrl:true,persistenceError:message,
         mcpServerId:input.server?.id,mcpServerName:input.server?.name,mcpToolName:input.toolName,
         imageEngine:inferEngine(input.toolName,input.server?.name),imagePrompt:extractPrompt(input.toolArgs),
+        ...(input.extraMessageMetadata || {}),
     }} as any);
 };
 
@@ -95,10 +97,11 @@ export async function persistMcpGeneratedImages(input: PersistMcpImageInput): Pr
             const prompt=extractPrompt(input.toolArgs); const engine=inferEngine(input.toolName,input.server?.name);
             const gallery:GalleryImage={ id:galleryId,charId:input.char.id,url:blobRef,timestamp:createdAt,
                 savedDate:new Date(createdAt).toISOString().slice(0,10),chatContext:buildRecentChatContext(input.recentMessages),
-                source:'mcp-generated',sourceMeta:{serverId:input.server?.id,serverName:input.server?.name,toolName:input.toolName,engine,prompt,originalUrl:candidate.kind==='url'?candidate.url:undefined} };
+                source:'mcp-generated',sourceMeta:{serverId:input.server?.id,serverName:input.server?.name,toolName:input.toolName,engine,prompt,originalUrl:candidate.kind==='url'?candidate.url:undefined,...(input.extraGallerySourceMeta || {})} };
             await DB.saveGeneratedImageBundle({blobId,blob,createdAt,gallery,message:{charId:input.char.id,role:'assistant',type:'image',content:blobRef,metadata:{
                 mcpGeneratedImage:true,persistedLocally:true,galleryImageId:galleryId,mcpServerId:input.server?.id,mcpServerName:input.server?.name,
                 mcpToolName:input.toolName,imageEngine:engine,imagePrompt:prompt,originalRemoteUrl:candidate.kind==='url'?candidate.url:undefined,
+                ...(input.extraMessageMetadata || {}),
             }} as any});
             output.persisted++;
         } catch(error) {
