@@ -22,7 +22,7 @@ import { DB } from './db';
  * 参与镜像的键。收录标准：用户手动配置或长期积累、丢了没法凭空再生、体积是小段
  * JSON/字符串（严禁 data URI 等大体积——那些本来就该走 assets/blob 存储）。
  * 这份名单与「设置 → 导出备份」带走的 localStorage 键保持同一批（见 OSContext
- * exportFullData / importFullData），新增备份键时记得两边同步。
+ * OSContext.exportSystem / importFullData），新增备份键时记得两边同步。
  */
 export const MIRRORED_KEYS: readonly string[] = [
     'os_theme',                          // 外观主题（丢了 = 回初始主题）
