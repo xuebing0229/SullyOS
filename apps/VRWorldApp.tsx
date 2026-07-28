@@ -12,6 +12,7 @@ import { useMusic, type Song } from '../context/MusicContext';
 import { DB } from '../utils/db';
 import { useResilientAssetUrl, attachAudioMirrorFallback } from '../utils/assetUrl';
 import { VRScheduler } from '../utils/vrWorld/scheduler';
+import { VR_AUTONOMOUS_ROOM_IDS, describeAutonomousRoomPolicy, getAutonomousRoomPolicy, resolveAutonomousRoomPool } from '../utils/vrWorld/roomSelection';
 import { VR_ROOMS, getRoom, VR_DEFAULT_INTERVAL_MIN, SIGNAL_EPIGRAPH, signalActFor, signalActRanges, SIGNAL_POEMS_PER_BOOKLET, SIGNAL_EVENT_ENDED, SIGNAL_MEMORIAL_CLOSING } from '../utils/vrWorld/constants';
 import { buildNovelAsync, groupAnnotationsBySeg, getBookmark } from '../utils/vrWorld/novel';
 import { decodeBytes } from '../utils/vrWorld/decodeText';
@@ -70,7 +71,7 @@ const stripSelfName = (text: string | undefined, name: string | undefined): stri
     }
     return text;
 };
-import type { CharacterProfile, UserProfile, VRWorldNovel, VRNovelAnnotation, VRCardMeta, VRRoomId, VRMusicRoomState, CharPlaylistSong, VRGuestbookState, VRGuestbookMessage, VRLetter, ApiPreset, APIConfig } from '../types';
+import type { CharacterProfile, UserProfile, VRWorldNovel, VRNovelAnnotation, VRCardMeta, VRRoomId, VRMusicRoomState, CharPlaylistSong, VRGuestbookState, VRGuestbookMessage, VRLetter, ApiPreset, APIConfig, VRAutonomousRoomId, VRAutonomousRoomMode } from '../types';
 
 // ============ chibi 形象解析（vrState.chibi → 立绘 → 头像） ============
 import { getChibi } from '../utils/vrWorld/chibi';
@@ -3278,6 +3279,100 @@ const UserVRPanel: React.FC<{
     );
 };
 
+
+interface RoomScopeSheetProps {
+    char: CharacterProfile;
+    novelCount: number;
+    onClose: () => void;
+    onSave: (mode: VRAutonomousRoomMode, roomIds: VRAutonomousRoomId[]) => void;
+    addToast?: (message: string, type?: any) => void;
+}
+
+const RoomScopeSheet: React.FC<RoomScopeSheetProps> = ({ char, novelCount, onClose, onSave, addToast }) => {
+    const initial = getAutonomousRoomPolicy(char);
+    const [mode, setMode] = useState<VRAutonomousRoomMode>(initial.mode);
+    const [selected, setSelected] = useState<Set<VRAutonomousRoomId>>(() => new Set(initial.roomIds));
+
+    useEffect(() => {
+        const next = getAutonomousRoomPolicy(char);
+        setMode(next.mode);
+        setSelected(new Set(next.roomIds));
+    }, [char.id]);
+
+    const toggle = (roomId: VRAutonomousRoomId) => {
+        setSelected(previous => {
+            const next = new Set(previous);
+            if (next.has(roomId)) next.delete(roomId);
+            else next.add(roomId);
+            return next;
+        });
+    };
+
+    const save = () => {
+        const roomIds = VR_AUTONOMOUS_ROOM_IDS.filter(roomId => selected.has(roomId));
+        if (mode === 'selected' && roomIds.length === 0) {
+            addToast?.('至少选择一个自主活动板块', 'error');
+            return;
+        }
+        onSave(mode, roomIds);
+    };
+
+    return (
+        <div className="fixed inset-0 z-[70] flex items-end justify-center bg-black/55" onClick={onClose}>
+            <div className="w-full max-w-md rounded-t-2xl px-4 pt-4 max-h-[88vh] overflow-y-auto vr-reader-scroll"
+                style={{ background: 'linear-gradient(180deg,#171d30 0%,#0b0f19 100%)', paddingBottom: vrBottomPad('1rem') }}
+                onClick={event => event.stopPropagation()}>
+                <div className="flex items-center gap-2 mb-1">
+                    <div className="min-w-0 flex-1">
+                        <div className="text-[15px] font-bold text-white truncate">{char.name} 的自主活动范围</div>
+                        <div className="text-[10px] text-indigo-300/55 mt-0.5">只影响自动登入和“范围内随机”</div>
+                    </div>
+                    <button onClick={onClose} className="p-1 text-indigo-300/60"><X size={18} /></button>
+                </div>
+                <p className="text-[10.5px] text-indigo-200/60 leading-relaxed mb-3">
+                    选一个板块就是固定去那里；选多个则只在这些板块里随机。临时手动点具体房间时，仍可派 ta 去范围外逛一次。
+                </p>
+                <div className="grid grid-cols-2 gap-2 mb-3">
+                    {([
+                        ['free', '自由漫游', '保持当前随机规则'],
+                        ['selected', '限定范围', '只去勾选的板块'],
+                    ] as const).map(([value, label, hint]) => (
+                        <button key={value} onClick={() => setMode(value)} className="rounded-xl px-3 py-2.5 text-left"
+                            style={{ background: mode === value ? 'rgba(129,140,248,.18)' : 'rgba(255,255,255,.045)', border: mode === value ? '1px solid rgba(165,180,252,.55)' : '1px solid rgba(255,255,255,.08)' }}>
+                            <div className="flex items-center gap-1.5"><span className="text-[12px] font-bold text-white">{label}</span>{mode === value && <Check size={13} weight="bold" className="text-indigo-200" />}</div>
+                            <div className="text-[9.5px] text-indigo-300/50 mt-1">{hint}</div>
+                        </button>
+                    ))}
+                </div>
+                {mode === 'selected' && (
+                    <div className="space-y-2">
+                        {VR_AUTONOMOUS_ROOM_IDS.map(roomId => {
+                            const room = getRoom(roomId);
+                            const checked = selected.has(roomId);
+                            const unavailableLibrary = roomId === 'library' && novelCount === 0;
+                            return (
+                                <button key={roomId} onClick={() => toggle(roomId)} className="w-full rounded-xl px-3 py-2.5 flex items-center gap-3 text-left active:scale-[.99]"
+                                    style={{ background: checked ? 'rgba(129,140,248,.14)' : 'rgba(255,255,255,.04)', border: checked ? '1px solid rgba(165,180,252,.42)' : '1px solid rgba(255,255,255,.07)' }}>
+                                    <span className="text-[17px] w-7 text-center shrink-0">{room.emoji || '✦'}</span>
+                                    <span className="min-w-0 flex-1">
+                                        <span className="block text-[12.5px] font-semibold text-white/90">{room.name}</span>
+                                        <span className="block text-[9.5px] text-indigo-300/50 mt-0.5 leading-snug">{unavailableLibrary ? '当前书库为空；若只选这里，自动登入会暂时跳过' : room.affordance}</span>
+                                    </span>
+                                    <span className={`h-5 w-5 rounded-md grid place-items-center shrink-0 ${checked ? 'bg-indigo-400 text-white' : 'bg-white/10 text-transparent'}`}><Check size={13} weight="bold" /></span>
+                                </button>
+                            );
+                        })}
+                    </div>
+                )}
+                <button onClick={save} className="w-full mt-4 rounded-xl py-2.5 text-[13px] font-bold text-white"
+                    style={{ background: 'linear-gradient(120deg,rgba(129,140,248,.95),rgba(168,139,250,.9),rgba(94,234,212,.78))' }}>
+                    保存活动范围
+                </button>
+            </div>
+        </div>
+    );
+};
+
 // ============ 接入设置 ============
 const INTERVAL_OPTIONS = [60, 120, 180, 360, 720];
 const SettingsView: React.FC<{
@@ -3289,15 +3384,39 @@ const SettingsView: React.FC<{
     onEditChibi: (char: CharacterProfile) => void;
 }> = ({ characters, updateCharacter, addToast, novelCount, onReload, onRequestEnable, onEditChibi }) => {
     const [pickFor, setPickFor] = useState<CharacterProfile | null>(null);
+    const [roomScopeFor, setRoomScopeFor] = useState<CharacterProfile | null>(null);
     // 接入列表的分组筛选（characters 由 props 传入，这里单独取 characterGroups 即可）
     const { characterGroups } = useOS();
     const [settingsGroupId, setSettingsGroupId] = useState<string>(GROUP_FILTER_ALL);
     const go = (room?: VRRoomId) => {
         if (!pickFor) return;
+        if (!room) {
+            const pool = resolveAutonomousRoomPool(pickFor, { hasNovels: novelCount > 0, hasMusicContent: false });
+            if (pool.length === 0) {
+                addToast?.('当前自主范围没有可用板块：书库为空，或尚未选择板块', 'error');
+                setPickFor(null);
+                return;
+            }
+        }
         VRScheduler.triggerNow(pickFor.id, room);
         addToast?.(`${pickFor.name} 正在登入彼方…`, 'info');
         setTimeout(onReload, 4000);
         setPickFor(null);
+    };
+    const saveRoomScope = (char: CharacterProfile, mode: VRAutonomousRoomMode, roomIds: VRAutonomousRoomId[]) => {
+        updateCharacter(char.id, {
+            vrState: {
+                ...(char.vrState || { enabled: false, intervalMinutes: VR_DEFAULT_INTERVAL_MIN }),
+                autonomousRoomMode: mode,
+                autonomousRoomIds: mode === 'selected' ? roomIds : undefined,
+            },
+        });
+        setRoomScopeFor(null);
+        addToast?.(mode === 'free'
+            ? `${char.name} 已改为自由漫游`
+            : roomIds.length === 1
+                ? `${char.name} 以后会固定去${getRoom(roomIds[0]).name}`
+                : `${char.name} 以后只会在所选板块活动`, 'success');
     };
 
     const disable = (char: CharacterProfile) => {
@@ -3312,7 +3431,7 @@ const SettingsView: React.FC<{
     return (
         <div className="space-y-3">
             <p className="text-[11px] text-indigo-300/60 leading-relaxed">
-                启用后，角色会按设定的间隔自己登入「彼方」，在图书馆读你上传的小说、写批注。每次活动会在 ta 的聊天里留下动态卡片，也会被记忆总结捕捉。
+                启用后，角色会按设定的间隔自己登入「彼方」，在允许的板块中活动。每次活动会在 ta 的聊天里留下动态卡片，也会被记忆总结捕捉。
                 {novelCount === 0 && <span className="text-amber-300/80"> 书库还空着，先去「书库」上传一本。</span>}
             </p>
             {characters.length === 0 && <p className="text-[11px] text-indigo-300/50 py-4 text-center">还没有角色。</p>}
@@ -3326,6 +3445,7 @@ const SettingsView: React.FC<{
                 const enabled = !!st?.enabled;
                 const interval = st?.intervalMinutes || VR_DEFAULT_INTERVAL_MIN;
                 const chibi = getChibi(char);
+                const roomScopeText = describeAutonomousRoomPolicy(char, roomId => getRoom(roomId).name);
                 return (
                     <div key={char.id} className="rounded-2xl p-3.5 backdrop-blur-sm" style={{ background: 'rgba(255,255,255,0.045)', border: '1px solid rgba(255,255,255,0.07)' }}>
                         <div className="flex items-center gap-2.5">
@@ -3354,6 +3474,12 @@ const SettingsView: React.FC<{
                                         </button>
                                     ))}
                                 </div>
+                                <button onClick={() => setRoomScopeFor(char)} className="w-full mt-2.5 rounded-xl px-3 py-2 flex items-center gap-2 text-left active:bg-white/10"
+                                    style={{ background: 'rgba(255,255,255,.045)', border: '1px solid rgba(255,255,255,.075)' }}>
+                                    <span className="h-7 w-7 rounded-lg grid place-items-center bg-indigo-400/15 text-indigo-200 shrink-0"><Planet size={14} weight="fill" /></span>
+                                    <span className="min-w-0 flex-1"><span className="block text-[9.5px] text-indigo-300/50">自主活动范围</span><span className="block text-[11px] text-indigo-100/85 truncate mt-0.5">{roomScopeText}</span></span>
+                                    <CaretRight size={13} weight="bold" className="text-indigo-300/45" />
+                                </button>
                                 <button onClick={() => setPickFor(char)}
                                     className="mt-2.5 text-[11px] text-amber-200 font-semibold flex items-center gap-1 active:opacity-70">
                                     <Play size={12} weight="fill" /> 让 ta 现在去逛一次
@@ -3365,7 +3491,7 @@ const SettingsView: React.FC<{
             })}
             <ActionSheet open={!!pickFor} title={pickFor ? `让 ${pickFor.name} 现在去哪个房间？` : ''}
                 actions={[
-                    { label: '随机一个房间', onClick: () => go() },
+                    { label: pickFor && getAutonomousRoomPolicy(pickFor).mode === 'selected' ? '在已选范围随机' : '随机一个房间', onClick: () => go() },
                     ...(novelCount > 0 ? [{ label: '图书馆 · 读书写批注', onClick: () => go('library') }] : []),
                     { label: '剧院 · 写剧本投稿', onClick: () => go('theater') },
                     { label: '听歌房 · 点歌锐评', onClick: () => go('music') },
@@ -3374,6 +3500,12 @@ const SettingsView: React.FC<{
                     { label: '邮局 · 写漂流信', onClick: () => go('postoffice') },
                     // 信号坠落处不放这里：参与统一走活动 banner → 面板「✍ 参与」，那条路才有「耳语」
                 ]} onClose={() => setPickFor(null)} />
+            {roomScopeFor && (
+                <RoomScopeSheet key={roomScopeFor.id} char={roomScopeFor} novelCount={novelCount}
+                    onClose={() => setRoomScopeFor(null)}
+                    onSave={(mode, roomIds) => saveRoomScope(roomScopeFor, mode, roomIds)}
+                    addToast={addToast} />
+            )}
         </div>
     );
 };

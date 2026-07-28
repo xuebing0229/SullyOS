@@ -1033,6 +1033,10 @@ export interface NovelBook {
 /** 虚拟世界里的房间。 */
 export type VRRoomId = 'library' | 'music' | 'guestbook' | 'gym' | 'postoffice' | 'theater' | 'signal' | 'cafe';
 
+/** 普通自主活动房间；signal 是特殊入口，cafe 尚未实装。 */
+export type VRAutonomousRoomId = Exclude<VRRoomId, 'signal' | 'cafe'>;
+export type VRAutonomousRoomMode = 'free' | 'selected';
+
 /** 全局小说库里的一本书（所有角色共享原文，各自留批注、各自书签）。 */
 export interface VRWorldNovel {
     id: string;
@@ -1084,6 +1088,10 @@ export interface VRWorldCharState {
     enabled: boolean;
     /** 自主登入间隔（分钟，30 对齐；默认 120 = 2h） */
     intervalMinutes: number;
+    /** undefined/free 保持旧版全房间随机；selected 仅在 autonomousRoomIds 内选择。 */
+    autonomousRoomMode?: VRAutonomousRoomMode;
+    /** selected 模式允许自主进入的普通房间；一个固定，多个随机。 */
+    autonomousRoomIds?: VRAutonomousRoomId[];
     /**
      * 每本小说的独立书签：novelId -> 下一次该从第几个 segment 开始读。
      * 这是"每个角色书签不一样"的落点。

@@ -132,9 +132,31 @@ describe('parseMusicOutput', () => {
     });
 });
 
-describe('彼方手动指定房间', () => {
+describe('彼方房间选择运行器入口', () => {
     it('手动点听歌房时，即使角色没有歌单且房间没在放歌也不会随机跳走', () => {
         expect(rollRoom({} as any, [], null, 'music')).toBe('music');
+    });
+
+    it('限定一个板块时每次固定进入该房间', () => {
+        const char = { vrState: { enabled: true, intervalMinutes: 120, autonomousRoomMode: 'selected', autonomousRoomIds: ['theater'] } } as any;
+        expect(rollRoom(char, [], null, undefined, () => 0)).toBe('theater');
+        expect(rollRoom(char, [], null, undefined, () => 0.99)).toBe('theater');
+    });
+
+    it('限定多个板块时只在所选范围内随机', () => {
+        const char = { vrState: { enabled: true, intervalMinutes: 120, autonomousRoomMode: 'selected', autonomousRoomIds: ['music', 'gym'] } } as any;
+        expect(rollRoom(char, [], null, undefined, () => 0)).toBe('music');
+        expect(rollRoom(char, [], null, undefined, () => 0.99)).toBe('gym');
+    });
+
+    it('只限定图书馆但没有书时跳过本轮', () => {
+        const char = { vrState: { enabled: true, intervalMinutes: 120, autonomousRoomMode: 'selected', autonomousRoomIds: ['library'] } } as any;
+        expect(rollRoom(char, [], null)).toBeNull();
+    });
+
+    it('手动具体房间可临时越过长期范围', () => {
+        const char = { vrState: { enabled: true, intervalMinutes: 120, autonomousRoomMode: 'selected', autonomousRoomIds: ['library'] } } as any;
+        expect(rollRoom(char, [], null, 'postoffice')).toBe('postoffice');
     });
 });
 

@@ -26,6 +26,7 @@ import { processNewMessages } from '../memoryPalace/pipeline';
 import { loadMusicCfgStandalone } from '../../context/MusicContext';
 import { getCharLyricSnippet } from '../charLyricCache';
 import { getRoom, VR_DEFAULT_INTERVAL_MIN, rollPoemLines, signalActFor, SIGNAL_EVENT_ENDED } from './constants';
+import { chooseVRRoom, getAutonomousRoomPolicy } from './roomSelection';
 import { getVRApi, logVRApiCall } from './vrApi';
 import { PostOffice } from './postOffice';
 import { Signal, SignalState, recordMyLine, getMyRecentLines, takeSignalWhisper } from './signal';
@@ -123,19 +124,21 @@ function nameLine(name: string, act: string): string {
     return t.startsWith(name) ? t : `${name}${act}`;
 }
 
-/** roll 一个房间：图书馆需有书；听歌房需有歌单或正在放歌；留言簿/娱乐室/邮局/剧院恒可去。 */
-export function rollRoom(char: CharacterProfile, novels: VRWorldNovel[], musicState: VRMusicRoomState | null, prefer?: VRRoomId): VRRoomId | null {
-    // 信号坠落处【不进随机池】——它是用户自发参与的特殊活动，只在用户点「参与→指定角色」
-    // 时以 forcedRoom='signal' 进入，角色不会自己随机逛过去。
-    if (prefer === 'signal') return 'signal';
-    // 用户手动点“听歌房”时必须尊重选择。即使当前没有歌，听歌房提示词也支持
-    // 角色戴着耳机放空；不能因为没有歌单就悄悄随机跳去剧院等其他房间。
-    if (prefer === 'music') return 'music';
-    const pool: VRRoomId[] = ['guestbook', 'gym', 'postoffice', 'theater'];
-    if (novels.length > 0) pool.push('library');
-    if (gatherCharSongs(char).length > 0 || musicState?.nowPlaying) pool.push('music');
-    if (prefer && pool.includes(prefer)) return prefer; // 指定的房间可用则去，否则回退随机
-    return pool[Math.floor(Math.random() * pool.length)];
+/** 房间选择兼容入口；真正规则集中在 roomSelection.ts。 */
+export function rollRoom(
+    char: CharacterProfile,
+    novels: VRWorldNovel[],
+    musicState: VRMusicRoomState | null,
+    prefer?: VRRoomId,
+    random?: () => number,
+): VRRoomId | null {
+    return chooseVRRoom({
+        char,
+        hasNovels: novels.length > 0,
+        hasMusicContent: gatherCharSongs(char).length > 0 || Boolean(musicState?.nowPlaying),
+        forcedRoom: prefer,
+        random,
+    });
 }
 
 export async function runVRSession(deps: VRSessionDeps): Promise<VRSessionResult> {
@@ -150,9 +153,15 @@ export async function runVRSession(deps: VRSessionDeps): Promise<VRSessionResult
 
     const novels = await DB.getVRNovels();
     const musicState = await DB.getVRMusicRoom();
-    let roomId = rollRoom(char, novels, musicState, forcedRoom);
-    if (!roomId) return { ok: false, reason: 'no-content' };
-    let room = getRoom(roomId);
+    const roomId = rollRoom(char, novels, musicState, forcedRoom);
+    if (!roomId) {
+        const policy = getAutonomousRoomPolicy(char);
+        return {
+            ok: false,
+            reason: policy.mode === 'selected' ? 'no-selected-room-available' : 'no-content',
+        };
+    }
+    const room = getRoom(roomId);
 
     running.add(char.id);
     // 信号坠落处的写诗会话锁 token（抢到才有值）；finally 里兜底放锁
