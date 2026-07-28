@@ -3177,6 +3177,7 @@ export interface FullBackupData {
     apiPresets?: ApiPreset[];
     /** 当前激活的普通聊天 API 预设精确 ID；null 表示未绑定任何预设。 */
     activeApiPresetId?: string | null;
+    apiFailoverGroups?: import('./utils/apiFailover').ApiFailoverGroup[];
     apiCostDailySummaries?: ApiCostDailySummary[];
     availableModels?: string[];
     realtimeConfig?: RealtimeConfig;  // 实时感知配置（天气/新闻/Notion）

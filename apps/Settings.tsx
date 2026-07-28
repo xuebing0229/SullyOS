@@ -25,6 +25,7 @@ import VersionInfo from '../components/settings/VersionInfo';
 import { LoyalUserRecruitmentController } from '../components/LoyalUserRecruitmentEvent';
 import { isPushVapidReady } from '../utils/pushVapid';
 import ApiCallLogModal from '../components/settings/ApiCallLogModal';
+import ApiFailoverSettings from '../components/settings/ApiFailoverSettings';
 import ApiPricingEditor from '../components/settings/ApiPricingEditor';
 import type { ApiPricing } from '../types';
 import { backfillUnpricedCallsForPreset } from '../utils/apiCostBackfill';
@@ -1697,6 +1698,13 @@ const Settings: React.FC = () => {
                     </div>
                 )}
             </div>
+        </SettingsSection>
+
+        <SettingsSection
+            title="API 故障转移"
+            icon={<div className="p-2 bg-amber-100/60 rounded-xl text-amber-600"><PlugsConnected className="w-4 h-4" /></div>}
+        >
+            <ApiFailoverSettings addToast={addToast} />
         </SettingsSection>
 
         {/* API 调用记录入口 — 点开看最近 5 天各 App / 角色 / 用途的调用明细 */}

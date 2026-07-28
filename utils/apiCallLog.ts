@@ -32,6 +32,13 @@ export interface ApiCallMeta {
     charName?: string;
     /** 具体用途，如 '聊天回复' / '情绪评估' / '记忆提取'，可空 */
     purpose?: string;
+    failoverRequestId?: string;
+    failoverGroupId?: string;
+    failoverGroupName?: string;
+    failoverRouteIndex?: number;
+    failoverRouteCount?: number;
+    failoverAttempt?: number;
+    failoverPresetId?: string;
 }
 
 /** 落库的一条记录。 */
@@ -521,6 +528,13 @@ export function recordApiCall(input: {
             charId: meta.charId,
             charName: meta.charName,
             purpose: meta.purpose,
+            failoverRequestId: meta.failoverRequestId,
+            failoverGroupId: meta.failoverGroupId,
+            failoverGroupName: meta.failoverGroupName,
+            failoverRouteIndex: meta.failoverRouteIndex,
+            failoverRouteCount: meta.failoverRouteCount,
+            failoverAttempt: meta.failoverAttempt,
+            failoverPresetId: meta.failoverPresetId,
         };
         // 动态 import 避开 safeApi ↔ db 的潜在加载顺序问题；写库失败静默吞掉。
         import('./db').then(async ({ DB }) => { const inserted = await DB.appendApiCallLog(entry); if (inserted) { const { emitApiCostUpdated } = await import('./apiCostEvents'); emitApiCostUpdated({ dateKey: localDateKey(entry.timestamp), entryId: entry.id }); } }).catch(() => {});

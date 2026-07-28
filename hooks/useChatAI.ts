@@ -1,6 +1,6 @@
 
 import { useState, useRef, useEffect, MutableRefObject } from 'react';
-import { CharacterProfile, UserProfile, Message, Emoji, EmojiCategory, GroupProfile, RealtimeConfig, CharacterBuff } from '../types';
+import { CharacterProfile, UserProfile, Message, Emoji, EmojiCategory, GroupProfile, RealtimeConfig, CharacterBuff, APIConfig } from '../types';
 import { DB } from '../utils/db';
 import { ChatPrompts } from '../utils/chatPrompts';
 import { safeFetchJson, safeResponseJson } from '../utils/safeApi';
@@ -49,6 +49,7 @@ import { shouldRequestAmbient, buildAmbientEvalSection } from '../utils/roomAmbi
 import { isEmotionEvalSkipped } from '../utils/devDebug';
 import { runAiRequest, sha256Hex } from '../utils/aiRequestManager';
 import { recordApiCall } from '../utils/apiCallLog';
+import { executeOpenAiChatPlan, resolveApiExecutionPlan, type ApiExecutionPlan } from '../utils/apiFailover';
 import {
     computeContextRangeSnapshot,
     getMemoryPalaceHighWaterMarkForContext,
@@ -331,7 +332,8 @@ export async function evaluateEmotionBackground(
     mainSystemPrompt: string,
     apiMessages: Array<{ role: string; content: any }>,
     api: { baseUrl: string; apiKey: string; model: string; stream?: boolean },
-    round?: { conversationId: string; userMessageId: string; assistantMessageId: string; forceRefresh?: boolean }
+    round?: { conversationId: string; userMessageId: string; assistantMessageId: string; forceRefresh?: boolean },
+    failoverScope?: 'emotion',
 ): Promise<string | null> {
     // 全局横幅「xx 正在感受…」（ChatBroadcast）。这里是所有本地评估路径的汇聚点
     // （主链路 fire & forget / post-push 补跑 / OSContext 主动消息），在函数级
@@ -341,14 +343,15 @@ export async function evaluateEmotionBackground(
         const ambientSection = shouldRequestAmbient(charData.id) ? buildAmbientEvalSection(charData) : '';
         const prompt = buildEmotionEvalPrompt(charData, userProfile, mainSystemPrompt, apiMessages, true, ambientSection);
 
-        const baseUrl = api.baseUrl.replace(/\/+$/, '');
-        const headers = {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${api.apiKey || 'sk-none'}`
-        };
+        const apiPlan = resolveApiExecutionPlan(
+            'emotion',
+            api as APIConfig,
+            failoverScope === 'emotion',
+        );
+        const effectiveApi = apiPlan.primaryApi;
 
         const evalBody = {
-            model: api.model,
+            model: effectiveApi.model,
             messages: [{ role: 'user', content: prompt }],
             temperature: 0.85,
             // 显式给足输出额度: 部分代理不传 max_tokens 时默认很小 (1k~2k), eval 的
@@ -358,31 +361,33 @@ export async function evaluateEmotionBackground(
         const evalMeta = { appName: '消息', charId: charData.id, charName: charData.name, purpose: '情绪评估' };
         let data: any;
         try {
-            data = await safeFetchJson(`${baseUrl}/chat/completions`, {
-                method: 'POST',
-                headers,
-                body: JSON.stringify({
+            const result = await executeOpenAiChatPlan({
+                plan: apiPlan,
+                body: {
                     ...evalBody,
-                    // 跟随全局流式开关（响应由 safeFetchJson 透明拼装，下游 JSON 解析不变）。
-                    // 好处: ①评估动辄生成 4~5k token、跑 30~46s，非流式最容易撞网关超时；
-                    // ②中转若按流式/非流式分渠道池，评估与主聊天落同一池，行为可对比。
-                    stream: !!api.stream,
-                    ...(api.stream ? { stream_options: { include_usage: true } } : {}),
-                })
-            }, 2, 0, evalMeta);
+                    // 跟随所选线路的流式开关；故障转移线路可各自覆盖 model/stream。
+                    stream: !!effectiveApi.stream,
+                    ...(effectiveApi.stream ? { stream_options: { include_usage: true } } : {}),
+                },
+                meta: evalMeta,
+                directMaxRetries: 2,
+            });
+            data = result.value;
         } catch (e: any) {
-            if (!api.stream) throw e;
+            if (!effectiveApi.stream) throw e;
             // 流式自愈: 个别中转/模型对 stream / stream_options 直接 4xx。主聊天的透明流式
             // 升级层有「用升级前原 body 重发」的回退 (OSContext), 但评估请求自带 stream:true
             // 不经过升级层, 没有这层兜底 —— 这里补上同等待遇: 非流式重发一次, 行为退回
             // 「评估跟随流式开关」(32c7be7) 之前。评估失败过去被静默吞掉, 用户只看到
             // 情绪徽章闪一下就灭、情绪永不更新 (真实反馈), 这类形状问题必须能自愈。
             console.warn('🎭 [Emotion] streamed eval failed, retrying non-stream:', e?.message);
-            data = await safeFetchJson(`${baseUrl}/chat/completions`, {
-                method: 'POST',
-                headers,
-                body: JSON.stringify({ ...evalBody, stream: false })
-            }, 1, 0, evalMeta);
+            const retryResult = await executeOpenAiChatPlan({
+                plan: apiPlan,
+                body: { ...evalBody, stream: false },
+                meta: evalMeta,
+                directMaxRetries: 1,
+            });
+            data = retryResult.value;
         }
 
         // 排查贩子降级路由用：把评估实际落到的后端和 token 计数打出来，
@@ -623,6 +628,8 @@ export const useChatAI = ({
                 setEmotionStatus('evaluating');
                 const innerState = await evaluateEmotionBackground(
                     evalChar, deps.userProfile, payload.systemPrompt, payload.cleanedApiMessages, emotionApi,
+                    undefined,
+                    evalChar.emotionConfig?.api?.baseUrl ? undefined : 'emotion',
                 );
                 if (innerState) setEvolvedNarrative(innerState);
                 // 成功后清 pending. 失败不清 → 下次 mount drain 重试.
@@ -714,8 +721,18 @@ export const useChatAI = ({
         // 早退路径也要熄「发送准备中」灯: caller (Chat.tsx) 是先 setInstantSendingActive(true)
         // 再调 triggerAI 的, 这里 return 掉而不通知的话指示灯会永远亮着。
         if (isTyping || !char) { onInstantPosted?.(); return; }
-        const effectiveApi = overrideApiConfig || apiConfig;
-        if (!effectiveApi.baseUrl) { alert("请先在设置中配置 API URL"); onInstantPosted?.(); return; }
+        const allowFailover = !overrideApiConfig;
+        const baseApi = (overrideApiConfig || apiConfig) as APIConfig;
+        if (!baseApi.baseUrl) { alert("请先在设置中配置 API URL"); onInstantPosted?.(); return; }
+        let apiPlan: ApiExecutionPlan;
+        try {
+            apiPlan = resolveApiExecutionPlan('chat', baseApi, allowFailover);
+        } catch (error: any) {
+            addToast(error?.message || 'API 故障转移配置不可用', 'error');
+            onInstantPosted?.();
+            return;
+        }
+        const effectiveApi = apiPlan.primaryApi;
 
         // 重 roll（回溯重生）时不带入上一轮的情绪余波：清掉 buff 注入（buffInjection/activeBuffs）和
         // 意识流（innerState/evolvedNarrative），让主回复与情绪评估两边都从干净状态独立重新生成——
@@ -885,6 +902,7 @@ export const useChatAI = ({
                         assistantMessageId,
                         forceRefresh: !!opts?.forceRefresh,
                     },
+                    char.emotionConfig?.api?.baseUrl ? undefined : 'emotion',
                 )
                     .then((innerState) => {
                         if (innerState) setEvolvedNarrative(innerState);
@@ -1028,6 +1046,7 @@ export const useChatAI = ({
             // 瑞幸聊天点单 / 麦当劳 / 瑞幸小程序 这些"客户端工具循环"模式必须走本地 fetch:
             // instant push 会把请求交给 worker 并在这里提前 return, 工具循环(callLuckinTool 等)根本跑不到,
             // 表现就是"选了城市也没用 / 角色不下单"。这些模式下跳过 instant push, 用本地 fetch 跑工具循环。
+            // Instant Push 只发送故障转移组的第一线路，不发送 routes 或备用 API Key；Worker 内失败不跨线路回退。
             if (isInstantConfigReady() && !payload.flags.luckinChatActive && !payload.flags.mcdActive && !payload.flags.luckinActive && !payload.flags.mcpChatActive) {
                 const instantResult = await sendInstantPushAndAwaitReply({
                     contactName: char.name,
@@ -1125,25 +1144,45 @@ export const useChatAI = ({
                 },
             } : undefined;
 
+            // 首次请求允许按有序线路故障转移；一旦某条线路成功，本轮所有工具结果续写
+            // 都固定在该线路，避免同一个工具回合中途换模型或换 API。
+            let activeApiForTurn: APIConfig = effectiveApi;
+            const executeChatBody = async (
+                body: Record<string, any>,
+                purpose: string,
+                hooks?: typeof streamHooks,
+                useFailover = false,
+            ): Promise<any> => {
+                const plan = useFailover
+                    ? apiPlan
+                    : resolveApiExecutionPlan('chat', activeApiForTurn, false);
+                const result = await executeOpenAiChatPlan({
+                    plan,
+                    body,
+                    meta: { appName: '消息', charId: char.id, charName: char.name, purpose },
+                    streamHooks: hooks,
+                    directMaxRetries: plan.mode === 'direct' ? 2 : 0,
+                });
+                activeApiForTurn = result.route.api;
+                return result.value;
+            };
+
             let data: any;
             try {
                 const managed = await runAiRequest({
                     kind: 'chat',
                     request: {
-                        provider: baseUrl,
+                        provider: apiPlan.cacheIdentity,
                         body: baseReqBody,
                         promptVersion: 'chat-prompt-v1',
                     },
-                    provider: baseUrl,
+                    provider: apiPlan.cacheIdentity,
                     model: baseReqBody.model,
                     promptVersion: 'chat-prompt-v1',
                     forceRefresh: !!opts?.forceRefresh,
                     metadata: { charId: char.id, purpose: '聊天回复' },
                     shouldCache: (response: any) => !!response?.choices?.[0]?.message,
-                    execute: () => safeFetchJson(`${baseUrl}/chat/completions`, {
-                        method: 'POST', headers,
-                        body: JSON.stringify(baseReqBody)
-                    }, 2, 0, { appName: '消息', charId: char.id, charName: char.name, purpose: '聊天回复' }, streamHooks),
+                    execute: () => executeChatBody(baseReqBody, '聊天回复', streamHooks, true),
                 });
                 data = managed.value;
                 if (!managed.networkRequest) {
@@ -1164,10 +1203,7 @@ export const useChatAI = ({
                 if (!mcpOnly || !baseReqBody.tools?.length || !shouldRetryMcpWithoutTools(e)) throw e;
                 console.warn('🔌 [MCP] 当前中转拒绝 tools 请求，降级为正文工具调用兼容模式');
                 const fallbackBody = buildMcpRejectedToolsFallbackBody(baseReqBody);
-                data = await safeFetchJson(`${baseUrl}/chat/completions`, {
-                    method: 'POST', headers,
-                    body: JSON.stringify(fallbackBody)
-                }, 0, 0, { appName: '消息', charId: char.id, charName: char.name, purpose: 'MCP tools 兼容重试' });
+                data = await executeChatBody(fallbackBody, 'MCP tools 兼容重试', undefined, true);
             }
             console.log(`⏱ [API call] ${Math.round(performance.now() - apiT0)}ms`);
             updateTokenUsage(data, historyMsgCount, 'initial');
@@ -1306,10 +1342,7 @@ export const useChatAI = ({
                     const followBody = { ...baseReqBody, messages: loopMessages };
                     delete followBody.tools;
                     delete followBody.tool_choice;
-                    data = await safeFetchJson(`${baseUrl}/chat/completions`, {
-                        method: 'POST', headers,
-                        body: JSON.stringify(followBody)
-                    });
+                    data = await executeChatBody(followBody, '麦当劳工具结果续写');
                     updateTokenUsage(data, historyMsgCount, `mcd-propose-${it + 1}`);
                     // 第二轮跳过 (我们已经禁用了 tools)
                     if (!data.choices?.[0]?.message?.tool_calls?.length) break;
@@ -1401,10 +1434,7 @@ export const useChatAI = ({
                     const followBody = { ...baseReqBody, messages: loopMessages };
                     delete followBody.tools;
                     delete followBody.tool_choice;
-                    data = await safeFetchJson(`${baseUrl}/chat/completions`, {
-                        method: 'POST', headers,
-                        body: JSON.stringify(followBody)
-                    });
+                    data = await executeChatBody(followBody, '瑞幸推荐工具结果续写');
                     updateTokenUsage(data, historyMsgCount, `luckin-propose-${it + 1}`);
                     if (!data.choices?.[0]?.message?.tool_calls?.length) break;
                 }
@@ -1510,10 +1540,10 @@ export const useChatAI = ({
                     // 继续让角色多步推进 (保留 tools, 允许 query→search→preview 连续走)
                     if (mcpToolResolve) setSearchStatus('正在整理 MCP 工具结果...');
                     const followBody = { ...baseReqBody, messages: loopMessages };
-                    data = await safeFetchJson(`${baseUrl}/chat/completions`, {
-                        method: 'POST', headers,
-                        body: JSON.stringify(followBody)
-                    });
+                    data = await executeChatBody(
+                        followBody,
+                        payload.flags.luckinChatActive ? '瑞幸工具结果续写' : 'MCP 工具结果续写',
+                    );
                     updateTokenUsage(data, historyMsgCount, `${payload.flags.luckinChatActive ? 'luckin-chat' : 'mcp-chat'}-${it + 1}`);
                 }
                 if (mcpToolResolve) setSearchStatus('');
@@ -1560,10 +1590,7 @@ export const useChatAI = ({
                     });
                     setSearchStatus('正在整理 MCP 工具结果...');
                     const followBody = buildMcpTextFallbackBody(baseReqBody, textLoopMessages);
-                    data = await safeFetchJson(`${baseUrl}/chat/completions`, {
-                        method: 'POST', headers,
-                        body: JSON.stringify(followBody)
-                    });
+                    data = await executeChatBody(followBody, 'MCP 正文工具结果续写');
                     updateTokenUsage(data, historyMsgCount, `mcp-text-${it + 1}`);
                 }
                 setSearchStatus('');

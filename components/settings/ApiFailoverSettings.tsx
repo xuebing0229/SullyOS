@@ -1,0 +1,505 @@
+import React, { useMemo, useState } from 'react';
+
+import { useOS } from '../../context/OSContext';
+import {
+    createDefaultApiFailoverGroup,
+    loadApiFailoverGroups,
+    normalizeApiFailoverGroup,
+    resetApiFailoverRuntime,
+    saveApiFailoverGroups,
+    type ApiFailoverGroup,
+    type ApiFailoverScope,
+} from '../../utils/apiFailover';
+
+interface Props {
+    addToast: (
+        message: string,
+        type?: 'success' | 'error' | 'info',
+    ) => void;
+}
+
+const SCOPES: ApiFailoverScope[] = ['chat', 'emotion'];
+
+function initialGroups(): ApiFailoverGroup[] {
+    const loaded = loadApiFailoverGroups();
+    return SCOPES.map(scope => {
+        const found = loaded.find(group => group.scope === scope);
+        return normalizeApiFailoverGroup(
+            found || createDefaultApiFailoverGroup(scope),
+            scope,
+        );
+    });
+}
+
+const ApiFailoverSettings: React.FC<Props> = ({ addToast }) => {
+    const { apiPresets } = useOS();
+    const [groups, setGroups] = useState<ApiFailoverGroup[]>(
+        initialGroups,
+    );
+    const [advancedScope, setAdvancedScope] =
+        useState<ApiFailoverScope | null>(null);
+
+    const presetMap = useMemo(
+        () => new Map(apiPresets.map(preset => [
+            preset.id,
+            preset,
+        ])),
+        [apiPresets],
+    );
+
+    const persist = (next: ApiFailoverGroup[]) => {
+        const stamped = next.map(group => ({
+            ...group,
+            updatedAt: Date.now(),
+        }));
+        setGroups(stamped);
+        saveApiFailoverGroups(stamped);
+    };
+
+    const updateGroup = (
+        scope: ApiFailoverScope,
+        update:
+            | Partial<ApiFailoverGroup>
+            | ((group: ApiFailoverGroup) => ApiFailoverGroup),
+    ) => {
+        persist(groups.map(group => {
+            if (group.scope !== scope) return group;
+            return typeof update === 'function'
+                ? update(group)
+                : { ...group, ...update };
+        }));
+    };
+
+    const unusedPresetIds = (group: ApiFailoverGroup) => {
+        const used = new Set(
+            group.members.map(member => member.presetId),
+        );
+        return apiPresets
+            .filter(preset => !used.has(preset.id))
+            .map(preset => preset.id);
+    };
+
+    const addRoute = (scope: ApiFailoverScope) => {
+        const group = groups.find(item => item.scope === scope)!;
+        const presetId = unusedPresetIds(group)[0];
+        if (!presetId) {
+            addToast('没有可添加的其他 API 预设', 'info');
+            return;
+        }
+
+        updateGroup(scope, current => ({
+            ...current,
+            members: [
+                ...current.members,
+                { presetId, enabled: true },
+            ],
+        }));
+    };
+
+    const replaceRoute = (
+        scope: ApiFailoverScope,
+        index: number,
+        presetId: string,
+    ) => {
+        updateGroup(scope, current => ({
+            ...current,
+            members: current.members.map((member, currentIndex) =>
+                currentIndex === index
+                    ? { ...member, presetId }
+                    : member
+            ),
+        }));
+    };
+
+    const removeRoute = (
+        scope: ApiFailoverScope,
+        index: number,
+    ) => {
+        updateGroup(scope, current => ({
+            ...current,
+            members: current.members.filter(
+                (_, currentIndex) => currentIndex !== index,
+            ),
+            enabled:
+                current.enabled
+                && current.members.length - 1 >= 2,
+        }));
+    };
+
+    const moveRoute = (
+        scope: ApiFailoverScope,
+        index: number,
+        direction: -1 | 1,
+    ) => {
+        updateGroup(scope, current => {
+            const target = index + direction;
+            if (target < 0 || target >= current.members.length) {
+                return current;
+            }
+            const members = [...current.members];
+            [members[index], members[target]] =
+                [members[target], members[index]];
+            return { ...current, members };
+        });
+    };
+
+    const toggleGroup = (
+        scope: ApiFailoverScope,
+        enabled: boolean,
+    ) => {
+        const group = groups.find(item => item.scope === scope)!;
+        const validCount = group.members.filter(member =>
+            member.enabled && presetMap.has(member.presetId)
+        ).length;
+
+        if (enabled && validCount < 2) {
+            addToast(
+                '至少添加两条有效 API 预设才能开启回退',
+                'error',
+            );
+            return;
+        }
+        updateGroup(scope, { enabled });
+    };
+
+    return (
+        <div className="space-y-4">
+            <div className="rounded-2xl border border-amber-100 bg-amber-50/70 p-3 text-[10px] leading-relaxed text-amber-700">
+                第一版只作用于本地模式的主聊天和情绪评估。
+                Instant Push 仍只使用第一线路；同组最好放同一个模型的不同 API 站。
+            </div>
+
+            {groups.map(group => {
+                const validCount = group.members.filter(member =>
+                    member.enabled && presetMap.has(member.presetId)
+                ).length;
+                const advanced = advancedScope === group.scope;
+
+                return (
+                    <section
+                        key={group.scope}
+                        className="rounded-2xl border border-slate-100 bg-white/70 p-4 space-y-3"
+                    >
+                        <div className="flex items-center justify-between gap-3">
+                            <div>
+                                <div className="text-sm font-bold text-slate-700">
+                                    {group.name}线路
+                                </div>
+                                <div className="mt-0.5 text-[10px] text-slate-400">
+                                    按从上到下的顺序尝试
+                                    {group.enabled
+                                        ? ` · 已启用 ${validCount} 条`
+                                        : ' · 未启用'}
+                                </div>
+                            </div>
+
+                            <button
+                                type="button"
+                                onClick={() =>
+                                    toggleGroup(
+                                        group.scope,
+                                        !group.enabled,
+                                    )
+                                }
+                                className={`relative h-6 w-11 rounded-full transition-colors ${
+                                    group.enabled
+                                        ? 'bg-emerald-500'
+                                        : 'bg-slate-200'
+                                }`}
+                            >
+                                <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${
+                                    group.enabled
+                                        ? 'translate-x-5'
+                                        : 'translate-x-0.5'
+                                }`} />
+                            </button>
+                        </div>
+
+                        <div className="space-y-2">
+                            {group.members.map((member, index) => {
+                                const preset =
+                                    presetMap.get(member.presetId);
+                                const candidates = apiPresets.filter(
+                                    item =>
+                                        item.id === member.presetId
+                                        || !group.members.some(
+                                            existing =>
+                                                existing.presetId
+                                                === item.id,
+                                        ),
+                                );
+
+                                return (
+                                    <div
+                                        key={`${member.presetId}-${index}`}
+                                        className="flex items-center gap-2 rounded-xl border border-slate-100 bg-slate-50/80 p-2"
+                                    >
+                                        <div className="w-6 text-center text-[11px] font-bold text-slate-400">
+                                            {index + 1}
+                                        </div>
+
+                                        <select
+                                            value={member.presetId}
+                                            onChange={event =>
+                                                replaceRoute(
+                                                    group.scope,
+                                                    index,
+                                                    event.target.value,
+                                                )
+                                            }
+                                            className={`min-w-0 flex-1 rounded-lg border px-2 py-2 text-xs ${
+                                                preset
+                                                    ? 'border-slate-200 bg-white text-slate-700'
+                                                    : 'border-rose-200 bg-rose-50 text-rose-600'
+                                            }`}
+                                        >
+                                            {!preset && (
+                                                <option value={member.presetId}>
+                                                    已缺失：{member.presetId}
+                                                </option>
+                                            )}
+                                            {candidates.map(item => (
+                                                <option
+                                                    key={item.id}
+                                                    value={item.id}
+                                                >
+                                                    {item.name} · {item.config.model}
+                                                </option>
+                                            ))}
+                                        </select>
+
+                                        <button
+                                            type="button"
+                                            disabled={index === 0}
+                                            onClick={() =>
+                                                moveRoute(
+                                                    group.scope,
+                                                    index,
+                                                    -1,
+                                                )
+                                            }
+                                            className="rounded-lg px-2 py-1.5 text-xs text-slate-400 disabled:opacity-20"
+                                            aria-label="上移"
+                                        >
+                                            ↑
+                                        </button>
+                                        <button
+                                            type="button"
+                                            disabled={
+                                                index
+                                                === group.members.length - 1
+                                            }
+                                            onClick={() =>
+                                                moveRoute(
+                                                    group.scope,
+                                                    index,
+                                                    1,
+                                                )
+                                            }
+                                            className="rounded-lg px-2 py-1.5 text-xs text-slate-400 disabled:opacity-20"
+                                            aria-label="下移"
+                                        >
+                                            ↓
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={() =>
+                                                removeRoute(
+                                                    group.scope,
+                                                    index,
+                                                )
+                                            }
+                                            className="rounded-lg px-2 py-1.5 text-xs text-rose-400"
+                                            aria-label="删除线路"
+                                        >
+                                            ×
+                                        </button>
+                                    </div>
+                                );
+                            })}
+                        </div>
+
+                        <button
+                            type="button"
+                            onClick={() => addRoute(group.scope)}
+                            disabled={
+                                unusedPresetIds(group).length === 0
+                            }
+                            className="w-full rounded-xl border border-dashed border-slate-200 py-2.5 text-[11px] font-bold text-slate-500 disabled:opacity-40"
+                        >
+                            + 添加备用预设
+                        </button>
+
+                        <button
+                            type="button"
+                            onClick={() =>
+                                setAdvancedScope(
+                                    advanced ? null : group.scope,
+                                )
+                            }
+                            className="text-[10px] text-slate-400"
+                        >
+                            {advanced ? '收起高级策略' : '高级策略'}
+                        </button>
+
+                        {advanced && (
+                            <div className="grid grid-cols-2 gap-3 rounded-xl bg-slate-50 p-3">
+                                <label className="text-[10px] text-slate-500">
+                                    单线路总尝试
+                                    <input
+                                        type="number"
+                                        min={1}
+                                        max={3}
+                                        value={group.policy.routeMaxAttempts}
+                                        onChange={event =>
+                                            updateGroup(
+                                                group.scope,
+                                                current => ({
+                                                    ...current,
+                                                    policy: {
+                                                        ...current.policy,
+                                                        routeMaxAttempts:
+                                                            Number(
+                                                                event.target.value,
+                                                            ),
+                                                    },
+                                                }),
+                                            )
+                                        }
+                                        className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-2 py-2 text-xs"
+                                    />
+                                </label>
+
+                                <label className="text-[10px] text-slate-500">
+                                    单次超时（秒）
+                                    <input
+                                        type="number"
+                                        min={30}
+                                        max={600}
+                                        value={Math.round(
+                                            group.policy.timeoutMs / 1000,
+                                        )}
+                                        onChange={event =>
+                                            updateGroup(
+                                                group.scope,
+                                                current => ({
+                                                    ...current,
+                                                    policy: {
+                                                        ...current.policy,
+                                                        timeoutMs:
+                                                            Number(
+                                                                event.target.value,
+                                                            ) * 1000,
+                                                    },
+                                                }),
+                                            )
+                                        }
+                                        className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-2 py-2 text-xs"
+                                    />
+                                </label>
+
+                                <label className="text-[10px] text-slate-500">
+                                    连续失败熔断
+                                    <input
+                                        type="number"
+                                        min={1}
+                                        max={10}
+                                        value={
+                                            group.policy
+                                                .consecutiveFailureThreshold
+                                        }
+                                        onChange={event =>
+                                            updateGroup(
+                                                group.scope,
+                                                current => ({
+                                                    ...current,
+                                                    policy: {
+                                                        ...current.policy,
+                                                        consecutiveFailureThreshold:
+                                                            Number(
+                                                                event.target.value,
+                                                            ),
+                                                    },
+                                                }),
+                                            )
+                                        }
+                                        className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-2 py-2 text-xs"
+                                    />
+                                </label>
+
+                                <label className="text-[10px] text-slate-500">
+                                    冷却（秒）
+                                    <input
+                                        type="number"
+                                        min={5}
+                                        max={1800}
+                                        value={Math.round(
+                                            group.policy.cooldownMs / 1000,
+                                        )}
+                                        onChange={event =>
+                                            updateGroup(
+                                                group.scope,
+                                                current => ({
+                                                    ...current,
+                                                    policy: {
+                                                        ...current.policy,
+                                                        cooldownMs:
+                                                            Number(
+                                                                event.target.value,
+                                                            ) * 1000,
+                                                    },
+                                                }),
+                                            )
+                                        }
+                                        className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-2 py-2 text-xs"
+                                    />
+                                </label>
+
+                                <label className="col-span-2 flex items-center justify-between gap-3 text-[10px] text-slate-500">
+                                    <span>
+                                        只允许同模型家族
+                                        <span className="block text-[9px] text-slate-400">
+                                            推荐保持开启，避免工具/思考参数不兼容
+                                        </span>
+                                    </span>
+                                    <input
+                                        type="checkbox"
+                                        checked={
+                                            group.policy.strictSameModel
+                                        }
+                                        onChange={event =>
+                                            updateGroup(
+                                                group.scope,
+                                                current => ({
+                                                    ...current,
+                                                    policy: {
+                                                        ...current.policy,
+                                                        strictSameModel:
+                                                            event.target.checked,
+                                                    },
+                                                }),
+                                            )
+                                        }
+                                    />
+                                </label>
+                            </div>
+                        )}
+                    </section>
+                );
+            })}
+
+            <button
+                type="button"
+                onClick={() => {
+                    resetApiFailoverRuntime();
+                    addToast('已清除线路冷却状态', 'success');
+                }}
+                className="w-full rounded-xl bg-slate-100 py-2.5 text-[11px] font-bold text-slate-600"
+            >
+                清除线路冷却状态
+            </button>
+        </div>
+    );
+};
+
+export default ApiFailoverSettings;

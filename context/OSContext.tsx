@@ -1,7 +1,7 @@
-
 import React, { createContext, useContext, useEffect, useState, useRef, useCallback } from 'react';
 import { APIConfig, AppID, OSTheme, VirtualTime, CharacterProfile, CharacterGroup, ChatTheme, Toast, FullBackupData, UserProfile, ApiPreset, ApiPricing, GroupProfile, SystemLog, Worldbook, NovelBook, SongSheet, Message, RealtimeConfig, AppearancePreset, CloudBackupConfig, CloudBackupFile } from '../types';
 import { DB } from '../utils/db';
+import { API_FAILOVER_STORAGE_KEY, resetApiFailoverRuntime } from '../utils/apiFailover';
 import { deleteRemoteNovelAiReference, stripNovelAiReferenceForTextOnlyBackup } from '../utils/novelAiReference';
 import { modelRejectsSamplingParams, stripSamplingParams, isSamplingParamError } from '../utils/samplingParamCompat';
 import { extractImagesInPlace, deepCloneForExport } from '../utils/backupExport';
@@ -2613,12 +2613,12 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
     localStorage.setItem('os_remote_vector_config', JSON.stringify(newConfig));
   };
   const saveModels = (models: string[]) => { setAvailableModels(models); localStorage.setItem('os_available_models', JSON.stringify(models)); };
-  const persistApiPresets = (next: ApiPreset[]) => { setApiPresets(next); localStorage.setItem('os_api_presets', JSON.stringify(next)); };
+  const persistApiPresets = (next: ApiPreset[]) => { setApiPresets(next); localStorage.setItem('os_api_presets', JSON.stringify(next)); resetApiFailoverRuntime(); };
   const activateApiPreset = (preset: ApiPreset) => { updateApiConfig(preset.config); setActiveApiPresetId(preset.id); localStorage.setItem('os_active_api_preset_id', preset.id); };
   const addApiPreset = (name: string, config: APIConfig, pricing?: ApiPricing) => { const preset={id:Date.now().toString(),name,config,pricing}; persistApiPresets([...apiPresets,preset]); setActiveApiPresetId(preset.id); localStorage.setItem('os_active_api_preset_id',preset.id); };
   const updateApiPreset = (id: string, patch: Partial<ApiPreset>) => { persistApiPresets(apiPresets.map(p=>p.id===id?{...p,...patch,config:patch.config??p.config}:p)); };
   const removeApiPreset = (id: string) => { persistApiPresets(apiPresets.filter(p=>p.id!==id)); if(activeApiPresetId===id){setActiveApiPresetId(null);localStorage.removeItem('os_active_api_preset_id');} };
-  const savePresets = (presets: ApiPreset[]) => { setApiPresets(presets); localStorage.setItem('os_api_presets', JSON.stringify(presets)); };
+  const savePresets = (presets: ApiPreset[]) => { setApiPresets(presets); localStorage.setItem('os_api_presets', JSON.stringify(presets)); resetApiFailoverRuntime(); };
   const addCharacter = async () => {
     const name = 'New Character';
     // 默认开启 emotionConfig.enabled，让"开日程 = 开情绪"这条隐含约定对新角色也成立。
@@ -3228,6 +3228,7 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
               apiConfig: (mode === 'text_only' || mode === 'full') ? apiConfig : undefined,
               apiPresets: (mode === 'text_only' || mode === 'full') ? apiPresets : undefined,
               activeApiPresetId: (mode === 'text_only' || mode === 'full') ? activeApiPresetId : undefined,
+              apiFailoverGroups: (mode === 'text_only' || mode === 'full') ? (() => { try { const raw = localStorage.getItem(API_FAILOVER_STORAGE_KEY); return raw ? JSON.parse(raw) : undefined; } catch { return undefined; } })() : undefined,
               apiCostDailySummaries: (mode === 'text_only' || mode === 'full') ? await DB.getApiCostDailySummaries() : undefined,
               availableModels: (mode === 'text_only' || mode === 'full') ? availableModels : undefined,
               realtimeConfig: (mode === 'text_only' || mode === 'full') ? realtimeConfig : undefined,
@@ -3953,6 +3954,11 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
               setActiveApiPresetId(restoredActivePresetId);
               if (restoredActivePresetId) localStorage.setItem('os_active_api_preset_id', restoredActivePresetId);
               else localStorage.removeItem('os_active_api_preset_id');
+          }
+          if (Object.prototype.hasOwnProperty.call(data, 'apiFailoverGroups')) {
+              if (data.apiFailoverGroups) localStorage.setItem(API_FAILOVER_STORAGE_KEY, JSON.stringify(data.apiFailoverGroups));
+              else localStorage.removeItem(API_FAILOVER_STORAGE_KEY);
+              resetApiFailoverRuntime();
           }
           if (data.realtimeConfig) updateRealtimeConfig(data.realtimeConfig); // 恢复实时感知配置
           if (data.memoryPalaceConfig) updateMemoryPalaceConfig(data.memoryPalaceConfig); // 恢复记忆宫殿全局配置
