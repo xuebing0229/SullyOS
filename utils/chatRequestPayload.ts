@@ -36,6 +36,11 @@ export interface UserListeningContext {
     activeIdx: number;
 }
 
+export interface ChatPayloadMessage {
+    role: 'system' | 'user' | 'assistant';
+    content: any;
+}
+
 export interface BuildChatPayloadInput {
     char: CharacterProfile;
     userProfile: UserProfile;
@@ -86,15 +91,21 @@ export interface BuildChatPayloadInput {
      * 只是把上下文撑爆的噪声（与群聊注入"不要把媒体当文本塞"同一约定）。
      */
     stripImages?: boolean;
+    /** 仅进入本次请求、不写入聊天 DB 的瞬态消息。 */
+    ephemeralMessages?: ChatPayloadMessage[];
+    /** 普通世界书关键词匹配专用消息；默认仍使用 recentMsgsHint。 */
+    worldbookQueryMessages?: Message[];
+    /** 是否允许通用 MCP 聊天工具；默认 true。 */
+    allowMcpChat?: boolean;
 }
 
 export interface BuildChatPayloadResult {
     /** 完整 system prompt（含所有可选块） */
     systemPrompt: string;
     /** 已剥离双语标签的历史消息（emotion eval 也吃这份） */
-    cleanedApiMessages: Array<{ role: string; content: any }>;
+    cleanedApiMessages: ChatPayloadMessage[];
     /** [system, ...cleanedApiMessages, 末尾 bilingual reminder?] —— 主 API 直接发这个 */
-    fullMessages: Array<{ role: string; content: any }>;
+    fullMessages: ChatPayloadMessage[];
     /** 调试用：bilingual / mcd 是否实际注入 */
     flags: {
         bilingualActive: boolean;
@@ -230,12 +241,18 @@ export async function buildChatRequestPayload(input: BuildChatPayloadInput): Pro
 
     if (isPromptBuildSkipped()) {
         const { apiMessages } = ChatPrompts.buildMessageHistory(historyMsgs, contextLimit, char, userProfile, emojis);
-        const cleanedApiMessages = cleanApiMessages(input.stripImages ? flattenImageContentParts(apiMessages) : apiMessages);
+        const cleanedHistory = cleanApiMessages(
+            input.stripImages ? flattenImageContentParts(apiMessages) : apiMessages,
+        ) as ChatPayloadMessage[];
+        const requestMessages: ChatPayloadMessage[] = [
+            ...cleanedHistory,
+            ...(input.ephemeralMessages ?? []),
+        ];
         console.warn('[DevDebug] Prompt Build skipped: sending chat history without system prompt injection.');
         return {
             systemPrompt: '',
-            cleanedApiMessages,
-            fullMessages: [...cleanedApiMessages],
+            cleanedApiMessages: requestMessages,
+            fullMessages: requestMessages,
             flags: {
                 bilingualActive: false,
                 mcdActive: false,
@@ -279,6 +296,7 @@ export async function buildChatRequestPayload(input: BuildChatPayloadInput): Pro
         !!isListeningTogether,
         musicCfg,
         recentTrackSwitch,
+        { worldbookMessages: input.worldbookQueryMessages ?? recentMsgsHint },
     );
     let systemPrompt = parts.stable;
     let volatileTail = parts.volatileState;
@@ -334,17 +352,23 @@ export async function buildChatRequestPayload(input: BuildChatPayloadInput): Pro
     const { apiMessages } = ChatPrompts.buildMessageHistory(historyMsgs, contextLimit, char, userProfile, emojis);
 
     // ── 8. 剥离历史里旧的双语标签（stripImages 时先压平 image_url → 纯文本占位） ──
-    const cleanedApiMessages = cleanApiMessages(input.stripImages ? flattenImageContentParts(apiMessages) : apiMessages);
+    const cleanedHistory = cleanApiMessages(
+        input.stripImages ? flattenImageContentParts(apiMessages) : apiMessages,
+    ) as ChatPayloadMessage[];
+    const requestContextMessages: ChatPayloadMessage[] = [
+        ...cleanedHistory,
+        ...(input.ephemeralMessages ?? []),
+    ];
     const resolvedWorldbookEntries = resolveWorldbookEntries(
         char.mountedWorldbooks || [],
-        cleanedApiMessages,
+        flattenImageContentParts(requestContextMessages),
         char.name,
         userProfile.name,
     );
     const messagesWithWorldbookDepth = injectWorldbookDepthEntries(
-        cleanedApiMessages,
+        requestContextMessages,
         resolvedWorldbookEntries.filter(entry => entry.position === 4),
-    );
+    ) as ChatPayloadMessage[];
 
     // ── 9. 麦当劳小程序上下文（购物车/菜单实时快照 → 易变尾段） ──
     const mcdActive = !!mcdMiniSnap?.open;
@@ -375,7 +399,7 @@ export async function buildChatRequestPayload(input: BuildChatPayloadInput): Pro
 
     // ── 9d. 通用 MCP 工具模式 (用户自配的远程 MCP 服务器, 见 docs/mcp-client.md) ──
     // 工具清单来自持久化的发现结果，变化很慢 → 稳定段。
-    const mcpChatActive = isMcpChatAvailable(char.id);
+    const mcpChatActive = input.allowMcpChat !== false && isMcpChatAvailable(char.id);
     if (mcpChatActive) {
         const block = buildMcpSystemBlock(userProfile?.name || '用户', char.id);
         if (block) {
@@ -390,7 +414,7 @@ export async function buildChatRequestPayload(input: BuildChatPayloadInput): Pro
 
     // 动态状态只服务当前请求，不写入消息 metadata，也不随历史永久回放。
     // 旧数据库里即使残留 aiTurnContext，buildMessageHistory 也会忽略它。
-    const fullMessages: Array<{ role: string; content: any }> = [
+    const fullMessages: ChatPayloadMessage[] = [
         { role: 'system', content: systemPrompt },
         ...messagesWithWorldbookDepth,
         { role: 'system', content: volatileTail },
@@ -417,7 +441,7 @@ export async function buildChatRequestPayload(input: BuildChatPayloadInput): Pro
         // 只是主 API 的实际消息结构把易变尾段放在历史之后（见上）。
         systemPrompt: systemPrompt + volatileTail,
         cleanedApiMessages: messagesWithWorldbookDepth,
-        fullMessages: finalMessages,
+        fullMessages: finalMessages as ChatPayloadMessage[],
         flags: { bilingualActive, mcdActive, luckinActive, luckinChatActive, mcpChatActive, htmlActive, thinkingActive, promptBuildSkipped: false },
     };
 }

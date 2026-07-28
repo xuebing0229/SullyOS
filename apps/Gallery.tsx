@@ -3,15 +3,24 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useOS } from '../context/OSContext';
 import { DB } from '../utils/db';
 import { GalleryImage, CharacterProfile } from '../types';
-import { safeResponseJson } from '../utils/safeApi';
 import ConfirmDialog from '../components/os/ConfirmDialog';
 import BlobImage from '../components/media/BlobImage';
-import { resolveRefToDataUrl } from '../utils/blobRef';
 import { saveGalleryImageToDevice } from '../utils/galleryExport';
-import { applyGalleryReview, buildRegeneratedReviewInstruction } from '../utils/galleryReview';
+import { applyGalleryReview } from '../utils/galleryReview';
+import { generateGalleryReview } from '../utils/galleryReviewRequest';
+import { loadMusicPlaybackSnapshot } from '../context/MusicContext';
 
 const Gallery: React.FC = () => {
-    const { closeApp, characters, apiConfig, addToast } = useOS();
+    const {
+        closeApp,
+        characters,
+        apiConfig,
+        addToast,
+        userProfile,
+        groups,
+        realtimeConfig,
+        updateCharacter,
+    } = useOS();
     const [view, setView] = useState<'albums' | 'grid' | 'detail'>('albums');
     const [activeCharId, setActiveCharId] = useState<string | null>(null);
     const [images, setImages] = useState<GalleryImage[]>([]);
@@ -152,102 +161,36 @@ const Gallery: React.FC = () => {
     };
 
     const handleReview = async () => {
-        if (!selectedImage || !activeCharId || !apiConfig.apiKey) {
-            addToast('缺少配置或图片信息', 'error');
+        if (!selectedImage || !activeCharId) {
+            addToast('缺少图片或角色信息', 'error');
             return;
         }
 
-        const char = characters.find(c => c.id === activeCharId);
-        if (!char) return;
+        const char = characters.find(candidate => candidate.id === activeCharId);
+        if (!char) {
+            addToast('找不到对应角色', 'error');
+            return;
+        }
 
         setIsReviewing(true);
         try {
-            const reviewImageUrl = await resolveRefToDataUrl(selectedImage.url);
-            if (!reviewImageUrl) throw new Error('本机图片数据已丢失');
-            // Build context-aware prompt
-            const chatContextStr = selectedImage.chatContext?.length
-                ? `\n\nContext: This photo was shared during a conversation. Here's what was being discussed:\n${selectedImage.chatContext.join('\n')}\n\nIMPORTANT: Your comment should feel natural given the conversation context above. Do NOT say things that contradict or are completely unrelated to what was being talked about.`
-                : '';
-
-            const dateStr = selectedImage.savedDate
-                ? `\nThis photo is from ${selectedImage.savedDate}.`
-                : '';
-
-            const regeneratedInstruction = buildRegeneratedReviewInstruction(
-                selectedImage.review,
-            );
-            const systemContent = `You are ${char.name}. ${char.systemPrompt || 'You are a helpful assistant.'}
-Task: The user sent you a photo. Comment on it briefly (1-3 sentences) based on your personality.${dateStr}${chatContextStr}
-Style: Casual, conversational, strictly NO AI-assistant tone. React as if you received this on a chat app.
-CRITICAL: Stay in character. If there's conversation context, your comment should naturally fit that context. Don't say anything that would be bizarre given what you two were just talking about.${regeneratedInstruction}`;
-
-            const payload = {
-                model: apiConfig.model,
-                messages: [
-                    { role: 'system', content: systemContent },
-                    {
-                        role: 'user',
-                        content: [
-                            { type: 'text', text: "Look at this photo I sent you." },
-                            {
-                                type: 'image_url',
-                                image_url: {
-                                    url: reviewImageUrl
-                                }
-                            }
-                        ]
-                    }
-                ],
-                max_tokens: 8000,
-                temperature: 0.7,
-                stream: false
-            };
-
-            const response = await fetch(`${apiConfig.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${apiConfig.apiKey}`
+            const result = await generateGalleryReview({
+                image: selectedImage,
+                char,
+                userProfile,
+                groups,
+                apiConfig,
+                realtimeConfig,
+                musicSnapshot: loadMusicPlaybackSnapshot(),
+                forceRefresh: Boolean(selectedImage.review),
+                onContextBreakpointExpired: () => {
+                    updateCharacter(char.id, {
+                        contextUserStartMessageId: undefined,
+                    });
                 },
-                body: JSON.stringify(payload)
             });
 
-            if (!response.ok) {
-                let errorMsg = `HTTP Error ${response.status}`;
-                try {
-                    const errData = await safeResponseJson(response);
-                    errorMsg = errData.error?.message || JSON.stringify(errData.error) || errorMsg;
-                    if (errorMsg.includes('vision') || errorMsg.includes('image')) {
-                        errorMsg = '当前模型可能不支持图片识别(Vision)，请切换模型。';
-                    }
-                } catch (e) {
-                    const text = await response.text();
-                    if(text) errorMsg = text.slice(0, 100);
-                }
-                throw new Error(errorMsg);
-            }
-
-            const data = await safeResponseJson(response);
-            const choice = data.choices?.[0];
-
-            if (choice?.finish_reason === 'content_filter') {
-                throw new Error('AI 拒绝回复 (图片可能包含敏感内容)');
-            }
-
-            let reviewText = choice?.message?.content;
-            if (!reviewText && choice?.message?.reasoning_content) {
-                reviewText = choice.message.reasoning_content;
-            }
-            if (!reviewText && choice?.text) reviewText = choice.text;
-            if (!reviewText && choice?.delta?.content) reviewText = choice.delta.content;
-
-            if (!reviewText) {
-                const debugStr = JSON.stringify(choice || data);
-                console.warn('AI Empty Response Structure:', data);
-                throw new Error(`AI 返回内容为空. Raw: ${debugStr.substring(0, 100)}...`);
-            }
-
-            const updatedImage = applyGalleryReview(selectedImage, reviewText);
+            const updatedImage = applyGalleryReview(selectedImage, result.text);
             await DB.updateGalleryImageReview(
                 selectedImage.id,
                 updatedImage.review!,
@@ -256,18 +199,24 @@ CRITICAL: Stay in character. If there's conversation context, your comment shoul
             setSelectedImage(updatedImage);
             setImages(previous =>
                 previous.map(image =>
-                    image.id === selectedImage.id ? updatedImage : image,
+                    image.id === updatedImage.id ? updatedImage : image,
                 ),
             );
 
             addToast(
-                selectedImage.review ? '已重新点评' : '点评生成成功',
+                selectedImage.review
+                    ? '已重新点评'
+                    : result.networkRequest
+                        ? '点评生成成功'
+                        : '点评已从本地缓存恢复',
                 'success',
             );
-
-        } catch (e: any) {
-            console.error('Review Error:', e);
-            addToast(`点评失败: ${e.message}`, 'error');
+        } catch (error: any) {
+            console.error('[Gallery Review] failed', error);
+            addToast(
+                `点评失败：${error?.message || '未知错误'}`,
+                'error',
+            );
         } finally {
             setIsReviewing(false);
         }

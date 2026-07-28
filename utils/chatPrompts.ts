@@ -67,6 +67,11 @@ function summarizeGroupMsgContent(m: Message): string {
     }
 }
 
+export interface BuildSystemPromptOptions {
+    /** 仅供世界书关键词匹配，不影响其他实时状态判断。 */
+    worldbookMessages?: Message[];
+}
+
 export const ChatPrompts = {
     // 格式化时间戳（tz 非空时按该时区折算墙上时间，用于自定义时区角色）
     formatDate: (ts: number, tz?: string) => {
@@ -198,6 +203,7 @@ export const ChatPrompts = {
         musicCfg?: MusicCfg,
         // 刚才一起听途中歌被切了（char 还没重新加入）—— 注入"察觉换歌"提示。
         recentTrackSwitch?: { songName: string; artists: string } | null,
+        options: BuildSystemPromptOptions = {},
     ): Promise<{ stable: string; volatileState: string; recencyTail: string }> => {
         // ── 分段计时（定位瓶颈用）──
         const perfT0 = performance.now();
@@ -217,7 +223,7 @@ export const ChatPrompts = {
             true,
             undefined,
             undefined,
-            { worldbookMessages: currentMsgs },
+            { worldbookMessages: options.worldbookMessages ?? currentMsgs },
             { deferVolatile: true },
         );
         timings.buildCoreContext = Math.round(performance.now() - coreT0);
