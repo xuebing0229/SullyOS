@@ -20,7 +20,6 @@ import {
     prepareMeetingCgArguments,
     resolveMeetingCgEngine,
     type MeetingCgBackground,
-    type MeetingCgEngine,
 } from '../../utils/meetingCg';
 import { clearDateResumeAttempt } from '../../utils/dateSessionRecovery';
 import { cleanTextForTts, VALID_EMOTIONS } from '../../utils/minimaxTts';
@@ -725,7 +724,7 @@ const DateSession: React.FC<DateSessionProps> = ({
     // Determine if we can reroll (last message is assistant)
     const canReroll = messages.length > 0 && messages[messages.length - 1].role === 'assistant';
 
-    const handleGenerateMeetingCg = async (requestedEngine?: MeetingCgEngine) => {
+    const handleGenerateMeetingCg = async () => {
         if (meetingCgLockRef.current) return;
         meetingCgLockRef.current = true;
         setIsGeneratingMeetingCg(true);
@@ -736,8 +735,8 @@ const DateSession: React.FC<DateSessionProps> = ({
             const resolved = resolveMeetingCgEngine({
                 gptEnabled: settings.engines['gpt-image'].enabled,
                 novelaiEnabled: settings.engines.novelai.enabled,
-                preferred: 'gpt',
-            }, requestedEngine);
+                preferred: settings.preferredEngine === 'gpt-image' ? 'gpt' : settings.preferredEngine,
+            });
             const serverId = resolved.engine === 'gpt'
                 ? 'builtin_image_gpt-image'
                 : 'builtin_image_novelai';
@@ -862,8 +861,6 @@ const DateSession: React.FC<DateSessionProps> = ({
                             {getMeetingCgButtonLabel(Boolean(meetingCgBackground), isGeneratingMeetingCg)}
                         </button>
                         <div className="flex gap-1">
-                            <button disabled={isGeneratingMeetingCg} onClick={() => void handleGenerateMeetingCg('gpt')} className="h-7 px-2.5 rounded-full text-[10px] font-bold bg-black/40 border border-white/15 text-white/75 disabled:opacity-50">GPT</button>
-                            <button disabled={isGeneratingMeetingCg} onClick={() => void handleGenerateMeetingCg('novelai')} className="h-7 px-2.5 rounded-full text-[10px] font-bold bg-black/40 border border-white/15 text-white/75 disabled:opacity-50">NovelAI</button>
                             {meetingCgBackground && <button disabled={isGeneratingMeetingCg} onClick={handleResetMeetingCgBackground} className="h-7 px-2.5 rounded-full text-[10px] font-bold bg-black/40 border border-white/15 text-white/75 disabled:opacity-50">默认背景</button>}
                         </div>
                         {!isTyping && canReroll && (

@@ -3,6 +3,7 @@ import {
     fetchBuiltinImageRemoteConfig,
     loadBuiltinImageSettings,
     saveBuiltinImageSettings,
+    setPreferredBuiltinImageEngine,
     testBuiltinImageRemoteConfig,
     updateBuiltinImageRemoteConfig,
     type BuiltinImageBinding,
@@ -383,10 +384,30 @@ export const ImageGenerationSettings: React.FC<Props> = ({ addToast }) => {
     const enabledCount = useMemo(() => Object.values(settings.engines).filter(engine => engine.enabled).length, [settings]);
     return (
         <div className="space-y-3">
+            <div className="rounded-2xl border border-violet-100 bg-violet-50/60 p-3">
+                <p className="text-xs font-bold text-slate-700">默认生图模式</p>
+                <p className="mt-1 text-[10px] leading-relaxed text-slate-400">选择后会一直使用，直到你在这里更换；生成时不再临时询问，也不会自动切换到另一引擎。</p>
+                <div className="mt-2 grid grid-cols-2 gap-2">
+                    {(['gpt-image', 'novelai'] as const).map(id => {
+                        const selected = settings.preferredEngine === id;
+                        return (
+                            <button
+                                key={id}
+                                type="button"
+                                onClick={() => setSettings(setPreferredBuiltinImageEngine(id))}
+                                className={`rounded-xl px-3 py-2.5 text-xs font-bold transition-all ${selected ? 'bg-violet-500 text-white shadow-sm' : 'bg-white text-slate-500 border border-violet-100'}`}
+                            >
+                                {id === 'gpt-image' ? 'GPT 生图' : 'NovelAI 生图'}
+                                {selected ? ' · 当前' : ''}
+                            </button>
+                        );
+                    })}
+                </div>
+            </div>
             <div className="flex items-center justify-between">
                 <div>
                     <p className="text-xs font-bold text-slate-600">内置生图引擎</p>
-                    <p className="mt-0.5 text-[10px] text-slate-400">两套工具独立开关；角色会按工具说明选择，你明确指定时必须遵从。</p>
+                    <p className="mt-0.5 text-[10px] text-slate-400">两套工具分别配置；实际生成固定使用上方选中的默认模式。</p>
                 </div>
                 <span className="rounded-full bg-violet-100 px-2 py-1 text-[10px] font-bold text-violet-600">{enabledCount}/2 已启用</span>
             </div>

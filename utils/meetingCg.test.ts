@@ -9,28 +9,28 @@ import {
 } from './meetingCg';
 
 describe('meeting cg engine resolution', () => {
-    it('uses explicit engine when enabled', () => {
-        const resolved = resolveMeetingCgEngine(
+    it('uses the persisted preferred engine when enabled', () => {
+        expect(resolveMeetingCgEngine(
             { gptEnabled: true, novelaiEnabled: true, preferred: 'novelai' },
-            'gpt',
-        );
-        expect(resolved).toEqual({ engine: 'gpt', reason: 'explicit' });
+        )).toEqual({ engine: 'novelai', reason: 'preferred' });
+        expect(resolveMeetingCgEngine(
+            { gptEnabled: true, novelaiEnabled: true, preferred: 'gpt' },
+        )).toEqual({ engine: 'gpt', reason: 'preferred' });
     });
 
-    it('falls back to preferred or available engine', () => {
-        expect(resolveMeetingCgEngine(
-            { gptEnabled: true, novelaiEnabled: false, preferred: 'novelai' },
-        ).engine).toBe('gpt');
-
-        expect(resolveMeetingCgEngine(
-            { gptEnabled: false, novelaiEnabled: true, preferred: 'gpt' },
-        ).engine).toBe('novelai');
-    });
-
-    it('throws when no engines are enabled', () => {
+    it('does not silently fall back when the selected engine is disabled', () => {
         expect(() => resolveMeetingCgEngine(
-            { gptEnabled: false, novelaiEnabled: false },
-        )).toThrow();
+            { gptEnabled: true, novelaiEnabled: false, preferred: 'novelai' },
+        )).toThrow('NovelAI');
+        expect(() => resolveMeetingCgEngine(
+            { gptEnabled: false, novelaiEnabled: true, preferred: 'gpt' },
+        )).toThrow('GPT');
+    });
+
+    it('requires the user to choose a default engine first', () => {
+        expect(() => resolveMeetingCgEngine(
+            { gptEnabled: true, novelaiEnabled: true, preferred: null },
+        )).toThrow('选择默认生图模式');
     });
 });
 

@@ -33,7 +33,7 @@ export interface BuiltinImageAvailability {
 
 export interface ResolvedMeetingCgEngine {
     engine: MeetingCgEngine;
-    reason: 'explicit' | 'preferred' | 'fallback';
+    reason: 'preferred';
 }
 
 export interface BuiltMeetingCgPrompt {
@@ -50,27 +50,18 @@ export async function prepareMeetingCgArguments<T extends Record<string, any>>(
 
 export function resolveMeetingCgEngine(
     availability: BuiltinImageAvailability,
-    requested?: MeetingCgEngine | null,
 ): ResolvedMeetingCgEngine {
-    const gpt = Boolean(availability.gptEnabled);
-    const novelai = Boolean(availability.novelaiEnabled);
-
-    if (!gpt && !novelai) {
-        throw new Error('未启用可用的生图引擎，请先在设置中开启 GPT 或 NovelAI。');
-    }
-
-    if (requested) {
-        if (requested === 'gpt' && !gpt) throw new Error('GPT 生图当前未启用。');
-        if (requested === 'novelai' && !novelai) throw new Error('NovelAI 生图当前未启用。');
-        return { engine: requested, reason: 'explicit' };
-    }
-
     const preferred = availability.preferred || null;
-    if (preferred === 'gpt' && gpt) return { engine: 'gpt', reason: 'preferred' };
-    if (preferred === 'novelai' && novelai) return { engine: 'novelai', reason: 'preferred' };
-
-    if (gpt) return { engine: 'gpt', reason: 'fallback' };
-    return { engine: 'novelai', reason: 'fallback' };
+    if (!preferred) {
+        throw new Error('请先在设置 → 内置生图引擎中选择默认生图模式。');
+    }
+    if (preferred === 'gpt' && !availability.gptEnabled) {
+        throw new Error('当前默认模式是 GPT 生图，但它尚未启用。请先启用或去设置更换模式。');
+    }
+    if (preferred === 'novelai' && !availability.novelaiEnabled) {
+        throw new Error('当前默认模式是 NovelAI 生图，但它尚未启用。请先启用或去设置更换模式。');
+    }
+    return { engine: preferred, reason: 'preferred' };
 }
 
 function cleanOneLine(value?: string): string {

@@ -19,7 +19,7 @@ import {
 } from './mcpClient';
 import { buildMcpOpenAITools, buildMcpRejectedToolsFallbackBody, buildMcpTextFallbackBody, extractMcpImageUrls, formatMcpToolResult, MCP_RESULT_MAX_CHARS, sanitizeMcpLeadInText, shouldRetryMcpWithoutTools, stripTextFakedMcpCalls } from './mcpToolBridge';
 import { completeGroupChatWithMcp } from './groupChat/mcp';
-import { BUILTIN_IMAGE_MCP_REQUEST_TIMEOUT_MS, getBuiltinImageMcpServers } from './builtinImageMcp';
+import { BUILTIN_IMAGE_MCP_REQUEST_TIMEOUT_MS, getBuiltinImageMcpServers, loadBuiltinImageSettings, saveBuiltinImageSettings } from './builtinImageMcp';
 
 const mkServer = (over: Partial<McpServerConfig>): McpServerConfig => ({
     ...createMcpServer('测试', 'https://mcp.example.com/mcp'),
@@ -31,6 +31,7 @@ const mkServer = (over: Partial<McpServerConfig>): McpServerConfig => ({
 beforeEach(() => {
     localStorage.removeItem('aetheros.mcp.servers');
     localStorage.removeItem('aetheros.mcp.useNativeTools');
+    localStorage.removeItem('aetheros.imageGeneration.builtin.v1');
 });
 
 afterEach(() => {
@@ -46,8 +47,17 @@ describe('MCP request timeout selection', () => {
 
     it('两个内置生图 MCP 都使用 240 秒', () => {
         const servers = getBuiltinImageMcpServers();
-        expect(servers).toHaveLength(2);
-        for (const server of servers) {
+        expect(servers).toHaveLength(0);
+
+        const settings = loadBuiltinImageSettings();
+        settings.preferredEngine = 'gpt-image';
+        settings.engines['gpt-image'].enabled = true;
+        settings.engines['gpt-image'].tools = [{ name: 'generate_image' }];
+        saveBuiltinImageSettings(settings);
+
+        const selectedServers = getBuiltinImageMcpServers();
+        expect(selectedServers).toHaveLength(1);
+        for (const server of selectedServers) {
             expect(server.builtin).toBe(true);
             expect(server.requestTimeoutMs).toBe(BUILTIN_IMAGE_MCP_REQUEST_TIMEOUT_MS);
             expect(getMcpRequestTimeoutMs(server)).toBe(BUILTIN_IMAGE_MCP_REQUEST_TIMEOUT_MS);

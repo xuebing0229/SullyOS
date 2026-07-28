@@ -56,12 +56,15 @@ describe('image generation presets', () => {
             },
         });
         const exported = exportImageGenerationLocal();
+        expect(exported.builtinSettings.preferredEngine).toBeNull();
+        exported.builtinSettings.preferredEngine = 'novelai';
         localStorage.clear();
         importImageGenerationLocal(exported);
         const state = loadImageGenerationPresetState();
         expect(state.presets[0].apiKey).toBe('novel-upstream-key');
         expect(state.presets[0].binding.token).toBe('novel-mcp-token');
         expect(state.activePresetIds.novelai).toBe(state.presets[0].id);
+        expect(loadBuiltinImageSettings().preferredEngine).toBe('novelai');
         expect(localStorage.getItem('aetheros.mcp.servers')).toContain('proxy-secret');
     });
     it('includes secrets in full/text backups and excludes them from media-only backups', () => {

@@ -14,6 +14,8 @@ export interface BuiltinImageBinding {
 
 export interface BuiltinImageSettings {
     version: 1;
+    /** 用户持久选择的默认生图引擎；未选择时要求先去设置选择，不做静默回退。 */
+    preferredEngine: BuiltinImageEngineId | null;
     engines: Record<BuiltinImageEngineId, BuiltinImageBinding>;
 }
 
@@ -70,6 +72,7 @@ export const BUILTIN_IMAGE_MCP_REQUEST_TIMEOUT_MS = 240_000;
 
 const DEFAULTS: BuiltinImageSettings = {
     version: 1,
+    preferredEngine: null,
     engines: {
         'gpt-image': {
             id: 'gpt-image',
@@ -101,6 +104,9 @@ export function loadBuiltinImageSettings(): BuiltinImageSettings {
         if (!raw) return fallback;
         const parsed = JSON.parse(raw);
         if (!parsed || parsed.version !== 1 || typeof parsed.engines !== 'object') return fallback;
+        fallback.preferredEngine = parsed.preferredEngine === 'gpt-image' || parsed.preferredEngine === 'novelai'
+            ? parsed.preferredEngine
+            : null;
         for (const id of ['gpt-image', 'novelai'] as BuiltinImageEngineId[]) {
             const source = parsed.engines[id] || {};
             fallback.engines[id] = {
@@ -126,6 +132,13 @@ export function saveBuiltinImageSettings(settings: BuiltinImageSettings): void {
     }
 }
 
+export function setPreferredBuiltinImageEngine(id: BuiltinImageEngineId): BuiltinImageSettings {
+    const current = loadBuiltinImageSettings();
+    current.preferredEngine = id;
+    saveBuiltinImageSettings(current);
+    return current;
+}
+
 export function updateBuiltinImageBinding(
     id: BuiltinImageEngineId,
     patch: Partial<BuiltinImageBinding>,
@@ -147,7 +160,9 @@ export function getBuiltinImageMcpServers(): McpServerConfig[] {
         'gpt-image': 'GPT 生图',
         novelai: 'NovelAI 生图',
     };
-    return (Object.keys(settings.engines) as BuiltinImageEngineId[]).map(id => {
+    return (Object.keys(settings.engines) as BuiltinImageEngineId[])
+        .filter(id => id === settings.preferredEngine)
+        .map(id => {
         const binding = settings.engines[id];
         return {
             id: `builtin_image_${id}`,
