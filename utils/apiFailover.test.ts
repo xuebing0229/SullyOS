@@ -272,3 +272,20 @@ describe('failover execution', () => {
         )).toBe(true);
     });
 });
+
+
+describe('single-route failover degradation', () => {
+    it('degrades an enabled one-route group to direct mode', () => {
+        const group = {
+            ...createDefaultApiFailoverGroup('chat'),
+            enabled: true,
+            members: [{ presetId: 'a', enabled: true }],
+        };
+        const directApi = { baseUrl: 'https://direct.test/v1', apiKey: 'direct', model: 'gemini-3.1-pro-preview' };
+        const presets = [{ id: 'a', name: 'A', config: { baseUrl: 'https://a.test/v1', apiKey: 'a', model: 'gemini-3.1-pro-preview' } }];
+        const resolved = resolveApiExecutionPlanWithData('chat', directApi, [group], presets, true);
+        expect(resolved.mode).toBe('direct');
+        expect(resolved.routes[0].presetId).toBe('a');
+        expect(resolved.failoverInactiveReason).toBe('not_enough_routes');
+    });
+});

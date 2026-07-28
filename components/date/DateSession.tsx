@@ -21,6 +21,7 @@ import {
     resolveMeetingCgEngine,
     type MeetingCgBackground,
 } from '../../utils/meetingCg';
+import { buildMeetingCgRecentContext } from '../../utils/meetingCgContext';
 import { clearDateResumeAttempt } from '../../utils/dateSessionRecovery';
 import { cleanTextForTts, VALID_EMOTIONS } from '../../utils/minimaxTts';
 import { synthesizeSpeech, characterHasVoice } from '../../utils/ttsRouter';
@@ -743,6 +744,13 @@ const DateSession: React.FC<DateSessionProps> = ({
             const server = getBuiltinImageMcpServers().find(item => item.id === serverId && item.enabled);
             if (!server) throw new Error(`${resolved.engine === 'gpt' ? 'GPT' : 'NovelAI'} 生图当前未启用。`);
             const recentMessages = messages.slice(-6);
+            const meetingCgRecentContext = buildMeetingCgRecentContext(recentMessages, {
+                userName: userProfile.name || '用户',
+                characterName: char.name,
+                maxMessages: 3,
+                maxCharsPerMessage: 300,
+                maxTotalChars: 1000,
+            });
             const built = buildMeetingCgPrompt(resolved.engine, {
                 id: char.id,
                 name: char.name,
@@ -753,7 +761,7 @@ const DateSession: React.FC<DateSessionProps> = ({
                 mood: observation?.state,
                 location: observation?.place,
                 timeLabel: observation?.time,
-                lastMessages: recentMessages.slice(-3).map(message => `${message.role === 'user' ? userProfile.name || '用户' : char.name}: ${message.content}`),
+                lastMessages: meetingCgRecentContext,
             }, Boolean(meetingCgBackground));
             const toolName = resolved.engine === 'gpt' ? 'generate_image' : 'novelai_generate_image';
             const rawArgs: Record<string, any> = resolved.engine === 'gpt'

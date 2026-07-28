@@ -10,6 +10,7 @@ import {
     type ApiFailoverGroup,
     type ApiFailoverScope,
 } from '../../utils/apiFailover';
+import { analyzeApiFailoverGroup, apiFailoverIssueLabel } from '../../utils/apiFailoverGroupAnalysis';
 
 interface Props {
     addToast: (
@@ -148,13 +149,13 @@ const ApiFailoverSettings: React.FC<Props> = ({ addToast }) => {
         enabled: boolean,
     ) => {
         const group = groups.find(item => item.scope === scope)!;
-        const validCount = group.members.filter(member =>
-            member.enabled && presetMap.has(member.presetId)
-        ).length;
+        const analysis = analyzeApiFailoverGroup(group, apiPresets);
 
-        if (enabled && validCount < 2) {
+        if (enabled && !analysis.canEnable) {
             addToast(
-                '至少添加两条有效 API 预设才能开启回退',
+                analysis.compatibleRouteCount === 1
+                    ? '当前只有一条实际可用线路，会继续按单 API 直连；至少两条兼容线路才能开启回退'
+                    : '没有足够的有效兼容线路，无法开启回退',
                 'error',
             );
             return;
@@ -170,9 +171,8 @@ const ApiFailoverSettings: React.FC<Props> = ({ addToast }) => {
             </div>
 
             {groups.map(group => {
-                const validCount = group.members.filter(member =>
-                    member.enabled && presetMap.has(member.presetId)
-                ).length;
+                const analysis = analyzeApiFailoverGroup(group, apiPresets);
+                const effectiveEnabled = group.enabled && analysis.canEnable;
                 const advanced = advancedScope === group.scope;
 
                 return (
@@ -187,9 +187,11 @@ const ApiFailoverSettings: React.FC<Props> = ({ addToast }) => {
                                 </div>
                                 <div className="mt-0.5 text-[10px] text-slate-400">
                                     按从上到下的顺序尝试
-                                    {group.enabled
-                                        ? ` · 已启用 ${validCount} 条`
-                                        : ' · 未启用'}
+                                    {effectiveEnabled
+                                        ? ` · 回退已启用 ${analysis.compatibleRouteCount} 条`
+                                        : analysis.compatibleRouteCount === 1
+                                            ? ' · 单 API 直连'
+                                            : ' · 回退未启用'}
                                 </div>
                             </div>
 
@@ -202,23 +204,31 @@ const ApiFailoverSettings: React.FC<Props> = ({ addToast }) => {
                                     )
                                 }
                                 className={`relative h-6 w-11 rounded-full transition-colors ${
-                                    group.enabled
+                                    effectiveEnabled
                                         ? 'bg-emerald-500'
                                         : 'bg-slate-200'
                                 }`}
                             >
                                 <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${
-                                    group.enabled
+                                    effectiveEnabled
                                         ? 'translate-x-5'
                                         : 'translate-x-0.5'
                                 }`} />
                             </button>
                         </div>
 
+                        {group.enabled && !analysis.canEnable && (
+                            <div className="rounded-xl border border-amber-200 bg-amber-50 p-2 text-[10px] text-amber-700">
+                                旧配置中的回退开关已失去足够线路，运行时会安全降级为单 API 直连，不会阻断聊天。
+                            </div>
+                        )}
+
                         <div className="space-y-2">
                             {group.members.map((member, index) => {
                                 const preset =
                                     presetMap.get(member.presetId);
+                                const memberAnalysis = analysis.members[index];
+                                const issueLabel = apiFailoverIssueLabel(memberAnalysis?.issue);
                                 const candidates = apiPresets.filter(
                                     item =>
                                         item.id === member.presetId
@@ -267,6 +277,7 @@ const ApiFailoverSettings: React.FC<Props> = ({ addToast }) => {
                                                 </option>
                                             ))}
                                         </select>
+                                        {issueLabel && <div className="mt-1 text-[9px] text-rose-500">{issueLabel}</div>}
 
                                         <button
                                             type="button"

@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { scanSseForLog, coreModelName, isSameCoreModel, buildPromptBreakdown, isFixedPromptBlockLabel, getApiCallAmbientContext, setApiCallAmbientContext } from './apiCallLog';
+import { describe, it, expect, beforeEach } from 'vitest';
+import { scanSseForLog, coreModelName, isSameCoreModel, buildPromptBreakdown, isFixedPromptBlockLabel, getApiCallAmbientContext, setApiCallAmbientContext, captureApiBillingContext } from './apiCallLog';
 
 describe('API call ambient context snapshots', () => {
     it('keeps the request-start App even after ambient navigation changes', () => {
@@ -267,5 +267,31 @@ describe('buildPromptBreakdown · 落单围栏', () => {
         const labels = buildPromptBreakdown({ messages: [{ role: 'system', content: sys }, { role: 'user', content: 'hi' }] })!
             .map(b => b.label);
         expect(labels).toEqual(['规则', '下一块', '聊天历史·用户消息 ×1']);
+    });
+});
+
+
+describe('failover preset billing capture', () => {
+    beforeEach(() => {
+        localStorage.removeItem('os_api_presets');
+        localStorage.removeItem('os_active_api_preset_id');
+    });
+
+    it('uses the explicitly attempted preset when URL and model are identical', () => {
+        localStorage.setItem('os_api_presets', JSON.stringify([
+            { id: 'a', name: 'A', config: { baseUrl: 'https://same.test/v1', apiKey: 'a', model: 'm' }, pricing: { mode: 'per_request', pricePerRequestYuan: '0.1' } },
+            { id: 'b', name: 'B', config: { baseUrl: 'https://same.test/v1', apiKey: 'b', model: 'm' }, pricing: { mode: 'per_request', pricePerRequestYuan: '0.9' } },
+        ]));
+        const capture = captureApiBillingContext('https://same.test/v1/chat/completions', JSON.stringify({ model: 'm' }), 'b');
+        expect(capture.presetId).toBe('b');
+        expect(capture.pricingSnapshot?.pricing).toEqual({ mode: 'per_request', pricePerRequestYuan: '0.9' });
+    });
+
+    it('keeps ambiguous matching without a preferred preset', () => {
+        localStorage.setItem('os_api_presets', JSON.stringify([
+            { id: 'a', name: 'A', config: { baseUrl: 'https://same.test/v1', apiKey: 'a', model: 'm' } },
+            { id: 'b', name: 'B', config: { baseUrl: 'https://same.test/v1', apiKey: 'b', model: 'm' } },
+        ]));
+        expect(captureApiBillingContext('https://same.test/v1/chat/completions', JSON.stringify({ model: 'm' })).missingPresetReason).toBe('preset_ambiguous');
     });
 });

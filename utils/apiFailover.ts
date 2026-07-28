@@ -8,8 +8,8 @@ import {
 } from 'cockatiel';
 
 import type { APIConfig, ApiPreset } from '../types';
+import { analyzeApiFailoverGroup } from './apiFailoverGroupAnalysis';
 import type { ApiCallMeta } from './apiCallLog';
-import { isSameCoreModel } from './apiCallLog';
 import { safeFetchJson, type StreamHooks } from './safeApi';
 
 export const API_FAILOVER_STORAGE_KEY = 'os_api_failover_groups_v1';
@@ -59,6 +59,7 @@ export interface ApiExecutionPlan {
     routes: ResolvedApiRoute[];
     group?: ApiFailoverGroup;
     cacheIdentity: string;
+    failoverInactiveReason?: 'not_enough_routes' | 'no_valid_routes';
 }
 
 export type ApiFailureKind =
@@ -265,13 +266,6 @@ export function loadApiPresetsForFailover(): ApiPreset[] {
     }
 }
 
-function validApiConfig(config: APIConfig | null | undefined): boolean {
-    return Boolean(
-        config?.baseUrl?.trim()
-        && config?.model?.trim(),
-    );
-}
-
 function routeIdentity(route: ResolvedApiRoute): string {
     return [
         route.presetId,
@@ -327,37 +321,27 @@ export function resolveApiExecutionPlanWithData(
     }
 
     const group = normalizeApiFailoverGroup(rawGroup, scope);
-    const presetMap = new Map(
-        presets.map(preset => [preset.id, preset]),
-    );
-    const routes: ResolvedApiRoute[] = [];
+    const analysis = analyzeApiFailoverGroup(group, presets);
 
-    for (const member of group.members) {
-        if (!member.enabled) continue;
-        const preset = presetMap.get(member.presetId);
-        if (!preset || !validApiConfig(preset.config)) continue;
-        routes.push({
-            presetId: preset.id,
-            presetName: preset.name || '未命名预设',
-            api: preset.config,
-            routeIndex: routes.length,
-        });
+    if (!analysis.canEnable) {
+        const selected = analysis.routes[0] || directRoute;
+        return {
+            mode: 'direct',
+            scope,
+            primaryApi: selected.api,
+            routes: [{ ...selected, routeIndex: 0 }],
+            group,
+            failoverInactiveReason: analysis.reason,
+            cacheIdentity: [
+                'direct-failover-inactive-v1',
+                selected.presetId,
+                selected.api.baseUrl?.trim().replace(/\/+$/, ''),
+                selected.api.model,
+            ].join('|'),
+        };
     }
 
-    if (routes.length === 0) {
-        throw new Error(
-            `${group.name}故障转移组已启用，但没有可用的 API 预设。`,
-        );
-    }
-
-    const first = routes[0];
-    const compatible = group.policy.strictSameModel
-        ? routes.filter((route, index) =>
-            index === 0
-            || isSameCoreModel(first.api.model, route.api.model))
-        : routes;
-
-    const reindexed = compatible.map((route, index) => ({
+    const reindexed = analysis.routes.map((route, index) => ({
         ...route,
         routeIndex: index,
     }));

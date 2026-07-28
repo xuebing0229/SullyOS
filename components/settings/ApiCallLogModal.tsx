@@ -1,3 +1,4 @@
+import { apiUnpricedReasonLabel } from '../../utils/apiCostFailurePolicy';
 import React, { useEffect, useState, useCallback } from 'react';
 import Modal from '../os/Modal';
 import { DB } from '../../utils/db';
@@ -237,10 +238,10 @@ const ApiCallLogModal: React.FC<ApiCallLogModalProps> = ({ isOpen, onClose }) =>
                                         <Field label="耗时" value={e.durationMs >= 1000 ? `${(e.durationMs / 1000).toFixed(1)}s` : `${e.durationMs}ms`} />
                                     )}
                                     <Field label="请求" value={e.networkRequest === false ? '未发网' : '真实发网'} />
-                                    {(e.totalTokens != null || e.promptTokens != null || e.completionTokens != null) && (
+                                    {e.costStatus && (
                                         <div className="flex flex-wrap gap-1.5 mb-2">
-                                            <span className="text-[10px] bg-emerald-50 text-emerald-700 px-2 py-1 rounded-lg font-bold">
-                                                {e.costStatus === 'unpriced' ? '未计价' : formatYuan(e.costMicros || '0')}
+                                            <span className={`text-[10px] px-2 py-1 rounded-lg font-bold ${e.unpricedReason === 'failure_cost_unknown' ? 'bg-amber-50 text-amber-700' : 'bg-emerald-50 text-emerald-700'}`}>
+                                                {e.costStatus === 'unpriced' ? apiUnpricedReasonLabel(e.unpricedReason) : formatYuan(e.costMicros || '0')}
                                             </span>
                                             {e.billingUsage && <span className="text-[10px] bg-violet-50 text-violet-700 px-2 py-1 rounded-lg">普通输入 {e.billingUsage.inputTokens} · 创建缓存 {e.billingUsage.cacheWriteTokens} · 读取缓存 {e.billingUsage.cacheReadTokens} · 输出 {e.billingUsage.outputTokens}</span>}
                                         </div>

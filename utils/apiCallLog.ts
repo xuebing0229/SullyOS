@@ -1,5 +1,6 @@
 import type { ApiBillingUsage, ApiCallCostStatus, ApiCallUnpricedReason, ApiPricingSnapshot, ApiPreset } from '../types';
 import { calculateApiCallCost, matchApiPresetForBilling, normalizeApiBillingUsage, snapshotPricing } from './apiPricing';
+import { failureMayHaveUpstreamCost } from './apiCostFailurePolicy';
 
 /**
  * 全局 API 调用记录（给 设置 → API 调用记录 页面用）。
@@ -107,10 +108,10 @@ const PRESETS_STORAGE_KEY = 'os_api_presets';
 const ACTIVE_PRESET_KEY = 'os_active_api_preset_id';
 export interface ApiBillingCapture { presetId?: string; presetName: string; pricingSnapshot?: ApiPricingSnapshot; missingPresetReason?: 'preset_not_found' | 'preset_ambiguous'; }
 function loadApiPresets(): ApiPreset[] { try { const raw=localStorage.getItem(PRESETS_STORAGE_KEY); const parsed=raw?JSON.parse(raw):[]; return Array.isArray(parsed)?parsed:[]; } catch { return []; } }
-export function captureApiBillingContext(url:string, body:unknown): ApiBillingCapture {
+export function captureApiBillingContext(url:string, body:unknown, preferredPresetId?: string): ApiBillingCapture {
  const baseUrl=deriveBaseUrl(url), model=extractModel(body); let activePresetId:string|null=null;
  try { activePresetId=localStorage.getItem(ACTIVE_PRESET_KEY); } catch {}
- const matched=matchApiPresetForBilling(loadApiPresets(),{baseUrl,model,activePresetId});
+ const matched=matchApiPresetForBilling(loadApiPresets(),{baseUrl,model,activePresetId:preferredPresetId || activePresetId});
  if(!matched.preset) return {presetName:resolvePresetName(baseUrl,model),missingPresetReason:matched.reason};
  return {presetId:matched.preset.id,presetName:matched.preset.name,pricingSnapshot:snapshotPricing(matched.preset)};
 }
@@ -499,7 +500,7 @@ export function recordApiCall(input: {
         const usage = extractUsage(responseForExtract);
         const billingUsage = input.billingUsage ?? normalizeApiBillingUsage(responseForExtract);
         const pricingSnapshot = input.pricingSnapshot ?? capture.pricingSnapshot;
-        const cost = calculateApiCallCost({ pricingSnapshot, usage: billingUsage, ok: input.ok, networkRequest: input.networkRequest ?? true, cacheHit: input.cacheHit ?? false, missingPresetReason: capture.missingPresetReason });
+        const cost = calculateApiCallCost({ pricingSnapshot, usage: billingUsage, ok: input.ok, networkRequest: input.networkRequest ?? true, cacheHit: input.cacheHit ?? false, missingPresetReason: capture.missingPresetReason, failureMayBeBilled: !input.ok && (input.networkRequest ?? true) && failureMayHaveUpstreamCost(input.status) });
         const entry: ApiCallLogEntry = {
             id: input.entryId ?? `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
             timestamp: Date.now(),

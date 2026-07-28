@@ -398,7 +398,7 @@ export interface ApiPricingSnapshot {
 }
 
 export type ApiCallCostStatus = 'priced' | 'free_local_cache' | 'free_failed' | 'unpriced';
-export type ApiCallUnpricedReason = 'preset_not_found' | 'preset_ambiguous' | 'pricing_not_configured' | 'usage_missing';
+export type ApiCallUnpricedReason = 'preset_not_found' | 'preset_ambiguous' | 'pricing_not_configured' | 'usage_missing' | 'failure_cost_unknown';
 
 export interface ApiCostBucket {
   key: string;

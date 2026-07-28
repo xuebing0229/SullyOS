@@ -993,8 +993,9 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
               }
           }
 
+          const requestMeta = (sendArgs[1] as any)?.__sullyMeta || (config as any)?.__sullyMeta || ambientMetaAtStart;
           const billingCapture = urlStr.includes('/chat/completions')
-              ? captureApiBillingContext(urlStr, (sendArgs[1] as any)?.body)
+              ? captureApiBillingContext(urlStr, (sendArgs[1] as any)?.body, requestMeta?.failoverPresetId)
               : undefined;
           try {
               let response = await originalFetch(...sendArgs);
@@ -1038,7 +1039,7 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
               // 正文 44s 才灌完，卡片却记成 6.5s（实测误导排查）。clone 与调用方并行消费同一
               // 条流，text() 完成时刻 ≈ 真实收完时刻。
               if (urlStr.includes('/chat/completions')) {
-                  const meta = (config as any)?.__sullyMeta || ambientMetaAtStart;
+                  const meta = requestMeta;
                   const body = (sendArgs[1] as any)?.body;
                   const status = response.status;
                   const ok = response.ok;
@@ -1098,7 +1099,7 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
           } catch (err: any) {
               // Network Failure
               if (urlStr.includes('/chat/completions')) {
-                  recordApiCall({ url: urlStr, body: (sendArgs[1] as any)?.body, ok: false, meta: (config as any)?.__sullyMeta || ambientMetaAtStart, durationMs: Date.now() - fetchStartedAt, billingCapture });
+                  recordApiCall({ url: urlStr, body: (sendArgs[1] as any)?.body, ok: false, meta: requestMeta, durationMs: Date.now() - fetchStartedAt, billingCapture });
               }
               setSystemLogs(prev => [{
                   id: `log-${Date.now()}`,

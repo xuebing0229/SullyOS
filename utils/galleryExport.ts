@@ -7,6 +7,13 @@ import {
 } from './blobRef';
 
 export const GALLERY_EXPORT_MAX_BYTES = 32 * 1024 * 1024;
+export const GALLERY_EXPORT_ANDROID_BASE64_MAX_BYTES = 12 * 1024 * 1024;
+
+export function assertAndroidBridgeSafeBlobSize(size: number): void {
+    if (size > GALLERY_EXPORT_ANDROID_BASE64_MAX_BYTES) {
+        throw new Error('图片超过 12 MiB，当前 Android 版本无法安全通过系统桥保存；请先压缩图片或使用浏览器版下载');
+    }
+}
 
 export type SupportedGalleryMime =
     | 'image/png'
@@ -298,6 +305,7 @@ export async function saveGalleryImageToDevice(
     }
 
     const plugin = registerPlugin<SullyGalleryPlugin>('SullyGallery');
+    if (source.kind === 'blob') assertAndroidBridgeSafeBlobSize(source.blob.size);
     const result = source.kind === 'blob'
         ? await plugin.saveImage({
             base64: await blobToBase64(source.blob),

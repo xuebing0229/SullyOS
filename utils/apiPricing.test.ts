@@ -165,6 +165,18 @@ describe(
     );
 
     it(
+      'marks potentially billed failures as unknown cost',
+      () => {
+        const common = {
+          usage: { inputTokens: 0, cacheWriteTokens: 0, cacheReadTokens: 0, outputTokens: 0, usageAvailable: false },
+          ok: false, networkRequest: true, cacheHit: false,
+        };
+        expect(calculateApiCallCost({ ...common, failureMayBeBilled: true })).toMatchObject({ costStatus: 'unpriced', unpricedReason: 'failure_cost_unknown' });
+        expect(calculateApiCallCost({ ...common, failureMayBeBilled: false })).toMatchObject({ costStatus: 'free_failed', costMicros: '0' });
+      },
+    );
+
+    it(
       'does not charge local cache',
       () => {
         const result =

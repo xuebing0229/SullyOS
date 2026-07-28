@@ -49,6 +49,7 @@ import { shouldRequestAmbient, buildAmbientEvalSection } from '../utils/roomAmbi
 import { isEmotionEvalSkipped } from '../utils/devDebug';
 import { runAiRequest, sha256Hex } from '../utils/aiRequestManager';
 import { recordApiCall } from '../utils/apiCallLog';
+import { CHAT_RESPONSE_CACHE_VERSION, shouldPersistChatCompletion } from '../utils/chatResponseCachePolicy';
 import { executeOpenAiChatPlan, resolveApiExecutionPlan, type ApiExecutionPlan } from '../utils/apiFailover';
 import {
     computeContextRangeSnapshot,
@@ -1038,6 +1039,14 @@ export const useChatAI = ({
                 }
             }
 
+            const knownTextToolNamesForCache = [
+                ...(mcpToolResolve ? [...mcpToolResolve.keys()] : []),
+                ...(mcpToolResolve ? [...mcpToolResolve.values()].map(item => item.toolName) : []),
+                ...((baseReqBody.tools || []).map((tool: any) => tool?.function?.name)),
+                MCD_PROPOSE_TOOL?.function?.name,
+                LUCKIN_PROPOSE_TOOL?.function?.name,
+            ].filter((value): value is string => Boolean(value));
+
             // ─── Instant Push 分支 ───
             // 与本地 fetch 对称：sendInstantPushAndAwaitReply 内部完成 sub 获取 / push 监听 /
             // 300s 超时兜底，返回时 push 已落库（或失败）。外层 finally 统一清 isTyping /
@@ -1171,6 +1180,7 @@ export const useChatAI = ({
             try {
                 const managed = await runAiRequest({
                     kind: 'chat',
+                    version: CHAT_RESPONSE_CACHE_VERSION,
                     request: {
                         provider: apiPlan.cacheIdentity,
                         body: baseReqBody,
@@ -1181,7 +1191,7 @@ export const useChatAI = ({
                     promptVersion: 'chat-prompt-v1',
                     forceRefresh: !!opts?.forceRefresh,
                     metadata: { charId: char.id, purpose: '聊天回复' },
-                    shouldCache: (response: any) => !!response?.choices?.[0]?.message,
+                    shouldCache: (response: any) => shouldPersistChatCompletion(response, { knownTextToolNames: knownTextToolNamesForCache }),
                     execute: () => executeChatBody(baseReqBody, '聊天回复', streamHooks, true),
                 });
                 data = managed.value;

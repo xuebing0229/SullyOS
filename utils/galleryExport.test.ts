@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+    assertAndroidBridgeSafeBlobSize,
     buildGalleryExportName,
     detectGalleryImageFormat,
     sanitizeGalleryPathSegment,
@@ -34,6 +35,13 @@ describe('gallery export format detection', () => {
             new Uint8Array([1, 2, 3]),
             'text/plain',
         )).toBeNull();
+    });
+});
+
+describe('gallery Android bridge guard', () => {
+    it('allows 12 MiB and rejects larger blobs before Base64 encoding', () => {
+        expect(() => assertAndroidBridgeSafeBlobSize(12 * 1024 * 1024)).not.toThrow();
+        expect(() => assertAndroidBridgeSafeBlobSize(12 * 1024 * 1024 + 1)).toThrow(/12 MiB/);
     });
 });
 
