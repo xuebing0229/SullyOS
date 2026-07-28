@@ -1,4 +1,3 @@
-import type { ApiPricing } from '../types';
 import {
     fetchBuiltinImageRemoteConfig,
     loadBuiltinImageSettings,
@@ -39,7 +38,6 @@ export interface ImageGenerationPreset {
     binding: ImagePresetBinding;
     remoteConfig: StoredImageRemoteConfig;
     apiKey: string;
-    pricing?: ApiPricing;
     createdAt: number;
     updatedAt: number;
 }
@@ -100,7 +98,6 @@ const sanitizePreset = (value: unknown): ImageGenerationPreset | null => {
         },
         remoteConfig: clone(raw.remoteConfig),
         apiKey: String(raw.apiKey || ''),
-        pricing: raw.pricing,
         createdAt: Number.isFinite(raw.createdAt) ? raw.createdAt : now,
         updatedAt: Number.isFinite(raw.updatedAt) ? raw.updatedAt : now,
     };
@@ -154,7 +151,6 @@ export function createImageGenerationPreset(input: {
     binding: BuiltinImageBinding;
     remoteConfig: ImageRemoteConfig;
     apiKey: string;
-    pricing?: ApiPricing;
 }): ImageGenerationPreset {
     const apiKey = input.apiKey.trim();
     if (!apiKey) throw new Error('请先输入 API Key，再保存生图预设');
@@ -166,7 +162,6 @@ export function createImageGenerationPreset(input: {
         binding: normalizeBinding(input.binding),
         remoteConfig: stripImageRemoteRuntimeFields(input.remoteConfig),
         apiKey,
-        pricing: input.pricing,
         createdAt: now,
         updatedAt: now,
     };
@@ -181,7 +176,6 @@ export function updateImageGenerationPreset(id: string, input: {
     binding: BuiltinImageBinding;
     remoteConfig: ImageRemoteConfig;
     apiKey: string;
-    pricing?: ApiPricing;
 }): ImageGenerationPreset {
     const state = loadImageGenerationPresetState();
     const index = state.presets.findIndex(item => item.id === id);
@@ -194,7 +188,6 @@ export function updateImageGenerationPreset(id: string, input: {
         binding: normalizeBinding(input.binding),
         remoteConfig: stripImageRemoteRuntimeFields(input.remoteConfig),
         apiKey: nextKey,
-        pricing: input.pricing ?? previous.pricing,
         updatedAt: Date.now(),
     };
     state.presets[index] = updated;

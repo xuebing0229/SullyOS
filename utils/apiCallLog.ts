@@ -528,11 +528,3 @@ export function recordApiCall(input: {
         // best-effort：任何异常都不影响主请求
     }
 }
-
-
-export function recordExternalApiCall(input: { id: string; timestamp?: number; presetId?: string; presetName: string; pricingSnapshot?: ApiPricingSnapshot; baseUrl: string; model: string; ok: boolean; status?: number; durationMs?: number; billingUsage?: ApiBillingUsage; appId?: string; appName?: string; charId?: string; charName?: string; purpose?: string; }): void {
- const usage=input.billingUsage??{inputTokens:0,cacheWriteTokens:0,cacheReadTokens:0,outputTokens:0,usageAvailable:false};
- const cost=calculateApiCallCost({pricingSnapshot:input.pricingSnapshot,usage,ok:input.ok,networkRequest:true,cacheHit:false,missingPresetReason:input.presetId?undefined:'preset_not_found'});
- const entry:ApiCallLogEntry={id:input.id,timestamp:input.timestamp??Date.now(),presetId:input.presetId,presetName:input.presetName,baseUrl:input.baseUrl,model:input.model,ok:input.ok,status:input.status,durationMs:input.durationMs,billingUsage:usage,pricingSnapshot:input.pricingSnapshot,costStatus:cost.costStatus,costMicros:cost.costMicros,unpricedReason:cost.unpricedReason,networkRequest:true,cacheHit:false,source:'network',appId:input.appId,appName:input.appName,charId:input.charId,charName:input.charName,purpose:input.purpose};
- import('./db').then(async({DB})=>{const inserted=await DB.appendApiCallLog(entry);if(inserted){const{emitApiCostUpdated}=await import('./apiCostEvents');emitApiCostUpdated({dateKey:localDateKey(entry.timestamp),entryId:entry.id});}}).catch(()=>{});
-}

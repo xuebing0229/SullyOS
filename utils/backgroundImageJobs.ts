@@ -2,12 +2,9 @@ import { App } from '@capacitor/app';
 
 import type {
     CharacterProfile,
-    Message, ApiPricingSnapshot,
+    Message,
 } from '../types';
 import { DB } from './db';
-import { recordExternalApiCall } from './apiCallLog';
-import { cloneApiPricing } from './apiPricing';
-import { getActiveImageGenerationPreset } from './imageGenerationPresets';
 import type {
     BuiltinImageEngineId,
 } from './builtinImageMcp';
@@ -55,11 +52,6 @@ export interface LocalBackgroundImageJob {
     charId: string;
     toolName: string;
     toolArgs: Record<string, any>;
-    presetId?: string;
-    presetName: string;
-    pricingSnapshot?: ApiPricingSnapshot;
-    billingBaseUrl: string;
-    billingModel: string;
 
     status: LocalBackgroundImageJobStatus;
     createdAt: number;
@@ -586,30 +578,6 @@ const hasAlreadyPersisted = (
             ?.backgroundImageClientRequestId
             === localJob.clientRequestId,
     );
-const recordImageJobCost = (
-    localJob: LocalBackgroundImageJob,
-    remoteJobId: string,
-    ok: boolean,
-    options: { status?: number; billingUsage?: any; model?: string; charName?: string } = {},
-): void => {
-    recordExternalApiCall({
-        id: `image-job:${localJob.engineId}:${remoteJobId}`,
-        presetId: localJob.presetId,
-        presetName: localJob.presetName,
-        pricingSnapshot: localJob.pricingSnapshot,
-        baseUrl: localJob.billingBaseUrl,
-        model: options.model || localJob.billingModel,
-        ok,
-        status: options.status,
-        billingUsage: options.billingUsage,
-        appId: 'chat',
-        appName: '消息',
-        charId: localJob.charId,
-        charName: options.charName,
-        purpose: '生成图片',
-    });
-};
-
 const applySucceededJob = async (
     localJob: LocalBackgroundImageJob,
     remoteJob: RemoteImageJob,
@@ -640,11 +608,6 @@ const applySucceededJob = async (
             remoteJob,
         )
     ) {
-        recordImageJobCost(localJob, remoteJob.id, true, {
-            billingUsage: remoteJob.result?.structuredContent?.billingUsage,
-            model: remoteJob.result?.structuredContent?.model,
-            charName: character.name,
-        });
         const updated = updateJob(
             localJob.id,
             {
@@ -720,8 +683,6 @@ const applySucceededJob = async (
             || '后台任务完成，但没有找到图片结果',
         );
     }
-
-    recordImageJobCost(localJob, remoteJob.id, true, { billingUsage: remoteJob.result?.structuredContent?.billingUsage, model: remoteJob.result?.structuredContent?.model, charName: character.name });
 
     const updated = updateJob(
         localJob.id,
@@ -888,7 +849,6 @@ const reconcileOne = async (
             || remoteJob.status
                 === 'cancelled'
         ) {
-            recordImageJobCost(updated, remoteJob.id, false, { status: 500 });
             dispatchJobEvent(
                 'failed',
                 updated,
@@ -1006,55 +966,15 @@ export async function callMcpToolWithBackgroundImage(
     const engineId =
         engineIdFromServer(server);
 
-    if (!engineId) {
-        return callMcpTool(server, toolName, args);
-    }
-
-    const activePreset = getActiveImageGenerationPreset(engineId);
-    const pricingSnapshot = activePreset?.pricing ? { presetId: activePreset.id, presetName: activePreset.name, pricing: cloneApiPricing(activePreset.pricing) } : undefined;
-
-    if (!server.controlBaseUrl) {
-        const billingRequestId = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
-            ? crypto.randomUUID()
-            : makeClientRequestId();
-        const startedAt = now();
-        try {
-            const result = await callMcpTool(server, toolName, args);
-            recordExternalApiCall({
-                id: `image-sync:${engineId}:${billingRequestId}`,
-                presetId: activePreset?.id,
-                presetName: activePreset?.name || server.name,
-                pricingSnapshot,
-                baseUrl: server.url,
-                model: result.structuredContent?.model || engineId,
-                ok: result.success !== false,
-                status: result.success === false ? 500 : 200,
-                durationMs: now() - startedAt,
-                billingUsage: result.structuredContent?.billingUsage,
-                appId: 'chat',
-                appName: '消息',
-                charId: context.charId,
-                purpose: '生成图片',
-            });
-            return result;
-        } catch (error) {
-            recordExternalApiCall({
-                id: `image-sync:${engineId}:${billingRequestId}`,
-                presetId: activePreset?.id,
-                presetName: activePreset?.name || server.name,
-                pricingSnapshot,
-                baseUrl: server.url,
-                model: engineId,
-                ok: false,
-                status: 500,
-                durationMs: now() - startedAt,
-                appId: 'chat',
-                appName: '消息',
-                charId: context.charId,
-                purpose: '生成图片',
-            });
-            throw error;
-        }
+    if (
+        !engineId
+        || !server.controlBaseUrl
+    ) {
+        return callMcpTool(
+            server,
+            toolName,
+            args,
+        );
     }
 
     const createdAt = now();
@@ -1077,11 +997,6 @@ export async function callMcpToolWithBackgroundImage(
         charId: context.charId,
         toolName,
         toolArgs: clone(args),
-        presetId: activePreset?.id,
-        presetName: activePreset?.name || server.name,
-        pricingSnapshot,
-        billingBaseUrl: server.controlBaseUrl || server.url,
-        billingModel: engineId,
         status: 'submitting',
         createdAt,
         updatedAt: createdAt,
