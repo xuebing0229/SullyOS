@@ -42,6 +42,7 @@ const sampleBackup = () => ({
     version: 3,
     theme: { name: 'dark', wallpaper: 'assets/asset_1.png' },
     userProfile: { name: '楪', avatar: 'assets/asset_2.png' },
+    activeApiPresetId: 'preset-priced-exactly',
     lifeSimState: null,                 // 单例空 → null，仍要原样带回（v1 语义：清目标）
     apiConfig: undefined,               // undefined 字段 → JSON 丢弃，导入端拿不到（与 v1 一致）
     // 数组字段 → 分片
@@ -73,6 +74,7 @@ describe('backupFormat v2 往返', () => {
         expect(data.memoryNodes).toEqual(src.memoryNodes);
         expect(data.theme).toEqual(src.theme);
         expect(data.userProfile).toEqual(src.userProfile);
+        expect(data.activeApiPresetId).toBe('preset-priced-exactly');
         expect(data.lifeSimState).toBe(null);                // null 原样带回
         expect('apiConfig' in data).toBe(false);             // undefined 字段被 JSON 丢弃，导入端没有
         expect(data.timestamp).toBe(123);

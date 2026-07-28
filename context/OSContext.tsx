@@ -59,6 +59,7 @@ import { exportDesktopSkinLocal } from '../utils/desktopSkinBackup';
 import { assertSupportedSullyBackup } from '../utils/backupImportPolicy';
 import { startBackgroundImageJobMonitor } from '../utils/backgroundImageJobs';
 import { migrateApiCostV1, markApiCostMigrationComplete } from '../utils/apiCostMigration';
+import { resolveBackedUpActiveApiPresetId } from '../utils/apiPresetBackup';
 
 interface ProactiveQueueEntry {
   charId: string;
@@ -3226,6 +3227,7 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
               version: 3,
               apiConfig: (mode === 'text_only' || mode === 'full') ? apiConfig : undefined,
               apiPresets: (mode === 'text_only' || mode === 'full') ? apiPresets : undefined,
+              activeApiPresetId: (mode === 'text_only' || mode === 'full') ? activeApiPresetId : undefined,
               apiCostDailySummaries: (mode === 'text_only' || mode === 'full') ? await DB.getApiCostDailySummaries() : undefined,
               availableModels: (mode === 'text_only' || mode === 'full') ? availableModels : undefined,
               realtimeConfig: (mode === 'text_only' || mode === 'full') ? realtimeConfig : undefined,
@@ -3941,6 +3943,17 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
           if (data.apiConfig) updateApiConfig(data.apiConfig);
           if (data.availableModels) saveModels(data.availableModels);
           if (data.apiPresets) savePresets(data.apiPresets);
+          // 旧备份没有该字段时保持兼容；新备份则只按本次导入预设列表中的精确 ID 恢复，
+          // 不根据 baseUrl/model 猜测，避免同地址同模型但价格不同的预设被错绑。
+          if (Object.prototype.hasOwnProperty.call(data, 'activeApiPresetId')) {
+              const restoredActivePresetId = resolveBackedUpActiveApiPresetId(
+                  data.activeApiPresetId,
+                  Array.isArray(data.apiPresets) ? data.apiPresets : [],
+              );
+              setActiveApiPresetId(restoredActivePresetId);
+              if (restoredActivePresetId) localStorage.setItem('os_active_api_preset_id', restoredActivePresetId);
+              else localStorage.removeItem('os_active_api_preset_id');
+          }
           if (data.realtimeConfig) updateRealtimeConfig(data.realtimeConfig); // 恢复实时感知配置
           if (data.memoryPalaceConfig) updateMemoryPalaceConfig(data.memoryPalaceConfig); // 恢复记忆宫殿全局配置
           if (data.imageGenerationLocal) importImageGenerationLocal(data.imageGenerationLocal);

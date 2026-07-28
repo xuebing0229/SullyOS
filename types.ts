@@ -3175,6 +3175,8 @@ export interface FullBackupData {
     instantPushConfig?: InstantPushConfig;
     pushVapid?: { vapidPublicKey: string; vapidPrivateKey: string; vapidEmail?: string; updatedAt?: number; };
     apiPresets?: ApiPreset[];
+    /** 当前激活的普通聊天 API 预设精确 ID；null 表示未绑定任何预设。 */
+    activeApiPresetId?: string | null;
     apiCostDailySummaries?: ApiCostDailySummary[];
     availableModels?: string[];
     realtimeConfig?: RealtimeConfig;  // 实时感知配置（天气/新闻/Notion）
