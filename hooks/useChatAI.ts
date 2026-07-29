@@ -26,6 +26,7 @@ import { callLuckinTool } from '../utils/luckinMcpClient';
 import { getMcpUseNativeTools, type McpToolResult } from '../utils/mcpClient';
 import { BACKGROUND_IMAGE_JOB_EVENT, callMcpToolWithBackgroundImage } from '../utils/backgroundImageJobs';
 import { buildMcpOpenAITools, buildMcpRejectedToolsFallbackBody, buildMcpTextFallbackBody, extractTextFakedMcpCalls, formatMcpToolResult, sanitizeMcpLeadInText, shouldRetryMcpWithoutTools, stripTextFakedMcpCalls, type FakedMcpCall } from '../utils/mcpToolBridge';
+import { claimMcpToolExecution, createMcpTurnExecutionState, formatBlockedMcpExecution } from '../utils/mcpExecutionPolicy';
 import { buildChatRequestPayload } from '../utils/chatRequestPayload';
 import { persistMcpGeneratedImages } from '../utils/mcpImagePersistence';
 import { prepareBuiltinImageToolArguments, sanitizeNovelAiReferenceToolArguments } from '../utils/novelAiReference';
@@ -1450,6 +1451,9 @@ export const useChatAI = ({
                 }
             }
 
+            // 整轮聊天共用：native FC 与正文假调用不能各自重复执行。
+            const mcpTurnExecution = createMcpTurnExecutionState();
+
             // 3.6 客户端工具循环 —— 两类共用一个循环骨架:
             //     · 瑞幸聊天点单: 真实 8 工具 (queryShopList → searchProductForMcp →
             //       switchProduct → previewOrder)。结果落 luckin_card; previewOrder 落"结账卡"(可改量+扫码付);
@@ -1461,6 +1465,7 @@ export const useChatAI = ({
                 let loopMessages = [...fullMessages];
                 const loc = luckinChatRef?.current;
                 for (let it = 0; it < MAX_LOOPS; it++) {
+                    let stopAfterSingleShot = false;
                     const toolCalls = data.choices?.[0]?.message?.tool_calls;
                     if (!toolCalls || !toolCalls.length) break;
                     if (mcpToolResolve && toolCalls.some((tc: any) => mcpToolResolve?.has(tc.function?.name || ''))) {
@@ -1484,6 +1489,26 @@ export const useChatAI = ({
                         // 通用 MCP 工具: 命中映射直接分发, 不走下面的瑞幸逻辑
                         const mcpHit = mcpToolResolve?.get(fname);
                         if (mcpHit) {
+                            const claim = claimMcpToolExecution(mcpTurnExecution, {
+                                serverId: mcpHit.server.id,
+                                toolName: mcpHit.toolName,
+                                args,
+                                policy: mcpHit.executionPolicy,
+                            });
+
+                            if (!claim.allowed) {
+                                loopMessages.push({
+                                    role: 'tool',
+                                    tool_call_id: tc.id,
+                                    content: formatBlockedMcpExecution(claim.reason!, fname),
+                                } as any);
+                                continue;
+                            }
+
+                            if (mcpHit.executionPolicy === 'single-shot') {
+                                stopAfterSingleShot = true;
+                            }
+
                             setSearchStatus(`正在调用 MCP 工具：${fname}...`);
                             let mcpResult: any;
                             try {
@@ -1547,39 +1572,58 @@ export const useChatAI = ({
                             : `工具 ${fname} 失败: ${result.error}`;
                         loopMessages.push({ role: 'tool', tool_call_id: tc.id, content: toolMsg } as any);
                     }
-                    // 继续让角色多步推进 (保留 tools, 允许 query→search→preview 连续走)
+                    // single-shot 生图后只允许一次纯文字收尾；普通 MCP 与瑞幸保留 tools 多步推进。
                     if (mcpToolResolve) setSearchStatus('正在整理 MCP 工具结果...');
-                    const followBody = { ...baseReqBody, messages: loopMessages };
+                    const followBody = stopAfterSingleShot
+                        ? buildMcpTextFallbackBody(baseReqBody, loopMessages)
+                        : { ...baseReqBody, messages: loopMessages };
                     data = await executeChatBody(
                         followBody,
-                        payload.flags.luckinChatActive ? '瑞幸工具结果续写' : 'MCP 工具结果续写',
+                        stopAfterSingleShot
+                            ? 'MCP 生图结果纯文字收尾'
+                            : payload.flags.luckinChatActive
+                                ? '瑞幸工具结果续写'
+                                : 'MCP 工具结果续写',
                     );
                     updateTokenUsage(data, historyMsgCount, `${payload.flags.luckinChatActive ? 'luckin-chat' : 'mcp-chat'}-${it + 1}`);
+                    if (stopAfterSingleShot) break;
                 }
                 if (mcpToolResolve) setSearchStatus('');
             }
 
             // 3.6b MCP 掉格式容错（第二层, 对标见面观测协议的两层容错）:
-            //     不支持 function calling 的模型会把工具调用写成正文文字, 如
-            //     ask_question("SullyOS") / ask_question: SullyOS。这里检测出来
-            //     系统代为执行, 把结果喂回去让角色重新组织语言, 用户就看不到乱码了。
-            //     executedSig 防止模型复读同一调用导致副作用工具重复执行。
+            //     不支持 function calling 的模型会把工具调用写成正文文字。
+            //     native 与正文兼容路径共享执行状态，不能分别重复执行副作用工具。
             if (mcpToolResolve) {
                 const MAX_TEXT_LOOPS = 3;
-                const executedSig = new Set<string>();
                 let textLoopMessages: any[] | null = null;
                 for (let it = 0; it < MAX_TEXT_LOOPS; it++) {
                     const contentNow: string = data.choices?.[0]?.message?.content || '';
-                    const faked = extractTextFakedMcpCalls(contentNow, mcpToolResolve)
-                        .filter(c => { try { return !executedSig.has(`${c.exposedName}|${JSON.stringify(c.args)}`); } catch { return true; } })
-                        .slice(0, 3);
+                    const faked = extractTextFakedMcpCalls(contentNow, mcpToolResolve).slice(0, 3);
                     if (!faked.length) break;
                     console.warn(`🔌 [MCP] 检测到 ${faked.length} 个正文假工具调用, 代为执行:`, faked.map(c => c.exposedName).join(', '));
                     await persistMcpLeadIn(contentNow, faked);
                     setSearchStatus(`正在调用 MCP 工具：${faked.map(c => c.exposedName).join('、')}...`);
                     const results: string[] = [];
+                    let stopAfterSingleShot = false;
+                    let executedAny = false;
+
                     for (const call of faked) {
-                        try { executedSig.add(`${call.exposedName}|${JSON.stringify(call.args)}`); } catch { /* ignore */ }
+                        const claim = claimMcpToolExecution(mcpTurnExecution, {
+                            serverId: call.server.id,
+                            toolName: call.toolName,
+                            args: call.args,
+                            policy: call.executionPolicy,
+                        });
+
+                        if (!claim.allowed) {
+                            results.push(formatBlockedMcpExecution(claim.reason!, call.exposedName));
+                            continue;
+                        }
+
+                        executedAny = true;
+                        if (call.executionPolicy === 'single-shot') stopAfterSingleShot = true;
+
                         let r: any;
                         try {
                             const preparedArgs = await prepareBuiltinImageToolArguments({ server: call.server, toolName: call.toolName, args: call.args, character: char });
@@ -1592,18 +1636,51 @@ export const useChatAI = ({
                             ? `工具 ${call.exposedName} 执行成功, 结果: ${formatMcpToolResult(r.data)}`
                             : `工具 ${call.exposedName} 执行失败: ${r.error}`);
                     }
+
+                    // 纯文字收尾再次输出已拦截调用时，不再发起额外模型请求。
+                    if (!executedAny) break;
+
                     if (!textLoopMessages) textLoopMessages = [...fullMessages];
                     textLoopMessages.push({ role: 'assistant', content: contentNow });
                     textLoopMessages.push({
                         role: 'user',
-                        content: `[系统消息: 你把工具调用写成了聊天文字, 系统已代为执行:\n${results.join('\n')}\n请基于结果继续用角色语气正常回复, 禁止再输出任何工具调用格式的文字, 也不要提及这条系统消息]`,
+                        content: `[系统消息: 你把工具调用写成了聊天文字, 系统已代为执行:
+${results.join('\n')}
+请基于结果继续用角色语气正常回复, 禁止再输出任何工具调用格式的文字, 也不要提及这条系统消息]`,
                     });
                     setSearchStatus('正在整理 MCP 工具结果...');
                     const followBody = buildMcpTextFallbackBody(baseReqBody, textLoopMessages);
                     data = await executeChatBody(followBody, 'MCP 正文工具结果续写');
                     updateTokenUsage(data, historyMsgCount, `mcp-text-${it + 1}`);
+                    if (stopAfterSingleShot) break;
                 }
                 setSearchStatus('');
+            }
+
+            /** single-shot 已执行后，最终正文中的假生图语法只做本地清洗。 */
+            if (mcpToolResolve && mcpTurnExecution.singleShotAttempted) {
+                const finalContent: string = data.choices?.[0]?.message?.content || '';
+                const repeatedCalls = extractTextFakedMcpCalls(finalContent, mcpToolResolve)
+                    .filter(call => call.executionPolicy === 'single-shot');
+
+                if (repeatedCalls.length > 0) {
+                    const cleaned = stripTextFakedMcpCalls(finalContent, repeatedCalls).trim();
+                    const firstChoice = data.choices?.[0];
+                    if (firstChoice?.message) {
+                        const cleanMessage = {
+                            ...firstChoice.message,
+                            content: cleaned || '图片已经开始生成，完成后会自动出现在聊天里。',
+                        } as any;
+                        delete cleanMessage.tool_calls;
+                        delete cleanMessage.function_call;
+                        data = {
+                            ...data,
+                            choices: data.choices.map((choice: any, index: number) => index === 0
+                                ? { ...choice, finish_reason: 'stop', message: cleanMessage }
+                                : choice),
+                        };
+                    }
+                }
             }
 
             // DEBUG: Log full API response details for troubleshooting truncation issues

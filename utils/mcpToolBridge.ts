@@ -9,6 +9,7 @@
  */
 
 import { getEnabledMcpServers, type McpServerConfig, type McpToolDef, type McpToolResult } from './mcpClient';
+import { resolveMcpExecutionPolicy, type McpExecutionPolicy } from './mcpExecutionPolicy';
 
 export interface OpenAIMcpTool {
     type: 'function';
@@ -22,6 +23,7 @@ export interface OpenAIMcpTool {
 export interface ResolvedMcpTool {
     server: McpServerConfig;
     toolName: string;
+    executionPolicy: McpExecutionPolicy;
 }
 
 // OpenAI 工具名只允许 [A-Za-z0-9_-]，最长 64；MCP 工具名可能带点号等
@@ -48,7 +50,11 @@ export const buildMcpOpenAITools = (charId?: string): { tools: OpenAIMcpTool[]; 
                 let i = 2;
                 while (resolve.has(exposed)) exposed = sanitizeToolName(`${serverSlug(server)}_${t.name}_${i++}`);
             }
-            resolve.set(exposed, { server, toolName: t.name });
+            resolve.set(exposed, {
+                server,
+                toolName: t.name,
+                executionPolicy: resolveMcpExecutionPolicy(server, t),
+            });
             tools.push({
                 type: 'function',
                 function: {
@@ -255,6 +261,7 @@ export interface FakedMcpCall {
     exposedName: string;
     server: McpServerConfig;
     toolName: string;
+    executionPolicy: McpExecutionPolicy;
     args: Record<string, any>;
     matched: string;
 }
@@ -467,6 +474,7 @@ export const extractTextFakedMcpCalls = (
                 exposedName: exposed,
                 server: hit.server,
                 toolName: hit.toolName,
+                executionPolicy: hit.executionPolicy,
                 args: parseFakedArgs(m[2], schema),
                 matched,
                 index: (m.index ?? 0) + m[1].length,
@@ -486,6 +494,7 @@ export const extractTextFakedMcpCalls = (
                 exposedName: exposed,
                 server: hit.server,
                 toolName: hit.toolName,
+                executionPolicy: hit.executionPolicy,
                 args: keys.length ? { [keys[0]]: coerceBySchema(value, schema, keys[0]) } : {},
                 matched,
                 index: (m.index ?? 0) + m[1].length,
