@@ -21,6 +21,7 @@ export enum AppID {
   Study = 'study',
   FAQ = 'faq',
   Game = 'game',
+  GameHall = 'game_hall',
   Worldbook = 'worldbook', 
   Novel = 'novel', 
   Bank = 'bank', // New App
