@@ -81,6 +81,8 @@ export const DEV_DEBUG_STORAGE_KEY = 'sullyos.devDebug.flags.v1';
 export const DEV_DEBUG_EVENT = 'sullyos-dev-debug-change';
 export const DEV_DEBUG_LOG_STORAGE_KEY = 'sullyos.devDebug.log.v1';
 export const DEV_DEBUG_LOG_EVENT = 'sullyos-dev-debug-log-change';
+export const DEV_DEBUG_ENTRY_STORAGE_KEY = 'sullyos.devDebug.entry.enabled.v1';
+export const DEV_DEBUG_ENTRY_EVENT = 'sullyos-dev-debug-entry-change';
 // 内部事件名，只通过 subscribeDevDebugAvailability 暴露——不 export 出去，免得固化成公共契约。
 const DEV_DEBUG_AVAILABILITY_EVENT = 'sullyos-dev-debug-availability';
 
@@ -147,17 +149,25 @@ function normalizeFlags(value: unknown): DevDebugFlags {
     };
 }
 
-// 会话级开关（都不落 localStorage → 刷新即重置）：
-//   manualUnlock：prod 上连点构建版本 5 下临时解锁，刷新即关。
-//   forceClosed：面板「关闭」按钮，任意分支强制关掉；刷新后失效 → 非 prod 自动回来。
+// 开发构建仍由编译 flag 默认开启；正式构建可以通过设置中的持久开关显示入口。
 let devDebugManualUnlock = false;
 let devDebugForceClosed = false;
 
+const isDevDebugBuildEnabled = (): boolean =>
+    typeof __BUILD_BADGE_VISIBLE__ !== 'undefined' && __BUILD_BADGE_VISIBLE__;
+
+export const readDevDebugEntryEnabled = (): boolean => {
+    if (typeof window === 'undefined') return false;
+    try {
+        return window.localStorage.getItem(DEV_DEBUG_ENTRY_STORAGE_KEY) === '1';
+    } catch {
+        return false;
+    }
+};
+
 export function isDevDebugAvailable(): boolean {
     if (devDebugForceClosed) return false;
-    const badgeVisible = typeof __BUILD_BADGE_VISIBLE__ !== 'undefined' && __BUILD_BADGE_VISIBLE__;
-    // 非 prod（badge 可见）默认一直开；prod 默认关，靠 manualUnlock 临时调出。
-    return badgeVisible || devDebugManualUnlock;
+    return isDevDebugBuildEnabled() || devDebugManualUnlock || readDevDebugEntryEnabled();
 }
 
 function emitDevDebugAvailability(): void {
@@ -165,18 +175,64 @@ function emitDevDebugAvailability(): void {
     window.dispatchEvent(new CustomEvent<boolean>(DEV_DEBUG_AVAILABILITY_EVENT, { detail: isDevDebugAvailable() }));
 }
 
-/** 连点构建版本 5 下：会话级解锁面板（刷新即关），并解除强制关闭。 */
+/** 连点版本号 5 下：保留原有会话级兼容入口。 */
 export function unlockDevDebug(): void {
     devDebugManualUnlock = true;
     devDebugForceClosed = false;
-    // 失效内存缓存：prod 初始 mount 时 canUseDevDebugStorage()=false 会把 memoryLog 锁成 []，
-    // 解锁后如果不重读，上一会话存在 localStorage 里的日志会被遮蔽，下一次 append 还会覆盖掉。
     memoryLog = null;
     emitDevDebugAvailability();
 }
 
-/** 面板「关闭」按钮：任意分支强制关掉（会话级；刷新后非 prod 会自动恢复）。 */
+export const setDevDebugEntryEnabled = (enabled: boolean): boolean => {
+    if (typeof window !== 'undefined') {
+        try {
+            window.localStorage.setItem(DEV_DEBUG_ENTRY_STORAGE_KEY, enabled ? '1' : '0');
+        } catch {
+            // localStorage 不可用时，本次会话状态仍尽量生效。
+        }
+    }
+    if (enabled) {
+        devDebugForceClosed = false;
+        memoryLog = null;
+    } else if (!isDevDebugBuildEnabled()) {
+        devDebugManualUnlock = false;
+        devDebugForceClosed = true;
+    }
+    if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent<boolean>(DEV_DEBUG_ENTRY_EVENT, { detail: enabled }));
+    }
+    emitDevDebugAvailability();
+    return enabled;
+};
+
+export const subscribeDevDebugEntryEnabled = (
+    listener: (enabled: boolean) => void,
+): (() => void) => {
+    if (typeof window === 'undefined') return () => {};
+    const onChange = (event: Event) => {
+        const detail = (event as CustomEvent<boolean>).detail;
+        listener(typeof detail === 'boolean' ? detail : readDevDebugEntryEnabled());
+    };
+    const onStorage = (event: StorageEvent) => {
+        if (event.key === DEV_DEBUG_ENTRY_STORAGE_KEY) {
+            listener(readDevDebugEntryEnabled());
+            emitDevDebugAvailability();
+        }
+    };
+    window.addEventListener(DEV_DEBUG_ENTRY_EVENT, onChange);
+    window.addEventListener('storage', onStorage);
+    return () => {
+        window.removeEventListener(DEV_DEBUG_ENTRY_EVENT, onChange);
+        window.removeEventListener('storage', onStorage);
+    };
+};
+
+/** 面板内关闭：正式版同步关闭持久开关；开发构建保持会话级关闭语义。 */
 export function closeDevDebug(): void {
+    if (!isDevDebugBuildEnabled()) {
+        setDevDebugEntryEnabled(false);
+        return;
+    }
     devDebugForceClosed = true;
     devDebugManualUnlock = false;
     emitDevDebugAvailability();

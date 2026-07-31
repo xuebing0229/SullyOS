@@ -1,13 +1,20 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { querySwVersion } from '../../utils/swVersion';
 import { APP_VERSION, BUILD_LABEL } from '../../utils/buildInfo';
-import { isDevDebugAvailable, subscribeDevDebugAvailability, unlockDevDebug } from '../../utils/devDebug';
+import {
+    isDevDebugAvailable,
+    readDevDebugEntryEnabled,
+    setDevDebugEntryEnabled,
+    subscribeDevDebugAvailability,
+    subscribeDevDebugEntryEnabled,
+    unlockDevDebug,
+} from '../../utils/devDebug';
 
 /**
  * Settings 底部的版本信息脚注。
  *
- * 与右下角的 BuildBadge 不同：BuildBadge 只在 dev / fork 构建可见（正式版树摇掉），
- * 这里在**所有**构建（含正式版）里都低调显示，方便用户截图报障时附带版本上下文：
+ * 右下角 BuildBadge 已停止挂载；这里在所有构建（含正式版）里低调显示，
+ * 方便用户截图报障时附带版本上下文：
  *   - APP_VERSION：手工维护的产品版本名（之前硬编码的 v2.2）
  *   - build：vite.config 注入的 __BUILD_BRANCH__@__BUILD_COMMIT__
  *   - sw：运行时向 Service Worker 查询的 SW_VERSION
@@ -15,18 +22,20 @@ import { isDevDebugAvailable, subscribeDevDebugAvailability, unlockDevDebug } fr
  * 构建全局（__BUILD_BRANCH__ 等）由 vite define 始终注入，prod 也有值，
  * 所以无需任何 dev 条件判断。SW 未注册 / 未响应时 sw 显示 '?'。
  *
- * 彩蛋（dev 附加）：连点 APP_VERSION 5 下手动解锁 DevDebug 面板——正式版默认隐藏，
- * 这是在正式版上临时调出调试工具排障的入口（会话级，刷新即关；面板内有「关闭」按钮可随时强制关掉）。
+ * 兼容彩蛋：连点 APP_VERSION 5 下仍可会话级解锁 DevDebug 面板；
+ * 正式版主要入口是上方的持久“调试工具”开关。
  * 面板已可用时（非 prod / 已解锁）再点不计数。
  */
 
 const UNLOCK_TAP_COUNT = 5;
 const TAP_RESET_MS = 2000;
+const isProductionBuild = typeof __BUILD_BADGE_VISIBLE__ === 'undefined' || !__BUILD_BADGE_VISIBLE__;
 
 const VersionInfo: React.FC = () => {
     const [swVersion, setSwVersion] = useState<string>('…');
     // available = 面板当前是否可用（非 prod 默认 true；prod 解锁后 true；强制关闭后 false）。
     const [available, setAvailable] = useState<boolean>(() => isDevDebugAvailable());
+    const [entryEnabled, setEntryEnabledState] = useState<boolean>(() => readDevDebugEntryEnabled());
     const [hint, setHint] = useState<string | null>(null);
     const tapCountRef = useRef(0);
     const tapTimerRef = useRef<number | null>(null);
@@ -39,6 +48,7 @@ const VersionInfo: React.FC = () => {
     }, []);
 
     useEffect(() => subscribeDevDebugAvailability(setAvailable), []);
+    useEffect(() => subscribeDevDebugEntryEnabled(setEntryEnabledState), []);
 
     // 卸载时清掉计时器，避免内存泄漏 / 卸载后 setState。
     useEffect(() => () => {
@@ -71,6 +81,34 @@ const VersionInfo: React.FC = () => {
 
     return (
         <div className="flex flex-col items-center gap-1.5 pt-2 pb-8 select-none">
+            {isProductionBuild && (
+                <div className="mt-1 mb-2 flex w-full max-w-[280px] items-center justify-between rounded-xl border border-slate-200/70 bg-white/60 px-3 py-2">
+                    <div className="min-w-0 text-left">
+                        <div className="text-[11px] font-semibold text-slate-500">调试工具</div>
+                        <div className="mt-0.5 text-[9px] text-slate-400">显示现有悬浮扳手</div>
+                    </div>
+                    <button
+                        type="button"
+                        role="switch"
+                        aria-checked={entryEnabled}
+                        onClick={() => {
+                            const next = !entryEnabled;
+                            setEntryEnabledState(setDevDebugEntryEnabled(next));
+                        }}
+                        className={`relative h-6 w-11 shrink-0 rounded-full border transition-colors ${
+                            entryEnabled
+                                ? 'border-amber-300/70 bg-amber-300/80'
+                                : 'border-slate-200 bg-slate-200'
+                        }`}
+                    >
+                        <span
+                            className={`absolute left-1 top-1/2 h-4 w-4 -translate-y-1/2 rounded-full bg-white shadow-sm transition-transform ${
+                                entryEnabled ? 'translate-x-5' : 'translate-x-0'
+                            }`}
+                        />
+                    </button>
+                </div>
+            )}
             <button
                 type="button"
                 onClick={handleVersionTap}
