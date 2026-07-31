@@ -17,6 +17,7 @@ import {
     persistMcpGeneratedImages,
 } from './mcpImagePersistence';
 import { parseImageToolClientOptions, type AfterGenerateAction } from './imageToolPostAction';
+import { sanitizeMcpOutcomeText } from './mcpSingleShotFlow';
 
 export const BACKGROUND_IMAGE_JOB_EVENT =
     'sullyos:background-image-job-event';
@@ -367,6 +368,12 @@ const updateJob = (
     return updated;
 };
 
+const removeJob = (id: string): void => {
+    const state = readState();
+    state.jobs = state.jobs.filter(job => job.id !== id);
+    writeState(state);
+};
+
 const getUnfinishedJobs = ():
 LocalBackgroundImageJob[] =>
     readState().jobs
@@ -461,6 +468,19 @@ const isPermanentSubmitError = (
         422,
     ].includes(error.status);
 
+const isUnsupportedJobsEndpointError = (
+    error: unknown,
+): boolean =>
+    error instanceof JobHttpError
+    && [404, 405, 501].includes(error.status);
+
+const isRemoteJobNotFoundError = (
+    error: unknown,
+): boolean =>
+    error instanceof JobHttpError
+    && error.status === 404
+    && error.body?.error === 'job_not_found';
+
 const submitRemoteJob = async (
     job: LocalBackgroundImageJob,
 ): Promise<RemoteImageJob> => {
@@ -508,10 +528,7 @@ async (
 
         return body?.job || null;
     } catch (error) {
-        if (
-            error instanceof JobHttpError
-            && error.status === 404
-        ) return null;
+        if (isRemoteJobNotFoundError(error)) return null;
         throw error;
     }
 };
@@ -533,10 +550,7 @@ const getRemoteJobById = async (
 
         return body?.job || null;
     } catch (error) {
-        if (
-            error instanceof JobHttpError
-            && error.status === 404
-        ) return null;
+        if (isRemoteJobNotFoundError(error)) return null;
         throw error;
     }
 };
@@ -575,6 +589,73 @@ const dispatchJobEvent = (
             },
         ),
     );
+};
+
+const hasFailureMessage = (
+    messages: Message[],
+    job: LocalBackgroundImageJob,
+): boolean => messages.some(message =>
+    message.metadata?.backgroundImageJobFailure === true
+    && (
+        message.metadata?.backgroundImageLocalJobId === job.id
+        || message.metadata?.backgroundImageClientRequestId === job.clientRequestId
+        || (
+            job.remoteJobId
+            && message.metadata?.backgroundImageJobId === job.remoteJobId
+        )
+    ),
+);
+
+export const persistBackgroundImageFailureMessage = async (
+    job: LocalBackgroundImageJob,
+): Promise<boolean> => {
+    const recent = await DB.getRecentMessagesByCharId(job.charId, 200);
+    if (hasFailureMessage(recent, job)) return false;
+
+    const detail = sanitizeMcpOutcomeText(
+        job.lastError || '后台生图任务失败',
+    ) || '后台生图任务失败';
+    await DB.saveMessage({
+        charId: job.charId,
+        role: 'system',
+        type: 'text',
+        content: `[生图失败] ${detail}`,
+        metadata: {
+            backgroundImageJobFailure: true,
+            backgroundImageLocalJobId: job.id,
+            backgroundImageJobId: job.remoteJobId,
+            backgroundImageClientRequestId: job.clientRequestId,
+        },
+    } as any);
+    return true;
+};
+
+const markMonitoredJobFailed = async (
+    jobId: string,
+    error: unknown,
+    options: MonitorOptions,
+    patch: Partial<LocalBackgroundImageJob> = {},
+): Promise<LocalBackgroundImageJob | null> => {
+    const detail = sanitizeMcpOutcomeText(error)
+        || '后台生图任务失败';
+    const failed = updateJob(jobId, {
+        ...patch,
+        status: 'failed',
+        lastError: detail,
+    });
+    if (!failed) return null;
+
+    try {
+        await persistBackgroundImageFailureMessage(failed);
+    } catch (persistError) {
+        console.warn(
+            '[BackgroundImage] persist failure message failed',
+            sanitizeMcpOutcomeText(persistError),
+        );
+    }
+    dispatchJobEvent('failed', failed);
+    options.onFailed?.(failed);
+    return failed;
 };
 
 const hasAlreadyPersisted = (
@@ -719,176 +800,119 @@ const reconcileOne = async (
     localJob: LocalBackgroundImageJob,
     options: MonitorOptions,
 ): Promise<void> => {
-    let remoteJob:
-        RemoteImageJob | null = null;
+    let remoteJob: RemoteImageJob | null = null;
 
     try {
         if (localJob.remoteJobId) {
-            remoteJob =
-                await getRemoteJobById(
-                    localJob,
-                );
+            remoteJob = await getRemoteJobById(localJob);
         }
 
         if (!remoteJob) {
-            remoteJob =
-                await findRemoteJobByClientId(
-                    localJob,
-                );
+            remoteJob = await findRemoteJobByClientId(localJob);
         }
 
         if (!remoteJob) {
-            if (
-                localJob.submitAttempts
-                >= MAX_SUBMIT_ATTEMPTS
-            ) {
-                const failed = updateJob(
+            if (localJob.submitAttempts >= MAX_SUBMIT_ATTEMPTS) {
+                await markMonitoredJobFailed(
                     localJob.id,
-                    {
-                        status: 'failed',
-                        lastError:
-                            '后台生图任务多次提交失败',
-                    },
+                    '后台生图任务多次提交失败',
+                    options,
                 );
-
-                if (failed) {
-                    dispatchJobEvent(
-                        'failed',
-                        failed,
-                    );
-                    options.onFailed?.(
-                        failed,
-                    );
-                }
                 return;
             }
 
-            const attempted = updateJob(
-                localJob.id,
-                {
-                    status: 'submitting',
-                    submitAttempts:
-                        localJob.submitAttempts + 1,
-                    lastCheckedAt: now(),
-                },
-            );
-
+            const attempted = updateJob(localJob.id, {
+                status: 'submitting',
+                submitAttempts: localJob.submitAttempts + 1,
+                lastCheckedAt: now(),
+            });
             if (!attempted) return;
 
             try {
-                remoteJob =
-                    await submitRemoteJob(
-                        attempted,
-                    );
+                remoteJob = await submitRemoteJob(attempted);
             } catch (error) {
                 if (
-                    isPermanentSubmitError(
-                        error,
-                    )
+                    isPermanentSubmitError(error)
+                    || isUnsupportedJobsEndpointError(error)
                 ) {
-                    const failed = updateJob(
+                    await markMonitoredJobFailed(
                         localJob.id,
-                        {
-                            status: 'failed',
-                            lastError:
-                                error instanceof Error
-                                    ? error.message
-                                    : String(error),
-                        },
+                        isUnsupportedJobsEndpointError(error)
+                            ? '当前生图服务不支持后台任务接口 /jobs，请更新服务端或重新发起直连生图。'
+                            : error,
+                        options,
                     );
-
-                    if (failed) {
-                        dispatchJobEvent(
-                            'failed',
-                            failed,
-                        );
-                        options.onFailed?.(
-                            failed,
-                        );
-                    }
+                    return;
                 }
                 throw error;
             }
         }
 
-        const updated = updateJob(
-            localJob.id,
-            {
-                remoteJobId:
-                    remoteJob.id,
-                status:
-                    remoteStatusToLocal(
-                        remoteJob.status,
-                    ),
-                lastCheckedAt: now(),
-                lastError:
-                    remoteJob.error?.message,
-            },
-        );
-
+        const updated = updateJob(localJob.id, {
+            remoteJobId: remoteJob.id,
+            status: remoteStatusToLocal(remoteJob.status),
+            lastCheckedAt: now(),
+            lastError: remoteJob.error?.message,
+        });
         if (!updated) return;
 
-        dispatchJobEvent(
-            'updated',
-            updated,
-        );
+        dispatchJobEvent('updated', updated);
 
-        if (
-            remoteJob.status
-            === 'succeeded'
-        ) {
-            await applySucceededJob(
-                updated,
-                remoteJob,
-            );
-
-            const completed =
-                readState().jobs.find(
-                    item =>
-                        item.id === updated.id,
+        if (remoteJob.status === 'succeeded') {
+            try {
+                await applySucceededJob(updated, remoteJob);
+            } catch (error) {
+                await markMonitoredJobFailed(
+                    updated.id,
+                    error,
+                    options,
+                    { remoteJobId: remoteJob.id },
                 );
-
-            if (completed) {
-                options.onCompleted?.(
-                    completed,
-                );
+                return;
             }
+
+            const completed = readState().jobs.find(
+                item => item.id === updated.id,
+            );
+            if (completed) options.onCompleted?.(completed);
             return;
         }
 
         if (
             remoteJob.status === 'failed'
-            || remoteJob.status
-                === 'cancelled'
+            || remoteJob.status === 'cancelled'
         ) {
-            dispatchJobEvent(
-                'failed',
-                updated,
-            );
-            options.onFailed?.(
-                updated,
+            await markMonitoredJobFailed(
+                updated.id,
+                remoteJob.error?.message
+                    || (remoteJob.status === 'cancelled'
+                        ? '后台生图任务已取消'
+                        : '后台生图任务失败'),
+                options,
+                { remoteJobId: remoteJob.id },
             );
         }
     } catch (error) {
+        if (isUnsupportedJobsEndpointError(error)) {
+            await markMonitoredJobFailed(
+                localJob.id,
+                '当前生图服务不支持后台任务接口 /jobs，请更新服务端或重新发起直连生图。',
+                options,
+            );
+            return;
+        }
+
         const current = readState().jobs.find(
             item => item.id === localJob.id,
         );
-
-        // 已经明确判为失败时不再覆盖状态。
         if (
             current?.status !== 'failed'
             && current?.status !== 'cancelled'
         ) {
-            updateJob(
-                localJob.id,
-                {
-                    lastCheckedAt: now(),
-                    lastError:
-                        error instanceof Error
-                            ? error.message
-                            : String(error),
-                },
-            );
+            updateJob(localJob.id, {
+                lastCheckedAt: now(),
+                lastError: sanitizeMcpOutcomeText(error),
+            });
         }
     }
 };
@@ -1071,48 +1095,45 @@ export async function callMcpToolWithBackgroundImage(
             remoteJob,
         );
     } catch (error) {
-        if (
-            isPermanentSubmitError(error)
-        ) {
-            const failed = updateJob(
-                localJob.id,
-                {
-                    status: 'failed',
-                    lastError:
-                        error instanceof Error
-                            ? error.message
-                            : String(error),
-                },
-            ) || localJob;
+        if (isUnsupportedJobsEndpointError(error)) {
+            // 旧服务或旧 Nginx 没有 /jobs。只有明确的 404/405/501 才安全直连回退；
+            // timeout、断网和 5xx 可能已经接单，必须保留 clientRequestId 查询，不能重发扣费。
+            removeJob(localJob.id);
+            try {
+                return await callMcpTool(
+                    server,
+                    toolName,
+                    cleanedArgs,
+                );
+            } catch (directError) {
+                return {
+                    success: false,
+                    error: sanitizeMcpOutcomeText(directError)
+                        || '直连 MCP 生图失败',
+                };
+            }
+        }
 
-            dispatchJobEvent(
-                'failed',
-                failed,
-            );
+        if (isPermanentSubmitError(error)) {
+            const failed = updateJob(localJob.id, {
+                status: 'failed',
+                lastError: sanitizeMcpOutcomeText(error),
+            }) || localJob;
 
+            dispatchJobEvent('failed', failed);
             return {
                 success: false,
-                error:
-                    failed.lastError
-                    || '后台生图提交失败',
+                error: failed.lastError || '后台生图提交失败',
             };
         }
 
         // 响应丢失时保留相同 clientRequestId，恢复后先查询再重交。
-        updateJob(
-            localJob.id,
-            {
-                status: 'submitting',
-                lastError:
-                    error instanceof Error
-                        ? error.message
-                        : String(error),
-            },
-        );
+        updateJob(localJob.id, {
+            status: 'submitting',
+            lastError: sanitizeMcpOutcomeText(error),
+        });
 
-        return queuedToolResult(
-            localJob,
-        );
+        return queuedToolResult(localJob);
     }
 }
 
