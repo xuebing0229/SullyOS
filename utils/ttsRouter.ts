@@ -10,6 +10,7 @@ import {
   type TtsResult,
 } from './minimaxTts';
 import { synthesizeSpeechFishDetailed } from './fishAudioTts';
+import { synthesizeSpeechElevenLabsDetailed } from './elevenLabsTts';
 import { resolveTtsProvider } from './ttsProvider';
 
 export type { TtsResult };
@@ -22,9 +23,9 @@ export async function synthesizeSpeechDetailed(
   apiConfig: APIConfig,
   options?: SynthOptions,
 ): Promise<TtsResult> {
-  if (resolveTtsProvider(apiConfig) === 'fishaudio') {
-    return synthesizeSpeechFishDetailed(text, char, apiConfig, options);
-  }
+  const provider = resolveTtsProvider(apiConfig);
+  if (provider === 'fishaudio') return synthesizeSpeechFishDetailed(text, char, apiConfig, options);
+  if (provider === 'elevenlabs') return synthesizeSpeechElevenLabsDetailed(text, char, apiConfig, options);
   return minimaxSynthesizeDetailed(text, char, apiConfig, options);
 }
 
@@ -45,8 +46,8 @@ export async function synthesizeSpeech(
  */
 export const characterHasVoice = (char: CharacterProfile, apiConfig: APIConfig): boolean => {
   const vp = char.voiceProfile;
-  if (resolveTtsProvider(apiConfig) === 'fishaudio') {
-    return !!vp?.fishReferenceId;
-  }
+  const provider = resolveTtsProvider(apiConfig);
+  if (provider === 'fishaudio') return !!vp?.fishReferenceId;
+  if (provider === 'elevenlabs') return !!vp?.elevenLabsVoiceId;
   return !!(vp?.voiceId || (vp?.timberWeights && vp.timberWeights.length > 0));
 };
