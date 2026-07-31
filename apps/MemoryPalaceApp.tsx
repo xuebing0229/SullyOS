@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useDeferredValue, useMemo } from 'react';
+import SensitiveTextInput from '../components/SensitiveTextInput';
 import { useOS } from '../context/OSContext';
 import {
     MemoryRoom, MemoryNode, ROOM_CONFIGS, ROOM_LABELS, getRoomLabel,
@@ -2610,7 +2611,7 @@ export default function MemoryPalaceApp() {
                         </div>
                         <div>
                             <label className={labelClass}>API KEY</label>
-                            <input type="password" value={lightKey} onChange={e => setLightKey(e.target.value)}
+                            <SensitiveTextInput value={lightKey} onChange={e => setLightKey(e.target.value)}
                                 placeholder="sk-..." className={inputClass} />
                         </div>
                         <div>
@@ -2735,8 +2736,7 @@ export default function MemoryPalaceApp() {
                         <div>
                             <label className={labelClass}>API KEY</label>
                             <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-                                <input
-                                    type="password"
+                                <SensitiveTextInput
                                     value={embKey}
                                     onChange={e => setEmbKey(e.target.value)}
                                     placeholder="sk-..."
@@ -2983,8 +2983,7 @@ export default function MemoryPalaceApp() {
 
                         <div>
                             <label className={labelClass}>API KEY</label>
-                            <input
-                                type="password"
+                            <SensitiveTextInput
                                 value={rrKey}
                                 onChange={e => setRrKey(e.target.value)}
                                 placeholder="sk-..."
@@ -3224,7 +3223,7 @@ create table if not exists memory_vectors (
                     </div>
                     <div style={{ marginTop: 10 }}>
                         <label className={labelClass}>ANON / PUBLIC KEY</label>
-                        <input type="password" value={rvKey} onChange={e => setRvKey(e.target.value)}
+                        <SensitiveTextInput value={rvKey} onChange={e => setRvKey(e.target.value)}
                             placeholder="eyJhbGciOiJIUzI1NiIs..." className={inputClass} />
                         <div style={{ fontSize: 10, color: '#9ca3af', marginTop: 2, paddingLeft: 4 }}>Settings → API → anon public key</div>
                     </div>

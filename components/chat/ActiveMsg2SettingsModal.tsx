@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import SensitiveTextInput from '../SensitiveTextInput';
 import Modal from '../os/Modal';
 import { APIConfig, CharacterProfile, GroupProfile, RealtimeConfig, UserProfile } from '../../types';
 import { ActiveMsgClient, getDefaultActiveMsgFirstSendTime } from '../../utils/activeMsgClient';
@@ -299,7 +300,7 @@ const ActiveMsg2SettingsModal: React.FC<ActiveMsg2SettingsModalProps> = ({
               {useSecondaryApi ? (
                 <div className="space-y-3 bg-slate-50 rounded-2xl p-3">
                   <input value={secUrl} onChange={(event) => setSecUrl(event.target.value)} placeholder="API URL" className="w-full px-3 py-2 bg-white rounded-xl text-sm border border-slate-200" />
-                  <input type="password" value={secKey} onChange={(event) => setSecKey(event.target.value)} placeholder="API Key" className="w-full px-3 py-2 bg-white rounded-xl text-sm border border-slate-200" />
+                  <SensitiveTextInput value={secKey} onChange={(event) => setSecKey(event.target.value)} placeholder="API Key" className="w-full px-3 py-2 bg-white rounded-xl text-sm border border-slate-200" />
                   <input value={secModel} onChange={(event) => setSecModel(event.target.value)} placeholder="Model" className="w-full px-3 py-2 bg-white rounded-xl text-sm border border-slate-200" />
                 </div>
               ) : null}

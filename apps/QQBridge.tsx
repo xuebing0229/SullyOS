@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import SensitiveTextInput from '../components/SensitiveTextInput';
 import { useOS } from '../context/OSContext';
 import { useChatAI } from '../hooks/useChatAI';
 import { DB } from '../utils/db';
@@ -332,8 +333,7 @@ const QQBridge: React.FC = () => {
 
           <label className="block">
             <div className="text-[11px] text-slate-500 mb-1">Access Token（可选，NapCat 没设可留空）</div>
-            <input
-              type="password"
+            <SensitiveTextInput
               value={token}
               onChange={e => setToken(e.target.value)}
               placeholder="留空即不发送"

@@ -64,7 +64,7 @@ var ADMIN_PAGE = `<!doctype html>
     </header>
     <section class="panel">
       <form id="login">
-        <input id="token" type="password" autocomplete="off" spellcheck="false" placeholder="ADMIN_TOKEN" aria-label="\u7BA1\u7406\u5458\u4EE4\u724C" required>
+        <input id="token" type="text" inputmode="text" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" style="-webkit-text-security:disc" onfocus="this.style.webkitTextSecurity='none'" onblur="this.style.webkitTextSecurity='disc'" placeholder="ADMIN_TOKEN" aria-label="\u7BA1\u7406\u5458\u4EE4\u724C" required>
         <button id="load" type="submit">\u67E5\u770B\u540D\u5355</button>
       </form>
       <p id="status" role="status" aria-live="polite">\u5C1A\u672A\u8BFB\u53D6\u6570\u636E</p>

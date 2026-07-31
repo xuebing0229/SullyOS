@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import SensitiveTextInput from '../SensitiveTextInput';
 import Modal from '../os/Modal';
 import { ActiveMsg2GlobalConfig } from '../../types';
 import { ActiveMsgClient } from '../../utils/activeMsgClient';
@@ -231,8 +232,7 @@ const ActiveMsgGlobalSettingsModal: React.FC<ActiveMsgGlobalSettingsModalProps> 
                 <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 block pl-1">
                   Init Secret（可选）
                 </label>
-                <input
-                  type="password"
+                <SensitiveTextInput
                   value={config.initSecret || ''}
                   onChange={(event) => patchConfig({ initSecret: event.target.value })}
                   placeholder="只有你自己额外配了 init-secret 才需要填"

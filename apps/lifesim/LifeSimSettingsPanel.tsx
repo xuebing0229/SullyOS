@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import SensitiveTextInput from '../../components/SensitiveTextInput';
 import { ApiPreset, APIConfig, CharacterProfile } from '../../types';
 import { CheckSquare, FloppyDisk, Gear, Square, X } from '@phosphor-icons/react';
 import { useOS } from '../../context/OSContext';
@@ -276,8 +277,7 @@ const LifeSimSettingsPanel: React.FC<{
                                     <label style={{ fontSize: 9, fontWeight: 700, color: '#7b7289', marginBottom: 4, display: 'block' }}>
                                         API Key
                                     </label>
-                                    <input
-                                        type="password"
+                                    <SensitiveTextInput
                                         value={draft.apiKey}
                                         onChange={event => patchDraft({ apiKey: event.target.value })}
                                         placeholder="sk-..."
