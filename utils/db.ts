@@ -28,11 +28,16 @@ const DB_NAME = 'AetherOS_Data';
 // v68：character_groups 角色分组（神经链接"文件夹"，见 types.ts CharacterGroup）。
 // v69：AI 精确响应缓存（聊天/情绪），带过期与 LRU 清理索引。
 // v70：API 每日消费永久汇总。
-const DB_VERSION = 70;
+const DB_VERSION = 71;
 
 const STORE_CHARACTERS = 'characters';
 const STORE_CHAR_GROUPS = 'character_groups'; // 角色分组定义（角色通过 groupId 指向；与群聊 groups 无关）
 const STORE_MESSAGES = 'messages';
+const STORE_GAME_HALL_SESSIONS = 'gameHallSessions';
+const STORE_GAME_HALL_MESSAGES = 'gameHallMessages';
+const STORE_GAME_HALL_PENDING = 'gameHallPendingActions';
+const STORE_GAME_HALL_SNAPSHOTS = 'gameHallBridgeSnapshots';
+const STORE_GAME_HALL_PROTOCOL = 'gameHallProtocolCache';
 const STORE_EMOJIS = 'emojis';
 const STORE_EMOJI_CATEGORIES = 'emoji_categories'; 
 const STORE_THEMES = 'themes';
@@ -305,6 +310,28 @@ export const openDB = (): Promise<IDBDatabase> => {
       }
       createStore(STORE_VR_SETTINGS, { keyPath: 'id' });
       createStore(STORE_API_CALL_LOG, { keyPath: 'id' });
+      if (!db.objectStoreNames.contains(STORE_GAME_HALL_SESSIONS)) {
+          const store = db.createObjectStore(STORE_GAME_HALL_SESSIONS, { keyPath: 'id' });
+          store.createIndex('charId', 'charId', { unique: false });
+          store.createIndex('updatedAt', 'updatedAt', { unique: false });
+      }
+      if (!db.objectStoreNames.contains(STORE_GAME_HALL_MESSAGES)) {
+          const store = db.createObjectStore(STORE_GAME_HALL_MESSAGES, { keyPath: 'id' });
+          store.createIndex('sessionId', 'sessionId', { unique: false });
+          store.createIndex('charId', 'charId', { unique: false });
+          store.createIndex('createdAt', 'createdAt', { unique: false });
+      }
+      if (!db.objectStoreNames.contains(STORE_GAME_HALL_PENDING)) {
+          const store = db.createObjectStore(STORE_GAME_HALL_PENDING, { keyPath: 'id' });
+          store.createIndex('sessionId', 'sessionId', { unique: false });
+          store.createIndex('status', 'status', { unique: false });
+      }
+      if (!db.objectStoreNames.contains(STORE_GAME_HALL_SNAPSHOTS)) {
+          const store = db.createObjectStore(STORE_GAME_HALL_SNAPSHOTS, { keyPath: 'id' });
+          store.createIndex('charId', 'charId', { unique: false });
+          store.createIndex('createdAt', 'createdAt', { unique: false });
+      }
+      createStore(STORE_GAME_HALL_PROTOCOL, { keyPath: 'id' });
       createStore(STORE_API_COST_DAILY, { keyPath: 'dateKey' });
       if (!db.objectStoreNames.contains(STORE_AI_RESPONSE_CACHE)) {
           const aiCache = db.createObjectStore(STORE_AI_RESPONSE_CACHE, { keyPath: 'key' });
@@ -2788,6 +2815,7 @@ export const DB = {
           STORE_WORLDS, STORE_WORLD_EPISODES,
           'memory_nodes', 'memory_vectors', 'memory_links', 'topic_boxes', 'anticipations', 'event_boxes',
           'room_plates', 'digest_reports',
+              'gameHallSessions', 'gameHallMessages', 'gameHallPendingActions', 'gameHallBridgeSnapshots', 'gameHallProtocolCache',
           'memory_batches', 'pixel_home_assets', 'pixel_home_layouts'
       ].filter(name => db.objectStoreNames.contains(name));
 
