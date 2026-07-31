@@ -1,11 +1,26 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+vi.mock('./mcpClient', async () => {
+    const actual = await vi.importActual<typeof import('./mcpClient')>('./mcpClient');
+    return {
+        ...actual,
+        callMcpTool: vi.fn(),
+    };
+});
+
+import { DB } from './db';
 import {
     callMcpToolWithBackgroundImage,
     clearBackgroundImageJobs,
     getBackgroundImageJobs,
     isBackgroundImageToolCall,
+    persistBackgroundImageFailureMessage,
+    type LocalBackgroundImageJob,
 } from './backgroundImageJobs';
-import type { McpServerConfig } from './mcpClient';
+import {
+    callMcpTool,
+    type McpServerConfig,
+} from './mcpClient';
 
 const server: McpServerConfig = {
     id: 'builtin_image_gpt-image',
@@ -18,10 +33,34 @@ const server: McpServerConfig = {
     updatedAt: 1,
 };
 
+const makeJob = (
+    patch: Partial<LocalBackgroundImageJob> = {},
+): LocalBackgroundImageJob => ({
+    id: 'local-job-1',
+    clientRequestId: 'client-request-1',
+    remoteJobId: 'remote-job-1',
+    engineId: 'gpt-image',
+    serverId: server.id,
+    serverName: server.name,
+    controlBaseUrl: server.controlBaseUrl!,
+    token: 'do-not-persist-this-token',
+    charId: 'char-1',
+    toolName: 'generate_image',
+    toolArgs: { prompt: 'cat' },
+    afterGenerateAction: 'none',
+    status: 'failed',
+    createdAt: 1,
+    updatedAt: 2,
+    submitAttempts: 1,
+    lastError: 'HTTP 500 Bearer secret-token https://private.example/jobs/1',
+    ...patch,
+});
+
 describe('background image jobs', () => {
     beforeEach(() => {
         localStorage.clear();
         vi.restoreAllMocks();
+        vi.mocked(callMcpTool).mockReset();
     });
 
     it('only backgrounds the matching built-in image tool', () => {
@@ -68,33 +107,122 @@ describe('background image jobs', () => {
             toolName: 'generate_image',
             arguments: { prompt: 'frozen prompt' },
         });
-        clearBackgroundImageJobs();
     });
 
     it('strips inspect orchestration fields and records a pending inspect', async () => {
-    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
-        created: true,
-        job: {
-            id: 'remote-job-inspect',
-            clientRequestId: 'client_request_inspect',
-            toolName: 'generate_image',
-            status: 'queued',
-            createdAt: 1,
-            updatedAt: 1,
-        },
-    }), { status: 202, headers: { 'content-type': 'application/json' } }));
-    await callMcpToolWithBackgroundImage(
-        server,
-        'generate_image',
-        { prompt: 'inspect me', after_generate_action: 'inspect' },
-        { charId: 'char-inspect' },
-    );
-    expect(getBackgroundImageJobs()[0]).toMatchObject({
-        toolArgs: { prompt: 'inspect me' },
-        afterGenerateAction: 'inspect',
-        inspectStatus: 'pending',
+        const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+            created: true,
+            job: {
+                id: 'remote-job-inspect',
+                clientRequestId: 'client_request_inspect',
+                toolName: 'generate_image',
+                status: 'queued',
+                createdAt: 1,
+                updatedAt: 1,
+            },
+        }), { status: 202, headers: { 'content-type': 'application/json' } }));
+        await callMcpToolWithBackgroundImage(
+            server,
+            'generate_image',
+            { prompt: 'inspect me', after_generate_action: 'inspect' },
+            { charId: 'char-inspect' },
+        );
+        expect(getBackgroundImageJobs()[0]).toMatchObject({
+            toolArgs: { prompt: 'inspect me' },
+            afterGenerateAction: 'inspect',
+            inspectStatus: 'pending',
+        });
+        const [, init] = fetchMock.mock.calls[0];
+        expect(JSON.parse(String(init?.body)).arguments).toEqual({ prompt: 'inspect me' });
     });
-    const [, init] = fetchMock.mock.calls[0];
-    expect(JSON.parse(String(init?.body)).arguments).toEqual({ prompt: 'inspect me' });
-});
+
+    it.each([404, 405, 501])(
+        '/jobs 返回 HTTP %s 时删除伪后台任务并仅回退一次直连 MCP',
+        async status => {
+            vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(
+                JSON.stringify({ error: 'route_not_found' }),
+                { status, headers: { 'content-type': 'application/json' } },
+            ));
+            vi.mocked(callMcpTool).mockResolvedValue({
+                success: true,
+                data: { imageUrl: 'https://image.example/result.png' },
+            });
+
+            const result = await callMcpToolWithBackgroundImage(
+                server,
+                'generate_image',
+                { prompt: 'fallback prompt', after_generate_action: 'none' },
+                { charId: 'char-fallback' },
+            );
+
+            expect(result.success).toBe(true);
+            expect(callMcpTool).toHaveBeenCalledTimes(1);
+            expect(callMcpTool).toHaveBeenCalledWith(
+                server,
+                'generate_image',
+                { prompt: 'fallback prompt' },
+            );
+            expect(getBackgroundImageJobs()).toHaveLength(0);
+        },
+    );
+
+    it('5xx 不回退直连，保留相同 clientRequestId 等待恢复查询', async () => {
+        vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(
+            JSON.stringify({ error: 'temporary_failure' }),
+            { status: 503, headers: { 'content-type': 'application/json' } },
+        ));
+
+        const result = await callMcpToolWithBackgroundImage(
+            server,
+            'generate_image',
+            { prompt: 'do not duplicate' },
+            { charId: 'char-503' },
+        );
+
+        expect(result.success).toBe(true);
+        expect(result.backgroundJob?.clientRequestId).toBeTruthy();
+        expect(callMcpTool).not.toHaveBeenCalled();
+        expect(getBackgroundImageJobs()).toHaveLength(1);
+    });
+
+    it('网络响应丢失不回退直连，保留后台任务等待幂等恢复', async () => {
+        vi.spyOn(globalThis, 'fetch').mockRejectedValue(new TypeError('network lost'));
+
+        const result = await callMcpToolWithBackgroundImage(
+            server,
+            'generate_image',
+            { prompt: 'do not duplicate on timeout' },
+            { charId: 'char-network' },
+        );
+
+        expect(result.success).toBe(true);
+        expect(result.backgroundJob?.status).toBe('submitting');
+        expect(callMcpTool).not.toHaveBeenCalled();
+        expect(getBackgroundImageJobs()).toHaveLength(1);
+    });
+
+    it('后台最终失败只落一条已脱敏的可见系统消息', async () => {
+        const messages: any[] = [];
+        vi.spyOn(DB, 'getRecentMessagesByCharId').mockImplementation(async () => messages as any);
+        const save = vi.spyOn(DB, 'saveMessage').mockImplementation(async message => {
+            messages.push({ ...message, id: messages.length + 1 });
+            return undefined as any;
+        });
+
+        const job = makeJob();
+        expect(await persistBackgroundImageFailureMessage(job)).toBe(true);
+        expect(await persistBackgroundImageFailureMessage(job)).toBe(false);
+        expect(save).toHaveBeenCalledTimes(1);
+
+        const saved = save.mock.calls[0][0] as any;
+        expect(saved.content).toContain('[生图失败]');
+        expect(saved.content).not.toContain('secret-token');
+        expect(saved.content).not.toContain('private.example');
+        expect(saved.metadata).toMatchObject({
+            backgroundImageJobFailure: true,
+            backgroundImageLocalJobId: job.id,
+            backgroundImageJobId: job.remoteJobId,
+            backgroundImageClientRequestId: job.clientRequestId,
+        });
+    });
 });

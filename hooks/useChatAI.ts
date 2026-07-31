@@ -27,6 +27,7 @@ import { getMcpUseNativeTools, type McpToolResult } from '../utils/mcpClient';
 import { BACKGROUND_IMAGE_JOB_EVENT, callMcpToolWithBackgroundImage, getBackgroundImageJobById, getPendingBackgroundImageInspectJobs, updateBackgroundImageInspectStatus } from '../utils/backgroundImageJobs';
 import { buildMcpOpenAITools, buildMcpRejectedToolsFallbackBody, buildMcpTextFallbackBody, extractTextFakedMcpCalls, formatMcpToolResult, sanitizeMcpLeadInText, shouldRetryMcpWithoutTools, stripTextFakedMcpCalls, type FakedMcpCall } from '../utils/mcpToolBridge';
 import { claimMcpToolExecution, createMcpTurnExecutionState, formatBlockedMcpExecution } from '../utils/mcpExecutionPolicy';
+import { resolveMcpSingleShotOutcome, runMcpSingleShotClosing, type McpSingleShotOutcome } from '../utils/mcpSingleShotFlow';
 import { parseImageToolClientOptions, type AfterGenerateAction } from '../utils/imageToolPostAction';
 import { inspectGeneratedImages } from '../utils/generatedImageInspect';
 import { buildToolResultMessage, normalizeToolCallsForCompat } from '../utils/toolCallCompat';
@@ -1314,6 +1315,32 @@ export const useChatAI = ({
                 }
             };
 
+            const closeMcpSingleShot = async (
+                leadIn: string,
+                outcome: McpSingleShotOutcome,
+                pass: string,
+            ): Promise<void> => {
+                setSearchStatus('正在整理生图结果...');
+                const closing = await runMcpSingleShotClosing({
+                    baseReqBody,
+                    fullMessages,
+                    leadIn,
+                    outcome,
+                    previousResponse: data,
+                    execute: body => executeChatBody(
+                        body,
+                        'MCP 生图结果纯文字收尾',
+                    ),
+                });
+                data = closing.response;
+                if (!closing.usedFallback) {
+                    updateTokenUsage(data, historyMsgCount, pass);
+                }
+                if (closing.error) {
+                    console.warn('[MCP] single-shot closing fallback:', closing.error);
+                }
+            };
+
             // 3.4 麦当劳小程序 propose_cart_items UI 钩子工具循环
             //     不调 MCP, 只把模型的 args 作为 mcd_card kind=proposal 落库, 让小程序聊天面板渲染
             //     成"+加进购物车"卡片。返回 ack 给模型继续走它的文字 reply。
@@ -1508,8 +1535,6 @@ export const useChatAI = ({
 
             // 整轮聊天共用：native FC 与正文假调用不能各自重复执行。
             const mcpTurnExecution = createMcpTurnExecutionState();
-            let terminateClaudeAfterImage = false;
-            let skipFinalAssistantPostProcess = false;
 
             // 3.6 客户端工具循环 —— 两类共用一个循环骨架:
             //     · 瑞幸聊天点单: 真实 8 工具 (queryShopList → searchProductForMcp →
@@ -1521,8 +1546,12 @@ export const useChatAI = ({
                 const MAX_LOOPS = 6;
                 let loopMessages = [...fullMessages];
                 const loc = luckinChatRef?.current;
-                for (let it = 0; it < MAX_LOOPS; it++) {
-let stopAfterSingleShot = false;
+                                for (let it = 0; it < MAX_LOOPS; it++) {
+                    let singleShotClosing: {
+                        leadIn: string;
+                        outcome: McpSingleShotOutcome;
+                    } | null = null;
+                    const assistantLeadIn = data.choices?.[0]?.message?.content || '';
                     const toolCalls = normalizeToolCallsForCompat(
                         data.choices?.[0]?.message?.tool_calls,
                         `private_${it}`,
@@ -1566,10 +1595,8 @@ let stopAfterSingleShot = false;
                                 continue;
                             }
 
-                            if (mcpHit.executionPolicy === 'single-shot') {
-                                stopAfterSingleShot = true;
-                                terminateClaudeAfterImage = true;
-                            }
+                            const isSingleShot =
+                                mcpHit.executionPolicy === 'single-shot';
 
                             setSearchStatus(`正在调用 MCP 工具：${fname}...`);
                             let mcpResult: any;
@@ -1580,16 +1607,37 @@ let stopAfterSingleShot = false;
                                 }, { charId: char.id });
                             }
                             catch (e: any) { mcpResult = { success: false, error: e?.message || String(e) }; }
-                            if (mcpResult.backgroundJob) addToast('图片已转入后台生成，切换应用不会中断', 'info');
+                            let imageMessages: Message[] = [];
+                            if (mcpResult.backgroundJob) {
+                                addToast('图片已转入后台生成，切换应用不会中断', 'info');
+                            }
                             if (mcpResult.success && !mcpResult.backgroundJob) {
-                                const images = await persistMcpImages(mcpResult, { id: mcpHit.server.id, name: mcpHit.server.name }, mcpHit.toolName, sanitizeNovelAiReferenceToolArguments(cleanedArgs));
-                                await runSynchronousImageInspect(afterGenerateAction, images);
+                                imageMessages = await persistMcpImages(
+                                    mcpResult,
+                                    { id: mcpHit.server.id, name: mcpHit.server.name },
+                                    mcpHit.toolName,
+                                    sanitizeNovelAiReferenceToolArguments(cleanedArgs),
+                                );
+                                await runSynchronousImageInspect(
+                                    afterGenerateAction,
+                                    imageMessages,
+                                );
                             }
                             const mcpMsg = mcpResult.success
                                 ? `工具 ${fname} 成功。结果: ${formatMcpToolResult(mcpResult.data)}`
                                 : `工具 ${fname} 失败: ${mcpResult.error}`;
 loopMessages.push(buildToolResultMessage(tc, mcpMsg) as any);
-                            if (terminateClaudeAfterImage) break;
+                            if (isSingleShot) {
+                                singleShotClosing = {
+                                    leadIn: assistantLeadIn,
+                                    outcome: resolveMcpSingleShotOutcome({
+                                        toolName: fname,
+                                        result: mcpResult,
+                                        imageMessageCount: imageMessages.length,
+                                    }),
+                                };
+                                break;
+                            }
                             continue;
                         }
                         // 只开了 MCP 没开瑞幸时, 幻觉出的未知工具名直接回错误让模型自我纠正
@@ -1639,25 +1687,24 @@ loopMessages.push(buildToolResultMessage(tc, mcpMsg) as any);
                             : `工具 ${fname} 失败: ${result.error}`;
                         loopMessages.push(buildToolResultMessage(tc, toolMsg) as any);
                     }
-                    if (terminateClaudeAfterImage) {
-                        skipFinalAssistantPostProcess = true;
+                    if (singleShotClosing) {
+                        await closeMcpSingleShot(
+                            singleShotClosing.leadIn,
+                            singleShotClosing.outcome,
+                            `mcp-image-${it + 1}`,
+                        );
                         break;
                     }
                     // 普通 MCP 与瑞幸保留 tools 多步推进。
                     if (mcpToolResolve) setSearchStatus('正在整理 MCP 工具结果...');
-                    const followBody = stopAfterSingleShot
-                        ? buildMcpTextFallbackBody(baseReqBody, loopMessages)
-                        : { ...baseReqBody, messages: loopMessages };
+                    const followBody = { ...baseReqBody, messages: loopMessages };
                     data = await executeChatBody(
                         followBody,
-                        stopAfterSingleShot
-                            ? 'MCP 生图结果纯文字收尾'
-                            : payload.flags.luckinChatActive
-                                ? '瑞幸工具结果续写'
-                                : 'MCP 工具结果续写',
+                        payload.flags.luckinChatActive
+                            ? '瑞幸工具结果续写'
+                            : 'MCP 工具结果续写',
                     );
                     updateTokenUsage(data, historyMsgCount, `${payload.flags.luckinChatActive ? 'luckin-chat' : 'mcp-chat'}-${it + 1}`);
-                    if (stopAfterSingleShot) break;
                 }
                 if (mcpToolResolve) setSearchStatus('');
             }
@@ -1676,7 +1723,10 @@ loopMessages.push(buildToolResultMessage(tc, mcpMsg) as any);
                     await persistMcpLeadIn(contentNow, faked);
                     setSearchStatus(`正在调用 MCP 工具：${faked.map(c => c.exposedName).join('、')}...`);
                     const results: string[] = [];
-                    let stopAfterSingleShot = false;
+                    let singleShotClosing: {
+                        leadIn: string;
+                        outcome: McpSingleShotOutcome;
+                    } | null = null;
                     let executedAny = false;
 
                     for (const call of faked) {
@@ -1694,10 +1744,8 @@ loopMessages.push(buildToolResultMessage(tc, mcpMsg) as any);
                         }
 
                         executedAny = true;
-                        if (call.executionPolicy === 'single-shot') {
-                            stopAfterSingleShot = true;
-                            terminateClaudeAfterImage = true;
-                        }
+                        const isSingleShot =
+                            call.executionPolicy === 'single-shot';
 
                         let r: any;
                         try {
@@ -1707,19 +1755,47 @@ loopMessages.push(buildToolResultMessage(tc, mcpMsg) as any);
                             }, { charId: char.id });
                         }
                         catch (e: any) { r = { success: false, error: e?.message || String(e) }; }
-                        if (r.backgroundJob) addToast('图片已转入后台生成，切换应用不会中断', 'info');
+                        let imageMessages: Message[] = [];
+                        if (r.backgroundJob) {
+                            addToast('图片已转入后台生成，切换应用不会中断', 'info');
+                        }
                         if (r.success && !r.backgroundJob) {
-                            const images = await persistMcpImages(r, { id: call.server.id, name: call.server.name }, call.toolName, sanitizeNovelAiReferenceToolArguments(cleanedArgs));
-                            await runSynchronousImageInspect(afterGenerateAction, images);
+                            imageMessages = await persistMcpImages(
+                                r,
+                                { id: call.server.id, name: call.server.name },
+                                call.toolName,
+                                sanitizeNovelAiReferenceToolArguments(cleanedArgs),
+                            );
+                            await runSynchronousImageInspect(
+                                afterGenerateAction,
+                                imageMessages,
+                            );
                         }
                         results.push(r.success
                             ? `工具 ${call.exposedName} 执行成功, 结果: ${formatMcpToolResult(r.data)}`
                             : `工具 ${call.exposedName} 执行失败: ${r.error}`);
-                        if (terminateClaudeAfterImage) break;
+                        if (isSingleShot) {
+                            singleShotClosing = {
+                                leadIn: stripTextFakedMcpCalls(
+                                    contentNow,
+                                    faked,
+                                ).trim(),
+                                outcome: resolveMcpSingleShotOutcome({
+                                    toolName: call.exposedName,
+                                    result: r,
+                                    imageMessageCount: imageMessages.length,
+                                }),
+                            };
+                            break;
+                        }
                     }
 
-                    if (terminateClaudeAfterImage) {
-                        skipFinalAssistantPostProcess = true;
+                    if (singleShotClosing) {
+                        await closeMcpSingleShot(
+                            singleShotClosing.leadIn,
+                            singleShotClosing.outcome,
+                            `mcp-text-image-${it + 1}`,
+                        );
                         break;
                     }
                     // 纯文字收尾再次输出已拦截调用时，不再发起额外模型请求。
@@ -1737,12 +1813,10 @@ ${results.join('\n')}
                     const followBody = buildMcpTextFallbackBody(baseReqBody, textLoopMessages);
                     data = await executeChatBody(followBody, 'MCP 正文工具结果续写');
                     updateTokenUsage(data, historyMsgCount, `mcp-text-${it + 1}`);
-                    if (stopAfterSingleShot) break;
                 }
                 setSearchStatus('');
             }
 
-            if (!skipFinalAssistantPostProcess) {
             /** single-shot 已执行后，最终正文中的假生图语法只做本地清洗。 */
             if (mcpToolResolve && mcpTurnExecution.singleShotAttempted) {
                 const finalContent: string = data.choices?.[0]?.message?.content || '';
@@ -1769,8 +1843,6 @@ ${results.join('\n')}
                 }
             }
 
-            }
-            if (!skipFinalAssistantPostProcess) {
             // DEBUG: Log full API response details for troubleshooting truncation issues
             console.log('🔍 [API Response Debug]', JSON.stringify({
                 finish_reason: data.choices?.[0]?.finish_reason,
@@ -1873,7 +1945,6 @@ ${results.join('\n')}
             // 对它已失效）会重新 reloadMessages；用户不在该会话时补未读 + toast。
             // instant 路径不发：它的落库回落走 'active-msg-received'（activeMsgRuntime）。
             announceChatGen(CHAT_GEN_EVENTS.replyArrived, { charId: char.id, charName: char.name });
-            }
 
         } catch (e: any) {
             // 注意: 这个 catch 兜的是「拿到 API 响应之后」的整条后处理管线 (applyAssistantPostProcessing,

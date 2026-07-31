@@ -2867,7 +2867,10 @@ recordApiCall({ requestId: (config as any)?.__sullyApiCallId, url: urlStr, body:
       setLastMsgTimestamp(Date.now());
       addToastRef.current('后台图片已生成，已保存到聊天和相册', 'success');
     },
-    onFailed: job => addToastRef.current(job.lastError || '后台生图失败', 'error'),
+    onFailed: job => {
+      setLastMsgTimestamp(Date.now());
+      addToastRef.current(job.lastError || '后台生图失败', 'error');
+    },
   }), []);
   const showError = (title: string, details: string) => { setErrorDialog({ title, details }); };
   const dismissError = () => { setErrorDialog(null); };
