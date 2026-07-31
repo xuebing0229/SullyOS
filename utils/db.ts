@@ -1295,8 +1295,13 @@ export const DB = {
 
   saveAssetRaw: async (id: string, data: any): Promise<void> => {
       const db = await openDB();
-      const transaction = db.transaction(STORE_ASSETS, 'readwrite');
-      transaction.objectStore(STORE_ASSETS).put({ id, data });
+      return new Promise((resolve, reject) => {
+          const transaction = db.transaction(STORE_ASSETS, 'readwrite');
+          transaction.objectStore(STORE_ASSETS).put({ id, data });
+          transaction.oncomplete = () => resolve();
+          transaction.onerror = () => reject(transaction.error);
+          transaction.onabort = () => reject(transaction.error || new Error('saveAssetRaw transaction aborted'));
+      });
   },
 
   deleteAsset: async (id: string): Promise<void> => {
@@ -1743,6 +1748,13 @@ export const DB = {
       const db = await openDB();
       const transaction = db.transaction(STORE_DAILY_SCHEDULE, 'readwrite');
       transaction.objectStore(STORE_DAILY_SCHEDULE).put(schedule);
+  },
+
+  deleteDailySchedule: async (charId: string, date: string): Promise<void> => {
+      const db = await openDB();
+      if (!db.objectStoreNames.contains(STORE_DAILY_SCHEDULE)) return;
+      const transaction = db.transaction(STORE_DAILY_SCHEDULE, 'readwrite');
+      transaction.objectStore(STORE_DAILY_SCHEDULE).delete(`${charId}_${date}`);
   },
 
   // ─── 热点快照 (分时段，全角色共享) ───
@@ -2488,7 +2500,7 @@ export const DB = {
       const stores=db.objectStoreNames.contains(STORE_API_COST_DAILY)?[STORE_API_CALL_LOG,STORE_API_COST_DAILY]:[STORE_API_CALL_LOG];
       const tx=db.transaction(stores,'readwrite'), logStore=tx.objectStore(STORE_API_CALL_LOG), costStore=stores.length>1?tx.objectStore(STORE_API_COST_DAILY):null;
       const logReq=logStore.get('log'), dayReq=costStore?.get(localDateKey(entry.timestamp)); let logReady=false,dayReady=!dayReq,inserted=false,queued=false,record:any={id:'log',entries:[]},day:ApiCostDailySummary|undefined;
-      const write=()=>{if(queued||!logReady||!dayReady)return;queued=true;const cur=Array.isArray(record.entries)?record.entries:[];if(cur.some((x:any)=>x?.id===entry.id))return;inserted=true;const cutoff=Date.now()-API_CALL_LOG_MAX_AGE_MS;logStore.put({id:'log',entries:[entry,...cur].filter((x:any)=>(x?.timestamp??0)>cutoff).slice(0,API_CALL_LOG_MAX_ENTRIES)});costStore?.put(applyEntryToDailySummary(day,entry));};
+      const write=()=>{if(queued||!logReady||!dayReady)return;queued=true;const cur=Array.isArray(record.entries)?record.entries:[];const duplicateIndex=cur.findIndex((x:any)=>x?.id===entry.id);const cutoff=Date.now()-API_CALL_LOG_MAX_AGE_MS;if(duplicateIndex>=0){const existing=cur[duplicateIndex];const defined=Object.fromEntries(Object.entries(entry).filter(([,value])=>value!==undefined&&value!==null&&value!==''));const merged={...existing,...defined,id:existing.id};const next=[...cur];next[duplicateIndex]=merged;logStore.put({id:'log',entries:next.filter((x:any)=>(x?.timestamp??0)>cutoff).slice(0,API_CALL_LOG_MAX_ENTRIES)});return;}inserted=true;logStore.put({id:'log',entries:[entry,...cur].filter((x:any)=>(x?.timestamp??0)>cutoff).slice(0,API_CALL_LOG_MAX_ENTRIES)});costStore?.put(applyEntryToDailySummary(day,entry));};
       logReq.onsuccess=()=>{logReady=true;record=logReq.result??record;write();};logReq.onerror=()=>{logReady=true;write();};if(dayReq){dayReq.onsuccess=()=>{dayReady=true;day=dayReq.result;write();};dayReq.onerror=()=>{dayReady=true;write();};}
       return new Promise((resolve,reject)=>{tx.oncomplete=()=>resolve(inserted);tx.onerror=()=>reject(tx.error);tx.onabort=()=>reject(tx.error??new Error('API cost transaction aborted'));});
   },
@@ -2560,8 +2572,13 @@ export const DB = {
   clearApiCallLog: async (): Promise<void> => {
       const db = await openDB();
       if (!db.objectStoreNames.contains(STORE_API_CALL_LOG)) return;
-      const tx = db.transaction(STORE_API_CALL_LOG, 'readwrite');
-      tx.objectStore(STORE_API_CALL_LOG).put({ id: 'log', entries: [] });
+      return new Promise((resolve, reject) => {
+          const tx = db.transaction(STORE_API_CALL_LOG, 'readwrite');
+          tx.objectStore(STORE_API_CALL_LOG).put({ id: 'log', entries: [] });
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => reject(tx.error || new Error('clearApiCallLog transaction failed'));
+          tx.onabort = () => reject(tx.error || new Error('clearApiCallLog transaction aborted'));
+      });
   },
 
   // 导入备份用：直接写回一条 vr_settings 原始记录（{id, ...}）。
@@ -2732,6 +2749,39 @@ export const DB = {
           const request = store.getAll();
           request.onsuccess = () => resolve(request.result || []);
           request.onerror = () => reject(request.error);
+      });
+  },
+
+  /**
+   * 在单个 readonly 事务里用游标逐条同步消费整表。onItem 不能返回 Promise；每次 cursor
+   * success 都只持有当前记录，适合边剥图边写备份分片，同时保留 getAll 的单事务快照语义。
+   */
+  streamRawStoreData: async (
+      storeName: string,
+      onItem: (item: any) => void,
+  ): Promise<void> => {
+      const db = await openDB();
+      if (!db.objectStoreNames.contains(storeName)) return;
+      return new Promise((resolve, reject) => {
+          const tx = db.transaction(storeName, 'readonly');
+          const req = tx.objectStore(storeName).openCursor();
+          let callbackError: unknown;
+
+          req.onsuccess = () => {
+              const cursor = req.result;
+              if (!cursor || callbackError) return;
+              try {
+                  onItem(cursor.value);
+                  cursor.continue();
+              } catch (error) {
+                  callbackError = error;
+                  try { tx.abort(); } catch { /* transaction may already be closing */ }
+              }
+          };
+          req.onerror = () => reject(req.error || tx.error || new Error('streamRawStoreData cursor failed'));
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => reject(callbackError || tx.error || new Error('streamRawStoreData tx failed'));
+          tx.onabort = () => reject(callbackError || tx.error || new Error('streamRawStoreData tx aborted'));
       });
   },
 

@@ -19,14 +19,15 @@ import { buildChatFineTuneCss, mergeChatFineTune } from '../utils/chatFineTuneCs
 import ChatFineTunePanel from '../components/chat/ChatFineTunePanel';
 import { FadersHorizontal } from '@phosphor-icons/react';
 import { generateDailyScheduleForChar, isScheduleFeatureOn } from '../utils/scheduleGenerator';
-import { getLocalDailySchedule } from '../utils/dailySchedule';
+import { getDailyScheduleForChar } from '../utils/dailySchedule';
 import { useLocalDateKey } from '../hooks/useLocalDateKey';
+import { resolveCharTimeZone } from '../utils/timezone';
 import { generateSlotTheater } from '../utils/theaterGenerator';
 import TheaterPlayer from '../components/schedule/TheaterPlayer';
 import { formatMessageWithTime, normalizeMessageContent } from '../utils/messageFormat';
 import { getRoomLabel } from '../utils/memoryPalace/types';
-import { XhsMcpClient, extractNotesFromMcpData, normalizeNote } from '../utils/xhsMcpClient';
-import { extractWebpageContent, detectFirstUrl, detectXhsShortUrl, isXhsUrl, extractXhsNoteId, expandShortUrl, type ExtractedWebpage } from '../utils/webpageExtractor';
+import { XhsMcpClient, extractNotesFromMcpData, normalizeXhsLiteDetail } from '../utils/xhsMcpClient';
+import { extractWebpageContent, detectFirstUrl, detectXhsShortUrl, extractXhsShareTitle, isXhsUrl, extractXhsNoteId, expandShortUrl, type ExtractedWebpage } from '../utils/webpageExtractor';
 import { isVideoShareUrl, parseVideoShareUrl } from '../utils/videoParser';
 import { isDevDebugAvailable } from '../utils/devDebug';
 import { resolveLifeRecordCard } from '../utils/lifeRecords';
@@ -45,6 +46,7 @@ import ChatHeader from '../components/chat/ChatHeaderShell';
 import CharacterEntryTransition from '../components/chat/CharacterEntryTransition';
 import ChromeCssEditor from '../components/chat/ChromeCssEditor';
 import ChatInputArea from '../components/chat/ChatInputArea';
+import MemoryRepairPortal from '../components/chat/MemoryRepairPortal';
 import ChatModals from '../components/chat/ChatModals';
 import Modal from '../components/os/Modal';
 import ProactiveSettingsModal from '../components/chat/ProactiveSettingsModal';
@@ -81,7 +83,7 @@ type InstantToolUiStatus = {
 };
 
 const Chat: React.FC = () => {
-    const { characters, activeCharacterId, setActiveCharacterId, updateCharacter, apiConfig, apiPresets, addApiPreset, closeApp, customThemes, removeCustomTheme, addToast, showError, userProfile, lastMsgTimestamp, groups, characterGroups, clearUnread, unreadMessages, realtimeConfig, memoryPalaceConfig, syncEmotionApiToAllCharacters, theme: osTheme, proactiveComposingChars, openDateWithChar } = useOS();
+    const { characters, activeCharacterId, setActiveCharacterId, updateCharacter, apiConfig, apiPresets, addApiPreset, closeApp, customThemes, removeCustomTheme, addToast, showError, userProfile, lastMsgTimestamp, groups, characterGroups, clearUnread, unreadMessages, realtimeConfig, memoryPalaceConfig, remoteVectorConfig, syncEmotionApiToAllCharacters, theme: osTheme, proactiveComposingChars, openDateWithChar } = useOS();
     const isProactiveComposing = !!(activeCharacterId && proactiveComposingChars[activeCharacterId]);
     const localDateKey = useLocalDateKey();
 
@@ -108,6 +110,7 @@ const Chat: React.FC = () => {
     const WINDOW_RADIUS = 25;
     const [input, setInput] = useState('');
     const [showPanel, setShowPanel] = useState<'none' | 'actions' | 'emojis' | 'chars'>('none');
+    const [memoryRepairOpen, setMemoryRepairOpen] = useState(false);
     
     // Emoji State
     const [emojis, setEmojis] = useState<Emoji[]>([]);
@@ -209,6 +212,37 @@ const Chat: React.FC = () => {
     const [showingTargetIds, setShowingTargetIds] = useState<Set<number>>(new Set());
 
     const char = characters.find(c => c.id === activeCharacterId) || characters[0];
+    const memoryRepairRound = useMemo(() => {
+        let assistantIndex = -1;
+        for (let i = messages.length - 1; i >= 0; i--) {
+            if (messages[i].role === 'assistant') {
+                assistantIndex = i;
+                break;
+            }
+        }
+        if (assistantIndex < 0) {
+            return { sinceTs: Date.now(), userMessage: '', assistantReply: '' };
+        }
+        let userIndex = -1;
+        for (let i = assistantIndex - 1; i >= 0; i--) {
+            if (messages[i].role === 'user') {
+                userIndex = i;
+                break;
+            }
+        }
+        const assistantReply = messages
+            .slice(userIndex + 1)
+            .filter(message => message.role === 'assistant')
+            .map(message => message.content)
+            .join('\n');
+        return {
+            // receipt 在用户消息落库之后、助手回复落库之前产生；留 1 秒时钟误差容差。
+            sinceTs: userIndex >= 0 ? Math.max(0, messages[userIndex].timestamp - 1000) : messages[assistantIndex].timestamp - 60_000,
+            userMessage: userIndex >= 0 ? messages[userIndex].content : '',
+            assistantReply,
+        };
+    }, [messages]);
+    const charDateKey = useLocalDateKey(resolveCharTimeZone(char));
     charRef.current = char; // Keep ref in sync for async callbacks
     const historyContextRange = useMemo(() => {
         if (!char) return undefined;
@@ -836,7 +870,7 @@ const Chat: React.FC = () => {
             setScheduleData(null);
             return;
         }
-        getLocalDailySchedule(char.id).then(existing => {
+        getDailyScheduleForChar(char).then(existing => {
             if (!existing) {
                 // Generate in background, don't block chat
                 generateDailySchedule(char, false);
@@ -844,7 +878,7 @@ const Chat: React.FC = () => {
                 setScheduleData(existing);
             }
         }).catch(() => {});
-    }, [activeCharacterId, char?.scheduleFeatureEnabled, localDateKey]);
+    }, [activeCharacterId, char?.scheduleFeatureEnabled, char?.customTimezoneEnabled, char?.customTimezone, charDateKey]);
 
     // 每次真正打开聊天设置时从角色持久化值重新初始化；避免用户在记忆宫殿页
     // 切换全自动模式后，隐藏着的 Chat 组件仍带着旧拉杆状态。
@@ -1064,9 +1098,9 @@ const Chat: React.FC = () => {
                         shortLinkError = e instanceof Error ? e.message : '短链展开失败';
                     }
                 }
-                // 文案标题形如「【标题 | 小红书 …】」，剥掉 "| 小红书…" 后缀（短链文案常无此块）。
-                const titleFromText = (text.match(/【(.+?)】/)?.[1] || '')
-                    .replace(/\s*[|｜]\s*小红书.*$/, '').trim();
+                // 兼容旧版「【标题 | 小红书】」和新版「标题 ... 短链 打开【小红书】」。
+                // 不能直接取第一个【】块：新版唯一的括号内容是应用名，会把卡片标题错误写成“小红书”。
+                const titleFromText = extractXhsShareTitle(text);
 
                 // 拿不到 noteId（短链展开失败/被挡）就不建空卡，保留原文给用户，并明确
                 // 告诉用户如何排查。此前这里完全静默，表现就是“角色能分享、用户分享不了”。
@@ -1087,22 +1121,9 @@ const Chat: React.FC = () => {
                             const result = await XhsMcpClient.getNoteDetail(mcpUrl, noteUrl, xsecToken, { loadAllComments: true });
                             if (isDevDebugAvailable()) console.log('[卡片调试] 小红书抓取 result =', result);
                             if (result.success && result.data) {
-                                // bridge(Lite) 返回 { data: { note, comments } }；MCP 可能直接是 note —— 逐层解包。
-                                const dataRoot = (result.data as any)?.data || result.data;
-                                const noteObj = dataRoot?.note || (result.data as any)?.note || result.data;
-                                const fetched = normalizeNote(noteObj);
+                                const fetched = normalizeXhsLiteDetail(result.data);
                                 // 抓到的字段补全基础卡；id/标题/token 保底，标题优先文案标题（更完整可读）。
                                 note = { ...note, ...fetched, noteId: fetched.noteId || note.noteId, title: titleFromText || fetched.title || note.title, xsecToken: fetched.xsecToken || xsecToken };
-                                // normalizeNote 只保留笔记基础字段会丢掉评论 —— 单独解包评论挂回卡片，
-                                // 让角色读 context 时也能看到评论区（与 char 浏览/分享笔记对齐）。
-                                const rawComments = dataRoot?.comments?.list || dataRoot?.comments
-                                    || (noteObj as any)?.comments?.list || (noteObj as any)?.comments || [];
-                                const comments = (Array.isArray(rawComments) ? rawComments : []).map((c: any) => ({
-                                    author: c.userInfo?.nickname || c.nickname || c.userName || c.author || '匿名',
-                                    content: c.content || '',
-                                    likes: c.likeCount || c.like_count || c.likes || 0,
-                                })).filter((c: any) => c.content).slice(0, 15);
-                                if (comments.length) note.comments = comments;
                             } else if (!result.success) {
                                 // 基础卡仍然可以发送，只提示详情读取失败，避免误以为整次分享失败。
                                 addToast(`小红书正文读取失败，已发送基础卡片。请尝试开启/关闭科学上网、切换 Wi‑Fi/流量，或检查 Lite 配置。${result.error ? `（${result.error}）` : ''}`, 'info');
@@ -1205,7 +1226,7 @@ const Chat: React.FC = () => {
     };
 
     // 用户点开「收到的转账」卡（角色发来、待处理）选择接收 / 退回：
-    // 标记原转账状态 + 补一张回执小卡（role=user，角色侧 prompt 会看到「用户接收/退回了你的转账」）。
+    // 标记原转账状态 + 补一张回执小卡（role=user，角色侧 prompt 会看到 [[记录:TRANSFER|to=user|...|status=已收下/已退回]]）。
     const handleResolveTransfer = useCallback(async (msg: Message, action: 'accepted' | 'returned') => {
         if (!char) return;
         // 只处理仍待处理的转账，避免重复点击造成多张回执。
@@ -1295,6 +1316,7 @@ const Chat: React.FC = () => {
 
     const handlePanelAction = (type: string, payload?: any) => {
         switch (type) {
+            case 'memory-link': setShowPanel('none'); setMemoryRepairOpen(true); break;
             case 'transfer': setModalType('transfer'); break;
             case 'poke': handleSendText('[戳一戳]', 'interaction'); break;
             case 'archive': setModalType('archive-settings'); break;
@@ -1584,7 +1606,7 @@ const Chat: React.FC = () => {
     const loadSchedule = async () => {
         if (!char) return;
         if (!isScheduleFeatureOn(char)) { setScheduleData(null); return; }
-        const s = await getLocalDailySchedule(char.id);
+        const s = await getDailyScheduleForChar(char);
         setScheduleData(s);
     };
 
@@ -1739,7 +1761,7 @@ const Chat: React.FC = () => {
         // 打开后立刻尝试生成（若今日未生成且已选风格）
         const updatedChar = { ...char, ...patch };
         if (updatedChar.scheduleStyle) {
-            const existing = await getLocalDailySchedule(char.id).catch(() => null);
+            const existing = await getDailyScheduleForChar(updatedChar).catch(() => null);
             if (existing) {
                 setScheduleData(existing);
             } else {
@@ -3831,6 +3853,23 @@ const Chat: React.FC = () => {
             {/* 情绪设置已嵌入日程 Modal（与日程强制同步开/关），不再单独渲染 */}
 
             {/* 🍔 麦当劳小程序 - MCP 数据流按钮驱动, 协同聊天走主 pipeline (完整人设/记忆/日程) */}
+            {memoryRepairOpen && char && (
+                <MemoryRepairPortal
+                    char={char}
+                    user={userProfile}
+                    apiConfig={apiConfig}
+                    embeddingConfig={memoryPalaceConfig.embedding}
+                    remoteVectorConfig={remoteVectorConfig}
+                    sinceTs={memoryRepairRound.sinceTs}
+                    userMessage={memoryRepairRound.userMessage}
+                    assistantReply={memoryRepairRound.assistantReply}
+                    onClose={() => {
+                        setMemoryRepairOpen(false);
+                        setShowPanel('none');
+                    }}
+                />
+            )}
+
             <McdMiniApp
                 open={mcdAppOpen}
                 onClose={() => setMcdAppOpen(false)}

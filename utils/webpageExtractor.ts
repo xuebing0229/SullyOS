@@ -124,6 +124,37 @@ export function detectXhsShortUrl(text: string): string | null {
   return null;
 }
 
+function cleanXhsShareTitle(raw: string): string {
+  return raw
+    .replace(/\s*[|｜]\s*(?:小红书|REDnote).*$/i, '')
+    .replace(/\s*(?:\.{2,}|…+|。{2,})\s*$/u, '')
+    .replace(/^[\s“”"'「」『』《》]+|[\s“”"'「」『』《》]+$/g, '')
+    .trim();
+}
+
+/**
+ * 从小红书分享文案中提取卡片标题。
+ *
+ * 桌面旧版常见「【标题 | 小红书】」，手机新版则是
+ * 「标题 ... http://xhslink.cn/... 打开【小红书】即可查看」。
+ * 后一种不能直接取第一个【】块，否则会把应用名“小红书”误当标题。
+ */
+export function extractXhsShareTitle(text: string): string {
+  if (!text) return '';
+
+  const bracketed = [...text.matchAll(/【(.+?)】/g)]
+    .map(match => cleanXhsShareTitle(match[1] || ''))
+    .find(candidate => candidate && !/^(?:小红书|REDnote)$/i.test(candidate));
+  if (bracketed) return bracketed;
+
+  const urls = text.match(/https?:\/\/[^\s，。！？；、'"」』）】]+/ig) || [];
+  const xhsUrl = urls.find(candidate => isXhsUrl(candidate.replace(/[.,;:!?'"）)\]】]+$/, '')));
+  if (!xhsUrl) return '';
+
+  const prefix = cleanXhsShareTitle(text.slice(0, text.indexOf(xhsUrl)));
+  return /^(?:小红书|REDnote)$/i.test(prefix) ? '' : prefix;
+}
+
 /** XHS 链接已有专门的 MCP 卡片路径，网页抓取要避开它，免得抢同一条消息。 */
 export function isXhsUrl(url: string): boolean {
   try {

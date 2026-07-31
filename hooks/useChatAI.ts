@@ -29,6 +29,7 @@ import { buildMcpOpenAITools, buildMcpRejectedToolsFallbackBody, buildMcpTextFal
 import { claimMcpToolExecution, createMcpTurnExecutionState, formatBlockedMcpExecution } from '../utils/mcpExecutionPolicy';
 import { parseImageToolClientOptions, type AfterGenerateAction } from '../utils/imageToolPostAction';
 import { inspectGeneratedImages } from '../utils/generatedImageInspect';
+import { buildToolResultMessage, normalizeToolCallsForCompat } from '../utils/toolCallCompat';
 import { buildChatRequestPayload } from '../utils/chatRequestPayload';
 import { getGameHallBridgeBlock } from '../utils/gameHallMemoryBridge';
 import { persistMcpGeneratedImages } from '../utils/mcpImagePersistence';
@@ -51,9 +52,9 @@ import { buildEmotionUserReferenceSection } from '../utils/emotionUserReference'
 import { announceChatGen, CHAT_GEN_EVENTS } from '../utils/chatGenEvents';
 import { shouldRequestAmbient, buildAmbientEvalSection } from '../utils/roomAmbient';
 import { isEmotionEvalSkipped } from '../utils/devDebug';
-import { runAiRequest, sha256Hex } from '../utils/aiRequestManager';
+import { sha256Hex } from '../utils/aiRequestManager';
+import { executeCachedChatCompletion, executeCachedEmotionCompletion } from '../utils/aiCompletionPipeline';
 import { recordApiCall } from '../utils/apiCallLog';
-import { CHAT_RESPONSE_CACHE_VERSION, shouldPersistChatCompletion } from '../utils/chatResponseCachePolicy';
 import { executeOpenAiChatPlan, resolveApiExecutionPlan, type ApiExecutionPlan } from '../utils/apiFailover';
 import {
     computeContextRangeSnapshot,
@@ -366,15 +367,12 @@ export async function evaluateEmotionBackground(
         const evalMeta = { appName: '消息', charId: charData.id, charName: charData.name, purpose: '情绪评估' };
         let data: any;
         try {
-            const result = await executeOpenAiChatPlan({
+            const result = await executeCachedEmotionCompletion({
                 plan: apiPlan,
-                body: {
-                    ...evalBody,
-                    // 跟随所选线路的流式开关；故障转移线路可各自覆盖 model/stream。
-                    stream: !!effectiveApi.stream,
-                    ...(effectiveApi.stream ? { stream_options: { include_usage: true } } : {}),
-                },
+                body: { ...evalBody, stream: !!effectiveApi.stream, ...(effectiveApi.stream ? { stream_options: { include_usage: true } } : {}) },
                 meta: evalMeta,
+                round: round ? { conversationId: round.conversationId, userMessageId: round.userMessageId, assistantMessageId: round.assistantMessageId } : undefined,
+                forceRefresh: Boolean(round?.forceRefresh),
                 directMaxRetries: 2,
             });
             data = result.value;
@@ -386,11 +384,10 @@ export async function evaluateEmotionBackground(
             // 「评估跟随流式开关」(32c7be7) 之前。评估失败过去被静默吞掉, 用户只看到
             // 情绪徽章闪一下就灭、情绪永不更新 (真实反馈), 这类形状问题必须能自愈。
             console.warn('🎭 [Emotion] streamed eval failed, retrying non-stream:', e?.message);
-            const retryResult = await executeOpenAiChatPlan({
-                plan: apiPlan,
-                body: { ...evalBody, stream: false },
-                meta: evalMeta,
-                directMaxRetries: 1,
+            const retryResult = await executeCachedEmotionCompletion({
+                plan: apiPlan, body: { ...evalBody, stream: false }, meta: evalMeta,
+                round: round ? { conversationId: round.conversationId, userMessageId: round.userMessageId, assistantMessageId: round.assistantMessageId } : undefined,
+                forceRefresh: Boolean(round?.forceRefresh), directMaxRetries: 1,
             });
             data = retryResult.value;
         }
@@ -1231,32 +1228,15 @@ export const useChatAI = ({
 
             let data: any;
             try {
-                const managed = await runAiRequest({
-                    kind: 'chat',
-                    version: CHAT_RESPONSE_CACHE_VERSION,
-                    request: {
-                        provider: apiPlan.cacheIdentity,
-                        body: baseReqBody,
-                        promptVersion: 'chat-prompt-v1',
-                    },
-                    provider: apiPlan.cacheIdentity,
-                    model: baseReqBody.model,
-                    promptVersion: 'chat-prompt-v1',
-                    forceRefresh: !!opts?.forceRefresh,
-                    metadata: { charId: char.id, purpose: '聊天回复' },
-                    shouldCache: (response: any) => shouldPersistChatCompletion(response, { knownTextToolNames: knownTextToolNamesForCache }),
-                    execute: () => executeChatBody(baseReqBody, '聊天回复', streamHooks, true),
+                const managed = await executeCachedChatCompletion({
+                    plan: apiPlan, body: baseReqBody,
+                    meta: { appName: '消息', charId: char.id, charName: char.name, purpose: '聊天回复' },
+                    streamHooks, forceRefresh: Boolean(opts?.forceRefresh),
+                    knownTextToolNames: knownTextToolNamesForCache, directMaxRetries: 2,
                 });
                 data = managed.value;
-                if (!managed.networkRequest) {
-                    recordApiCall({
-                        url: `${baseUrl}/chat/completions`, body: baseReqBody, ok: true, response: data,
-                        durationMs: Math.round(managed.durationMs), source: managed.source, cacheHit: true,
-                        networkRequest: false, requestHash: managed.key, requestChars: JSON.stringify(baseReqBody).length,
-                        meta: { appName: '消息', charId: char.id, charName: char.name, purpose: '聊天回复' },
-                    });
-                }
-                console.log(`🗃️ [AI cache] kind=chat source=${managed.source} key=${managed.key.slice(0, 12)} network=${managed.networkRequest ? 'yes' : 'no'}`);
+                if (managed.route) activeApiForTurn = managed.route.api;
+                console.log(`🗃️ [AI cache] kind=chat source=${managed.source} key=${managed.cacheKey.slice(0, 12)} network=${managed.networkRequest ? 'yes' : 'no'}`);
             } catch (e) {
                 // 仅通用 MCP、且没有和其他工具模式混用时降级。部分 OpenAI 兼容中转
                 // 会对携带 tools 的请求直接回 4xx，而不是忽略参数；去掉 tools 后让
@@ -1542,8 +1522,11 @@ export const useChatAI = ({
                 let loopMessages = [...fullMessages];
                 const loc = luckinChatRef?.current;
                 for (let it = 0; it < MAX_LOOPS; it++) {
-                    let stopAfterSingleShot = false;
-                    const toolCalls = data.choices?.[0]?.message?.tool_calls;
+let stopAfterSingleShot = false;
+                    const toolCalls = normalizeToolCallsForCompat(
+                        data.choices?.[0]?.message?.tool_calls,
+                        `private_${it}`,
+                    );
                     if (!toolCalls || !toolCalls.length) break;
                     if (mcpToolResolve && toolCalls.some((tc: any) => mcpToolResolve?.has(tc.function?.name || ''))) {
                         await persistMcpLeadIn(data.choices?.[0]?.message?.content || '');
@@ -1605,13 +1588,13 @@ export const useChatAI = ({
                             const mcpMsg = mcpResult.success
                                 ? `工具 ${fname} 成功。结果: ${formatMcpToolResult(mcpResult.data)}`
                                 : `工具 ${fname} 失败: ${mcpResult.error}`;
-                            loopMessages.push({ role: 'tool', tool_call_id: tc.id, content: mcpMsg } as any);
+loopMessages.push(buildToolResultMessage(tc, mcpMsg) as any);
                             if (terminateClaudeAfterImage) break;
                             continue;
                         }
                         // 只开了 MCP 没开瑞幸时, 幻觉出的未知工具名直接回错误让模型自我纠正
                         if (!payload.flags.luckinChatActive) {
-                            loopMessages.push({ role: 'tool', tool_call_id: tc.id, content: `未知工具 ${fname}, 只能使用系统提供的工具。` } as any);
+                            loopMessages.push(buildToolResultMessage(tc, `未知工具 ${fname}, 只能使用系统提供的工具。`) as any);
                             continue;
                         }
                         // 经纬度兜底: 角色漏传就用激活时抓到的定位补上
@@ -1621,11 +1604,10 @@ export const useChatAI = ({
                         }
                         // 拦截 createOrder: 不真下单, 引导走结账卡
                         if (/create[-_]?order/i.test(fname)) {
-                            loopMessages.push({
-                                role: 'tool',
-                                tool_call_id: tc.id,
-                                content: '下单与支付由用户在结账卡上完成, 你不要调 createOrder。若还没出结账卡, 请先调 previewOrder 把订单算价展示出来, 然后用角色语气让用户去卡片上确认支付。',
-                            } as any);
+                            loopMessages.push(buildToolResultMessage(
+                                tc,
+                                '下单与支付由用户在结账卡上完成, 你不要调 createOrder。若还没出结账卡, 请先调 previewOrder 把订单算价展示出来, 然后用角色语气让用户去卡片上确认支付。',
+                            ) as any);
                             continue;
                         }
                         let result: any;
@@ -1655,7 +1637,7 @@ export const useChatAI = ({
                         const toolMsg = result.success
                             ? `工具 ${fname} 成功。结果(截断): ${(() => { try { return JSON.stringify(result.data).slice(0, 1500); } catch { return String(result.data).slice(0, 800); } })()}`
                             : `工具 ${fname} 失败: ${result.error}`;
-                        loopMessages.push({ role: 'tool', tool_call_id: tc.id, content: toolMsg } as any);
+                        loopMessages.push(buildToolResultMessage(tc, toolMsg) as any);
                     }
                     if (terminateClaudeAfterImage) {
                         skipFinalAssistantPostProcess = true;
