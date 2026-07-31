@@ -10,6 +10,7 @@ import {
     formatMcpToolResult,
     shouldRetryMcpWithoutTools,
 } from '../mcpToolBridge';
+import { buildToolResultMessage, normalizeToolCallsForCompat } from '../toolCallCompat';
 
 interface GroupMcpCompletionOptions {
     url: string;
@@ -84,8 +85,11 @@ export async function completeGroupChatWithMcp(options: GroupMcpCompletionOption
 
     // 正规 function calling：保留 tools，允许游戏/主持类 MCP 连续多步调用。
     for (let iteration = 0; iteration < 6; iteration++) {
-        const toolCalls = data.choices?.[0]?.message?.tool_calls;
-        if (!Array.isArray(toolCalls) || !toolCalls.length) break;
+        const toolCalls = normalizeToolCallsForCompat(
+            data.choices?.[0]?.message?.tool_calls,
+            `group_${iteration}`,
+        );
+        if (!toolCalls.length) break;
         conversationMessages.push({
             role: 'assistant',
             content: data.choices[0].message.content || '(调用工具中)',
@@ -101,19 +105,21 @@ export async function completeGroupChatWithMcp(options: GroupMcpCompletionOption
             } catch { /* 交给工具返回错误，不中断整轮群聊 */ }
 
             if (!hit) {
-                conversationMessages.push({ role: 'tool', tool_call_id: toolCall.id, content: `未知工具 ${exposedName}，只能使用系统提供的工具。` });
+                conversationMessages.push(buildToolResultMessage(
+                    toolCall,
+                    `未知工具 ${exposedName}，只能使用系统提供的工具。`,
+                ));
                 continue;
             }
             options.onStatus?.(`正在调用 MCP 工具：${exposedName}…`);
-            const preparedArgs = await prepareBuiltinImageToolArguments({ server: hit.server, toolName: hit.toolName, args, character: null });
+const preparedArgs = await prepareBuiltinImageToolArguments({ server: hit.server, toolName: hit.toolName, args, character: null });
             const result = await callMcpTool(hit.server, hit.toolName, preparedArgs);
-            conversationMessages.push({
-                role: 'tool',
-                tool_call_id: toolCall.id,
-                content: result.success
-                    ? `工具 ${exposedName} 成功。结果: ${formatMcpToolResult(result.data)}`
-                    : `工具 ${exposedName} 失败: ${result.error}`,
-            });
+            conversationMessages.push(buildToolResultMessage(
+                toolCall,
+                result.success
+                    ? JSON.stringify(result.data ?? result.content ?? result)
+                    : `工具调用失败：${result.error || '未知错误'}`,
+            ));
         }
         options.onStatus?.('正在整理 MCP 工具结果…');
         data = await request({ ...nativeBody, messages: conversationMessages });

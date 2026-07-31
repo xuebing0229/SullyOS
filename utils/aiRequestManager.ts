@@ -134,7 +134,7 @@ export async function cleanupAiCache(maxBytes = AI_CACHE_MAX_BYTES): Promise<voi
   let total = 0;
   const live: AiCacheEntry[] = [];
   for (const entry of entries) {
-    if (entry.expiresAt <= now || entry.version !== AI_CACHE_VERSION) store.delete(entry.key);
+    if (entry.expiresAt <= now) store.delete(entry.key);
     else { total += entry.size || 0; live.push(entry); }
   }
   if (total > maxBytes) {

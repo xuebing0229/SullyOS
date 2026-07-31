@@ -5,17 +5,20 @@ const {
     buildMessageHistory,
     injectMemoryPalace,
     isMcpChatAvailable,
+    filterVisibleEmojis,
 } = vi.hoisted(() => ({
     buildSystemPromptParts: vi.fn(),
     buildMessageHistory: vi.fn(),
     injectMemoryPalace: vi.fn(),
     isMcpChatAvailable: vi.fn(),
+    filterVisibleEmojis: vi.fn((emojis, categories) => ({ emojis, categories })),
 }));
 
 vi.mock('./chatPrompts', () => ({
     ChatPrompts: {
         buildSystemPromptParts,
         buildMessageHistory,
+        filterVisibleEmojis,
     },
 }));
 

@@ -465,6 +465,8 @@ export function buildPromptBreakdown(body: unknown): PromptBlockStat[] | undefin
 }
 
 export function recordApiCall(input: {
+    /** 同一条 HTTP 请求在显式记录与全局 fetch 兜底间共享的 ID，用于原子去重。 */
+    requestId?: string;
     url: string;
     body?: unknown;
     status?: number;
@@ -502,7 +504,7 @@ export function recordApiCall(input: {
         const pricingSnapshot = input.pricingSnapshot ?? capture.pricingSnapshot;
         const cost = calculateApiCallCost({ pricingSnapshot, usage: billingUsage, ok: input.ok, networkRequest: input.networkRequest ?? true, cacheHit: input.cacheHit ?? false, missingPresetReason: capture.missingPresetReason, failureMayBeBilled: !input.ok && (input.networkRequest ?? true) && failureMayHaveUpstreamCost(input.status) });
         const entry: ApiCallLogEntry = {
-            id: input.entryId ?? `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+id: input.requestId || input.entryId || `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
             timestamp: Date.now(),
             presetId: input.presetId ?? capture.presetId,
             presetName: input.presetName ?? capture.presetName ?? resolvePresetName(baseUrl, model),

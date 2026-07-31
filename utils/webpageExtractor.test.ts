@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { detectFirstUrl, detectXhsShortUrl, isXhsUrl, extractXhsNoteId, parseWebpageHtml, extractWebpageContent } from './webpageExtractor';
+import { detectFirstUrl, detectXhsShortUrl, extractXhsShareTitle, isXhsUrl, extractXhsNoteId, parseWebpageHtml, extractWebpageContent } from './webpageExtractor';
 
 describe('detectFirstUrl', () => {
   it('从一句话里揪出 http(s) 链接', () => {
@@ -48,6 +48,24 @@ describe('detectXhsShortUrl', () => {
   it('不接受相似恶意域名', () => {
     expect(detectXhsShortUrl('https://xhslink.cn.example.com/o/AbC123')).toBeNull();
     expect(detectXhsShortUrl('https://fake-xhslink.cn/o/AbC123')).toBeNull();
+  });
+});
+
+describe('extractXhsShareTitle', () => {
+  it('从新版手机分享文案的短链前提取标题，不把【小红书】当标题', () => {
+    const text = '人机恋教主~ a社是不是该给你和你的克颁发结婚证嘞？ ... http://xhslink.cn/o/3udN9HGr5iT 把文本复制下来，打开【小红书】即可查看。';
+    expect(extractXhsShareTitle(text))
+      .toBe('人机恋教主~ a社是不是该给你和你的克颁发结婚证嘞？');
+  });
+
+  it('继续支持旧版【标题 | 小红书】格式', () => {
+    const text = '【今天也要好好吃饭 | 小红书】 https://xhslink.com/a/AbC123';
+    expect(extractXhsShareTitle(text)).toBe('今天也要好好吃饭');
+  });
+
+  it('只有应用名而没有标题时返回空，允许接口标题兜底', () => {
+    const text = 'http://xhslink.cn/o/AbC123 打开【小红书】即可查看';
+    expect(extractXhsShareTitle(text)).toBe('');
   });
 });
 

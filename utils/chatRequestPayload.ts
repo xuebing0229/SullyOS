@@ -28,6 +28,9 @@ import { isPromptBuildSkipped, isSystemMessageMergeEnabled } from './devDebug';
 import { mergeSystemMessages } from './systemMessageMerge';
 import { injectWorldbookDepthEntries, resolveWorldbookEntries } from './worldbook';
 import { normalizeTranslationLangLabel } from './translationLang';
+import { cleanApiMessages, flattenImageContentParts } from './promptMessageCleanup';
+
+export { cleanApiMessages, flattenImageContentParts } from './promptMessageCleanup';
 
 export interface UserListeningContext {
     songName: string;
@@ -177,44 +180,6 @@ export function deriveRecentTrackSwitchForChar(
 }
 
 /**
- * 剥离历史里旧的双语标签: `%%BILINGUAL%%` 形态整条在标记处截断 (只留原文侧),
- * `<翻译>` XML 形态只留 <原文>。导出仅为单测 — 引用头绝不能混入 %%BILINGUAL%%
- * (见 chatPrompts.buildMessageHistory 的引用摘要清洗), 否则截断会吃掉用户的实际回复。
- */
-export function cleanApiMessages(apiMessages: Array<{ role: string; content: any }>): Array<{ role: string; content: any }> {
-    return apiMessages.map((msg: any) => {
-        if (typeof msg.content !== 'string') return msg;
-        let c: string = msg.content;
-        if (c.toLowerCase().includes('%%bilingual%%')) {
-            const idx = c.toLowerCase().indexOf('%%bilingual%%');
-            c = c.substring(0, idx).trim();
-        }
-        if (c.includes('<翻译>')) {
-            c = c.replace(/<翻译>\s*<原文>([\s\S]*?)<\/原文>\s*<译文>[\s\S]*?<\/译文>\s*<\/翻译>/g, '$1').trim();
-        }
-        return { ...msg, content: c };
-    });
-}
-
-/**
- * 把 buildMessageHistory 产出的多模态图片消息压平成纯文本：保留 text 部分
- * （里面已带 `[User sent an image]` 占位与时间戳），丢弃 image_url 部分。
- * 与 buildMessageHistory 的"图片数据已丢失"分支产出完全同形。
- * 导出仅为单测。
- */
-export function flattenImageContentParts(apiMessages: Array<{ role: string; content: any }>): Array<{ role: string; content: any }> {
-    return apiMessages.map((msg) => {
-        if (!Array.isArray(msg.content)) return msg;
-        const text = msg.content
-            .filter((part: any) => part?.type === 'text')
-            .map((part: any) => part.text || '')
-            .join('\n')
-            .trim();
-        return { ...msg, content: text || '[图片]' };
-    });
-}
-
-/**
  * 构造完整 chat 请求载荷。三段式结构（稳定前缀 / 历史 / 易变尾段）：
  *
  *   1. injectMemoryPalace（向量召回挂到 char.memoryPalaceInjection）
@@ -235,10 +200,19 @@ export function flattenImageContentParts(apiMessages: Array<{ role: string; cont
  */
 export async function buildChatRequestPayload(input: BuildChatPayloadInput): Promise<BuildChatPayloadResult> {
     const {
-        char, userProfile, groups, emojis, categories, historyMsgs, contextLimit,
+        char, userProfile, groups, historyMsgs, contextLimit,
         realtimeConfig, innerState,
         translationConfig, htmlMode, thinkingChain, mcdMiniSnap, luckinMiniSnap, luckinChat,
     } = input;
+    // 角色可见性必须在统一载荷层再次收口。UI 聊天、1.0 本地主动消息、2.0 推送、
+    // 彼方/小小窝等调用方各自维护筛选很容易漏掉一条路径；一旦把全量表情传进来，
+    // 模型既会看到其他角色的专属表情，历史里的同名表情也可能反查到错误 URL。
+    // 即使调用方已经过滤过，重复过滤仍是幂等的。
+    const { emojis, categories } = ChatPrompts.filterVisibleEmojis(
+        input.emojis,
+        input.categories,
+        char.id,
+    );
     const recentMsgsHint = input.recentMsgsHint ?? historyMsgs;
 
     if (isPromptBuildSkipped()) {

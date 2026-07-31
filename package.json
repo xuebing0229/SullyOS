@@ -13,7 +13,8 @@
     "capacitor:sync:after": "node scripts/install-android-gallery-plugin.mjs && node scripts/install-android-game-hall-plugin.mjs",
     "build:workers": "node scripts/build-workers.mjs",
     "test": "vitest",
-    "test:run": "vitest run"
+    "test:run": "vitest run",
+    "verify:upstream-merge": "node scripts/verify-upstream-merge.mjs"
   },
   "dependencies": {
     "@capacitor-community/speech-recognition": "^6.0.1",
