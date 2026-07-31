@@ -121,6 +121,12 @@ const ACNH_ICON_MAP: Partial<Record<AppID, React.ReactNode>> = {
     <rect x="30" y="52" width="14" height="5" rx="2.5" fill={BROWN} /><rect x="34.5" y="47.5" width="5" height="14" rx="2.5" fill={BROWN} />
     <circle cx="64" cy="50" r="4" fill="#FC736D" /><circle cx="72" cy="58" r="4" fill="#82D5BB" />
   </>),
+  [AppID.GameHall]: draw([18, 30, 82, 76], <>
+    <rect x="18" y="38" width="64" height="32" rx="16" fill={CREAM} />
+    <path d="M31 54h15M38.5 46.5v15" stroke={BROWN} strokeWidth="5" strokeLinecap="round" />
+    <circle cx="64" cy="50" r="4" fill="#FC736D" /><circle cx="72" cy="59" r="4" fill="#82D5BB" />
+    <path d="M28 38l7-8M72 38l-7-8" stroke={CREAM} strokeWidth="5" strokeLinecap="round" />
+  </>),
   [AppID.Journal]: draw([21, 24, 79, 77], bookGlyph),
   [AppID.Novel]: draw([21, 24, 79, 77], bookGlyph),
   [AppID.Study]: draw([21, 24, 79, 77], bookGlyph),
