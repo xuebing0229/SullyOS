@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef, useLayoutEffect } from 'react';
+import SensitiveTextInput from '../components/SensitiveTextInput';
 import { useOS } from '../context/OSContext';
 import {
     ArrowLeft, Plus, Trash, BookOpen, Planet, Clock, Play, CaretRight, X,
@@ -764,7 +765,7 @@ const AdminModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                 <div className="text-[13px] font-semibold text-amber-100 mb-1 shrink-0" style={{ fontFamily: `'Noto Serif SC',serif` }}>邮局后台</div>
                 <p className="text-[10px] text-white/45 leading-snug mb-2.5 shrink-0">用 worker 的 <b className="text-amber-200/70">ADMIN_TOKEN</b> 查看后端全部信件（按踩数、时间倒序，最多 200 条），可逐条删除。token 只存在本机。</p>
                 <div className="flex gap-1.5 mb-3 shrink-0">
-                    <input value={token} onChange={e => setToken(e.target.value)} type="password" placeholder="ADMIN_TOKEN" className="flex-1 rounded-lg bg-black/25 px-3 py-2 text-[11.5px] text-amber-50 placeholder-white/25 outline-none" style={{ border: '1px solid rgba(220,190,120,.2)' }} />
+                    <SensitiveTextInput value={token} onChange={e => setToken(e.target.value)} placeholder="ADMIN_TOKEN" className="flex-1 rounded-lg bg-black/25 px-3 py-2 text-[11.5px] text-amber-50 placeholder-white/25 outline-none" style={{ border: '1px solid rgba(220,190,120,.2)' }} />
                     <button onClick={load} disabled={loading} className="shrink-0 px-3.5 rounded-lg text-[11px] font-semibold text-black disabled:opacity-40" style={{ background: 'linear-gradient(120deg,#f3d08a,#e8b75e)' }}>{loading ? '…' : (letters ? '刷新' : '拉取')}</button>
                 </div>
                 {err && <div className="text-[10.5px] text-red-300/80 mb-2 shrink-0">{err}</div>}
@@ -1712,7 +1713,7 @@ const SignalAdminPanel: React.FC<{ onClose: () => void; addToast?: (m: string, t
             <div className="px-3.5 py-2.5 border-b border-white/10 space-y-2">
                 <p className="text-[9.5px] text-white/45 leading-snug">用 worker 的 <b className="text-amber-200/70">ADMIN_TOKEN</b>（和漂流瓶后台同一个）管理跨用户诗集：删整首 / 删单句 / 暂停推入。token 只存本机。</p>
                 <div className="flex gap-1.5">
-                    <input value={token} onChange={e => setToken(e.target.value)} type="password" placeholder="ADMIN_TOKEN"
+                    <SensitiveTextInput value={token} onChange={e => setToken(e.target.value)} placeholder="ADMIN_TOKEN"
                         className="flex-1 rounded-lg bg-black/25 px-3 py-2 text-[11.5px] text-amber-50 placeholder-white/25 outline-none" style={{ border: '1px solid rgba(220,190,120,.2)' }} />
                     <button onClick={() => load(token)} disabled={busy} className="text-[11px] px-3 rounded-lg bg-amber-400/85 text-black font-semibold disabled:opacity-40">拉取</button>
                 </div>

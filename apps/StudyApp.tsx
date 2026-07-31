@@ -1,5 +1,6 @@
 
 import React, { useState, useEffect, useRef } from 'react';
+import SensitiveTextInput from '../components/SensitiveTextInput';
 import { useOS } from '../context/OSContext';
 import { DB } from '../utils/db';
 import { StudyCourse, StudyChapter, CharacterProfile, Message, UserProfile, APIConfig, StudyTutorPreset, QuizQuestion, QuizSession, QuizQuestionNote } from '../types';
@@ -1715,7 +1716,7 @@ Answer in character. Be helpful and clear. If they're confused about a concept, 
                             <h4 className="text-xs font-bold text-slate-500 uppercase tracking-widest mb-3">专用 API（留空则使用全局设置）</h4>
                             <div className="space-y-2">
                                 <input value={localStudyUrl} onChange={e => setLocalStudyUrl(e.target.value)} placeholder="API Base URL" className="w-full bg-slate-100 rounded-xl p-3 text-sm focus:outline-emerald-500" />
-                                <input value={localStudyKey} onChange={e => setLocalStudyKey(e.target.value)} placeholder="API Key" type="password" className="w-full bg-slate-100 rounded-xl p-3 text-sm focus:outline-emerald-500" />
+                                <SensitiveTextInput value={localStudyKey} onChange={e => setLocalStudyKey(e.target.value)} placeholder="API Key" className="w-full bg-slate-100 rounded-xl p-3 text-sm focus:outline-emerald-500" />
                                 <input value={localStudyModel} onChange={e => setLocalStudyModel(e.target.value)} placeholder="模型名称 (e.g. gpt-4o)" className="w-full bg-slate-100 rounded-xl p-3 text-sm focus:outline-emerald-500" />
                                 <div className="flex gap-2">
                                     <button onClick={saveStudyApi} className="flex-1 py-2.5 bg-emerald-500 text-white font-bold rounded-xl text-xs">保存</button>

@@ -1,5 +1,6 @@
 
 import React, { useState, useEffect } from 'react';
+import SensitiveTextInput from '../SensitiveTextInput';
 import Modal from '../os/Modal';
 import { CharacterProfile } from '../../types';
 
@@ -159,8 +160,7 @@ const ProactiveSettingsModal: React.FC<ProactiveSettingsModalProps> = ({
                                     </div>
                                     <div>
                                         <label className="text-xs text-slate-500 font-medium block mb-1">API Key</label>
-                                        <input
-                                            type="password"
+                                        <SensitiveTextInput
                                             value={secKey}
                                             onChange={e => setSecKey(e.target.value)}
                                             placeholder="sk-..."

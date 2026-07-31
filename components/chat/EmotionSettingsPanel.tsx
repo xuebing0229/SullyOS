@@ -1,5 +1,6 @@
 
 import React, { useState, useEffect } from 'react';
+import SensitiveTextInput from '../SensitiveTextInput';
 import { CharacterProfile, ApiPreset, APIConfig, CharacterBuff } from '../../types';
 import { isScheduleFeatureOn } from '../../utils/scheduleGenerator';
 
@@ -152,8 +153,7 @@ const EmotionSettingsPanel: React.FC<EmotionSettingsPanelProps> = ({
                 </div>
                 <div>
                     <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 block pl-1">Key</label>
-                    <input
-                        type="password"
+                    <SensitiveTextInput
                         value={key}
                         onChange={e => { setKey(e.target.value); setDirty(true); }}
                         placeholder="sk-..."

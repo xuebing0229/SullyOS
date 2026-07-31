@@ -13,6 +13,7 @@ import {
     type ImageRemoteConfig,
     type NovelAiRemoteConfig,
 } from '../../utils/builtinImageMcp';
+import SensitiveTextInput from '../SensitiveTextInput';
 import { resetMcpSession, testMcpConnection } from '../../utils/mcpClient';
 import {
     applyImageGenerationPreset, createImageGenerationPreset, deleteImageGenerationPreset,
@@ -24,10 +25,14 @@ interface Props {
     addToast: (message: string, type?: 'success' | 'error' | 'info') => void;
 }
 
-const Input: React.FC<React.InputHTMLAttributes<HTMLInputElement> & { label: string; hint?: string }> = ({ label, hint, ...props }) => (
+const Input: React.FC<Omit<React.InputHTMLAttributes<HTMLInputElement>, 'type'> & { label: string; hint?: string; sensitive?: boolean }> = ({ label, hint, sensitive, ...props }) => (
     <label className="block">
         <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider pl-1">{label}</span>
-        <input {...props} className={`mt-1 w-full rounded-xl border border-slate-200 bg-white/80 px-3 py-2.5 text-xs text-slate-700 outline-none focus:border-violet-300 ${props.className || ''}`} />
+        {sensitive ? (
+            <SensitiveTextInput {...props} className={`mt-1 w-full rounded-xl border border-slate-200 bg-white/80 px-3 py-2.5 text-xs text-slate-700 outline-none focus:border-violet-300 ${props.className || ''}`} />
+        ) : (
+            <input {...props} type="text" className={`mt-1 w-full rounded-xl border border-slate-200 bg-white/80 px-3 py-2.5 text-xs text-slate-700 outline-none focus:border-violet-300 ${props.className || ''}`} />
+        )}
         {hint && <span className="mt-1 block pl-1 text-[10px] leading-relaxed text-slate-400">{hint}</span>}
     </label>
 );
@@ -106,7 +111,7 @@ const BindingAdvanced: React.FC<{
                     <Input label="配置接口地址" value={binding.controlBaseUrl} onChange={event => onChange({ controlBaseUrl: event.target.value })} />
                     <Input
                         label="MCP Token"
-                        type="password"
+                        sensitive
                         autoComplete="new-password"
                         value={binding.token}
                         onChange={event => onChange({ token: event.target.value })}
@@ -358,7 +363,7 @@ const EngineCard: React.FC<{
                             {id === 'novelai' && isNovelConfig(remote) && <NovelForm config={remote} onChange={setRemote} />}
                             <Input
                                 label="API 密钥"
-                                type="password"
+                                sensitive
                                 autoComplete="new-password"
                                 value={apiKey}
                                 onChange={event => setApiKey(event.target.value)}

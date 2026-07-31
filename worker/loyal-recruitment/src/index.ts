@@ -103,7 +103,7 @@ const ADMIN_PAGE = `<!doctype html>
     </header>
     <section class="panel">
       <form id="login">
-        <input id="token" type="password" autocomplete="off" spellcheck="false" placeholder="ADMIN_TOKEN" aria-label="管理员令牌" required>
+        <input id="token" type="text" inputmode="text" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" style="-webkit-text-security:disc" onfocus="this.style.webkitTextSecurity='none'" onblur="this.style.webkitTextSecurity='disc'" placeholder="ADMIN_TOKEN" aria-label="管理员令牌" required>
         <button id="load" type="submit">查看名单</button>
       </form>
       <p id="status" role="status" aria-live="polite">尚未读取数据</p>

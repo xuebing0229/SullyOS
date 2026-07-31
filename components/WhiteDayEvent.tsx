@@ -12,6 +12,7 @@
  */
 
 import React, { useState, useRef, useEffect, useMemo } from 'react';
+import SensitiveTextInput from './SensitiveTextInput';
 import { useOS } from '../context/OSContext';
 import { DB } from '../utils/db';
 import { ContextBuilder } from '../utils/context';
@@ -290,7 +291,7 @@ const WhiteDayApiSetup: React.FC<{ onDone: () => void; onBack: () => void }> = (
                     </div>
                     <div>
                         <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 block pl-1">Key</label>
-                        <input type="password" value={localKey} onChange={(e) => setLocalKey(e.target.value)} placeholder="sk-..." className="w-full bg-white/50 border border-slate-200/60 rounded-xl px-4 py-2.5 text-sm font-mono focus:bg-white transition-all" />
+                        <SensitiveTextInput value={localKey} onChange={(e) => setLocalKey(e.target.value)} placeholder="sk-..." className="w-full bg-white/50 border border-slate-200/60 rounded-xl px-4 py-2.5 text-sm font-mono focus:bg-white transition-all" />
                     </div>
                     <div>
                         <div className="flex justify-between items-center mb-1.5 pl-1">
