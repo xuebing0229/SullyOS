@@ -70,4 +70,31 @@ describe('background image jobs', () => {
         });
         clearBackgroundImageJobs();
     });
+
+    it('strips inspect orchestration fields and records a pending inspect', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+        created: true,
+        job: {
+            id: 'remote-job-inspect',
+            clientRequestId: 'client_request_inspect',
+            toolName: 'generate_image',
+            status: 'queued',
+            createdAt: 1,
+            updatedAt: 1,
+        },
+    }), { status: 202, headers: { 'content-type': 'application/json' } }));
+    await callMcpToolWithBackgroundImage(
+        server,
+        'generate_image',
+        { prompt: 'inspect me', after_generate_action: 'inspect' },
+        { charId: 'char-inspect' },
+    );
+    expect(getBackgroundImageJobs()[0]).toMatchObject({
+        toolArgs: { prompt: 'inspect me' },
+        afterGenerateAction: 'inspect',
+        inspectStatus: 'pending',
+    });
+    const [, init] = fetchMock.mock.calls[0];
+    expect(JSON.parse(String(init?.body)).arguments).toEqual({ prompt: 'inspect me' });
+});
 });

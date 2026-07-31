@@ -10,6 +10,7 @@
 
 import { getEnabledMcpServers, type McpServerConfig, type McpToolDef, type McpToolResult } from './mcpClient';
 import { resolveMcpExecutionPolicy, type McpExecutionPolicy } from './mcpExecutionPolicy';
+import { augmentImageToolSchema } from './imageToolPostAction';
 
 export interface OpenAIMcpTool {
     type: 'function';
@@ -60,7 +61,9 @@ export const buildMcpOpenAITools = (charId?: string): { tools: OpenAIMcpTool[]; 
                 function: {
                     name: exposed,
                     description: buildToolDescription(server, t, servers.length > 1),
-                    parameters: t.inputSchema || { type: 'object', properties: {} },
+                    parameters: resolveMcpExecutionPolicy(server, t) === 'single-shot'
+                    ? augmentImageToolSchema(t.inputSchema || { type: 'object', properties: {} })
+                    : (t.inputSchema || { type: 'object', properties: {} }),
                 },
             });
         }
@@ -223,6 +226,8 @@ ${hasGptImage ? '- `generate_image`：自然语言、写实、海报、物品、
 ${hasNovelAi ? '- `novelai_generate_image`：二次元、标签提示词、负面提示词、Seed/Steps/Guidance、NovelAI 风格控制。' : ''}
 - 用户明确说“用 GPT 画/生图”时必须用 GPT 工具；明确说“用 NovelAI 画/生图”时必须用 NovelAI 工具。
 - 用户未指定时再按画面类型判断；不要为了展示能力同时调用两套引擎。
+- 生图工具同一轮只能调用一次。可选参数 after_generate_action：none 表示图片完成后直接结束；inspect 表示系统在最终图片真正完成后再把图片交给你看，并让你自然回应一小句。
+- 默认使用 none。仅当用户明确要求看图后评价，或当前语境确实需要亲自看最终成图时才使用 inspect；不要为了显得更有互动感默认使用 inspect。
 ` : '';
     return `
 
@@ -334,6 +339,7 @@ export const buildMcpRejectedToolsFallbackBody = (baseReqBody: any): any => {
         hasGptImage ? '- generate_image：自然语言、写实、海报、物品、风景、通用图片。' : '',
         hasNovelAi ? '- novelai_generate_image：二次元、标签提示词、负面提示词、Seed/Steps/Guidance、NovelAI 风格控制。' : '',
         hasGptImage || hasNovelAi ? '- 用户明确指定 GPT 或 NovelAI 时必须遵从；未指定时按画面类型判断；不要同时调用两套引擎。' : '',
+        hasGptImage || hasNovelAi ? '- 生图同轮只能调用一次；after_generate_action 默认 none，仅在确实需要看最终成图后回应时使用 inspect。' : '',
     ].filter(Boolean);
     const newline = String.fromCharCode(10);
     const imageSelectionRules = imageSelectionLines.length

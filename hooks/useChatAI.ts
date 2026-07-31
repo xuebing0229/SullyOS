@@ -24,9 +24,11 @@ import { MCD_PROPOSE_TOOL, autoFixProposalCodesByName } from '../utils/mcdToolBr
 import { LUCKIN_PROPOSE_TOOL, autoFixProposalCodesByName as autoFixLuckinProposalCodesByName, fetchOpenAIToolsForLuckin, inferCardKind as inferLuckinCardKind } from '../utils/luckinToolBridge';
 import { callLuckinTool } from '../utils/luckinMcpClient';
 import { getMcpUseNativeTools, type McpToolResult } from '../utils/mcpClient';
-import { BACKGROUND_IMAGE_JOB_EVENT, callMcpToolWithBackgroundImage } from '../utils/backgroundImageJobs';
+import { BACKGROUND_IMAGE_JOB_EVENT, callMcpToolWithBackgroundImage, getBackgroundImageJobById, getPendingBackgroundImageInspectJobs, updateBackgroundImageInspectStatus } from '../utils/backgroundImageJobs';
 import { buildMcpOpenAITools, buildMcpRejectedToolsFallbackBody, buildMcpTextFallbackBody, extractTextFakedMcpCalls, formatMcpToolResult, sanitizeMcpLeadInText, shouldRetryMcpWithoutTools, stripTextFakedMcpCalls, type FakedMcpCall } from '../utils/mcpToolBridge';
 import { claimMcpToolExecution, createMcpTurnExecutionState, formatBlockedMcpExecution } from '../utils/mcpExecutionPolicy';
+import { parseImageToolClientOptions, type AfterGenerateAction } from '../utils/imageToolPostAction';
+import { inspectGeneratedImages } from '../utils/generatedImageInspect';
 import { buildChatRequestPayload } from '../utils/chatRequestPayload';
 import { persistMcpGeneratedImages } from '../utils/mcpImagePersistence';
 import { prepareBuiltinImageToolArguments, sanitizeNovelAiReferenceToolArguments } from '../utils/novelAiReference';
@@ -479,16 +481,62 @@ export const useChatAI = ({
 
     useEffect(() => {
         if (!char) return;
+        const inspectCompletedJob = async (localJobId: string): Promise<void> => {
+            const job = getBackgroundImageJobById(localJobId);
+            if (!job || job.charId !== char.id || job.inspectStatus !== 'pending') return;
+            if (!updateBackgroundImageInspectStatus(job.id, 'running')) return;
+            try {
+                const recent = await DB.getRecentMessagesByCharId(char.id, 200);
+                setMessages(recent);
+                const images = recent.filter(message => message.type === 'image' && (
+                    message.metadata?.backgroundImageJobId === job.remoteJobId
+                    || message.metadata?.backgroundImageClientRequestId === job.clientRequestId
+                ));
+                if (!images.length) throw new Error('最终图片尚未成功写入聊天');
+                const plan = resolveApiExecutionPlan('chat', apiConfig as APIConfig, false);
+                const inspected = await inspectGeneratedImages({
+                    char,
+                    userProfile,
+                    imageMessages: images,
+                    model: apiConfig.model,
+                    executeChat: async (body, purpose) => (await executeOpenAiChatPlan({
+                        plan, body,
+                        meta: { appName: '消息', charId: char.id, charName: char.name, purpose },
+                        directMaxRetries: 0,
+                    })).value,
+                });
+                await DB.saveMessage({
+                    charId: char.id, role: 'assistant', type: 'text', content: inspected.text,
+                    metadata: {
+                        generatedImageInspectReply: true,
+                        backgroundImageJobId: job.remoteJobId,
+                        backgroundImageClientRequestId: job.clientRequestId,
+                    },
+                } as any);
+                updateBackgroundImageInspectStatus(job.id, 'done');
+                setMessages(await DB.getRecentMessagesByCharId(char.id, 200));
+            } catch (error: any) {
+                const message = error?.message || String(error);
+                updateBackgroundImageInspectStatus(job.id, 'failed', message);
+                console.warn('[BackgroundImage] inspect failed', message);
+            }
+        };
         const handleBackgroundImageJob = (event: Event) => {
             const detail = (event as CustomEvent).detail;
             if (!detail || detail.type !== 'completed' || detail.charId !== char.id) return;
             void DB.getRecentMessagesByCharId(char.id, 200).then(setMessages).catch(error => {
                 console.warn('[BackgroundImage] refresh messages failed', error);
             });
+            if (detail.afterGenerateAction === 'inspect') {
+                void inspectCompletedJob(detail.localJobId);
+            }
         };
         window.addEventListener(BACKGROUND_IMAGE_JOB_EVENT, handleBackgroundImageJob);
+        for (const job of getPendingBackgroundImageInspectJobs(char.id)) {
+            void inspectCompletedJob(job.id);
+        }
         return () => window.removeEventListener(BACKGROUND_IMAGE_JOB_EVENT, handleBackgroundImageJob);
-    }, [char?.id, setMessages]);
+    }, [char?.id, userProfile, apiConfig, setMessages]);
     const [recallStatus, setRecallStatus] = useState<string>('');
     const [searchStatus, setSearchStatus] = useState<string>('');
     const [diaryStatus, setDiaryStatus] = useState<string>('');
@@ -1162,6 +1210,7 @@ export const useChatAI = ({
                 purpose: string,
                 hooks?: typeof streamHooks,
                 useFailover = false,
+                directMaxRetries = 2,
             ): Promise<any> => {
                 const plan = useFailover
                     ? apiPlan
@@ -1171,7 +1220,7 @@ export const useChatAI = ({
                     body,
                     meta: { appName: '消息', charId: char.id, charName: char.name, purpose },
                     streamHooks: hooks,
-                    directMaxRetries: plan.mode === 'direct' ? 2 : 0,
+                    directMaxRetries: plan.mode === 'direct' ? directMaxRetries : 0,
                 });
                 activeApiForTurn = result.route.api;
                 return result.value;
@@ -1227,16 +1276,39 @@ export const useChatAI = ({
                 server: { id: string; name: string } | undefined,
                 toolName: string,
                 toolArgs: Record<string, any>,
-            ): Promise<number> => {
+            ): Promise<Message[]> => {
+                const before = await DB.getRecentMessagesByCharId(char.id, 200);
+                const beforeIds = new Set(before.map(message => message.id));
                 const outcome = await persistMcpGeneratedImages({
                     result, char, server, toolName, toolArgs,
                     recentMessages: contextMsgs, seenKeys: displayedMcpImageKeys,
                 });
                 if (outcome.persisted > 0) addToast(`已保存 ${outcome.persisted} 张图片到聊天和「${char.name}」相册`, 'success');
-                if (outcome.temporary > 0) addToast(`${outcome.temporary} 张图片仅临时显示，未能保存到本机相册，链接可能失效`, 'warning');
+                if (outcome.temporary > 0) addToast(`${outcome.temporary} 张图片仅临时显示，未能保存到本机相册，链接可能失效`, 'info');
                 if (outcome.failed > 0) addToast(`${outcome.failed} 张图片保存失败`, 'error');
-                if (outcome.persisted || outcome.temporary) setMessages(await DB.getRecentMessagesByCharId(char.id, 200));
-                return outcome.persisted + outcome.temporary;
+                if (!outcome.persisted && !outcome.temporary) return [];
+                const recent = await DB.getRecentMessagesByCharId(char.id, 200);
+                setMessages(recent);
+                return recent.filter(message => message.type === 'image' && !beforeIds.has(message.id));
+            };
+            const runSynchronousImageInspect = async (
+                action: AfterGenerateAction,
+                imageMessages: Message[],
+            ): Promise<void> => {
+                if (action !== 'inspect' || !imageMessages.length) return;
+                try {
+                    const inspected = await inspectGeneratedImages({
+                        char, userProfile, imageMessages, model: activeApiForTurn.model,
+                        executeChat: (body, purpose) => executeChatBody(body, purpose, undefined, false, 0),
+                    });
+                    await DB.saveMessage({
+                        charId: char.id, role: 'assistant', type: 'text', content: inspected.text,
+                        metadata: { generatedImageInspectReply: true },
+                    } as any);
+                    setMessages(await DB.getRecentMessagesByCharId(char.id, 200));
+                } catch (error) {
+                    console.warn('[MCP] synchronous image inspect failed', error);
+                }
             };
             const persistMcpLeadIn = async (raw: string, fakedCalls: FakedMcpCall[] = []): Promise<void> => {
                 if (!mcpToolResolve || !raw.trim()) return;
@@ -1453,6 +1525,8 @@ export const useChatAI = ({
 
             // 整轮聊天共用：native FC 与正文假调用不能各自重复执行。
             const mcpTurnExecution = createMcpTurnExecutionState();
+            let terminateClaudeAfterImage = false;
+            let skipFinalAssistantPostProcess = false;
 
             // 3.6 客户端工具循环 —— 两类共用一个循环骨架:
             //     · 瑞幸聊天点单: 真实 8 工具 (queryShopList → searchProductForMcp →
@@ -1489,10 +1563,11 @@ export const useChatAI = ({
                         // 通用 MCP 工具: 命中映射直接分发, 不走下面的瑞幸逻辑
                         const mcpHit = mcpToolResolve?.get(fname);
                         if (mcpHit) {
+                            const { afterGenerateAction, cleanedArgs } = parseImageToolClientOptions(args);
                             const claim = claimMcpToolExecution(mcpTurnExecution, {
                                 serverId: mcpHit.server.id,
                                 toolName: mcpHit.toolName,
-                                args,
+                                args: cleanedArgs,
                                 policy: mcpHit.executionPolicy,
                             });
 
@@ -1507,21 +1582,28 @@ export const useChatAI = ({
 
                             if (mcpHit.executionPolicy === 'single-shot') {
                                 stopAfterSingleShot = true;
+                                terminateClaudeAfterImage = true;
                             }
 
                             setSearchStatus(`正在调用 MCP 工具：${fname}...`);
                             let mcpResult: any;
                             try {
-                                const preparedArgs = await prepareBuiltinImageToolArguments({ server: mcpHit.server, toolName: mcpHit.toolName, args, character: char });
-                                mcpResult = await callMcpToolWithBackgroundImage(mcpHit.server, mcpHit.toolName, preparedArgs, { charId: char.id });
+                                const preparedArgs = await prepareBuiltinImageToolArguments({ server: mcpHit.server, toolName: mcpHit.toolName, args: cleanedArgs, character: char });
+                                mcpResult = await callMcpToolWithBackgroundImage(mcpHit.server, mcpHit.toolName, {
+                                    ...preparedArgs, after_generate_action: afterGenerateAction,
+                                }, { charId: char.id });
                             }
                             catch (e: any) { mcpResult = { success: false, error: e?.message || String(e) }; }
                             if (mcpResult.backgroundJob) addToast('图片已转入后台生成，切换应用不会中断', 'info');
-                            if (mcpResult.success && !mcpResult.backgroundJob) await persistMcpImages(mcpResult, { id: mcpHit.server.id, name: mcpHit.server.name }, mcpHit.toolName, sanitizeNovelAiReferenceToolArguments(args));
+                            if (mcpResult.success && !mcpResult.backgroundJob) {
+                                const images = await persistMcpImages(mcpResult, { id: mcpHit.server.id, name: mcpHit.server.name }, mcpHit.toolName, sanitizeNovelAiReferenceToolArguments(cleanedArgs));
+                                await runSynchronousImageInspect(afterGenerateAction, images);
+                            }
                             const mcpMsg = mcpResult.success
                                 ? `工具 ${fname} 成功。结果: ${formatMcpToolResult(mcpResult.data)}`
                                 : `工具 ${fname} 失败: ${mcpResult.error}`;
                             loopMessages.push({ role: 'tool', tool_call_id: tc.id, content: mcpMsg } as any);
+                            if (terminateClaudeAfterImage) break;
                             continue;
                         }
                         // 只开了 MCP 没开瑞幸时, 幻觉出的未知工具名直接回错误让模型自我纠正
@@ -1572,7 +1654,11 @@ export const useChatAI = ({
                             : `工具 ${fname} 失败: ${result.error}`;
                         loopMessages.push({ role: 'tool', tool_call_id: tc.id, content: toolMsg } as any);
                     }
-                    // single-shot 生图后只允许一次纯文字收尾；普通 MCP 与瑞幸保留 tools 多步推进。
+                    if (terminateClaudeAfterImage) {
+                        skipFinalAssistantPostProcess = true;
+                        break;
+                    }
+                    // 普通 MCP 与瑞幸保留 tools 多步推进。
                     if (mcpToolResolve) setSearchStatus('正在整理 MCP 工具结果...');
                     const followBody = stopAfterSingleShot
                         ? buildMcpTextFallbackBody(baseReqBody, loopMessages)
@@ -1609,10 +1695,11 @@ export const useChatAI = ({
                     let executedAny = false;
 
                     for (const call of faked) {
+                        const { afterGenerateAction, cleanedArgs } = parseImageToolClientOptions(call.args);
                         const claim = claimMcpToolExecution(mcpTurnExecution, {
                             serverId: call.server.id,
                             toolName: call.toolName,
-                            args: call.args,
+                            args: cleanedArgs,
                             policy: call.executionPolicy,
                         });
 
@@ -1622,21 +1709,34 @@ export const useChatAI = ({
                         }
 
                         executedAny = true;
-                        if (call.executionPolicy === 'single-shot') stopAfterSingleShot = true;
+                        if (call.executionPolicy === 'single-shot') {
+                            stopAfterSingleShot = true;
+                            terminateClaudeAfterImage = true;
+                        }
 
                         let r: any;
                         try {
-                            const preparedArgs = await prepareBuiltinImageToolArguments({ server: call.server, toolName: call.toolName, args: call.args, character: char });
-                            r = await callMcpToolWithBackgroundImage(call.server, call.toolName, preparedArgs, { charId: char.id });
+                            const preparedArgs = await prepareBuiltinImageToolArguments({ server: call.server, toolName: call.toolName, args: cleanedArgs, character: char });
+                            r = await callMcpToolWithBackgroundImage(call.server, call.toolName, {
+                                ...preparedArgs, after_generate_action: afterGenerateAction,
+                            }, { charId: char.id });
                         }
                         catch (e: any) { r = { success: false, error: e?.message || String(e) }; }
                         if (r.backgroundJob) addToast('图片已转入后台生成，切换应用不会中断', 'info');
-                        if (r.success && !r.backgroundJob) await persistMcpImages(r, { id: call.server.id, name: call.server.name }, call.toolName, sanitizeNovelAiReferenceToolArguments(call.args));
+                        if (r.success && !r.backgroundJob) {
+                            const images = await persistMcpImages(r, { id: call.server.id, name: call.server.name }, call.toolName, sanitizeNovelAiReferenceToolArguments(cleanedArgs));
+                            await runSynchronousImageInspect(afterGenerateAction, images);
+                        }
                         results.push(r.success
                             ? `工具 ${call.exposedName} 执行成功, 结果: ${formatMcpToolResult(r.data)}`
                             : `工具 ${call.exposedName} 执行失败: ${r.error}`);
+                        if (terminateClaudeAfterImage) break;
                     }
 
+                    if (terminateClaudeAfterImage) {
+                        skipFinalAssistantPostProcess = true;
+                        break;
+                    }
                     // 纯文字收尾再次输出已拦截调用时，不再发起额外模型请求。
                     if (!executedAny) break;
 
@@ -1657,6 +1757,7 @@ ${results.join('\n')}
                 setSearchStatus('');
             }
 
+            if (!skipFinalAssistantPostProcess) {
             /** single-shot 已执行后，最终正文中的假生图语法只做本地清洗。 */
             if (mcpToolResolve && mcpTurnExecution.singleShotAttempted) {
                 const finalContent: string = data.choices?.[0]?.message?.content || '';
@@ -1683,6 +1784,8 @@ ${results.join('\n')}
                 }
             }
 
+            }
+            if (!skipFinalAssistantPostProcess) {
             // DEBUG: Log full API response details for troubleshooting truncation issues
             console.log('🔍 [API Response Debug]', JSON.stringify({
                 finish_reason: data.choices?.[0]?.finish_reason,
@@ -1785,6 +1888,7 @@ ${results.join('\n')}
             // 对它已失效）会重新 reloadMessages；用户不在该会话时补未读 + toast。
             // instant 路径不发：它的落库回落走 'active-msg-received'（activeMsgRuntime）。
             announceChatGen(CHAT_GEN_EVENTS.replyArrived, { charId: char.id, charName: char.name });
+            }
 
         } catch (e: any) {
             // 注意: 这个 catch 兜的是「拿到 API 响应之后」的整条后处理管线 (applyAssistantPostProcessing,

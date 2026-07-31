@@ -16,6 +16,7 @@ import {
 import {
     persistMcpGeneratedImages,
 } from './mcpImagePersistence';
+import { parseImageToolClientOptions, type AfterGenerateAction } from './imageToolPostAction';
 
 export const BACKGROUND_IMAGE_JOB_EVENT =
     'sullyos:background-image-job-event';
@@ -52,6 +53,9 @@ export interface LocalBackgroundImageJob {
     charId: string;
     toolName: string;
     toolArgs: Record<string, any>;
+    afterGenerateAction: AfterGenerateAction;
+    inspectStatus?: 'pending' | 'running' | 'done' | 'failed';
+    inspectError?: string;
 
     status: LocalBackgroundImageJobStatus;
     createdAt: number;
@@ -244,6 +248,11 @@ const sanitizeLoadedJob = (
         charId: raw.charId,
         toolName: raw.toolName,
         toolArgs: clone(raw.toolArgs),
+        afterGenerateAction: raw.afterGenerateAction === 'inspect' ? 'inspect' : 'none',
+        inspectStatus: ['pending', 'running', 'done', 'failed'].includes(raw.inspectStatus)
+            ? raw.inspectStatus
+            : undefined,
+        inspectError: typeof raw.inspectError === 'string' ? raw.inspectError : undefined,
         status: raw.status,
         createdAt: raw.createdAt,
         updatedAt: raw.updatedAt,
@@ -559,6 +568,9 @@ const dispatchJobEvent = (
                     localJobId: job.id,
                     remoteJobId:
                         job.remoteJobId,
+                    clientRequestId: job.clientRequestId,
+                    afterGenerateAction: job.afterGenerateAction,
+                    inspectStatus: job.inspectStatus,
                 },
             },
         ),
@@ -942,6 +954,32 @@ const queuedToolResult = (
     },
 });
 
+export const getBackgroundImageJobById = (id: string): LocalBackgroundImageJob | null =>
+    readState().jobs.find(job => job.id === id) || null;
+
+export const getPendingBackgroundImageInspectJobs = (charId: string): LocalBackgroundImageJob[] =>
+    readState().jobs.filter(job =>
+        job.charId === charId
+        && job.resultAppliedAt
+        && job.afterGenerateAction === 'inspect'
+        && job.inspectStatus === 'pending',
+    );
+
+export const updateBackgroundImageInspectStatus = (
+    id: string,
+    status: 'running' | 'done' | 'failed',
+    error?: string,
+): LocalBackgroundImageJob | null => {
+    const current = getBackgroundImageJobById(id);
+    if (!current) return null;
+    if (status === 'running' && current.inspectStatus !== 'pending') return null;
+    if ((status === 'done' || status === 'failed') && current.inspectStatus !== 'running') return null;
+    return updateJob(id, {
+        inspectStatus: status,
+        inspectError: error,
+    });
+};
+
 export async function callMcpToolWithBackgroundImage(
     server: McpServerConfig,
     toolName: string,
@@ -950,6 +988,7 @@ export async function callMcpToolWithBackgroundImage(
         charId: string;
     },
 ): Promise<McpToolResult> {
+    const { afterGenerateAction, cleanedArgs } = parseImageToolClientOptions(args);
     if (
         !isBackgroundImageToolCall(
             server,
@@ -959,7 +998,7 @@ export async function callMcpToolWithBackgroundImage(
         return callMcpTool(
             server,
             toolName,
-            args,
+            cleanedArgs,
         );
     }
 
@@ -973,7 +1012,7 @@ export async function callMcpToolWithBackgroundImage(
         return callMcpTool(
             server,
             toolName,
-            args,
+            cleanedArgs,
         );
     }
 
@@ -996,7 +1035,9 @@ export async function callMcpToolWithBackgroundImage(
             String(server.token || ''),
         charId: context.charId,
         toolName,
-        toolArgs: clone(args),
+        toolArgs: clone(cleanedArgs),
+        afterGenerateAction,
+        inspectStatus: afterGenerateAction === 'inspect' ? 'pending' : undefined,
         status: 'submitting',
         createdAt,
         updatedAt: createdAt,
