@@ -201,8 +201,8 @@ export interface VirtualTime {
 export type MinimaxRegion = 'domestic' | 'overseas';
 
 // 语音合成（TTS）服务商。'minimax'（默认）走 MiniMax T2A；'fishaudio' 走鱼声 Fish Audio。
-// 全局二选一：切换后所有语音场景（聊天语音条 / 约会 / 电话）统一用同一家。
-export type TtsProvider = 'minimax' | 'fishaudio';
+// 全局手动三选一：切换后所有语音场景（聊天语音条 / 约会 / 电话）统一用同一家。
+export type TtsProvider = 'minimax' | 'fishaudio' | 'elevenlabs';
 
 export interface APIConfig {
   baseUrl: string;
@@ -220,6 +220,9 @@ export interface APIConfig {
   // 鱼声默认模型（s2.1-pro / s2-pro / s1）。缺省 → 's2.1-pro'。
   // 角色 voiceProfile.fishModel 优先于这个全局默认。
   fishAudioModel?: string;
+  elevenLabsApiKey?: string;
+  elevenLabsModel?: 'eleven_v3' | 'eleven_multilingual_v2' | 'eleven_flash_v2_5';
+  elevenLabsOutputFormat?: 'mp3_44100_128';
   // 用户自定义「语音表演指南」——注入到角色 system prompt、教模型怎么写出有情绪的语音台词。
   // minimax / fishaudio：聊天 + 电话共用，按 TTS 服务商分别存（两家标记体系不同，不能共用一份）；
   //   留空 → 用内置默认（minimaxTts.VOICE_ACTING_GUIDE / fishAudioTts.FISH_VOICE_ACTING_GUIDE）。
@@ -229,6 +232,7 @@ export interface APIConfig {
   voicePrompts?: {
     minimax?: string;
     fishaudio?: string;
+    elevenlabs?: string;
     dateVoice?: string;
   };
   // Replicate token (r8_xxx) for ACE-Step song generation in 写歌 App.
@@ -2196,6 +2200,13 @@ export interface CharacterProfile {
       fishReferenceId?: string;
       // 该角色单独指定的鱼声模型（覆盖全局 fishAudioModel）。
       fishModel?: string;
+      elevenLabsVoiceId?: string;
+      elevenLabsModel?: 'eleven_v3' | 'eleven_multilingual_v2' | 'eleven_flash_v2_5';
+      elevenLabsStability?: number;
+      elevenLabsSimilarityBoost?: number;
+      elevenLabsStyle?: number;
+      elevenLabsUseSpeakerBoost?: boolean;
+      elevenLabsSpeed?: number;
       voiceName?: string;
       source?: 'system' | 'voice_cloning' | 'voice_generation' | 'custom';
       model?: string;
