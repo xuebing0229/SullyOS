@@ -9,11 +9,8 @@
  */
 import type { APIConfig, TtsProvider } from '../types';
 
-export const normalizeTtsProvider = (raw: unknown): TtsProvider => {
-  if (raw === 'fishaudio') return 'fishaudio';
-  if (raw === 'elevenlabs') return 'elevenlabs';
-  return 'minimax';
-};
+export const normalizeTtsProvider = (raw: unknown): TtsProvider =>
+  raw === 'fishaudio' ? 'fishaudio' : 'minimax';
 
 let currentProvider: TtsProvider = 'minimax';
 
@@ -47,7 +44,6 @@ export function setVoicePromptOverrides(overrides: APIConfig['voicePrompts'] | u
   voicePromptOverrides = {
     minimax: typeof overrides?.minimax === 'string' ? overrides.minimax : undefined,
     fishaudio: typeof overrides?.fishaudio === 'string' ? overrides.fishaudio : undefined,
-    elevenlabs: typeof overrides?.elevenlabs === 'string' ? overrides.elevenlabs : undefined,
     dateVoice: typeof overrides?.dateVoice === 'string' ? overrides.dateVoice : undefined,
   };
 }
@@ -57,9 +53,3 @@ export function getVoicePromptOverride(key: VoicePromptKey): string | undefined 
   const v = voicePromptOverrides[key];
   return v && v.trim() ? v : undefined;
 }
-
-let currentElevenLabsModel: 'eleven_v3' | 'eleven_multilingual_v2' | 'eleven_flash_v2_5' = 'eleven_v3';
-export function setElevenLabsModel(model?: string | null): void {
-  currentElevenLabsModel = model === 'eleven_multilingual_v2' || model === 'eleven_flash_v2_5' ? model : 'eleven_v3';
-}
-export function getElevenLabsModel(): string { return currentElevenLabsModel; }

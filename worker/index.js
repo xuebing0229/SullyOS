@@ -15,7 +15,7 @@ function corsHeaders(origin) {
   return {
     "Access-Control-Allow-Origin": origin || "*",
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, Authorization, Depth, X-Brave-API-Key, X-Notion-API-Key, X-Feishu-Token, X-Xhs-Cookie, X-Netease-Cookie, X-WebDAV-Method, X-WebDAV-Depth, X-WebDAV-Range, X-GitHub-Method, X-GitHub-Api-Version, Mcp-Session-Id, Accept, Range, X-ElevenLabs-API-Key",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization, Depth, X-Brave-API-Key, X-Notion-API-Key, X-Feishu-Token, X-Xhs-Cookie, X-Netease-Cookie, X-WebDAV-Method, X-WebDAV-Depth, X-WebDAV-Range, X-GitHub-Method, X-GitHub-Api-Version, Mcp-Session-Id, Accept, Range",
     "Access-Control-Expose-Headers": "Mcp-Session-Id",
     "Access-Control-Max-Age": "86400",
   };
@@ -1430,38 +1430,6 @@ export default {
     // CORS preflight
     if (request.method === "OPTIONS") {
       return new Response(null, { status: 204, headers: corsHeaders(origin) });
-    }
-
-    // ========== ElevenLabs TTS 固定代理 ==========
-    if (url.pathname === '/api/elevenlabs/tts') {
-      if (request.method !== 'POST') return jsonResponse({ error: 'Method not allowed' }, { status: 405, origin });
-      const apiKey = request.headers.get('X-ElevenLabs-API-Key');
-      if (!apiKey) return jsonResponse({ error: 'missing ElevenLabs API key' }, { status: 401, origin });
-      try {
-        const body = await request.json();
-        const voiceId = String(body.voiceId || '').trim();
-        if (!/^[A-Za-z0-9_-]{1,128}$/.test(voiceId)) return jsonResponse({ error: 'invalid voiceId' }, { status: 400, origin });
-        const allowedModels = new Set(['eleven_v3', 'eleven_multilingual_v2', 'eleven_flash_v2_5']);
-        if (!allowedModels.has(body.modelId)) return jsonResponse({ error: 'invalid modelId' }, { status: 400, origin });
-        if (typeof body.text !== 'string' || !body.text.trim()) return jsonResponse({ error: 'text required' }, { status: 400, origin });
-        if (body.text.length > 10000) return jsonResponse({ error: 'text too long' }, { status: 413, origin });
-        const upstream = new URL(`https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(voiceId)}`);
-        upstream.searchParams.set('output_format', 'mp3_44100_128');
-        const response = await fetch(upstream.toString(), {
-          method: 'POST',
-          headers: { 'xi-api-key': apiKey, 'Content-Type': 'application/json', Accept: 'audio/mpeg' },
-          body: JSON.stringify({ text: body.text, model_id: body.modelId, voice_settings: body.voiceSettings }),
-        });
-        if (!response.ok) {
-          const detail = (await response.text()).slice(0, 300);
-          return jsonResponse({ error: 'ElevenLabs request failed', detail }, { status: response.status, origin });
-        }
-        const headers = new Headers(corsHeaders(origin));
-        headers.set('Content-Type', response.headers.get('Content-Type') || 'audio/mpeg');
-        return new Response(response.body, { status: response.status, headers });
-      } catch (_error) {
-        return jsonResponse({ error: 'ElevenLabs upstream fetch failed' }, { status: 502, origin });
-      }
     }
 
     // ========== 小红书 Lite 桥接 (/api/<command>) ==========
