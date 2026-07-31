@@ -1500,6 +1500,19 @@ ${isInitialGeneration ? `
                                    <p className="text-[10px] text-slate-400">从 fish.audio 选好音色后，把那一页的链接（含 ?modelId=…）或 32 位 id 直接贴进来都行，会自动识别。设置里语音选「鱼声 Fish」后该角色就用它合成；与上面的 MiniMax voice_id 各存各的。</p>
                                </div>
 
+                               {/* ElevenLabs 独立音色与高级参数 */}
+                               <div className="rounded-2xl border border-violet-200/60 bg-violet-50/40 p-2.5 space-y-2">
+                                   <div className="text-[10px] font-bold text-violet-600 uppercase tracking-widest">ElevenLabs 音色</div>
+                                   <input value={formData.voiceProfile?.elevenLabsVoiceId || ''} onChange={(e) => handleChange('voiceProfile', { ...(formData.voiceProfile || {}), elevenLabsVoiceId: e.target.value })} className="w-full bg-white rounded-2xl px-3 py-2 text-xs border border-slate-200" placeholder="ElevenLabs Voice ID" />
+                                   <select value={formData.voiceProfile?.elevenLabsModel || ''} onChange={(e) => handleChange('voiceProfile', { ...(formData.voiceProfile || {}), elevenLabsModel: (e.target.value || undefined) as any })} className="w-full bg-white rounded-2xl px-3 py-2 text-xs border border-slate-200">
+                                       <option value="">跟随全局模型</option><option value="eleven_v3">Eleven v3</option><option value="eleven_multilingual_v2">Multilingual v2</option><option value="eleven_flash_v2_5">Flash v2.5</option>
+                                   </select>
+                                   <label className="block text-[10px] text-slate-500">稳定度<input type="range" min={0} max={1} step={0.05} value={formData.voiceProfile?.elevenLabsStability ?? 0.5} onChange={(e) => handleChange('voiceProfile', { ...(formData.voiceProfile || {}), elevenLabsStability: Number(e.target.value) })} className="w-full accent-violet-500" /></label>
+                                   <label className="block text-[10px] text-slate-500">相似度<input type="range" min={0} max={1} step={0.05} value={formData.voiceProfile?.elevenLabsSimilarityBoost ?? 0.75} onChange={(e) => handleChange('voiceProfile', { ...(formData.voiceProfile || {}), elevenLabsSimilarityBoost: Number(e.target.value) })} className="w-full accent-violet-500" /></label>
+                                   <label className="block text-[10px] text-slate-500">风格强度<input type="range" min={0} max={1} step={0.05} value={formData.voiceProfile?.elevenLabsStyle ?? 0} onChange={(e) => handleChange('voiceProfile', { ...(formData.voiceProfile || {}), elevenLabsStyle: Number(e.target.value) })} className="w-full accent-violet-500" /></label>
+                                   <label className="block text-[10px] text-slate-500">ElevenLabs 语速<input type="range" min={0.7} max={1.2} step={0.05} value={formData.voiceProfile?.elevenLabsSpeed ?? 1} onChange={(e) => handleChange('voiceProfile', { ...(formData.voiceProfile || {}), elevenLabsSpeed: Number(e.target.value) })} className="w-full accent-violet-500" /></label>
+                                   <label className="flex items-center justify-between text-[10px] text-slate-500"><span>说话人增强</span><input type="checkbox" checked={formData.voiceProfile?.elevenLabsUseSpeakerBoost !== false} onChange={(e) => handleChange('voiceProfile', { ...(formData.voiceProfile || {}), elevenLabsUseSpeakerBoost: e.target.checked })} /></label>
+                               </div>
                                {/* 语速：MiniMax 与鱼声共用 voiceProfile.speed */}
                                <div className="space-y-1 pt-1">
                                    <div className="flex items-center justify-between">
