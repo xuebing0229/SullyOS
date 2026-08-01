@@ -36,6 +36,16 @@ import { isMcdActivatedInMessages, MCD_ACTIVATE_TRIGGER, MCD_DEACTIVATE_TRIGGER 
 import { isLuckinConfigured } from '../utils/luckinMcpClient';
 import { isLuckinActivatedInMessages, LUCKIN_ACTIVATE_TRIGGER, LUCKIN_DEACTIVATE_TRIGGER } from '../utils/luckinToolBridge';
 import MessageItem, { ThinkingChainBlock } from '../components/chat/MessageItem';
+import ImageJobCard from '../components/chat/ImageJobCard';
+import {
+    BACKGROUND_IMAGE_JOB_EVENT,
+    getBackgroundImageJobs,
+} from '../utils/backgroundImageJobs';
+import {
+    IMAGE_JOB_CARD_AUTO_HIDE_MS,
+    visibleImageJobCards,
+    type LocalImageJobCard,
+} from '../utils/imageJobCards';
 import McdMiniApp from '../components/mcd/McdMiniApp';
 import LuckinMiniApp from '../components/luckin/LuckinMiniApp';
 import LuckinLocationModal from '../components/luckin/LuckinLocationModal';
@@ -338,6 +348,38 @@ const Chat: React.FC = () => {
         luckinChatRef,
         updateCharacter,
     });
+
+    // 后台生图任务卡是独立本地 UI 状态，不写入 messages，因而不会进入
+    // 模型上下文、记忆、TTS、导出或聊天 token 计费。
+    const [imageJobCards, setImageJobCards] = useState<LocalImageJobCard[]>([]);
+    useEffect(() => {
+        let hideTimer: ReturnType<typeof setTimeout> | null = null;
+        const refreshCards = () => {
+            const cards = visibleImageJobCards(
+                getBackgroundImageJobs(),
+                char.id,
+            );
+            setImageJobCards(cards);
+            if (hideTimer) clearTimeout(hideTimer);
+            if (cards.some(card => card.status === 'completed')) {
+                hideTimer = setTimeout(
+                    refreshCards,
+                    IMAGE_JOB_CARD_AUTO_HIDE_MS + 50,
+                );
+            }
+        };
+        const onJobEvent = (event: Event) => {
+            const detail = (event as CustomEvent).detail;
+            if (!detail || detail.charId !== char.id) return;
+            refreshCards();
+        };
+        refreshCards();
+        window.addEventListener(BACKGROUND_IMAGE_JOB_EVENT, onJobEvent);
+        return () => {
+            window.removeEventListener(BACKGROUND_IMAGE_JOB_EVENT, onJobEvent);
+            if (hideTimer) clearTimeout(hideTimer);
+        };
+    }, [char.id]);
 
     // --- Voice TTS for chat messages ---
     interface VoiceData { url: string; originalText: string; spokenText?: string; lang?: string; }
@@ -3421,6 +3463,10 @@ const Chat: React.FC = () => {
                         </div>
                     );
                 })}
+
+                {!selectionMode && imageJobCards.map(card => (
+                    <ImageJobCard key={card.id} card={card} />
+                ))}
                 
                 {/* 纯前端「发送准备中」三个点: 不走 MessageItem (那条逐条路径实测渲染不出来), 直接挂在
                     消息列表末尾、靠右(用户侧). 跟 header「发送中」同源 instantSendingActive 一起亮灭.

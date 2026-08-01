@@ -579,6 +579,10 @@ const dispatchJobEvent = (
     type: 'completed' | 'failed' | 'updated',
     job: LocalBackgroundImageJob,
 ): void => {
+    if (
+        typeof window === 'undefined'
+        || typeof CustomEvent === 'undefined'
+    ) return;
     window.dispatchEvent(
         new CustomEvent(
             BACKGROUND_IMAGE_JOB_EVENT,
@@ -651,15 +655,6 @@ const markMonitoredJobFailed = async (
         lastError: detail,
     });
     if (!failed) return null;
-
-    try {
-        await persistBackgroundImageFailureMessage(failed);
-    } catch (persistError) {
-        console.warn(
-            '[BackgroundImage] persist failure message failed',
-            sanitizeMcpOutcomeText(persistError),
-        );
-    }
     dispatchJobEvent('failed', failed);
     options.onFailed?.(failed);
     return failed;
@@ -866,8 +861,13 @@ const reconcileOne = async (
         dispatchJobEvent('updated', updated);
 
         if (remoteJob.status === 'succeeded') {
+            const saving = updateJob(updated.id, {
+                status: 'succeeded',
+                lastCheckedAt: now(),
+            }) || updated;
+            dispatchJobEvent('updated', saving);
             try {
-                await applySucceededJob(updated, remoteJob);
+                await applySucceededJob(saving, remoteJob);
             } catch (error) {
                 await markMonitoredJobFailed(
                     updated.id,
@@ -1076,6 +1076,7 @@ export async function callMcpToolWithBackgroundImage(
     };
 
     upsertJob(localJob);
+    dispatchJobEvent('updated', localJob);
 
     try {
         const remoteJob =
@@ -1106,6 +1107,7 @@ export async function callMcpToolWithBackgroundImage(
             // 旧服务或旧 Nginx 没有 /jobs。只有明确的 404/405/501 才安全直连回退；
             // timeout、断网和 5xx 可能已经接单，必须保留 clientRequestId 查询，不能重发扣费。
             removeJob(localJob.id);
+            dispatchJobEvent('updated', localJob);
             try {
                 return await callMcpTool(
                     server,

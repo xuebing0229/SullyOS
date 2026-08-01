@@ -263,30 +263,15 @@ const normalizeClosingResponse = (
 };
 
 /**
- * single-shot 工具完成后的唯一收尾入口。
- * 请求体不含 tools / tool_choice / tool role / tool_calls，兼容不接受混合协议的中转。
- * execute 只调用一次；失败或空回时改用本地确定性文案，不会再次请求模型。
+ * single-shot 工具完成后的本地收尾入口。
+ * 为保证一次聊天模型 + 一次图片模型，本函数绝不调用 execute。
  */
 export const runMcpSingleShotClosing = async (
     input: RunMcpSingleShotClosingInput,
-): Promise<RunMcpSingleShotClosingResult> => {
-    const body = buildMcpSingleShotClosingBody(input);
-
-    try {
-        const response = await input.execute(body);
-        return normalizeClosingResponse(
-            response,
-            input.previousResponse,
-            input.outcome,
-        );
-    } catch (error) {
-        return {
-            response: buildMcpSingleShotFallbackResponse(
-                input.previousResponse,
-                input.outcome,
-            ),
-            usedFallback: true,
-            error: sanitizeMcpOutcomeText(error),
-        };
-    }
-};
+): Promise<RunMcpSingleShotClosingResult> => ({
+    response: buildMcpSingleShotFallbackResponse(
+        input.previousResponse,
+        input.outcome,
+    ),
+    usedFallback: true,
+});
