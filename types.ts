@@ -3268,6 +3268,8 @@ export interface FullBackupData {
     activeApiPresetId?: string | null;
     apiFailoverGroups?: import('./utils/apiFailover').ApiFailoverGroup[];
     apiCostDailySummaries?: ApiCostDailySummary[];
+    /** 最近五天逐次 API 调用明细；与永久每日汇总分开恢复。 */
+    apiCallLog?: import('./utils/apiCallLog').ApiCallLogEntry[];
     availableModels?: string[];
     realtimeConfig?: RealtimeConfig;  // 实时感知配置（天气/新闻/Notion）
     memoryPalaceConfig?: MemoryPalaceBackupConfig;
@@ -3292,6 +3294,14 @@ export interface FullBackupData {
     socialPosts?: SocialPost[]; 
     courses?: StudyCourse[]; 
     games?: GameSession[];
+    // 游戏厅永久数据；gameHallProtocolCache 是可重建缓存，故意不备份。
+    gameHallSessions?: import('./utils/gameHallTypes').GameHallSession[];
+    gameHallMessages?: import('./utils/gameHallTypes').GameHallMessage[];
+    gameHallPendingActions?: import('./utils/gameHallTypes').GameHallPendingAction[];
+    gameHallBridgeSnapshots?: import('./utils/gameHallTypes').GameHallBridgeSnapshot[];
+    gameHallEvents?: import('./utils/gameHallMemoryTypes').GameHallEvent[];
+    gameHallMemoryCandidates?: import('./utils/gameHallMemoryTypes').GameHallMemoryCandidate[];
+    gameHallPreferenceEvidence?: import('./utils/gameHallMemoryTypes').GameHallPreferenceEvidence[];
     worldbooks?: Worldbook[]; 
     roomCustomAssets?: { id?: string; name: string; image: string; defaultScale: number; description?: string; visibility?: 'public' | 'character'; assignedCharIds?: string[] }[]; 
     
@@ -3315,6 +3325,10 @@ export interface FullBackupData {
     mcdLocal?: Record<string, string>;         // 麦当劳：token + 启用状态（存 localStorage）
     mcpLocal?: Record<string, string>;         // 通用 MCP：用户自配的服务器列表（存 localStorage）
     imageGenerationLocal?: import('./utils/imageGenerationPresets').ImageGenerationBackupLocal; // 生图预设、API Key、内置/通用 MCP Token 与配置
+    /** Cedar Toy MCP 地址、Token、代理与已发现工具；新备份始终带空状态以清除旧设备残留。 */
+    gameHallCedarConnection?: import('./utils/cedarToyMcpAdapter').CedarToyConnectionBackup;
+    /** 只包含可继续轮询的未完成后台生图任务；完成/失败历史由聊天与相册承担。 */
+    backgroundImageJobs?: import('./utils/backgroundImageJobs').BackgroundImageJobsBackup;
     desktopSkinLocal?: Record<string, string>; // 桌面皮肤偏好：电子宠物/手游风的界面配色 + 看板 banner（存 localStorage；看板图令牌导出时解析为 data URL）
     songs?: SongSheet[]; // Songwriting app data
     

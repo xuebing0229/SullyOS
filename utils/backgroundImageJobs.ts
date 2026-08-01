@@ -72,6 +72,13 @@ interface LocalState {
     jobs: LocalBackgroundImageJob[];
 }
 
+
+export interface BackgroundImageJobsBackup {
+    version: 1;
+    exportedAt: number;
+    jobs: LocalBackgroundImageJob[];
+}
+
 interface RemoteImageJob {
     id: string;
     clientRequestId: string;
@@ -1225,6 +1232,39 @@ export function startBackgroundImageJobMonitor(
             .then(handle => handle.remove())
             .catch(() => {});
     };
+}
+
+export function exportBackgroundImageJobsForBackup(): BackgroundImageJobsBackup {
+    return {
+        version: 1,
+        exportedAt: now(),
+        // 只保存能继续 reconcile 的任务。已成功落图、失败或取消的历史已经在聊天/相册里。
+        jobs: clone(getUnfinishedJobs()),
+    };
+}
+
+export function importBackgroundImageJobsFromBackup(data: unknown): number {
+    if (!data || typeof data !== 'object' || (data as any).version !== 1 || !Array.isArray((data as any).jobs)) {
+        return 0;
+    }
+
+    const resumable = new Set<LocalBackgroundImageJobStatus>([
+        'submitting', 'queued', 'running', 'succeeded',
+    ]);
+    const byIdentity = new Map<string, LocalBackgroundImageJob>();
+    for (const raw of (data as any).jobs) {
+        const job = sanitizeLoadedJob(raw);
+        if (!job || job.resultAppliedAt || !resumable.has(job.status)) continue;
+        const identity = job.clientRequestId || job.id;
+        const previous = byIdentity.get(identity);
+        if (!previous || previous.updatedAt <= job.updatedAt) byIdentity.set(identity, job);
+    }
+
+    const jobs = [...byIdentity.values()]
+        .sort((a, b) => a.createdAt - b.createdAt)
+        .slice(-MAX_LOCAL_JOBS);
+    writeState({ version: 1, jobs });
+    return jobs.length;
 }
 
 export function getBackgroundImageJobs():

@@ -21,6 +21,7 @@ import { exportMcpLocal, importMcpLocal } from './mcpClient';
 import { exportWorldHomeLocal, importWorldHomeLocal } from './worldHome/localBackup';
 import { exportDesktopSkinLocal, importDesktopSkinLocal } from './desktopSkinBackup';
 import { applyGalleryReview } from './galleryReview';
+import { GAME_HALL_BACKUP_STORES, GAME_HALL_PROTOCOL_CACHE_STORE } from './gameHallBackup';
 
 const DB_NAME = 'AetherOS_Data';
 // v67：两条并行线各自用掉了 v65/v66（A线: blob_assets + 生活记录；B线: room_plates 门牌 + digest_reports 消化日志），
@@ -2542,6 +2543,30 @@ export const DB = {
       });
   },
 
+  /** 恢复最近五天调用明细，但绝不清空或重算永久每日消费汇总。 */
+  replaceApiCallLog: async (entries: ApiCallLogEntry[]): Promise<void> => {
+      const db = await openDB();
+      if (!db.objectStoreNames.contains(STORE_API_CALL_LOG)) return;
+      const cutoff = Date.now() - API_CALL_LOG_MAX_AGE_MS;
+      const seenIds = new Set<string>();
+      const pruned = (Array.isArray(entries) ? entries : [])
+          .filter(entry => entry && typeof entry.id === 'string' && (entry.timestamp ?? 0) > cutoff)
+          .sort((a, b) => (b.timestamp ?? 0) - (a.timestamp ?? 0))
+          .filter(entry => {
+              if (seenIds.has(entry.id)) return false;
+              seenIds.add(entry.id);
+              return true;
+          })
+          .slice(0, API_CALL_LOG_MAX_ENTRIES);
+      const tx = db.transaction(STORE_API_CALL_LOG, 'readwrite');
+      tx.objectStore(STORE_API_CALL_LOG).put({ id: 'log', entries: pruned });
+      return new Promise((resolve, reject) => {
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => reject(tx.error);
+          tx.onabort = () => reject(tx.error ?? new Error('API call log restore aborted'));
+      });
+  },
+
   replaceApiCallLogAndRebuildCost: async (entries: ApiCallLogEntry[]): Promise<void> => {
       const db = await openDB();
       if (!db.objectStoreNames.contains(STORE_API_CALL_LOG) || !db.objectStoreNames.contains(STORE_API_COST_DAILY)) return;
@@ -2882,11 +2907,11 @@ export const DB = {
           STORE_LIFE_SETTINGS,
           STORE_HOTNEWS,
           STORE_VR_NOVELS, STORE_VR_ANNOTATIONS, STORE_CC_PARTS, STORE_VR_MUSIC, STORE_VR_GUESTBOOK, STORE_VR_SCRIPTS, STORE_VR_PLAYS, STORE_VR_PRESETS, STORE_VR_LETTERS, STORE_VR_SETTINGS,
-          STORE_API_COST_DAILY,
+          STORE_API_CALL_LOG, STORE_API_COST_DAILY,
           STORE_WORLDS, STORE_WORLD_EPISODES,
           'memory_nodes', 'memory_vectors', 'memory_links', 'topic_boxes', 'anticipations', 'event_boxes',
           'room_plates', 'digest_reports',
-              'gameHallSessions', 'gameHallMessages', 'gameHallPendingActions', 'gameHallBridgeSnapshots', 'gameHallProtocolCache', 'gameHallEvents', 'gameHallMemoryCandidates', 'gameHallPreferenceEvidence',
+              ...GAME_HALL_BACKUP_STORES.map(item => item.storeName), GAME_HALL_PROTOCOL_CACHE_STORE,
           'memory_batches', 'pixel_home_assets', 'pixel_home_layouts'
       ].filter(name => db.objectStoreNames.contains(name));
 
@@ -2941,6 +2966,8 @@ export const DB = {
           data.socialPosts !== undefined,
           data.courses !== undefined,
           data.games !== undefined,
+          ...GAME_HALL_BACKUP_STORES.map(({ field }) => (data as any)[field] !== undefined),
+          data.apiCallLog !== undefined,
           data.worldbooks !== undefined,
           data.novels !== undefined,
           data.songs !== undefined,
@@ -3210,6 +3237,14 @@ export const DB = {
           await clearAndAdd(STORE_GAMES, data.games, '游戏记录', false);
           data.games = undefined as any;
       }, data.games?.length || 0);
+
+      for (const descriptor of GAME_HALL_BACKUP_STORES) {
+          const items = (data as any)[descriptor.field] as any[] | undefined;
+          await runSection(descriptor.label, items !== undefined, async () => {
+              await clearAndAdd(descriptor.storeName, items || [], descriptor.label, false);
+              (data as any)[descriptor.field] = undefined;
+          }, items?.length || 0);
+      }
       await runSection('世界书', data.worldbooks !== undefined, async () => {
           await clearAndAdd(STORE_WORLDBOOKS, data.worldbooks, '世界书', false);
           data.worldbooks = undefined as any;
@@ -3476,6 +3511,11 @@ export const DB = {
           data.bankState = undefined as any;
           data.bankDollhouse = undefined as any;
       }, (data.bankState ? 1 : 0) + (data.bankDollhouse ? 1 : 0));
+
+      await runSection('API 调用明细', data.apiCallLog !== undefined, async () => {
+          await DB.replaceApiCallLog(data.apiCallLog || []);
+          data.apiCallLog = undefined as any;
+      }, data.apiCallLog?.length || 0);
 
       // 所有完整/云端/分片备份最终都走 importFullData：在统一出口清理旧 Fork
       await runSection('API 消费历史', data.apiCostDailySummaries !== undefined, async () => {

@@ -59,7 +59,9 @@ import { exportMcdLocal } from '../utils/mcdMcpClient';
 import { exportMcpLocal } from '../utils/mcpClient';
 import { exportDesktopSkinLocal } from '../utils/desktopSkinBackup';
 import { assertSupportedSullyBackup } from '../utils/backupImportPolicy';
-import { startBackgroundImageJobMonitor } from '../utils/backgroundImageJobs';
+import { exportBackgroundImageJobsForBackup, importBackgroundImageJobsFromBackup, startBackgroundImageJobMonitor } from '../utils/backgroundImageJobs';
+import { exportCedarToyConnectionForBackup, importCedarToyConnectionFromBackup } from '../utils/cedarToyMcpAdapter';
+import { GAME_HALL_BACKUP_FIELD_BY_STORE, GAME_HALL_BACKUP_STORES } from '../utils/gameHallBackup';
 import { migrateApiCostV1, markApiCostMigrationComplete } from '../utils/apiCostMigration';
 import { resolveBackedUpActiveApiPresetId } from '../utils/apiPresetBackup';
 
@@ -3198,7 +3200,9 @@ recordApiCall({ requestId: (config as any)?.__sullyApiCallId, url: urlStr, body:
               // 角色身上的 groupId 指向这张表，漏导会让导入端全员回落「未分组」
               'characters', 'character_groups', 'messages', 'themes', 'emojis', 'emoji_categories', 'assets', 'gallery',
               'user_profile', 'diaries', 'tasks', 'anniversaries', 'room_todos',
-              'room_notes', 'groups', 'journal_stickers', 'social_posts', 'courses', 'games', 'worldbooks', 'novels', 'songs',
+              'room_notes', 'groups', 'journal_stickers', 'social_posts', 'courses', 'games',
+              ...GAME_HALL_BACKUP_STORES.map(item => item.storeName),
+              'worldbooks', 'novels', 'songs',
               'bank_transactions', 'bank_data',
               'xhs_activities', 'xhs_stock',
               'quizzes', 'guidebook', 'scheduled_messages', 'life_sim',
@@ -3250,10 +3254,13 @@ recordApiCall({ requestId: (config as any)?.__sullyApiCallId, url: urlStr, body:
               activeApiPresetId: (mode === 'text_only' || mode === 'full') ? activeApiPresetId : undefined,
               apiFailoverGroups: (mode === 'text_only' || mode === 'full') ? (() => { try { const raw = localStorage.getItem(API_FAILOVER_STORAGE_KEY); return raw ? JSON.parse(raw) : undefined; } catch { return undefined; } })() : undefined,
               apiCostDailySummaries: (mode === 'text_only' || mode === 'full') ? await DB.getApiCostDailySummaries() : undefined,
+              apiCallLog: (mode === 'text_only' || mode === 'full') ? await DB.getApiCallLog() : undefined,
               availableModels: (mode === 'text_only' || mode === 'full') ? availableModels : undefined,
               realtimeConfig: (mode === 'text_only' || mode === 'full') ? realtimeConfig : undefined,
               memoryPalaceConfig: (mode === 'text_only' || mode === 'full') ? memoryPalaceConfig : undefined,
               imageGenerationLocal: exportImageGenerationLocalForMode(mode),
+              gameHallCedarConnection: (mode === 'text_only' || mode === 'full') ? exportCedarToyConnectionForBackup() : undefined,
+              backgroundImageJobs: (mode === 'text_only' || mode === 'full') ? exportBackgroundImageJobsForBackup() : undefined,
               theme: cloneForInPlace(theme), // Include theme in all modes (text/media)
               customIcons: (mode === 'text_only' || mode === 'media_only' || mode === 'full')
                   ? cloneForInPlace(customIcons)
@@ -3468,6 +3475,7 @@ recordApiCall({ requestId: (config as any)?.__sullyApiCallId, url: urlStr, body:
               'room_plates', 'digest_reports',
               'bank_transactions', 'scheduled_messages', 'memory_batches', 'hotnews_snapshots',
               'character_groups',
+              ...GAME_HALL_BACKUP_STORES.map(item => item.storeName),
               'life_records', 'med_plans', 'life_record_settings'
           ]);
 
@@ -3542,6 +3550,7 @@ recordApiCall({ requestId: (config as any)?.__sullyApiCallId, url: urlStr, body:
               life_records: 'lifeRecords',
               med_plans: 'medPlans',
               life_record_settings: 'lifeRecordSettings',
+              ...Object.fromEntries(GAME_HALL_BACKUP_STORES.map(item => [item.storeName, item.field])),
           };
           const prewrittenStores: BackupManifest['stores'] = {};
           const textOnlyShardLimits = {
@@ -3676,7 +3685,13 @@ recordApiCall({ requestId: (config as any)?.__sullyApiCallId, url: urlStr, body:
                       : processObject(rawData);
               }
 
-              // Assign to Backup Data
+              // Assign to Backup Data. 游戏厅字段从统一登记表动态映射，新增 store 不再补第二份 switch。
+              const gameHallBackupField = Object.prototype.hasOwnProperty.call(GAME_HALL_BACKUP_FIELD_BY_STORE, storeName)
+                  ? GAME_HALL_BACKUP_FIELD_BY_STORE[storeName as keyof typeof GAME_HALL_BACKUP_FIELD_BY_STORE]
+                  : undefined;
+              if (gameHallBackupField) {
+                  (backupData as any)[gameHallBackupField] = processedData;
+              } else {
               switch(storeName) {
                   case 'characters': if(mode !== 'media_only') backupData.characters = processedData; break;
                   // 角色分组定义 —— 键名须与 importFullData 读取的字段（data.characterGroups）对齐
@@ -3751,6 +3766,7 @@ recordApiCall({ requestId: (config as any)?.__sullyApiCallId, url: urlStr, body:
                   // 家园 —— 键名须与 importFullData 读取的字段（data.worlds / data.worldEpisodes）对齐
                   case 'worlds': backupData.worlds = processedData; break;
                   case 'world_episodes': backupData.worldEpisodes = processedData; break;
+              }
               }
 
               await new Promise(resolve => setTimeout(resolve, 10));
@@ -4085,6 +4101,12 @@ recordApiCall({ requestId: (config as any)?.__sullyApiCallId, url: urlStr, body:
           }
           if (data.realtimeConfig) updateRealtimeConfig(data.realtimeConfig); // 恢复实时感知配置
           if (data.memoryPalaceConfig) updateMemoryPalaceConfig(data.memoryPalaceConfig); // 恢复记忆宫殿全局配置
+          if (Object.prototype.hasOwnProperty.call(data, 'gameHallCedarConnection')) {
+              importCedarToyConnectionFromBackup(data.gameHallCedarConnection);
+          }
+          if (Object.prototype.hasOwnProperty.call(data, 'backgroundImageJobs')) {
+              importBackgroundImageJobsFromBackup(data.backgroundImageJobs);
+          }
           if (data.imageGenerationLocal) importImageGenerationLocal(data.imageGenerationLocal);
           else if (data.mcpLocal) importMcpLocal(data.mcpLocal); // 兼容旧备份顶层通用 MCP 配置
 

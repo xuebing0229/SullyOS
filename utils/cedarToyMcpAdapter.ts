@@ -37,11 +37,25 @@ export const describeCedarCapabilities = (map: CedarCapabilityMap): string[] => 
   `行动工具：${map.action.length ? map.action.map(t => t.name).join('、') : '未识别'}`,
 ];
 
+const normalizeCedarConnection = (value: unknown): CedarToyConnection => {
+  const raw = value && typeof value === 'object' ? value as Record<string, unknown> : {};
+  const tools = Array.isArray(raw.tools)
+    ? raw.tools.filter((tool): tool is McpToolDef => !!tool && typeof tool === 'object' && typeof (tool as McpToolDef).name === 'string')
+    : undefined;
+  return {
+    url: typeof raw.url === 'string' ? raw.url : '',
+    token: typeof raw.token === 'string' ? raw.token : '',
+    proxyUrl: typeof raw.proxyUrl === 'string' ? raw.proxyUrl : '',
+    proxyKey: typeof raw.proxyKey === 'string' ? raw.proxyKey : '',
+    updatedAt: Number.isFinite(Number(raw.updatedAt)) ? Number(raw.updatedAt) : 0,
+    tools: tools?.map(tool => ({ ...tool })),
+  };
+};
+
 export const loadCedarConnection = (): CedarToyConnection => {
   try {
-    const value = JSON.parse(localStorage.getItem(CEDAR_CONNECTION_KEY) || '{}');
-    return { url: typeof value.url === 'string' ? value.url : '', token: value.token || '', proxyUrl: value.proxyUrl || '', proxyKey: value.proxyKey || '', updatedAt: Number(value.updatedAt) || 0, tools: Array.isArray(value.tools) ? value.tools : undefined };
-  } catch { return { url: '', token: '', proxyUrl: '', proxyKey: '', updatedAt: 0 }; }
+    return normalizeCedarConnection(JSON.parse(localStorage.getItem(CEDAR_CONNECTION_KEY) || '{}'));
+  } catch { return normalizeCedarConnection({}); }
 };
 
 export const saveCedarConnection = (connection: CedarToyConnection): void => {
@@ -49,6 +63,26 @@ export const saveCedarConnection = (connection: CedarToyConnection): void => {
 };
 
 export const clearCedarConnection = (): void => localStorage.removeItem(CEDAR_CONNECTION_KEY);
+
+
+export interface CedarToyConnectionBackup {
+  version: 1;
+  connection: CedarToyConnection;
+}
+
+/** 新备份即使没有配置也写入空状态，导入时才能清掉目标设备的旧连接。 */
+export const exportCedarToyConnectionForBackup = (): CedarToyConnectionBackup => ({
+  version: 1,
+  connection: normalizeCedarConnection(loadCedarConnection()),
+});
+
+export const importCedarToyConnectionFromBackup = (data: unknown): boolean => {
+  if (!data || typeof data !== 'object' || Array.isArray(data) || (data as any).version !== 1) return false;
+  const connection = (data as any).connection;
+  if (!connection || typeof connection !== 'object' || Array.isArray(connection)) return false;
+  saveCedarConnection(normalizeCedarConnection(connection));
+  return true;
+};
 
 export const toCedarMcpServer = (connection: CedarToyConnection): McpServerConfig => ({
   ...createMcpServer('Cedar Toy', connection.url.trim()),
