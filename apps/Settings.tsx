@@ -1644,6 +1644,24 @@ const Settings: React.FC = () => {
                                 </button>
                                 <button
                                     type="button"
+                                    onClick={(event) => {
+                                        event.stopPropagation();
+                                        setPricingPresetId(preset.id);
+                                        setPricingDraft(
+                                            preset.pricing ?? {
+                                                mode: 'per_request',
+                                                pricePerRequestYuan: '',
+                                            },
+                                        );
+                                    }}
+                                    aria-label={`${preset.pricing ? '修改' : '设置'}预设 ${preset.name} 的价格`}
+                                    title={preset.pricing ? '修改价格' : '设置价格'}
+                                    className="shrink-0 rounded-lg bg-emerald-50 px-2.5 py-1 text-[10px] font-bold text-emerald-600 transition-colors hover:bg-emerald-100 active:scale-95"
+                                >
+                                    {preset.pricing ? '修改价格' : '设置价格'}
+                                </button>
+                                <button
+                                    type="button"
                                     aria-label={`长按或双击删除预设 ${preset.name}`}
                                     title="长按或双击删除"
                                     onPointerDown={(event) => { event.stopPropagation(); beginPresetDeleteHold(preset.id, preset.name); }}
