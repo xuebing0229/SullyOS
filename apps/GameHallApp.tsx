@@ -23,9 +23,12 @@ import {
   saveCedarConnection,
 } from '../utils/cedarToyMcpAdapter';
 import {
+  canCallWithoutGuessing,
   executePendingGameHallAction,
   planGameHallTurn,
   readCedarGameState,
+  respondToGameHallToolResult,
+  summarizeGameHallToolResult,
 } from '../utils/gameHallAgent';
 import { writeGameHallBridgeSnapshot } from '../utils/gameHallMemoryBridge';
 import {
@@ -105,6 +108,7 @@ const GameHallApp: React.FC = () => {
     role: GameHallMessage['role'],
     content: string,
     toolName?: string,
+    toolResultSummary?: string,
   ) => {
     if (!session || !selected) return;
     const message = {
@@ -114,6 +118,7 @@ const GameHallApp: React.FC = () => {
       role,
       content,
       toolName,
+      toolResultSummary,
       createdAt: Date.now(),
     };
     await saveGameHallMessage(message);
@@ -136,6 +141,13 @@ const GameHallApp: React.FC = () => {
           status: 'active',
           createdAt: now,
           updatedAt: now,
+        };
+        await saveGameHallSession(current);
+      } else if (current.status !== 'active') {
+        current = {
+          ...current,
+          status: 'active',
+          updatedAt: Date.now(),
         };
         await saveGameHallSession(current);
       }
@@ -164,8 +176,8 @@ const GameHallApp: React.FC = () => {
     await saveGameHallSession(updated);
   };
 
-  const refreshState = async () => {
-    setBusy(true);
+  const refreshState = async (manageBusy = true) => {
+    if (manageBusy) setBusy(true);
     try {
       const read = await readCedarGameState(connection);
       setGameState(read.state);
@@ -186,7 +198,7 @@ const GameHallApp: React.FC = () => {
       await append('system', error?.message || String(error));
       throw error;
     } finally {
-      setBusy(false);
+      if (manageBusy) setBusy(false);
     }
   };
 
@@ -195,17 +207,37 @@ const GameHallApp: React.FC = () => {
     const running = { ...action, status: 'confirmed' as const, updatedAt: Date.now() };
     await savePendingGameHallAction(running);
 
+    let result;
     try {
-      const result = await executePendingGameHallAction(connection, running);
+      result = await executePendingGameHallAction(connection, running);
       if (!result.success) throw new Error(result.error || '行动失败');
+    } catch (error: any) {
+      const failed = {
+        ...running,
+        status: 'failed' as const,
+        error: error?.message || String(error),
+        updatedAt: Date.now(),
+      };
+      await savePendingGameHallAction(failed);
+      await append('system', `行动失败：${failed.error}`);
+      setBusy(false);
+      return;
+    }
 
-      const done = { ...running, status: 'executed' as const, updatedAt: Date.now() };
-      await savePendingGameHallAction(done);
-      setPending(value => value.filter(item => item.id !== action.id));
+    const done = { ...running, status: 'executed' as const, updatedAt: Date.now() };
+    await savePendingGameHallAction(done);
+    setPending(value => value.filter(item => item.id !== action.id));
+
+    try {
+      const toolResultSummary = summarizeGameHallToolResult(result);
+      const executionLabel = automatic ? '自动回合' : '已确认';
       await append(
         'tool',
-        `${automatic ? '自动回合' : '已确认'}执行 ${action.toolName} 成功。`,
+        `${executionLabel}执行 ${action.toolName} 成功。${
+          toolResultSummary ? `\n\n工具返回：\n${toolResultSummary}` : ''
+        }`,
         action.toolName,
+        toolResultSummary,
       );
 
       const actionSummary = `我和${selected?.name || '角色'}刚刚在 Cedar Toy 共同游戏；${selected?.name || '角色'}${automatic ? '按自动回合规则' : '经我确认'}执行了 ${action.toolName}，原因：${action.reason}。`;
@@ -222,16 +254,47 @@ const GameHallApp: React.FC = () => {
         gameId: session?.gameId,
         gameName: session?.gameName,
       });
-      await refreshState();
+
+      try {
+        const reply = await respondToGameHallToolResult({
+          apiConfig,
+          char: selected!,
+          userProfile,
+          action,
+          toolResultSummary,
+          history: messages,
+        });
+        if (reply) {
+          const assistantMessage = await append('assistant', reply);
+          await recordGameHallMemoryEvent({
+            sessionId: action.sessionId,
+            charId: action.charId,
+            kind: 'assistant_message',
+            text: reply,
+            sourceMessageIds: assistantMessage ? [assistantMessage.id] : [],
+            gameId: session?.gameId,
+            gameName: session?.gameName,
+          });
+        }
+      } catch {
+        // 工具结果已经真实显示并落库；角色化复述失败不能把已成功的工具改判为失败。
+      }
+
+      const hasCallableStateTool = (capabilities?.state || []).some(tool =>
+        canCallWithoutGuessing(tool, {}),
+      );
+      if (hasCallableStateTool) {
+        try {
+          await refreshState(false);
+        } catch {
+          // 状态刷新是后处理，失败不能推翻已经成功的账号/行动工具。
+        }
+      }
     } catch (error: any) {
-      const failed = {
-        ...running,
-        status: 'failed' as const,
-        error: error?.message || String(error),
-        updatedAt: Date.now(),
-      };
-      await savePendingGameHallAction(failed);
-      await append('system', `行动失败：${failed.error}`);
+      await append(
+        'system',
+        `工具已经执行成功，但结果整理或保存失败：${error?.message || String(error)}`,
+      ).catch(() => undefined);
     } finally {
       setBusy(false);
     }
@@ -281,6 +344,7 @@ const GameHallApp: React.FC = () => {
         state,
         actionTools: capabilities?.action || [],
         sessionId: session.id,
+        history: [...messages, ...(userMessage ? [userMessage] : [])],
       });
 
       const assistantMessage = await append('assistant', plan.reply);
@@ -331,7 +395,7 @@ const GameHallApp: React.FC = () => {
     }
   };
 
-  const finishSession = async () => {
+  const closeGameHall = async () => {
     if (session && selected) {
       await buildGameHallSessionSummary({
         sessionId: session.id,
@@ -344,7 +408,7 @@ const GameHallApp: React.FC = () => {
         charId: selected.id,
         embedding: memoryPalaceConfig.embedding,
       });
-      await saveGameHallSession({ ...session, status: 'ended', updatedAt: Date.now() });
+      await saveGameHallSession({ ...session, status: 'active', updatedAt: Date.now() });
     }
     closeApp();
   };
@@ -382,7 +446,7 @@ const GameHallApp: React.FC = () => {
       style={{ paddingTop: 'var(--chrome-top)', paddingBottom: 'var(--safe-bottom)' }}
     >
       <header className="flex h-14 shrink-0 items-center gap-3 px-3">
-        <button onClick={() => void finishSession()} className="rounded-xl p-2">
+        <button onClick={() => void closeGameHall()} className="rounded-xl p-2">
           <ArrowLeft size={22} />
         </button>
         <GameController size={25} weight="fill" className="text-violet-300" />
@@ -475,7 +539,7 @@ const GameHallApp: React.FC = () => {
                   {messages.slice(-30).map(message => (
                     <div
                       key={message.id}
-                      className={`rounded-xl px-3 py-2 ${
+                      className={`whitespace-pre-wrap break-words rounded-xl px-3 py-2 ${
                         message.role === 'user'
                           ? 'ml-8 bg-violet-600'
                           : message.role === 'assistant'
