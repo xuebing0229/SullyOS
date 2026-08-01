@@ -45,19 +45,10 @@ describe('mcpSingleShotFlow', () => {
         expect(body.messages[body.messages.length - 1].content).toContain('图片现在还没有完成');
     });
 
-    it('收尾模型只调用一次并清掉返回里的 tool_calls', async () => {
-        const execute = vi.fn().mockResolvedValue({
-            choices: [{
-                index: 0,
-                finish_reason: 'tool_calls',
-                message: {
-                    role: 'assistant',
-                    content: '好，生成完会自己出现。',
-                    tool_calls: [{ id: 'bad-repeat' }],
-                },
-            }],
+    it('生图 single-shot 后不再发第二次聊天模型请求', async () => {
+        const execute = vi.fn(async () => {
+            throw new Error('should not be called');
         });
-
         const result = await runMcpSingleShotClosing({
             baseReqBody: { model: 'test', tools: [{}], tool_choice: 'auto' },
             fullMessages: [{ role: 'user', content: '画图' }],
@@ -65,16 +56,17 @@ describe('mcpSingleShotFlow', () => {
             previousResponse: { choices: [] },
             execute,
         });
-
-        expect(execute).toHaveBeenCalledTimes(1);
-        expect(execute.mock.calls[0][0].tools).toBeUndefined();
-        expect(result.usedFallback).toBe(false);
+        expect(execute).not.toHaveBeenCalled();
+        expect(result.usedFallback).toBe(true);
         expect(result.response.choices[0].finish_reason).toBe('stop');
+        expect(result.response.choices[0].message.content).toContain('后台生成');
         expect(result.response.choices[0].message.tool_calls).toBeUndefined();
     });
 
-    it('收尾请求失败时不重试，使用确定性本地文案', async () => {
-        const execute = vi.fn().mockRejectedValue(new Error('HTTP 500 Bearer very-secret-token'));
+    it('失败场景也只使用本地确定性文案', async () => {
+        const execute = vi.fn(async () => {
+            throw new Error('HTTP 500 Bearer very-secret-token');
+        });
         const result = await runMcpSingleShotClosing({
             baseReqBody: { model: 'test' },
             fullMessages: [{ role: 'user', content: '画图' }],
@@ -86,13 +78,11 @@ describe('mcpSingleShotFlow', () => {
             previousResponse: { choices: [] },
             execute,
         });
-
-        expect(execute).toHaveBeenCalledTimes(1);
+        expect(execute).not.toHaveBeenCalled();
         expect(result.usedFallback).toBe(true);
         expect(result.response.choices[0].message.content).toBe('[生图失败] upstream failed');
-        expect(result.error).not.toContain('very-secret-token');
+        expect(result.error).toBeUndefined();
     });
-
     it('区分同步完成、后台排队和无图片失败', () => {
         expect(resolveMcpSingleShotOutcome({
             toolName: 'generate_image',
