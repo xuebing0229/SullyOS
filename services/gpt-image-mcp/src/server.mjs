@@ -8,7 +8,10 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { bootstrapRuntimeConfig, staticConfig } from "./config.mjs";
 import { createRuntimeConfigStore } from "./runtime-config.mjs";
 import { generateUpstreamImage } from "./upstream.mjs";
-import { createPersistentImageJobQueue } from "./jobs.mjs";
+import {
+  backgroundJobOptionsFromEnv,
+  createBackgroundJobService
+} from "./background-jobs.mjs";
 import {
   cleanupExpiredImages,
   initializeImageStorage,
@@ -122,6 +125,14 @@ async function executeGptImageGeneration(rawArgs, { runtimeOverride, forcePersis
     content: [{ type: "text", text: ["Image generated successfully.", `Image URL: ${imageUrl}`, `Model: ${runtime.model}`, `Size: ${args.size}`, ...(saved ? [`Expires at: ${saved.expiresAt}`] : []), "Show the image to the user and continue speaking in character."].join("\n") }]
   };
 }
+async function executeMcpTool(toolName, args, context = {}) {
+  if (toolName !== GPT_IMAGE_TOOL_NAME) {
+    return { success: false, error: "Unknown tool" };
+  }
+  return executeGptImageGeneration(args, {
+    forcePersist: Boolean(context.jobId)
+  });
+}
 function createMcpServer() {
   const server = new McpServer({ name: SERVICE_NAME, version: SERVICE_VERSION });
   server.registerTool(GPT_IMAGE_TOOL_NAME, {
@@ -129,7 +140,7 @@ function createMcpServer() {
     description: "Generate one general-purpose image with the configured GPT/OpenAI-compatible image API.",
     inputSchema: gptImageInputShape
   }, async args => {
-    try { return await executeGptImageGeneration(args); }
+    try { return await executeMcpTool(GPT_IMAGE_TOOL_NAME, args); }
     catch (error) {
       log("error", "generation_failed", safeErrorLogFields(error));
       return { isError: true, content: [{ type: "text", text: `Image generation failed: ${error?.message || String(error)}` }] };
@@ -139,21 +150,15 @@ function createMcpServer() {
 }
 await initializeImageStorage(staticConfig.imageDir);
 await runtimeStore.load();
-const backgroundJobQueue = createPersistentImageJobQueue({
-  directory: staticConfig.jobDir,
-  ttlMs: staticConfig.jobTtlMs,
-  maxRetainedJobs: staticConfig.maxRetainedJobs,
-  log,
-  execute: async ({ toolName, arguments: args, executionContext }) => {
-    if (toolName !== GPT_IMAGE_TOOL_NAME) {
-      const error = new Error(`Unsupported background tool: ${toolName}`);
-      error.code = "unsupported_tool";
-      throw error;
-    }
-    return executeGptImageGeneration(args, { runtimeOverride: executionContext.runtime, forcePersist: true });
-  }
+const imageJobs = await createBackgroundJobService({
+  ...backgroundJobOptionsFromEnv({
+    defaultDir: process.env.IMAGE_JOBS_DIR || "/var/lib/sullyos-image-jobs/gpt",
+    defaultTool: GPT_IMAGE_TOOL_NAME,
+    executeTool: executeMcpTool,
+    logger: console
+  }),
+  authToken: staticConfig.mcpBearerToken
 });
-await backgroundJobQueue.initialize();
 const initiallyRemoved = await cleanupExpiredImages(
   staticConfig.imageDir,
   staticConfig.imageTtlMs
@@ -162,15 +167,11 @@ if (initiallyRemoved) log("info", "startup_cleanup", { removed: initiallyRemoved
 
 const cleanupTimer = setInterval(async () => {
   try {
-    const [removedImages, removedJobs] = await Promise.all([
-      cleanupExpiredImages(
-        staticConfig.imageDir,
-        staticConfig.imageTtlMs
-      ),
-      backgroundJobQueue.cleanup()
-    ]);
+    const removedImages = await cleanupExpiredImages(
+      staticConfig.imageDir,
+      staticConfig.imageTtlMs
+    );
     if (removedImages) log("info", "scheduled_image_cleanup", { removed: removedImages });
-    if (removedJobs) log("info", "scheduled_job_cleanup", { removed: removedJobs });
   } catch (error) {
     log("error", "cleanup_failed", safeErrorLogFields(error));
   }
@@ -191,6 +192,14 @@ app.use((req, res, next) => {
   res.setHeader("X-Content-Type-Options", "nosniff");
   if (req.method === "OPTIONS") return res.sendStatus(204);
   next();
+});
+app.use(async (req, res, next) => {
+  try {
+    if (await imageJobs.handle(req, res)) return;
+    next();
+  } catch (error) {
+    next(error);
+  }
 });
 app.use(express.json({ limit: "1mb" }));
 
@@ -273,35 +282,6 @@ app.get("/images/:fileName", async (req, res) => {
   return res.sendFile(filePath);
 });
 
-app.post("/jobs", requireBearer, async (req, res, next) => {
-  try {
-    const body = z.object({
-      clientRequestId: z.string().min(8).max(160).regex(/^[A-Za-z0-9._:-]+$/),
-      toolName: z.literal(GPT_IMAGE_TOOL_NAME),
-      arguments: gptImageArgumentsSchema
-    }).strict().parse(req.body);
-    const runtimeSnapshot = await runtimeStore.load();
-    const result = await backgroundJobQueue.enqueue({ ...body, executionContext: { runtime: runtimeSnapshot, revision: runtimeSnapshot.revision } });
-    res.setHeader("Cache-Control", "no-store");
-    res.status(result.created ? 202 : 200).json(result);
-  } catch (error) {
-    if (error?.code === "IDEMPOTENCY_CONFLICT") return res.status(409).json({ error: "idempotency_conflict", message: error.message });
-    next(error);
-  }
-});
-app.get("/jobs/by-client/:clientRequestId", requireBearer, (req, res) => {
-  const job = backgroundJobQueue.getByClientRequestId(req.params.clientRequestId);
-  res.setHeader("Cache-Control", "no-store");
-  if (!job) return res.status(404).json({ error: "job_not_found" });
-  return res.json({ job });
-});
-app.get("/jobs/:jobId", requireBearer, (req, res) => {
-  const job = backgroundJobQueue.getById(req.params.jobId);
-  res.setHeader("Cache-Control", "no-store");
-  if (!job) return res.status(404).json({ error: "job_not_found" });
-  return res.json({ job });
-});
-
 app.post("/mcp", requireBearer, async (req, res) => {
   res.setHeader("Cache-Control", "no-store");
   const mcpServer = createMcpServer();
@@ -354,11 +334,11 @@ httpServer.on("error", (error) => {
   process.exit(1);
 });
 
-function shutdown(signal) {
+async function shutdown(signal) {
   log("info", "shutdown_started", { signal });
   clearInterval(cleanupTimer);
-  backgroundJobQueue.shutdown();
+  await imageJobs.stop();
   httpServer.close((error) => process.exit(error ? 1 : 0));
 }
-process.on("SIGINT", () => shutdown("SIGINT"));
-process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => void shutdown("SIGINT"));
+process.on("SIGTERM", () => void shutdown("SIGTERM"));

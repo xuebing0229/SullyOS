@@ -52,10 +52,7 @@ export const staticConfig = Object.freeze({
   mcpBearerToken: normalizeToken(required("MCP_BEARER_TOKEN")),
   runtimeConfigFile: path.resolve(optional("RUNTIME_CONFIG_FILE", "/var/lib/novelai-image-mcp/config.json")),
   imageDir: path.resolve(optional("IMAGE_DIR", "./data/images")),
-  jobDir: path.resolve(optional("JOB_DIR", "./data/jobs")),
   imageTtlMs: positiveInteger("IMAGE_TTL_HOURS", 96) * 3_600_000,
-  jobTtlMs: positiveInteger("JOB_TTL_HOURS", 72) * 3_600_000,
-  maxRetainedJobs: positiveInteger("MAX_RETAINED_JOBS", 300),
   maxImageBytes: positiveInteger("MAX_IMAGE_BYTES", 25 * 1024 * 1024),
   maxUpstreamResponseBytes: positiveInteger(
     "MAX_UPSTREAM_RESPONSE_BYTES",

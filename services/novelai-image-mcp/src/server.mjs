@@ -9,7 +9,10 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { bootstrapRuntimeConfig, staticConfig } from "./config.mjs";
 import { createNovelRuntimeConfigStore, toUpstreamConfig } from "./runtime-config.mjs";
 import { buildUpstreamRequest, generateUpstreamImage } from "./upstream.mjs";
-import { createPersistentImageJobQueue } from "./jobs.mjs";
+import {
+  backgroundJobOptionsFromEnv,
+  createBackgroundJobService
+} from "./background-jobs.mjs";
 import { createReferenceStore } from "./reference-store.mjs";
 import { isNovelAiV45Model, preciseReferenceUnsupportedMessage } from "./precise-reference.mjs";
 import {
@@ -138,6 +141,14 @@ async function executeNovelAiGeneration(rawArgs, { runtimeOverride, forcePersist
     content: [{ type: "text", text: ["Image generated successfully.", `Image URL: ${imageUrl}`, `Seed: ${generated.seed}`, `Model: ${request.modelId}`, `Size: ${request.dimensions.width}x${request.dimensions.height}`, ...(saved ? [`Expires at: ${saved.expiresAt}`] : []), "Show the image to the user and continue speaking in character."].join("\n") }]
   };
 }
+async function executeMcpTool(toolName, args, context = {}) {
+  if (toolName !== NOVELAI_TOOL_NAME) {
+    return { success: false, error: "Unknown tool" };
+  }
+  return executeNovelAiGeneration(args, {
+    forcePersist: Boolean(context.jobId)
+  });
+}
 function createMcpServer() {
   const server = new McpServer({ name: SERVICE_NAME, version: SERVICE_VERSION });
   server.registerTool(NOVELAI_TOOL_NAME, {
@@ -145,7 +156,7 @@ function createMcpServer() {
     description: "Generate one anime/illustration image through the configured NovelAI-compatible API.",
     inputSchema: novelAiInputShape
   }, async args => {
-    try { return await executeNovelAiGeneration(args); }
+    try { return await executeMcpTool(NOVELAI_TOOL_NAME, args); }
     catch (error) {
       log("error", "generation_failed", safeErrorLogFields(error));
       return { isError: true, content: [{ type: "text", text: `Image generation failed: ${error?.message || String(error)}` }] };
@@ -156,31 +167,21 @@ function createMcpServer() {
 await initializeImageStorage(staticConfig.imageDir);
 await referenceStore.initialize();
 await runtimeStore.load();
-const backgroundJobQueue = createPersistentImageJobQueue({
-  directory: staticConfig.jobDir,
-  ttlMs: staticConfig.jobTtlMs,
-  maxRetainedJobs: staticConfig.maxRetainedJobs,
-  log,
-  execute: async ({ toolName, arguments: args, executionContext }) => {
-    if (toolName !== NOVELAI_TOOL_NAME) {
-      const error = new Error(`Unsupported background tool: ${toolName}`);
-      error.code = "unsupported_tool";
-      throw error;
-    }
-    return executeNovelAiGeneration(args, { runtimeOverride: executionContext.runtime, forcePersist: true });
-  }
+const imageJobs = await createBackgroundJobService({
+  ...backgroundJobOptionsFromEnv({
+    defaultDir: process.env.IMAGE_JOBS_DIR || "/var/lib/sullyos-image-jobs/novelai",
+    defaultTool: NOVELAI_TOOL_NAME,
+    executeTool: executeMcpTool,
+    logger: console
+  }),
+  authToken: staticConfig.mcpBearerToken
 });
-await backgroundJobQueue.initialize();
 const initiallyRemoved = await cleanupExpiredImages(staticConfig.imageDir, staticConfig.imageTtlMs);
 if (initiallyRemoved) log("info", "startup_cleanup", { removed: initiallyRemoved });
 const cleanupTimer = setInterval(async () => {
   try {
-    const [removedImages, removedJobs] = await Promise.all([
-      cleanupExpiredImages(staticConfig.imageDir, staticConfig.imageTtlMs),
-      backgroundJobQueue.cleanup()
-    ]);
+    const removedImages = await cleanupExpiredImages(staticConfig.imageDir, staticConfig.imageTtlMs);
     if (removedImages) log("info", "scheduled_image_cleanup", { removed: removedImages });
-    if (removedJobs) log("info", "scheduled_job_cleanup", { removed: removedJobs });
   } catch (error) { log("error", "cleanup_failed", safeErrorLogFields(error)); }
 }, 3_600_000);
 cleanupTimer.unref();
@@ -196,6 +197,14 @@ app.use((req, res, next) => {
   res.setHeader("X-Content-Type-Options", "nosniff");
   if (req.method === "OPTIONS") return res.sendStatus(204);
   next();
+});
+app.use(async (req, res, next) => {
+  try {
+    if (await imageJobs.handle(req, res)) return;
+    next();
+  } catch (error) {
+    next(error);
+  }
 });
 app.use(express.json({ limit: "1mb" }));
 app.get("/healthz", (req, res) => res.json({ status: "ok", service: SERVICE_NAME, version: SERVICE_VERSION }));
@@ -272,35 +281,6 @@ app.get("/images/:fileName", async (req, res) => {
   res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
   return res.sendFile(filePath);
 });
-app.post("/jobs", requireBearer, async (req, res, next) => {
-  try {
-    const body = z.object({
-      clientRequestId: z.string().min(8).max(160).regex(/^[A-Za-z0-9._:-]+$/),
-      toolName: z.literal(NOVELAI_TOOL_NAME),
-      arguments: novelAiArgumentsSchema
-    }).strict().parse(req.body);
-    const runtimeSnapshot = await runtimeStore.load();
-    const result = await backgroundJobQueue.enqueue({ ...body, executionContext: { runtime: runtimeSnapshot, revision: runtimeSnapshot.revision } });
-    res.setHeader("Cache-Control", "no-store");
-    res.status(result.created ? 202 : 200).json(result);
-  } catch (error) {
-    if (error?.code === "IDEMPOTENCY_CONFLICT") return res.status(409).json({ error: "idempotency_conflict", message: error.message });
-    next(error);
-  }
-});
-app.get("/jobs/by-client/:clientRequestId", requireBearer, (req, res) => {
-  const job = backgroundJobQueue.getByClientRequestId(req.params.clientRequestId);
-  res.setHeader("Cache-Control", "no-store");
-  if (!job) return res.status(404).json({ error: "job_not_found" });
-  return res.json({ job });
-});
-app.get("/jobs/:jobId", requireBearer, (req, res) => {
-  const job = backgroundJobQueue.getById(req.params.jobId);
-  res.setHeader("Cache-Control", "no-store");
-  if (!job) return res.status(404).json({ error: "job_not_found" });
-  return res.json({ job });
-});
-
 app.post("/mcp", requireBearer, async (req, res) => {
   res.setHeader("Cache-Control", "no-store");
   const mcpServer = createMcpServer();
@@ -334,6 +314,11 @@ const httpServer = app.listen(staticConfig.port, staticConfig.host, async () => 
   });
 });
 httpServer.on("error", (error) => { log("fatal", "server_start_failed", safeErrorLogFields(error)); process.exit(1); });
-function shutdown(signal) { log("info", "shutdown_started", { signal }); clearInterval(cleanupTimer); backgroundJobQueue.shutdown(); httpServer.close((error) => process.exit(error ? 1 : 0)); }
-process.on("SIGINT", () => shutdown("SIGINT"));
-process.on("SIGTERM", () => shutdown("SIGTERM"));
+async function shutdown(signal) {
+  log("info", "shutdown_started", { signal });
+  clearInterval(cleanupTimer);
+  await imageJobs.stop();
+  httpServer.close((error) => process.exit(error ? 1 : 0));
+}
+process.on("SIGINT", () => void shutdown("SIGINT"));
+process.on("SIGTERM", () => void shutdown("SIGTERM"));
