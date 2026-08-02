@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import {
     fetchBuiltinImageRemoteConfig,
     loadBuiltinImageSettings,
-    saveBuiltinImageSettings,
+    updateBuiltinImageBinding,
     setPreferredBuiltinImageEngine,
     testBuiltinImageRemoteConfig,
     updateBuiltinImageRemoteConfig,
@@ -239,18 +239,11 @@ const EngineCard: React.FC<{
     const [apiKey, setApiKey] = useState(() => getActiveImageGenerationPreset(id)?.apiKey || '');
     const [status, setStatus] = useState('');
 
-    const updateBinding = (patch: Partial<BuiltinImageBinding>) => {
-        setSettings(current => {
-            const next = {
-                ...current,
-                engines: {
-                    ...current.engines,
-                    [id]: { ...current.engines[id], ...patch, id, updatedAt: Date.now() },
-                },
-            };
-            saveBuiltinImageSettings(next);
-            return next;
-        });
+    const updateBinding = (
+        patch: Partial<BuiltinImageBinding>,
+    ) => {
+        const next = updateBuiltinImageBinding(id, patch);
+        setSettings(next);
         resetMcpSession(`builtin_image_${id}`);
     };
 

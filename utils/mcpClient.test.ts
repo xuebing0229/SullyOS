@@ -19,7 +19,7 @@ import {
 } from './mcpClient';
 import { buildMcpOpenAITools, buildMcpRejectedToolsFallbackBody, buildMcpTextFallbackBody, extractMcpImageUrls, formatMcpToolResult, MCP_RESULT_MAX_CHARS, sanitizeMcpLeadInText, shouldRetryMcpWithoutTools, stripTextFakedMcpCalls } from './mcpToolBridge';
 import { completeGroupChatWithMcp } from './groupChat/mcp';
-import { BUILTIN_IMAGE_MCP_REQUEST_TIMEOUT_MS, getBuiltinImageMcpServers, loadBuiltinImageSettings, saveBuiltinImageSettings } from './builtinImageMcp';
+import { BUILTIN_IMAGE_MCP_REQUEST_TIMEOUT_MS, BUILTIN_IMAGE_SETTINGS_KEY, getBuiltinImageMcpServers, loadBuiltinImageSettings, saveBuiltinImageSettings } from './builtinImageMcp';
 
 const mkServer = (over: Partial<McpServerConfig>): McpServerConfig => ({
     ...createMcpServer('测试', 'https://mcp.example.com/mcp'),
@@ -168,6 +168,36 @@ describe('服务器配置持久化', () => {
         expect(loadMcpServers()).toEqual([]);
         importMcpLocal(dump);
         expect(loadMcpServers().map(s => s.name)).toEqual(['A']);
+    });
+
+    it('exposes a migrated legacy image tool to chat', () => {
+        localStorage.setItem(BUILTIN_IMAGE_SETTINGS_KEY, JSON.stringify({
+            version: 1,
+            engines: {
+                'gpt-image': {
+                    id: 'gpt-image',
+                    enabled: true,
+                    mcpUrl: 'https://example.test/mcp',
+                    controlBaseUrl: 'https://example.test/gpt-image',
+                    token: 'token',
+                    tools: [{ name: 'generate_image' }],
+                    updatedAt: 1,
+                },
+                novelai: {
+                    id: 'novelai',
+                    enabled: false,
+                    tools: [],
+                },
+            },
+        }));
+
+        expect(loadBuiltinImageSettings().preferredEngine).toBe('gpt-image');
+        expect(
+            getEnabledMcpServers('char-1')
+                .flatMap(server => server.tools || [])
+                .map(tool => tool.name),
+        ).toContain('generate_image');
+        expect(isMcpChatAvailable('char-1')).toBe(true);
     });
 
     it('isMcpChatAvailable: 必须启用且已发现工具', () => {
