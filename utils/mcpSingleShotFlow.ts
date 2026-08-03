@@ -179,11 +179,10 @@ export const buildMcpSingleShotClosingBody = (
 export const localMcpSingleShotFallbackText = (
     outcome: McpSingleShotOutcome,
 ): string => {
-    if (outcome.status === 'queued') {
-        return '图片已经开始在后台生成，完成后会自动出现在聊天和相册里。';
-    }
-    if (outcome.status === 'completed') {
-        return '图片已经生成，并保存到聊天和相册里了。';
+    // 排队与成功已有顶部轻提示和最终图片，不再制造一条假装是角色回复的状态气泡。
+    // 失败仍保留确定性错误文本，避免真正的问题被静默吞掉。
+    if (outcome.status === 'queued' || outcome.status === 'completed') {
+        return '';
     }
     const detail = sanitizeMcpOutcomeText(
         outcome.detail || '生图工具执行失败',

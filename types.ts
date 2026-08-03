@@ -3338,6 +3338,7 @@ export interface FullBackupData {
     gameHallSessions?: import('./utils/gameHallTypes').GameHallSession[];
     gameHallMessages?: import('./utils/gameHallTypes').GameHallMessage[];
     gameHallPendingActions?: import('./utils/gameHallTypes').GameHallPendingAction[];
+    characterExternalAccounts?: import('./utils/gameHallTypes').CharacterExternalAccount[];
     gameHallBridgeSnapshots?: import('./utils/gameHallTypes').GameHallBridgeSnapshot[];
     gameHallEvents?: import('./utils/gameHallMemoryTypes').GameHallEvent[];
     gameHallMemoryCandidates?: import('./utils/gameHallMemoryTypes').GameHallMemoryCandidate[];

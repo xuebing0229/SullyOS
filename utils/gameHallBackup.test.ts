@@ -11,13 +11,15 @@ describe('gameHallBackup registry', () => {
       'gameHallSessions',
       'gameHallMessages',
       'gameHallPendingActions',
+      'characterExternalAccounts',
       'gameHallBridgeSnapshots',
       'gameHallEvents',
       'gameHallMemoryCandidates',
       'gameHallPreferenceEvidence',
     ]);
-    expect(new Set(GAME_HALL_BACKUP_STORES.map(item => item.field)).size).toBe(7);
+    expect(new Set(GAME_HALL_BACKUP_STORES.map(item => item.field)).size).toBe(8);
     expect(GAME_HALL_BACKUP_FIELD_BY_STORE.gameHallSessions).toBe('gameHallSessions');
+    expect(GAME_HALL_BACKUP_FIELD_BY_STORE.characterExternalAccounts).toBe('characterExternalAccounts');
   });
 
   it('keeps the regenerable protocol cache outside permanent backup', () => {
