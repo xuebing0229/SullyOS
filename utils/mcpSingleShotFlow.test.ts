@@ -59,7 +59,7 @@ describe('mcpSingleShotFlow', () => {
         expect(execute).not.toHaveBeenCalled();
         expect(result.usedFallback).toBe(true);
         expect(result.response.choices[0].finish_reason).toBe('stop');
-        expect(result.response.choices[0].message.content).toContain('后台生成');
+        expect(result.response.choices[0].message.content).toBe('');
         expect(result.response.choices[0].message.tool_calls).toBeUndefined();
     });
 
@@ -116,6 +116,10 @@ describe('mcpSingleShotFlow', () => {
         expect(localMcpSingleShotFallbackText({
             toolName: 'generate_image',
             status: 'queued',
-        })).toContain('后台生成');
+        })).toBe('');
+        expect(localMcpSingleShotFallbackText({
+            toolName: 'generate_image',
+            status: 'completed',
+        })).toBe('');
     });
 });

@@ -28,6 +28,7 @@ import { BACKGROUND_IMAGE_JOB_EVENT, callMcpToolWithBackgroundImage, getBackgrou
 import { buildMcpOpenAITools, buildMcpRejectedToolsFallbackBody, buildMcpTextFallbackBody, extractTextFakedMcpCalls, formatMcpToolResult, sanitizeMcpLeadInText, shouldRetryMcpWithoutTools, stripTextFakedMcpCalls, type FakedMcpCall } from '../utils/mcpToolBridge';
 import { claimMcpToolExecution, createMcpTurnExecutionState, formatBlockedMcpExecution } from '../utils/mcpExecutionPolicy';
 import { resolveMcpSingleShotOutcome, runMcpSingleShotClosing, type McpSingleShotOutcome } from '../utils/mcpSingleShotFlow';
+import { cleanupLegacyMcpImageStatusMessages } from '../utils/mcpImageStatusCleanup';
 import { parseImageToolClientOptions, type AfterGenerateAction } from '../utils/imageToolPostAction';
 import { inspectGeneratedImages } from '../utils/generatedImageInspect';
 import { buildToolResultMessage, normalizeToolCallsForCompat } from '../utils/toolCallCompat';
@@ -552,6 +553,23 @@ export const useChatAI = ({
     // LLM 提取（+ 50 轮认知消化）。用 ref 在 finally 里读最新状态。
     const charRef = useRef(char);
     charRef.current = char;
+
+    // 旧版把“图片正在/已经生成”写成角色消息；打开聊天时精确清掉这些历史占位。
+    useEffect(() => {
+        if (!char?.id) return;
+        let cancelled = false;
+        void cleanupLegacyMcpImageStatusMessages(char.id)
+            .then(async removed => {
+                if (cancelled || removed <= 0) return;
+                setMessages(await DB.getRecentMessagesByCharId(char.id, 200));
+            })
+            .catch(error => {
+                console.warn('[MCP] cleanup legacy image status messages failed', error);
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, [char?.id, setMessages]);
 
     // beforeunload 保护：记忆宫殿后台处理中时，阻止用户意外关闭页面
     useEffect(() => {
@@ -1315,11 +1333,17 @@ export const useChatAI = ({
                 }
             };
 
+            let suppressMcpImageStatusMessage = false;
+
             const closeMcpSingleShot = async (
                 leadIn: string,
                 outcome: McpSingleShotOutcome,
                 pass: string,
             ): Promise<void> => {
+                // 排队/完成只保留顶部轻提示与最终图片；失败仍进入聊天，不能静默。
+                if (outcome.status !== 'failed') {
+                    suppressMcpImageStatusMessage = true;
+                }
                 setSearchStatus('正在整理生图结果...');
                 const closing = await runMcpSingleShotClosing({
                     baseReqBody,
@@ -1829,7 +1853,9 @@ ${results.join('\n')}
                     if (firstChoice?.message) {
                         const cleanMessage = {
                             ...firstChoice.message,
-                            content: cleaned || '图片已经开始生成，完成后会自动出现在聊天里。',
+                            content: cleaned || (suppressMcpImageStatusMessage
+                                ? ''
+                                : '图片已经开始生成，完成后会自动出现在聊天里。'),
                         } as any;
                         delete cleanMessage.tool_calls;
                         delete cleanMessage.function_call;
@@ -1894,10 +1920,14 @@ ${results.join('\n')}
                     setStreamingThinking('');
                 }
             };
-            const rawAiContent = data.choices?.[0]?.message?.content || '';
+            const rawAiContent = suppressMcpImageStatusMessage
+                ? ''
+                : (data.choices?.[0]?.message?.content || '');
             // 主回复完整结束后再做增量情绪评估，确保输入包含“本轮用户消息 + 本轮助手回复”。
-            // fire-and-forget 保持 UI 行为不变；同一轮由消息身份缓存保证最多成功评估一次。
-            void fireLocalEmotionEval?.(rawAiContent);
+            // 纯生图状态没有角色正文，不写聊天，也不拿空状态去做情绪评估。
+            if (!suppressMcpImageStatusMessage) {
+                void fireLocalEmotionEval?.(rawAiContent);
+            }
             const xhsCaches: XhsCaches = {
                 xsecTokenCache: xsecTokenCacheRef.current,
                 noteTitleCache: noteTitleCacheRef.current,
@@ -1905,7 +1935,7 @@ ${results.join('\n')}
                 commentAuthorNameCache: commentAuthorNameCacheRef.current,
                 commentParentIdCache: commentParentIdCacheRef.current,
             };
-            await applyAssistantPostProcessing(rawAiContent, {
+            if (!suppressMcpImageStatusMessage) await applyAssistantPostProcessing(rawAiContent, {
                 char,
                 userProfile,
                 emojis,
@@ -1944,7 +1974,9 @@ ${results.join('\n')}
             // 当前挂载的 Chat（可能是切走又切回后新 mount 的实例，本闭包的 setMessages
             // 对它已失效）会重新 reloadMessages；用户不在该会话时补未读 + toast。
             // instant 路径不发：它的落库回落走 'active-msg-received'（activeMsgRuntime）。
-            announceChatGen(CHAT_GEN_EVENTS.replyArrived, { charId: char.id, charName: char.name });
+            if (!suppressMcpImageStatusMessage) {
+                announceChatGen(CHAT_GEN_EVENTS.replyArrived, { charId: char.id, charName: char.name });
+            }
 
         } catch (e: any) {
             // 注意: 这个 catch 兜的是「拿到 API 响应之后」的整条后处理管线 (applyAssistantPostProcessing,
