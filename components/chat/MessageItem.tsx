@@ -12,6 +12,7 @@ import McdCard from './McdCard';
 import HtmlCard from './HtmlCard';
 import LuckinCard from './LuckinCard';
 import LuckinCheckoutCard from './LuckinCheckoutCard';
+import GameHallHandoffCard from './GameHallHandoffCard';
 import BlobImage from '../media/BlobImage';
 import TokenImg from '../os/TokenImg';
 
@@ -2431,6 +2432,10 @@ const MessageItem = React.memo(({
                 candidateItem={meta.luckinCandidate}
             />
         );
+    }
+
+    if ((m.type as string) === 'game_hall_card') {
+        return commonLayout(<GameHallHandoffCard message={m} charName={charName} />);
     }
 
     if (m.type === 'vr_card') {

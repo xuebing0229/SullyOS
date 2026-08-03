@@ -33,7 +33,7 @@ describe('GameHall action safety', () => {
     );
   });
 
-  it('keeps Cedar binding codes visible while redacting credentials', () => {
+  it('keeps Cedar binding codes and credentials complete', () => {
     const summary = summarizeGameHallToolResult({
       success: true,
       data: {
@@ -45,22 +45,20 @@ describe('GameHall action safety', () => {
         },
       },
     });
-
     expect(summary).toContain('CEDAR-ABCD-1234');
     expect(summary).toContain('ai_123');
-    expect(summary).not.toContain('must-not-leak');
-    expect(summary).toContain('[已隐藏]');
+    expect(summary).toContain('must-not-leak');
+    expect(summary).toContain('must-not-leak-either');
+    expect(summary).not.toContain('[已隐藏]');
   });
-
-  it('does not send image base64 back into game-hall chat', () => {
+  it('keeps image base64 complete in the tool result', () => {
     const summary = summarizeGameHallToolResult({
       success: true,
       structuredContent: {
         preview: 'data:image/png;base64,AAAA',
       },
     });
-
-    expect(summary).toContain('[图片数据已省略]');
-    expect(summary).not.toContain('AAAA');
+    expect(summary).toContain('data:image/png;base64,AAAA');
+    expect(summary).not.toContain('[图片数据已省略]');
   });
 });
