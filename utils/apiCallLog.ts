@@ -1,6 +1,5 @@
 import type { ApiBillingUsage, ApiCallCostStatus, ApiCallUnpricedReason, ApiPricingSnapshot, ApiPreset } from '../types';
 import { calculateApiCallCost, matchApiPresetForBilling, normalizeApiBillingUsage, snapshotPricing } from './apiPricing';
-import { failureMayHaveUpstreamCost } from './apiCostFailurePolicy';
 
 /**
  * 全局 API 调用记录（给 设置 → API 调用记录 页面用）。
@@ -94,6 +93,8 @@ export interface ApiCallLogEntry extends ApiCallMeta {
     costStatus?: ApiCallCostStatus;
     costMicros?: string;
     unpricedReason?: ApiCallUnpricedReason;
+    costResolution?: 'automatic' | 'manual' | 'ignored' | 'pricing_backfill';
+    costResolvedAt?: number;
 }
 
 /** 输入构成里的一块：system prompt 的一个 ### 段落，或聚合后的聊天历史。 */
@@ -502,7 +503,7 @@ export function recordApiCall(input: {
         const usage = extractUsage(responseForExtract);
         const billingUsage = input.billingUsage ?? normalizeApiBillingUsage(responseForExtract);
         const pricingSnapshot = input.pricingSnapshot ?? capture.pricingSnapshot;
-        const cost = calculateApiCallCost({ pricingSnapshot, usage: billingUsage, ok: input.ok, networkRequest: input.networkRequest ?? true, cacheHit: input.cacheHit ?? false, missingPresetReason: capture.missingPresetReason, failureMayBeBilled: !input.ok && (input.networkRequest ?? true) && failureMayHaveUpstreamCost(input.status) });
+        const cost = calculateApiCallCost({ pricingSnapshot, usage: billingUsage, ok: input.ok, networkRequest: input.networkRequest ?? true, cacheHit: input.cacheHit ?? false, missingPresetReason: capture.missingPresetReason });
         const entry: ApiCallLogEntry = {
 id: input.requestId || input.entryId || `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
             timestamp: Date.now(),

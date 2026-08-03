@@ -435,7 +435,6 @@ export function calculateApiCallCost(
     missingPresetReason?:
       | 'preset_not_found'
       | 'preset_ambiguous';
-    failureMayBeBilled?: boolean;
   },
 ): ApiCostCalculation {
   if (
@@ -450,10 +449,10 @@ export function calculateApiCallCost(
   }
 
   if (!input.ok) {
-    if (input.failureMayBeBilled) {
-      return { costStatus: 'unpriced', unpricedReason: 'failure_cost_unknown' };
-    }
-    return { costStatus: 'free_failed', costMicros: '0' };
+    return {
+      costStatus: 'free_failed',
+      costMicros: '0',
+    };
   }
 
   if (!input.pricingSnapshot) {
