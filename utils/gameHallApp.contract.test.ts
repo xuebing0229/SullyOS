@@ -20,9 +20,9 @@ describe('GameHall tool result and history contracts', () => {
   });
 
   it('shows the real successful tool result instead of a success-only placeholder', () => {
-    expect(appSource).toContain('summarizeGameHallToolResult(result)');
-    expect(appSource).toContain('工具返回：');
-    expect(appSource).toContain('toolResultSummary');
+    expect(appSource).toContain('toolResult: result');
+    expect(appSource).toContain('message.toolResult &&');
+    expect(appSource).toContain('getGameHallToolResultPayload(message.toolResult)');
   });
 
   it('does not turn a successful account action into failure because no state tool exists', () => {

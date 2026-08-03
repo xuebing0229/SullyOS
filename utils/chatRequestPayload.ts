@@ -386,7 +386,8 @@ export async function buildChatRequestPayload(input: BuildChatPayloadInput): Pro
     // ── 10. recency 钢印归位 + 组装 fullMessages ─────────
     // 「关于对方的表达」+「回到你自己」必须是易变尾段的最后内容：修复旧版把双语/HTML/
     // 思考链/点单块拼在钢印之后、模型开口前最后读到的是格式说明书的问题。
-    if (input.gameHallBridgeBlock?.trim()) volatileTail += input.gameHallBridgeBlock;
+    // 游戏厅跨功能连续性现在通过真正写入 messages 主表的 game_hall_card 完成。
+    // 不再注入旧 gameHallBridgeBlock，避免临时摘要与主聊天卡重复或残留旧状态。
     volatileTail += parts.recencyTail;
 
     // 动态状态只服务当前请求，不写入消息 metadata，也不随历史永久回放。

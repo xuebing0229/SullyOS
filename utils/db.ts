@@ -29,7 +29,8 @@ const DB_NAME = 'AetherOS_Data';
 // v68：character_groups 角色分组（神经链接"文件夹"，见 types.ts CharacterGroup）。
 // v69：AI 精确响应缓存（聊天/情绪），带过期与 LRU 清理索引。
 // v70：API 每日消费永久汇总。
-const DB_VERSION = 72;
+// v73：角色外部账号档案。完整保存游戏厅注册/登录返回，模型只引用 accountRef。
+const DB_VERSION = 73;
 
 const STORE_CHARACTERS = 'characters';
 const STORE_CHAR_GROUPS = 'character_groups'; // 角色分组定义（角色通过 groupId 指向；与群聊 groups 无关）
@@ -42,6 +43,7 @@ const STORE_GAME_HALL_PROTOCOL = 'gameHallProtocolCache';
 const STORE_GAME_HALL_EVENTS = 'gameHallEvents';
 const STORE_GAME_HALL_CANDIDATES = 'gameHallMemoryCandidates';
 const STORE_GAME_HALL_PREFERENCES = 'gameHallPreferenceEvidence';
+const STORE_GAME_HALL_CHARACTER_EXTERNAL_ACCOUNTS = 'characterExternalAccounts';
 const STORE_EMOJIS = 'emojis';
 const STORE_EMOJI_CATEGORIES = 'emoji_categories'; 
 const STORE_THEMES = 'themes';
@@ -353,6 +355,14 @@ export const openDB = (): Promise<IDBDatabase> => {
           const store = db.createObjectStore(STORE_GAME_HALL_PREFERENCES, { keyPath: 'id' });
           store.createIndex('charId', 'charId', { unique: false });
           store.createIndex('createdAt', 'createdAt', { unique: false });
+      }
+      if (!db.objectStoreNames.contains(STORE_GAME_HALL_CHARACTER_EXTERNAL_ACCOUNTS)) {
+          const store = db.createObjectStore(STORE_GAME_HALL_CHARACTER_EXTERNAL_ACCOUNTS, { keyPath: 'accountRef' });
+          store.createIndex('charId', 'charId', { unique: false });
+          store.createIndex('provider', 'provider', { unique: false });
+          store.createIndex('serverId', 'serverId', { unique: false });
+          store.createIndex('charProviderServer', ['charId', 'provider', 'serverId'], { unique: true });
+          store.createIndex('updatedAt', 'updatedAt', { unique: false });
       }
       createStore(STORE_API_COST_DAILY, { keyPath: 'dateKey' });
       if (!db.objectStoreNames.contains(STORE_AI_RESPONSE_CACHE)) {
