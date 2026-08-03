@@ -164,15 +164,13 @@ describe(
       },
     );
 
-    it(
-      'marks potentially billed failures as unknown cost',
+    it.each([401, 408, 500, undefined])(
+      'marks failed status %s as free failed',
       () => {
-        const common = {
+        expect(calculateApiCallCost({
           usage: { inputTokens: 0, cacheWriteTokens: 0, cacheReadTokens: 0, outputTokens: 0, usageAvailable: false },
           ok: false, networkRequest: true, cacheHit: false,
-        };
-        expect(calculateApiCallCost({ ...common, failureMayBeBilled: true })).toMatchObject({ costStatus: 'unpriced', unpricedReason: 'failure_cost_unknown' });
-        expect(calculateApiCallCost({ ...common, failureMayBeBilled: false })).toMatchObject({ costStatus: 'free_failed', costMicros: '0' });
+        })).toMatchObject({ costStatus: 'free_failed', costMicros: '0' });
       },
     );
 

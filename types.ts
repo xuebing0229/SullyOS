@@ -425,8 +425,46 @@ export interface ApiPricingSnapshot {
   pricing: ApiPricing;
 }
 
-export type ApiCallCostStatus = 'priced' | 'free_local_cache' | 'free_failed' | 'unpriced';
-export type ApiCallUnpricedReason = 'preset_not_found' | 'preset_ambiguous' | 'pricing_not_configured' | 'usage_missing' | 'failure_cost_unknown';
+export type ApiCallCostStatus =
+  | 'priced'
+  | 'free_local_cache'
+  | 'free_failed'
+  | 'unpriced'
+  | 'ignored_unpriced';
+export type ApiCallUnpricedReason =
+  | 'preset_not_found'
+  | 'preset_ambiguous'
+  | 'pricing_not_configured'
+  | 'usage_missing'
+  | 'failure_cost_unknown'
+  | 'legacy_unknown';
+export type ApiCostUnresolvedKind = 'call' | 'legacy_aggregate';
+export interface ApiCostUnresolvedEntry {
+  id: string;
+  kind: ApiCostUnresolvedKind;
+  sourceEntryId?: string;
+  timestamp: number;
+  dateKey: string;
+  callCount: number;
+  presetId?: string;
+  presetName: string;
+  baseUrl?: string;
+  model?: string;
+  appId?: string;
+  appName?: string;
+  purpose?: string;
+  charId?: string;
+  charName?: string;
+  reason: ApiCallUnpricedReason;
+  billingUsage?: ApiBillingUsage;
+  pricingSnapshot?: ApiPricingSnapshot;
+  createdAt: number;
+  updatedAt: number;
+}
+export type ApiCostResolution =
+  | { kind: 'ignore_zero'; resolvedAt?: number }
+  | { kind: 'manual_cost'; costMicros: string; resolvedAt?: number }
+  | { kind: 'pricing_backfill'; costMicros: string; pricingSnapshot: ApiPricingSnapshot; resolvedAt?: number };
 
 export interface ApiCostBucket {
   key: string;
@@ -441,6 +479,7 @@ export interface ApiCostDailySummary {
   pricedCallCount: number;
   freeCallCount: number;
   unpricedCallCount: number;
+  ignoredCallCount: number;
   byPreset: ApiCostBucket[];
   byApp: ApiCostBucket[];
   byPurpose: ApiCostBucket[];
@@ -3268,6 +3307,7 @@ export interface FullBackupData {
     activeApiPresetId?: string | null;
     apiFailoverGroups?: import('./utils/apiFailover').ApiFailoverGroup[];
     apiCostDailySummaries?: ApiCostDailySummary[];
+    apiCostUnresolvedEntries?: ApiCostUnresolvedEntry[];
     /** 最近五天逐次 API 调用明细；与永久每日汇总分开恢复。 */
     apiCallLog?: import('./utils/apiCallLog').ApiCallLogEntry[];
     availableModels?: string[];

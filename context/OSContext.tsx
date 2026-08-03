@@ -3254,6 +3254,7 @@ recordApiCall({ requestId: (config as any)?.__sullyApiCallId, url: urlStr, body:
               activeApiPresetId: (mode === 'text_only' || mode === 'full') ? activeApiPresetId : undefined,
               apiFailoverGroups: (mode === 'text_only' || mode === 'full') ? (() => { try { const raw = localStorage.getItem(API_FAILOVER_STORAGE_KEY); return raw ? JSON.parse(raw) : undefined; } catch { return undefined; } })() : undefined,
               apiCostDailySummaries: (mode === 'text_only' || mode === 'full') ? await DB.getApiCostDailySummaries() : undefined,
+              apiCostUnresolvedEntries: (mode === 'text_only' || mode === 'full') ? await DB.getApiCostUnresolvedEntries() : undefined,
               apiCallLog: (mode === 'text_only' || mode === 'full') ? await DB.getApiCallLog() : undefined,
               availableModels: (mode === 'text_only' || mode === 'full') ? availableModels : undefined,
               realtimeConfig: (mode === 'text_only' || mode === 'full') ? realtimeConfig : undefined,

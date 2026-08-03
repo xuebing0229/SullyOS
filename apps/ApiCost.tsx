@@ -12,6 +12,7 @@ import type {
   ApiCostBucket,
   ApiCostDailySummary,
   ApiCostOverview,
+  ApiCostUnresolvedEntry,
 } from '../types';
 
 import { DB }
@@ -19,6 +20,7 @@ import { DB }
 
 import {
   API_COST_UPDATED_EVENT,
+  emitApiCostUpdated,
 } from '../utils/apiCostEvents';
 
 import {
@@ -27,6 +29,10 @@ import {
 
 import ApiCostHeatmap
   from '../components/apiCost/ApiCostHeatmap';
+import UnpricedCostResolver
+  from '../components/apiCost/UnpricedCostResolver';
+import { migrateApiCostUnresolvedV1 }
+  from '../utils/apiCostUnresolvedMigration';
 
 import ApiCallLogModal
   from '../components/settings/ApiCallLogModal';
@@ -116,6 +122,8 @@ React.FC = () => {
   ] = useState<
     ApiCostOverview
   >(EMPTY);
+  const [unresolved, setUnresolved] = useState<ApiCostUnresolvedEntry[]>([]);
+  const [showResolver, setShowResolver] = useState(false);
 
   const [
     range,
@@ -150,9 +158,11 @@ React.FC = () => {
       const [
         nextSummaries,
         nextOverview,
+        nextUnresolved,
       ] = await Promise.all([
         DB.getApiCostDailySummaries(),
         DB.getApiCostOverview(),
+        DB.getApiCostUnresolvedEntries(),
       ]);
 
       setSummaries(
@@ -162,10 +172,13 @@ React.FC = () => {
       setOverview(
         nextOverview,
       );
+      setUnresolved(nextUnresolved);
     }, []);
 
   useEffect(() => {
-    void load();
+    void migrateApiCostUnresolvedV1()
+      .catch(error => console.warn('[API Cost] unresolved migration failed', error))
+      .finally(() => void load());
 
     const refresh = () => {
       void load();
@@ -448,19 +461,27 @@ React.FC = () => {
           )}
         </section>
 
-        {overview
-          .todayUnpricedCalls
-          > 0 && (
-          <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-[11px] text-amber-700">
-            今天有
-            {' '}
-            <b>
-              {overview
-                .todayUnpricedCalls}
-            </b>
-            {' '}
-            次调用未计价或费用未知。可能是未配置价格、缺少 Token 用量，或请求超时/断流后无法确认上游是否收费。
+        {overview.totalUnpricedCalls > 0 && (
+          <div className="flex items-center justify-between gap-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-[11px] text-amber-700">
+            <div>
+              <div>今天有 <b>{overview.todayUnpricedCalls}</b> 次待处理</div>
+              <div>累计待处理 <b>{overview.totalUnpricedCalls}</b> 次</div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowResolver(value => !value)}
+              className="rounded-xl bg-amber-600 px-3 py-2 font-bold text-white"
+            >
+              {showResolver ? '收起' : '去处理'}
+            </button>
           </div>
+        )}
+
+        {showResolver && unresolved.length > 0 && (
+          <UnpricedCostResolver
+            entries={unresolved}
+            onUpdated={() => emitApiCostUpdated()}
+          />
         )}
 
         <section className="rounded-3xl bg-white p-4 shadow-sm">
@@ -518,7 +539,7 @@ React.FC = () => {
                 </div>
 
                 <div>
-                  未计价
+                  待处理
                   {' '}
                   {selectedSummary
                     ?.unpricedCallCount
@@ -526,6 +547,11 @@ React.FC = () => {
                   {' '}
                   次
                 </div>
+                {(selectedSummary?.ignoredCallCount ?? 0) > 0 && (
+                  <div>
+                    已归档 {selectedSummary?.ignoredCallCount ?? 0} 次
+                  </div>
+                )}
               </div>
             </div>
           </div>

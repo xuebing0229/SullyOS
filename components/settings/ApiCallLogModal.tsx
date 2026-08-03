@@ -2,8 +2,6 @@ import { apiUnpricedReasonLabel } from '../../utils/apiCostFailurePolicy';
 import React, { useEffect, useState, useCallback } from 'react';
 import Modal from '../os/Modal';
 import { DB } from '../../utils/db';
-import { isSameCoreModel } from '../../utils/apiCallLog';
-import type { ApiCallLogEntry } from '../../utils/apiCallLog';
 import { clearAiCache } from '../../utils/aiRequestManager';
 import { isSameCoreModel, isFixedPromptBlockLabel } from '../../utils/apiCallLog';
 import { formatYuan } from '../../utils/apiPricing';
@@ -12,6 +10,30 @@ import type { ApiCallLogEntry, PromptBlockStat } from '../../utils/apiCallLog';
 interface ApiCallLogModalProps {
     isOpen: boolean;
     onClose: () => void;
+}
+
+function costStatusDisplay(entry: ApiCallLogEntry): { text: string; className: string } | null {
+    switch (entry.costStatus) {
+        case 'priced':
+            return { text: `已计价 ${formatYuan(entry.costMicros || '0')}`, className: 'bg-emerald-50 text-emerald-700' };
+        case 'free_local_cache':
+            return { text: '本地缓存 ¥0', className: 'bg-sky-50 text-sky-700' };
+        case 'free_failed':
+            return { text: '调用失败 ¥0', className: 'bg-slate-100 text-slate-600' };
+        case 'unpriced':
+            return { text: `待处理 · ${apiUnpricedReasonLabel(entry.unpricedReason)}`, className: 'bg-amber-50 text-amber-700' };
+        case 'ignored_unpriced':
+            return { text: '已按 ¥0 归档', className: 'bg-stone-100 text-stone-600' };
+        default:
+            return null;
+    }
+}
+
+function costResolutionLabel(entry: ApiCallLogEntry): string | null {
+    if (entry.costResolution === 'manual') return '手动计价';
+    if (entry.costResolution === 'ignored') return '按 ¥0 归档';
+    if (entry.costResolution === 'pricing_backfill') return '价格补算';
+    return null;
 }
 
 /** 把时间戳格式化成「今天 14:03:21 / 昨天 09:12 / 06-04 22:08」这种好扫的形态。 */
@@ -238,14 +260,23 @@ const ApiCallLogModal: React.FC<ApiCallLogModalProps> = ({ isOpen, onClose }) =>
                                         <Field label="耗时" value={e.durationMs >= 1000 ? `${(e.durationMs / 1000).toFixed(1)}s` : `${e.durationMs}ms`} />
                                     )}
                                     <Field label="请求" value={e.networkRequest === false ? '未发网' : '真实发网'} />
-                                    {e.costStatus && (
-                                        <div className="flex flex-wrap gap-1.5 mb-2">
-                                            <span className={`text-[10px] px-2 py-1 rounded-lg font-bold ${e.unpricedReason === 'failure_cost_unknown' ? 'bg-amber-50 text-amber-700' : 'bg-emerald-50 text-emerald-700'}`}>
-                                                {e.costStatus === 'unpriced' ? apiUnpricedReasonLabel(e.unpricedReason) : formatYuan(e.costMicros || '0')}
-                                            </span>
-                                            {e.billingUsage && <span className="text-[10px] bg-violet-50 text-violet-700 px-2 py-1 rounded-lg">普通输入 {e.billingUsage.inputTokens} · 创建缓存 {e.billingUsage.cacheWriteTokens} · 读取缓存 {e.billingUsage.cacheReadTokens} · 输出 {e.billingUsage.outputTokens}</span>}
-                                        </div>
-                                    )}
+                                    {e.costStatus && (() => {
+                                        const status = costStatusDisplay(e);
+                                        const resolution = costResolutionLabel(e);
+                                        return status ? (
+                                            <div className="flex flex-wrap gap-1.5 mb-2">
+                                                <span className={`text-[10px] px-2 py-1 rounded-lg font-bold ${status.className}`}>
+                                                    {status.text}
+                                                </span>
+                                                {resolution && (
+                                                    <span className="text-[10px] bg-indigo-50 text-indigo-700 px-2 py-1 rounded-lg font-bold">
+                                                        {resolution}
+                                                    </span>
+                                                )}
+                                                {e.billingUsage && <span className="text-[10px] bg-violet-50 text-violet-700 px-2 py-1 rounded-lg">普通输入 {e.billingUsage.inputTokens} · 创建缓存 {e.billingUsage.cacheWriteTokens} · 读取缓存 {e.billingUsage.cacheReadTokens} · 输出 {e.billingUsage.outputTokens}</span>}
+                                            </div>
+                                        ) : null;
+                                    })()}
                                     {(e.totalTokens != null || e.promptTokens != null || e.completionTokens != null) && (
                                         <div className="col-span-2 flex items-baseline gap-1.5 min-w-0">
                                             <span className="text-[10px] text-slate-400 shrink-0">Token</span>

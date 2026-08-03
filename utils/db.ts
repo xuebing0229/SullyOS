@@ -9,10 +9,11 @@ import {
     LifeSimState, HandbookEntry, Tracker, TrackerEntry, HotNewsSnapshot,
     LifeRecord, MedPlan, LifeRecordSettings, CharacterGroup,
     VRWorldNovel, VRNovelAnnotation, CustomCreatorPart, VRMusicRoomState, VRGuestbookState, VRScript, VRStagedPlay, VRLetter,
-    ApiCallUnpricedReason, ApiCostBucket, ApiCostDailySummary, ApiCostOverview,
+    ApiCallUnpricedReason, ApiCostBucket, ApiCostDailySummary, ApiCostOverview, ApiCostResolution, ApiCostUnresolvedEntry,
     WorldProfile, WorldEpisode
 } from '../types';
 import type { ApiCallLogEntry } from './apiCallLog';
+import { applyUnpricedResolutionToSummary, normalizeApiCostDailySummary, toApiCostUnresolvedEntry } from './apiCostResolution';
 import { exportPostOfficeLocal, importPostOfficeLocal } from './vrWorld/postOffice';
 import { exportSignalLocal, importSignalLocal } from './vrWorld/signal';
 import { exportLuckinLocal, importLuckinLocal } from './luckinMcpClient';
@@ -30,7 +31,8 @@ const DB_NAME = 'AetherOS_Data';
 // v69：AI 精确响应缓存（聊天/情绪），带过期与 LRU 清理索引。
 // v70：API 每日消费永久汇总。
 // v73：角色外部账号档案。完整保存游戏厅注册/登录返回，模型只引用 accountRef。
-const DB_VERSION = 73;
+// v74：API 未计价请求永久待处理 Store；确保已升级到 v73 的用户仍会触发建表。
+const DB_VERSION = 74;
 
 const STORE_CHARACTERS = 'characters';
 const STORE_CHAR_GROUPS = 'character_groups'; // 角色分组定义（角色通过 groupId 指向；与群聊 groups 无关）
@@ -89,6 +91,7 @@ const STORE_VR_LETTERS = 'vr_letters';            // 邮局信件（本地存档
 const STORE_VR_SETTINGS = 'vr_settings';          // 彼方设置单例：独立 API（id='api'）+ 调用记录（id='apilog'）
 const STORE_API_CALL_LOG = 'api_call_log';        // 全局 API 调用记录单例（id='log'，保留近 5 天）
 const STORE_API_COST_DAILY = 'api_cost_daily';
+const STORE_API_COST_UNRESOLVED = 'api_cost_unresolved';
 export const STORE_AI_RESPONSE_CACHE = 'ai_response_cache';
 const STORE_WORLDS = 'worlds';                    // 家园·世界定义（成员/NPC/居住/关系/模式）
 const STORE_WORLD_EPISODES = 'world_episodes';    // 家园·演绎历史（每轮一条，index worldId）
@@ -365,6 +368,12 @@ export const openDB = (): Promise<IDBDatabase> => {
           store.createIndex('updatedAt', 'updatedAt', { unique: false });
       }
       createStore(STORE_API_COST_DAILY, { keyPath: 'dateKey' });
+      if (!db.objectStoreNames.contains(STORE_API_COST_UNRESOLVED)) {
+          const store = db.createObjectStore(STORE_API_COST_UNRESOLVED, { keyPath: 'id' });
+          store.createIndex('dateKey', 'dateKey', { unique: false });
+          store.createIndex('reason', 'reason', { unique: false });
+          store.createIndex('timestamp', 'timestamp', { unique: false });
+      }
       if (!db.objectStoreNames.contains(STORE_AI_RESPONSE_CACHE)) {
           const aiCache = db.createObjectStore(STORE_AI_RESPONSE_CACHE, { keyPath: 'key' });
           aiCache.createIndex('expiresAt', 'expiresAt', { unique: false });
@@ -575,9 +584,38 @@ const healMessageHighWaterMarks = (msg: Omit<Message, 'id' | 'timestamp'>, newId
 
 const localDateKey=(timestamp:number):string=>{const d=new Date(timestamp),pad=(v:number)=>String(v).padStart(2,'0');return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;};
 const safeBigInt=(v:unknown):bigint=>{try{return BigInt(String(v??'0'));}catch{return 0n;}};
-const emptyApiCostSummary=(dateKey:string):ApiCostDailySummary=>({dateKey,totalCostMicros:'0',pricedCallCount:0,freeCallCount:0,unpricedCallCount:0,byPreset:[],byApp:[],byPurpose:[],updatedAt:Date.now()});
-const addBucketCost=(items:ApiCostBucket[],key:string,label:string,costMicros:string):ApiCostBucket[]=>{const i=items.findIndex(x=>x.key===key);if(i<0)return [...items,{key,label,costMicros,callCount:1}];const next=[...items],cur=next[i];next[i]={...cur,label:label||cur.label,costMicros:(safeBigInt(cur.costMicros)+safeBigInt(costMicros)).toString(),callCount:cur.callCount+1};return next;};
-export const applyEntryToDailySummary=(original:ApiCostDailySummary|undefined,entry:ApiCallLogEntry):ApiCostDailySummary=>{const dateKey=localDateKey(entry.timestamp);let x={...(original??emptyApiCostSummary(dateKey)),byPreset:[...(original?.byPreset??[])],byApp:[...(original?.byApp??[])],byPurpose:[...(original?.byPurpose??[])],updatedAt:Date.now()};if(entry.costStatus==='priced'){const c=entry.costMicros??'0';x.totalCostMicros=(safeBigInt(x.totalCostMicros)+safeBigInt(c)).toString();x.pricedCallCount++;x.byPreset=addBucketCost(x.byPreset,entry.presetId??`name:${entry.presetName||entry.baseUrl||'未识别 API'}`,entry.presetName||entry.baseUrl||'未识别 API',c);x.byApp=addBucketCost(x.byApp,entry.appId??`name:${entry.appName||'其他 App'}`,entry.appName||'其他 App',c);x.byPurpose=addBucketCost(x.byPurpose,entry.purpose||'未标注用途',entry.purpose||'未标注用途',c);}else if(entry.costStatus==='free_local_cache'||entry.costStatus==='free_failed'){x.freeCallCount++;}else{x.unpricedCallCount++;}return x;};
+const emptyApiCostSummary = (dateKey: string): ApiCostDailySummary => ({
+  dateKey, totalCostMicros: '0', pricedCallCount: 0, freeCallCount: 0,
+  unpricedCallCount: 0, ignoredCallCount: 0, byPreset: [], byApp: [],
+  byPurpose: [], updatedAt: Date.now(),
+});
+const addBucketCost = (items: ApiCostBucket[], key: string, label: string, costMicros: string): ApiCostBucket[] => {
+  const i = items.findIndex(x => x.key === key);
+  if (i < 0) return [...items, { key, label, costMicros, callCount: 1 }];
+  const next = [...items], cur = next[i];
+  next[i] = { ...cur, label: label || cur.label, costMicros: (safeBigInt(cur.costMicros) + safeBigInt(costMicros)).toString(), callCount: cur.callCount + 1 };
+  return next;
+};
+export const applyEntryToDailySummary = (original: ApiCostDailySummary | undefined, entry: ApiCallLogEntry): ApiCostDailySummary => {
+  const dateKey = localDateKey(entry.timestamp);
+  let x = normalizeApiCostDailySummary(original ?? emptyApiCostSummary(dateKey));
+  x = { ...x, byPreset: [...x.byPreset], byApp: [...x.byApp], byPurpose: [...x.byPurpose], updatedAt: Date.now() };
+  if (entry.costStatus === 'priced') {
+    const c = entry.costMicros ?? '0';
+    x.totalCostMicros = (safeBigInt(x.totalCostMicros) + safeBigInt(c)).toString();
+    x.pricedCallCount++;
+    x.byPreset = addBucketCost(x.byPreset, entry.presetId ?? `name:${entry.presetName || entry.baseUrl || '未识别 API'}`, entry.presetName || entry.baseUrl || '未识别 API', c);
+    x.byApp = addBucketCost(x.byApp, entry.appId ?? `name:${entry.appName || '其他 App'}`, entry.appName || '其他 App', c);
+    x.byPurpose = addBucketCost(x.byPurpose, entry.purpose || '未标注用途', entry.purpose || '未标注用途', c);
+  } else if (entry.costStatus === 'free_local_cache' || entry.costStatus === 'free_failed') {
+    x.freeCallCount++;
+  } else if (entry.costStatus === 'ignored_unpriced') {
+    x.ignoredCallCount++;
+  } else {
+    x.unpricedCallCount++;
+  }
+  return x;
+};
 
 export const DB = {
   deleteDB: async (): Promise<void> => {
@@ -2507,15 +2545,248 @@ export const DB = {
   },
 
   appendApiCallLog: async (entry: ApiCallLogEntry): Promise<boolean> => {
-      const db=await openDB(); if(!db.objectStoreNames.contains(STORE_API_CALL_LOG)) return false;
-      const stores=db.objectStoreNames.contains(STORE_API_COST_DAILY)?[STORE_API_CALL_LOG,STORE_API_COST_DAILY]:[STORE_API_CALL_LOG];
-      const tx=db.transaction(stores,'readwrite'), logStore=tx.objectStore(STORE_API_CALL_LOG), costStore=stores.length>1?tx.objectStore(STORE_API_COST_DAILY):null;
-      const logReq=logStore.get('log'), dayReq=costStore?.get(localDateKey(entry.timestamp)); let logReady=false,dayReady=!dayReq,inserted=false,queued=false,record:any={id:'log',entries:[]},day:ApiCostDailySummary|undefined;
-      const write=()=>{if(queued||!logReady||!dayReady)return;queued=true;const cur=Array.isArray(record.entries)?record.entries:[];const duplicateIndex=cur.findIndex((x:any)=>x?.id===entry.id);const cutoff=Date.now()-API_CALL_LOG_MAX_AGE_MS;if(duplicateIndex>=0){const existing=cur[duplicateIndex];const defined=Object.fromEntries(Object.entries(entry).filter(([,value])=>value!==undefined&&value!==null&&value!==''));const merged={...existing,...defined,id:existing.id};const next=[...cur];next[duplicateIndex]=merged;logStore.put({id:'log',entries:next.filter((x:any)=>(x?.timestamp??0)>cutoff).slice(0,API_CALL_LOG_MAX_ENTRIES)});return;}inserted=true;logStore.put({id:'log',entries:[entry,...cur].filter((x:any)=>(x?.timestamp??0)>cutoff).slice(0,API_CALL_LOG_MAX_ENTRIES)});costStore?.put(applyEntryToDailySummary(day,entry));};
-      logReq.onsuccess=()=>{logReady=true;record=logReq.result??record;write();};logReq.onerror=()=>{logReady=true;write();};if(dayReq){dayReq.onsuccess=()=>{dayReady=true;day=dayReq.result;write();};dayReq.onerror=()=>{dayReady=true;write();};}
-      return new Promise((resolve,reject)=>{tx.oncomplete=()=>resolve(inserted);tx.onerror=()=>reject(tx.error);tx.onabort=()=>reject(tx.error??new Error('API cost transaction aborted'));});
+      const db = await openDB();
+      if (!db.objectStoreNames.contains(STORE_API_CALL_LOG)) return false;
+      const storeNames = [STORE_API_CALL_LOG, STORE_API_COST_DAILY, STORE_API_COST_UNRESOLVED]
+          .filter(name => db.objectStoreNames.contains(name));
+      const tx = db.transaction(storeNames, 'readwrite');
+      const logStore = tx.objectStore(STORE_API_CALL_LOG);
+      const costStore = storeNames.includes(STORE_API_COST_DAILY) ? tx.objectStore(STORE_API_COST_DAILY) : null;
+      const unresolvedStore = storeNames.includes(STORE_API_COST_UNRESOLVED) ? tx.objectStore(STORE_API_COST_UNRESOLVED) : null;
+      const logReq = logStore.get('log');
+      const dayReq = costStore?.get(localDateKey(entry.timestamp));
+      let inserted = false;
+      let logReady = false, dayReady = !dayReq, queued = false;
+      let record: { id: string; entries: ApiCallLogEntry[] } = { id: 'log', entries: [] };
+      let day: ApiCostDailySummary | undefined;
+      const write = () => {
+          if (queued || !logReady || !dayReady) return;
+          queued = true;
+          const cur = Array.isArray(record.entries) ? record.entries : [];
+          const duplicateIndex = cur.findIndex(item => item?.id === entry.id);
+          const cutoff = Date.now() - API_CALL_LOG_MAX_AGE_MS;
+          if (duplicateIndex >= 0) {
+              const existing = cur[duplicateIndex];
+              const defined = Object.fromEntries(Object.entries(entry).filter(([, value]) => value !== undefined && value !== null && value !== ''));
+              const merged = { ...existing, ...defined, id: existing.id } as ApiCallLogEntry;
+              const next = [...cur];
+              next[duplicateIndex] = merged;
+              logStore.put({ id: 'log', entries: next.filter(item => (item?.timestamp ?? 0) > cutoff).slice(0, API_CALL_LOG_MAX_ENTRIES) });
+              if (existing.costStatus === 'unpriced' && merged.costStatus !== 'unpriced' && costStore) {
+                  let summary = normalizeApiCostDailySummary(day ?? emptyApiCostSummary(localDateKey(merged.timestamp)));
+                  summary.unpricedCallCount = Math.max(0, summary.unpricedCallCount - 1);
+                  costStore.put(applyEntryToDailySummary(summary, merged));
+                  unresolvedStore?.delete(`call:${existing.id}`);
+              } else if (merged.costStatus === 'unpriced') {
+                  const unresolved = toApiCostUnresolvedEntry(merged);
+                  if (unresolved) unresolvedStore?.put(unresolved);
+              }
+              return;
+          }
+          inserted = true;
+          logStore.put({ id: 'log', entries: [entry, ...cur].filter(item => (item?.timestamp ?? 0) > cutoff).slice(0, API_CALL_LOG_MAX_ENTRIES) });
+          costStore?.put(applyEntryToDailySummary(day, entry));
+          const unresolved = toApiCostUnresolvedEntry(entry);
+          if (unresolved) unresolvedStore?.put(unresolved);
+      };
+      logReq.onsuccess = () => { logReady = true; record = logReq.result ?? record; write(); };
+      logReq.onerror = () => { logReady = true; write(); };
+      if (dayReq) {
+          dayReq.onsuccess = () => { dayReady = true; day = dayReq.result; write(); };
+          dayReq.onerror = () => { dayReady = true; write(); };
+      }
+      return new Promise((resolve, reject) => {
+          tx.oncomplete = () => resolve(inserted);
+          tx.onerror = () => reject(tx.error);
+          tx.onabort = () => reject(tx.error ?? new Error('API cost transaction aborted'));
+      });
   },
-
+  migrateApiCostUnresolvedV1Data: async (): Promise<void> => {
+      const db = await openDB();
+      const required = [STORE_API_CALL_LOG, STORE_API_COST_DAILY, STORE_API_COST_UNRESOLVED];
+      if (required.some(name => !db.objectStoreNames.contains(name))) return;
+      const tx = db.transaction(required, 'readwrite');
+      const logStore = tx.objectStore(STORE_API_CALL_LOG);
+      const dailyStore = tx.objectStore(STORE_API_COST_DAILY);
+      const unresolvedStore = tx.objectStore(STORE_API_COST_UNRESOLVED);
+      const logReq = logStore.get('log');
+      const dailyReq = dailyStore.getAll();
+      let logReady = false, dailyReady = false, applied = false;
+      let logRecord: { id: string; entries: ApiCallLogEntry[] } = { id: 'log', entries: [] };
+      let summaries: ApiCostDailySummary[] = [];
+      const apply = () => {
+          if (applied || !logReady || !dailyReady) return;
+          applied = true;
+          const entries = Array.isArray(logRecord.entries) ? [...logRecord.entries] : [];
+          const summaryMap = new Map(summaries.map(item => [item.dateKey, normalizeApiCostDailySummary(item)]));
+          const exactByDate = new Map<string, number>();
+          for (let index = 0; index < entries.length; index++) {
+              const entry = entries[index];
+              if (entry.costStatus !== 'unpriced') continue;
+              const dateKey = localDateKey(entry.timestamp);
+              if (!entry.ok) {
+                  entries[index] = { ...entry, costStatus: 'free_failed', costMicros: '0', unpricedReason: undefined, costResolution: 'automatic' };
+                  const summary = summaryMap.get(dateKey) ?? emptyApiCostSummary(dateKey);
+                  summary.unpricedCallCount = Math.max(0, summary.unpricedCallCount - 1);
+                  summary.freeCallCount += 1;
+                  summary.updatedAt = Date.now();
+                  summaryMap.set(dateKey, summary);
+                  unresolvedStore.delete(`call:${entry.id}`);
+                  continue;
+              }
+              const unresolved = toApiCostUnresolvedEntry(entry);
+              if (unresolved) {
+                  unresolvedStore.put(unresolved);
+                  exactByDate.set(dateKey, (exactByDate.get(dateKey) ?? 0) + 1);
+              }
+          }
+          logStore.put({ id: 'log', entries });
+          const now = Date.now();
+          for (const [dateKey, summary] of summaryMap) {
+              dailyStore.put(summary);
+              const legacyCount = Math.max(0, summary.unpricedCallCount - (exactByDate.get(dateKey) ?? 0));
+              if (legacyCount > 0) {
+                  unresolvedStore.put({
+                      id: `legacy:${dateKey}`, kind: 'legacy_aggregate',
+                      timestamp: new Date(`${dateKey}T12:00:00`).getTime(), dateKey,
+                      callCount: legacyCount, presetName: '历史遗留', appName: '未知',
+                      purpose: '旧版未计费记录', reason: 'legacy_unknown',
+                      createdAt: now, updatedAt: now,
+                  } satisfies ApiCostUnresolvedEntry);
+              }
+          }
+      };
+      logReq.onsuccess = () => { logReady = true; logRecord = logReq.result ?? logRecord; apply(); };
+      logReq.onerror = () => { logReady = true; apply(); };
+      dailyReq.onsuccess = () => { dailyReady = true; summaries = dailyReq.result ?? []; apply(); };
+      dailyReq.onerror = () => { dailyReady = true; apply(); };
+      return new Promise((resolve, reject) => { tx.oncomplete = () => resolve(); tx.onerror = () => reject(tx.error); tx.onabort = () => reject(tx.error); });
+  },
+  getApiCostUnresolvedEntries: async (): Promise<ApiCostUnresolvedEntry[]> => {
+      const db = await openDB();
+      if (!db.objectStoreNames.contains(STORE_API_COST_UNRESOLVED)) return [];
+      return new Promise(resolve => {
+          const tx = db.transaction(STORE_API_COST_UNRESOLVED, 'readonly');
+          const req = tx.objectStore(STORE_API_COST_UNRESOLVED).getAll();
+          req.onsuccess = () => resolve((req.result ?? []).filter(Boolean).sort((a, b) => b.timestamp - a.timestamp));
+          req.onerror = () => resolve([]);
+      });
+  },
+  replaceApiCostUnresolvedEntries: async (entries: ApiCostUnresolvedEntry[]): Promise<void> => {
+      const db = await openDB();
+      if (!db.objectStoreNames.contains(STORE_API_COST_UNRESOLVED)) return;
+      const tx = db.transaction(STORE_API_COST_UNRESOLVED, 'readwrite');
+      const store = tx.objectStore(STORE_API_COST_UNRESOLVED);
+      store.clear();
+      for (const entry of entries || []) if (entry?.id) store.put(entry);
+      return new Promise((resolve, reject) => { tx.oncomplete = () => resolve(); tx.onerror = () => reject(tx.error); tx.onabort = () => reject(tx.error); });
+  },
+  resolveApiCostUnpriced: async (unresolvedId: string, resolution: ApiCostResolution): Promise<boolean> => {
+      const db = await openDB();
+      const required = [STORE_API_COST_UNRESOLVED, STORE_API_COST_DAILY, STORE_API_CALL_LOG];
+      if (required.some(name => !db.objectStoreNames.contains(name))) return false;
+      const tx = db.transaction(required, 'readwrite');
+      const unresolvedStore = tx.objectStore(STORE_API_COST_UNRESOLVED);
+      const dailyStore = tx.objectStore(STORE_API_COST_DAILY);
+      const logStore = tx.objectStore(STORE_API_CALL_LOG);
+      let changed = false;
+      const unresolvedReq = unresolvedStore.get(unresolvedId);
+      unresolvedReq.onsuccess = () => {
+          const unresolved = unresolvedReq.result as ApiCostUnresolvedEntry | undefined;
+          if (!unresolved) return;
+          const dayReq = dailyStore.get(unresolved.dateKey);
+          const logReq = logStore.get('log');
+          let dayReady = false, logReady = false;
+          let day: ApiCostDailySummary | undefined;
+          let logRecord: { id: string; entries: ApiCallLogEntry[] } = { id: 'log', entries: [] };
+          const finish = () => {
+              if (!dayReady || !logReady) return;
+              const resolvedAt = resolution.resolvedAt ?? Date.now();
+              dailyStore.put(applyUnpricedResolutionToSummary(day ?? emptyApiCostSummary(unresolved.dateKey), unresolved, resolution));
+              if (unresolved.sourceEntryId) {
+                  const entries = Array.isArray(logRecord.entries) ? [...logRecord.entries] : [];
+                  const index = entries.findIndex(item => item.id === unresolved.sourceEntryId);
+                  if (index >= 0) {
+                      const patch: Partial<ApiCallLogEntry> = resolution.kind === 'ignore_zero'
+                          ? { costStatus: 'ignored_unpriced', costMicros: '0', unpricedReason: undefined, costResolution: 'ignored', costResolvedAt: resolvedAt }
+                          : { costStatus: 'priced', costMicros: resolution.costMicros, pricingSnapshot: resolution.kind === 'pricing_backfill' ? resolution.pricingSnapshot : entries[index].pricingSnapshot, unpricedReason: undefined, costResolution: resolution.kind === 'pricing_backfill' ? 'pricing_backfill' : 'manual', costResolvedAt: resolvedAt };
+                      entries[index] = { ...entries[index], ...patch };
+                      logStore.put({ id: 'log', entries });
+                  }
+              }
+              unresolvedStore.delete(unresolvedId);
+              changed = true;
+          };
+          dayReq.onsuccess = () => { dayReady = true; day = dayReq.result; finish(); };
+          dayReq.onerror = () => { dayReady = true; finish(); };
+          logReq.onsuccess = () => { logReady = true; logRecord = logReq.result ?? logRecord; finish(); };
+          logReq.onerror = () => { logReady = true; finish(); };
+      };
+      return new Promise((resolve, reject) => { tx.oncomplete = () => resolve(changed); tx.onerror = () => reject(tx.error); tx.onabort = () => reject(tx.error); });
+  },
+  resolveApiCostUnpricedBatch: async (ids: string[], resolution: { kind: 'ignore_zero' }): Promise<number> => {
+      const uniqueIds = [...new Set(ids.filter(Boolean))];
+      if (!uniqueIds.length) return 0;
+      const db = await openDB();
+      const required = [STORE_API_COST_UNRESOLVED, STORE_API_COST_DAILY, STORE_API_CALL_LOG];
+      if (required.some(name => !db.objectStoreNames.contains(name))) return 0;
+      const tx = db.transaction(required, 'readwrite');
+      const unresolvedStore = tx.objectStore(STORE_API_COST_UNRESOLVED);
+      const dailyStore = tx.objectStore(STORE_API_COST_DAILY);
+      const logStore = tx.objectStore(STORE_API_CALL_LOG);
+      const unresolvedReq = unresolvedStore.getAll();
+      const dailyReq = dailyStore.getAll();
+      const logReq = logStore.get('log');
+      let unresolvedReady = false, dailyReady = false, logReady = false, applied = false;
+      let unresolvedEntries: ApiCostUnresolvedEntry[] = [];
+      let dailyEntries: ApiCostDailySummary[] = [];
+      let logRecord: { id: string; entries: ApiCallLogEntry[] } = { id: 'log', entries: [] };
+      let count = 0;
+      const apply = () => {
+          if (applied || !unresolvedReady || !dailyReady || !logReady) return;
+          applied = true;
+          const wanted = new Set(uniqueIds);
+          const selected = unresolvedEntries.filter(entry => wanted.has(entry.id));
+          if (!selected.length) return;
+          const summaries = new Map(dailyEntries.map(summary => [summary.dateKey, normalizeApiCostDailySummary(summary)]));
+          const logEntries = Array.isArray(logRecord.entries) ? [...logRecord.entries] : [];
+          const resolvedAt = Date.now();
+          let logChanged = false;
+          for (const unresolved of selected) {
+              const summary = summaries.get(unresolved.dateKey) ?? emptyApiCostSummary(unresolved.dateKey);
+              summaries.set(unresolved.dateKey, applyUnpricedResolutionToSummary(summary, unresolved, resolution));
+              if (unresolved.sourceEntryId) {
+                  const index = logEntries.findIndex(entry => entry.id === unresolved.sourceEntryId);
+                  if (index >= 0) {
+                      logEntries[index] = {
+                          ...logEntries[index],
+                          costStatus: 'ignored_unpriced',
+                          costMicros: '0',
+                          unpricedReason: undefined,
+                          costResolution: 'ignored',
+                          costResolvedAt: resolvedAt,
+                      };
+                      logChanged = true;
+                  }
+              }
+              unresolvedStore.delete(unresolved.id);
+              count++;
+          }
+          for (const summary of summaries.values()) dailyStore.put(summary);
+          if (logChanged) logStore.put({ id: 'log', entries: logEntries });
+      };
+      unresolvedReq.onsuccess = () => { unresolvedReady = true; unresolvedEntries = unresolvedReq.result ?? []; apply(); };
+      unresolvedReq.onerror = () => { unresolvedReady = true; apply(); };
+      dailyReq.onsuccess = () => { dailyReady = true; dailyEntries = dailyReq.result ?? []; apply(); };
+      dailyReq.onerror = () => { dailyReady = true; apply(); };
+      logReq.onsuccess = () => { logReady = true; logRecord = logReq.result ?? logRecord; apply(); };
+      logReq.onerror = () => { logReady = true; apply(); };
+      return new Promise((resolve, reject) => {
+          tx.oncomplete = () => resolve(count);
+          tx.onerror = () => reject(tx.error);
+          tx.onabort = () => reject(tx.error ?? new Error('API cost batch resolution aborted'));
+      });
+  },
   applyApiCallCostBackfill: async (
       entryId: string,
       patch: Pick<ApiCallLogEntry, 'presetId' | 'presetName' | 'billingUsage' | 'pricingSnapshot' | 'costStatus' | 'costMicros' | 'unpricedReason'>,
@@ -2600,9 +2871,16 @@ export const DB = {
       });
   },
 
-  getApiCostDailySummaries: async (startDateKey?: string, endDateKey?: string): Promise<ApiCostDailySummary[]> => { const db=await openDB(); if(!db.objectStoreNames.contains(STORE_API_COST_DAILY))return []; return new Promise(resolve=>{const tx=db.transaction(STORE_API_COST_DAILY,'readonly'),req=tx.objectStore(STORE_API_COST_DAILY).getAll();req.onsuccess=()=>resolve((req.result??[]).filter((x:ApiCostDailySummary)=>(!startDateKey||x.dateKey>=startDateKey)&&(!endDateKey||x.dateKey<=endDateKey)).sort((a:ApiCostDailySummary,b:ApiCostDailySummary)=>a.dateKey.localeCompare(b.dateKey)));req.onerror=()=>resolve([]);}); },
+  getApiCostDailySummaries: async (startDateKey?: string, endDateKey?: string): Promise<ApiCostDailySummary[]> => { const db=await openDB(); if(!db.objectStoreNames.contains(STORE_API_COST_DAILY))return []; return new Promise(resolve=>{const tx=db.transaction(STORE_API_COST_DAILY,'readonly'),req=tx.objectStore(STORE_API_COST_DAILY).getAll();req.onsuccess=()=>resolve((req.result??[]).map((x:ApiCostDailySummary)=>normalizeApiCostDailySummary(x)).filter((x:ApiCostDailySummary)=>(!startDateKey||x.dateKey>=startDateKey)&&(!endDateKey||x.dateKey<=endDateKey)).sort((a:ApiCostDailySummary,b:ApiCostDailySummary)=>a.dateKey.localeCompare(b.dateKey)));req.onerror=()=>resolve([]);}); },
   getApiCostOverview: async (): Promise<ApiCostOverview> => { const all=await DB.getApiCostDailySummaries(); const today=localDateKey(Date.now()),month=today.slice(0,7),t=all.find(x=>x.dateKey===today);return {todayCostMicros:t?.totalCostMicros??'0',monthCostMicros:all.filter(x=>x.dateKey.startsWith(month)).reduce((a,x)=>(safeBigInt(a)+safeBigInt(x.totalCostMicros)).toString(),'0'),totalCostMicros:all.reduce((a,x)=>(safeBigInt(a)+safeBigInt(x.totalCostMicros)).toString(),'0'),todayPricedCalls:t?.pricedCallCount??0,todayFreeCalls:t?.freeCallCount??0,todayUnpricedCalls:t?.unpricedCallCount??0,totalUnpricedCalls:all.reduce((a,x)=>a+x.unpricedCallCount,0)}; },
-  clearApiCostHistory: async (): Promise<void> => { const db=await openDB(); if(db.objectStoreNames.contains(STORE_API_COST_DAILY))db.transaction(STORE_API_COST_DAILY,'readwrite').objectStore(STORE_API_COST_DAILY).clear(); },
+  clearApiCostHistory: async (): Promise<void> => {
+      const db = await openDB();
+      const stores = [STORE_API_COST_DAILY, STORE_API_COST_UNRESOLVED].filter(name => db.objectStoreNames.contains(name));
+      if (!stores.length) return;
+      const tx = db.transaction(stores, 'readwrite');
+      for (const name of stores) tx.objectStore(name).clear();
+      return new Promise((resolve, reject) => { tx.oncomplete = () => resolve(); tx.onerror = () => reject(tx.error); tx.onabort = () => reject(tx.error); });
+  },
 
   clearApiCallLog: async (): Promise<void> => {
       const db = await openDB();
@@ -2917,7 +3195,7 @@ export const DB = {
           STORE_LIFE_SETTINGS,
           STORE_HOTNEWS,
           STORE_VR_NOVELS, STORE_VR_ANNOTATIONS, STORE_CC_PARTS, STORE_VR_MUSIC, STORE_VR_GUESTBOOK, STORE_VR_SCRIPTS, STORE_VR_PLAYS, STORE_VR_PRESETS, STORE_VR_LETTERS, STORE_VR_SETTINGS,
-          STORE_API_CALL_LOG, STORE_API_COST_DAILY,
+          STORE_API_CALL_LOG, STORE_API_COST_DAILY, STORE_API_COST_UNRESOLVED,
           STORE_WORLDS, STORE_WORLD_EPISODES,
           'memory_nodes', 'memory_vectors', 'memory_links', 'topic_boxes', 'anticipations', 'event_boxes',
           'room_plates', 'digest_reports',
@@ -3527,12 +3805,34 @@ export const DB = {
           data.apiCallLog = undefined as any;
       }, data.apiCallLog?.length || 0);
 
-      // 所有完整/云端/分片备份最终都走 importFullData：在统一出口清理旧 Fork
-      await runSection('API 消费历史', data.apiCostDailySummaries !== undefined, async () => {
-          await clearAndAdd(STORE_API_COST_DAILY, data.apiCostDailySummaries, 'API 消费历史', false);
+      // API 花费备份：先保留原始字段状态，避免消费历史写入后清空字段，
+      // 导致老备份无法生成可处理的 legacy aggregate。
+      const importedCostSummaries = data.apiCostDailySummaries;
+      // clearAndAdd 会在导入过程中释放原数组元素；老备份迁移必须保留独立快照。
+      const legacyCostSummaries = importedCostSummaries?.filter(Boolean).map(summary => ({ ...summary }));
+      const importedUnresolved = data.apiCostUnresolvedEntries;
+      await runSection('API 消费历史', importedCostSummaries !== undefined, async () => {
+          await clearAndAdd(STORE_API_COST_DAILY, importedCostSummaries, 'API 消费历史', false);
           data.apiCostDailySummaries = undefined as any;
-      }, data.apiCostDailySummaries?.length || 0);
-
+      }, importedCostSummaries?.length || 0);
+      await runSection('API 待处理花费', importedUnresolved !== undefined || importedCostSummaries !== undefined, async () => {
+          if (importedUnresolved !== undefined) {
+              await DB.replaceApiCostUnresolvedEntries(importedUnresolved || []);
+          } else {
+              const now = Date.now();
+              await DB.replaceApiCostUnresolvedEntries((legacyCostSummaries || [])
+                  .filter((summary): summary is ApiCostDailySummary => Boolean(summary))
+                  .filter(summary => summary.unpricedCallCount > 0)
+                  .map(summary => ({
+                      id: `legacy:${summary.dateKey}`, kind: 'legacy_aggregate' as const,
+                      timestamp: new Date(`${summary.dateKey}T12:00:00`).getTime(),
+                      dateKey: summary.dateKey, callCount: summary.unpricedCallCount,
+                      presetName: '历史遗留', appName: '未知', purpose: '旧版未计费记录',
+                      reason: 'legacy_unknown' as const, createdAt: now, updatedAt: now,
+                  })));
+          }
+          data.apiCostUnresolvedEntries = undefined as any;
+      }, importedUnresolved?.length || 0);
       // 所有完整/云端/分片备份最终都走 importFullData：在统一出口清理旧 Fork
       // 遗留的逐轮上下文快照，避免恢复备份后无效 metadata 再次落回本机。
       const cleanedLegacySnapshots = await DB.cleanupLegacyTurnContextSnapshots();

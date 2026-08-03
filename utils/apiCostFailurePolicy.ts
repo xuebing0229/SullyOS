@@ -1,22 +1,11 @@
-/**
- * 没有可靠响应，或响应可能由网关在上游已开始工作后丢失时，
- * 不能断言这次调用一定没有费用。
- */
-export function failureMayHaveUpstreamCost(
-    status: number | undefined,
-): boolean {
-    if (status == null) return true;
-    if (status === 408 || status === 425) return true;
-    if (status >= 500 && status <= 599) return true;
-    return false;
-}
-
 export function apiUnpricedReasonLabel(
     reason: string | undefined,
 ): string {
     switch (reason) {
+        case 'legacy_unknown':
+            return '历史遗留，明细已过期';
         case 'failure_cost_unknown':
-            return '费用未知';
+            return '旧版失败记录';
         case 'preset_not_found':
             return '未匹配到预设';
         case 'preset_ambiguous':
