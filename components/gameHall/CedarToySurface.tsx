@@ -35,8 +35,11 @@ const CedarToySurface: React.FC<Props> = ({ suspended = false, onState }) => {
     void start();
     window.addEventListener('resize', updateFrame);
     return () => {
-      disposed = true; observer.disconnect(); window.removeEventListener('resize', updateFrame);
-      void listener?.remove(); void gameHallWebView.destroy().catch(() => undefined);
+      disposed = true;
+      observer.disconnect();
+      window.removeEventListener('resize', updateFrame);
+      void listener?.remove();
+      void gameHallWebView.destroy().catch(() => undefined);
     };
   }, [native, onState]);
 
@@ -48,9 +51,14 @@ const CedarToySurface: React.FC<Props> = ({ suspended = false, onState }) => {
   const reload = () => native
     ? void gameHallWebView.reload().catch((e: any) => setNativeError(e?.message || '刷新失败'))
     : (() => { if (iframeRef.current) iframeRef.current.src = CEDAR_TOY_URL; })();
-  const back = () => native
-    ? void gameHallWebView.goBack().catch((e: any) => setNativeError(e?.message || '后退失败'))
-    : window.history.back();
+  const back = () => {
+    if (native) {
+      void gameHallWebView.goBack().catch((e: any) => setNativeError(e?.message || '后退失败'));
+      return;
+    }
+    try { iframeRef.current?.contentWindow?.history.back(); }
+    catch { /* 跨域 iframe 无法读 history 时保持当前页，不改写浏览器主历史。 */ }
+  };
 
   return (
     <section className="relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-white/10 bg-slate-950">
@@ -66,8 +74,8 @@ const CedarToySurface: React.FC<Props> = ({ suspended = false, onState }) => {
             title="Cedar Toy"
             src={CEDAR_TOY_URL}
             className="h-full w-full border-0"
-            sandbox="allow-forms allow-modals allow-popups allow-same-origin allow-scripts allow-downloads"
-            allow="clipboard-read; clipboard-write; fullscreen"
+            allow="accelerometer; autoplay; camera; clipboard-read; clipboard-write; encrypted-media; fullscreen; geolocation; gyroscope; microphone; payment; picture-in-picture; screen-wake-lock; web-share"
+            allowFullScreen
             onLoad={() => { setIframeBlocked(false); onState?.({ url: CEDAR_TOY_URL, title: 'Cedar Toy', loading: false }); }}
             onError={() => setIframeBlocked(true)}
           />
@@ -76,7 +84,7 @@ const CedarToySurface: React.FC<Props> = ({ suspended = false, onState }) => {
           <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 bg-slate-950 p-6 text-center text-slate-200">
             <WarningCircle size={34} className="text-amber-400" />
             <strong>{native ? '原生游戏视图不可用' : '该站点可能不支持嵌入'}</strong>
-            <p className="text-xs leading-5 text-slate-400">{nativeError || '请在 Android 版使用原生子 WebView。SullyOS 不会绕过站点的 frame 安全策略。'}</p>
+            <p className="text-xs leading-5 text-slate-400">{nativeError || '浏览器端仍可能被站点自身的 frame-ancestors / X-Frame-Options 拦截；Android 版会使用原生子 WebView。'}</p>
           </div>
         )}
       </div>

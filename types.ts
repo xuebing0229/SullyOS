@@ -3340,9 +3340,10 @@ export interface FullBackupData {
     gameHallPendingActions?: import('./utils/gameHallTypes').GameHallPendingAction[];
     characterExternalAccounts?: import('./utils/gameHallTypes').CharacterExternalAccount[];
     gameHallBridgeSnapshots?: import('./utils/gameHallTypes').GameHallBridgeSnapshot[];
-    gameHallEvents?: import('./utils/gameHallMemoryTypes').GameHallEvent[];
-    gameHallMemoryCandidates?: import('./utils/gameHallMemoryTypes').GameHallMemoryCandidate[];
-    gameHallPreferenceEvidence?: import('./utils/gameHallMemoryTypes').GameHallPreferenceEvidence[];
+    // 仅用于旧版备份原样透传；运行时已删除 gameHallMemory* 旁路，不再依赖其类型或逻辑。
+    gameHallEvents?: Record<string, unknown>[];
+    gameHallMemoryCandidates?: Record<string, unknown>[];
+    gameHallPreferenceEvidence?: Record<string, unknown>[];
     worldbooks?: Worldbook[]; 
     roomCustomAssets?: { id?: string; name: string; image: string; defaultScale: number; description?: string; visibility?: 'public' | 'character'; assignedCharIds?: string[] }[]; 
     

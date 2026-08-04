@@ -2,29 +2,39 @@ import { createMcpServer, testMcpConnection, type McpServerConfig, type McpToolD
 import type { CedarCapabilityMap, CedarToyConnection } from './gameHallTypes';
 
 export const CEDAR_CONNECTION_KEY = 'sullyos.gameHall.cedar.connection.v1';
-const MATCHERS = {
-  account: /account|identity|profile|user|login|绑定|账号|身份/i,
-  catalog: /catalog|list games?|game list|library|目录|游戏列表/i,
-  guide: /guide|help|rules?|manual|攻略|规则|说明/i,
-  state: /state|status|snapshot|board|save|session|turn|局面|状态|存档|回合/i,
-  action: /action|act|move|play|choose|submit|command|操作|行动|出牌|选择/i,
+
+const NAME_MATCHERS = {
+  account: /^(?:account|login|identity|profile|user)(?:_|$)|账号|登录|身份/i,
+  catalog: /^(?:list_?games?|games?_?list|catalog|library)(?:_|$)|游戏列表|目录/i,
+  guide: /^(?:get_?guide|guide|help|rules?|manual)(?:_|$)|攻略|规则|说明/i,
+  state: /^(?:get_|read_|fetch_)?(?:game_)?(?:state|status|snapshot|board|session|turn)(?:_|$)|局面|状态|存档|回合/i,
+  action: /^(?:play|action|act|move|choose|submit|command)(?:_|$)|操作|行动|出牌|选择/i,
 } as const;
 
-const searchableToolText = (tool: McpToolDef): string => {
-  let schema = '';
-  try { schema = JSON.stringify(tool.inputSchema || {}); } catch { /* ignore */ }
-  return `${tool.name} ${tool.description || ''} ${schema}`;
-};
+const DESCRIPTION_MATCHERS = {
+  account: /account|identity|login|账号|身份|登录/i,
+  catalog: /list games?|game catalog|game library|游戏列表|游戏目录/i,
+  guide: /guide|rules?|manual|攻略|规则|说明/i,
+  state: /read (?:the )?(?:game )?state|snapshot|current turn|读取状态|当前局面/i,
+  action: /perform|take action|play game|submit move|执行行动|进行游戏/i,
+} as const;
 
+/**
+ * 分类只用于 UI 诊断、账号落库和寻找专用状态工具。
+ * 角色可见工具永远直接使用原始 tools/list，绝不经过这里筛选。
+ */
 export const buildCedarCapabilityMap = (tools: McpToolDef[]): CedarCapabilityMap => {
   const map: CedarCapabilityMap = { account: [], catalog: [], guide: [], state: [], action: [], unknown: [] };
   for (const tool of tools) {
-    const text = searchableToolText(tool);
-    let matched = false;
-    for (const key of ['account', 'catalog', 'guide', 'state', 'action'] as const) {
-      if (MATCHERS[key].test(text)) { map[key].push(tool); matched = true; }
-    }
-    if (!matched) map.unknown.push(tool);
+    const name = String(tool.name || '');
+    const description = String(tool.description || '');
+    const byName = (Object.keys(NAME_MATCHERS) as Array<keyof typeof NAME_MATCHERS>)
+      .find(key => NAME_MATCHERS[key].test(name));
+    const byDescription = byName ? undefined : (Object.keys(DESCRIPTION_MATCHERS) as Array<keyof typeof DESCRIPTION_MATCHERS>)
+      .find(key => DESCRIPTION_MATCHERS[key].test(description));
+    const category = byName || byDescription;
+    if (category) map[category].push(tool);
+    else map.unknown.push(tool);
   }
   return map;
 };
@@ -35,6 +45,7 @@ export const describeCedarCapabilities = (map: CedarCapabilityMap): string[] => 
   `攻略工具：${map.guide.length ? map.guide.map(t => t.name).join('、') : '未识别'}`,
   `状态工具：${map.state.length ? map.state.map(t => t.name).join('、') : '未识别'}`,
   `行动工具：${map.action.length ? map.action.map(t => t.name).join('、') : '未识别'}`,
+  `未分类工具：${map.unknown.length ? map.unknown.map(t => t.name).join('、') : '无'}`,
 ];
 
 const normalizeCedarConnection = (value: unknown): CedarToyConnection => {
@@ -53,9 +64,8 @@ const normalizeCedarConnection = (value: unknown): CedarToyConnection => {
 };
 
 export const loadCedarConnection = (): CedarToyConnection => {
-  try {
-    return normalizeCedarConnection(JSON.parse(localStorage.getItem(CEDAR_CONNECTION_KEY) || '{}'));
-  } catch { return normalizeCedarConnection({}); }
+  try { return normalizeCedarConnection(JSON.parse(localStorage.getItem(CEDAR_CONNECTION_KEY) || '{}')); }
+  catch { return normalizeCedarConnection({}); }
 };
 
 export const saveCedarConnection = (connection: CedarToyConnection): void => {
@@ -64,13 +74,11 @@ export const saveCedarConnection = (connection: CedarToyConnection): void => {
 
 export const clearCedarConnection = (): void => localStorage.removeItem(CEDAR_CONNECTION_KEY);
 
-
 export interface CedarToyConnectionBackup {
   version: 1;
   connection: CedarToyConnection;
 }
 
-/** 新备份即使没有配置也写入空状态，导入时才能清掉目标设备的旧连接。 */
 export const exportCedarToyConnectionForBackup = (): CedarToyConnectionBackup => ({
   version: 1,
   connection: normalizeCedarConnection(loadCedarConnection()),

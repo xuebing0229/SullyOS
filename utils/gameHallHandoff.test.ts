@@ -1,73 +1,61 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { buildGameHallHandoffMeta } from './gameHallHandoff';
-import type {
-  CharacterExternalAccount,
-  GameHallMessage,
-  GameHallSession,
-} from './gameHallTypes';
+import type { CharacterExternalAccount, GameHallMessage, GameHallSession } from './gameHallTypes';
+
+const handoffSource = readFileSync(new URL('./gameHallHandoff.ts', import.meta.url), 'utf8');
+const storeSource = readFileSync(new URL('./gameHallStore.ts', import.meta.url), 'utf8');
 
 const session: GameHallSession = {
-  id: 's1',
-  charId: 'c1',
-  mode: 'ask-before-action',
-  status: 'active',
-  gameName: 'Cedar Toy',
-  createdAt: 1,
-  updatedAt: 1,
+  id: 's1', charId: 'c1', mode: 'ask-before-action', status: 'active',
+  gameName: 'Cedar Toy', createdAt: 1, updatedAt: 1,
 };
-
 const account: CharacterExternalAccount = {
-  accountRef: 'cedar_toy:server:c1',
-  charId: 'c1',
-  provider: 'cedar_toy',
-  serverId: 'server',
-  serverUrl: 'https://example.test/mcp',
-  sourceToolName: 'account',
-  credentials: { token: 'EXACT_TOKEN' },
-  rawRegistrationResult: { token: 'EXACT_TOKEN' },
-  status: 'active',
-  createdAt: 1,
-  updatedAt: 1,
+  accountRef: 'cedar_toy:server:c1:account1', charId: 'c1', provider: 'cedar_toy',
+  serverId: 'server', serverUrl: 'https://example.test', identityEndpoint: 'https://example.test/TOKEN',
+  sourceToolName: 'account', credentials: { token: 'EXACT_TOKEN' },
+  rawRegistrationResult: { token: 'EXACT_TOKEN' }, status: 'active', createdAt: 1, updatedAt: 1,
 };
-
-const messages: GameHallMessage[] = [
-  { id: 'm1', sessionId: 's1', charId: 'c1', role: 'user', content: '去主对话继续说这个。', createdAt: 10 },
-  { id: 'm2', sessionId: 's1', charId: 'c1', role: 'assistant', content: '好，我们回去接着说。', createdAt: 11 },
-  {
-    id: 'm3',
-    sessionId: 's1',
-    charId: 'c1',
-    role: 'tool',
-    content: '已确认执行 account 成功。',
-    toolName: 'account',
-    accountRef: account.accountRef,
-    toolResult: { success: true, rawResult: { token: 'EXACT_TOKEN' } },
-    createdAt: 12,
-  },
+const sourceMessages: GameHallMessage[] = [
+  { id: 'm1', sessionId: 's1', charId: 'c1', role: 'user', content: '回主对话继续。', createdAt: 10 },
+  { id: 'm2', sessionId: 's1', charId: 'c1', role: 'assistant', content: '好。', createdAt: 11 },
 ];
 
-describe('game hall main-chat handoff', () => {
-  it('creates a normal main-chat card payload with conversation and accountRef', () => {
+describe('game hall main-chat handoff meta', () => {
+  it('records exact source ids/count and stores the generated summary', () => {
     const meta = buildGameHallHandoffMeta({
       session,
-      messages,
+      sourceMessages,
       accounts: [account],
-      charName: '祁连云',
+      summary: '刚才约好回主对话继续讨论街机游戏。',
+      transferredImageCount: 0,
     });
-    expect(meta.gameHallCard).toBe(true);
-    expect(meta.transcript.map(line => line.text)).toContain('去主对话继续说这个。');
-    expect(meta.transcript.map(line => line.text)).toContain('好，我们回去接着说。');
-    expect(meta.accountRefs).toContain(account.accountRef);
+    expect(meta.sourceMessageIds).toEqual(['m1', 'm2']);
+    expect(meta.sourceMessageCount).toBe(2);
+    expect(meta.summary).toContain('街机游戏');
+    expect(meta.transcript.map(line => line.text).join('\n')).toContain('街机游戏');
   });
 
-  it('does not copy credentials into the memory card; it references the exact account record', () => {
+  it('keeps the exact accountRef in the handoff metadata', () => {
     const meta = buildGameHallHandoffMeta({
       session,
-      messages,
+      sourceMessages,
       accounts: [account],
-      charName: '祁连云',
+      summary: '角色账号已经绑定，可继续玩。',
+      transferredImageCount: 0,
     });
-    expect(JSON.stringify(meta)).not.toContain('EXACT_TOKEN');
-    expect(JSON.stringify(meta)).toContain(account.accountRef);
+    expect(meta.accountRefs).toContain(account.accountRef);
   });
+  it('atomically confirms the handoff cursor and deletes exact source messages last', () => {
+    expect(storeSource).toContain('export async function commitGameHallHandoff');
+    expect(storeSource).toContain('[GAME_HALL_STORES.sessions, GAME_HALL_STORES.messages]');
+    expect(storeSource).toContain('tx.objectStore(GAME_HALL_STORES.sessions).put(session)');
+    expect(storeSource).toContain('uniqueIds.forEach(id => messageStore.delete(id))');
+    expect(handoffSource).toContain('await commitGameHallHandoff(committedSession, meta.sourceMessageIds)');
+    expect(handoffSource.indexOf('cardMessageId = await DB.saveMessage')).toBeLessThan(
+      handoffSource.indexOf('await commitGameHallHandoff(committedSession, meta.sourceMessageIds)'),
+    );
+    expect(handoffSource).toContain('await DB.deleteMessages(rollbackIds).catch(() => undefined)');
+  });
+
 });

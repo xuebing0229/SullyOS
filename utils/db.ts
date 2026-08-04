@@ -32,7 +32,7 @@ const DB_NAME = 'AetherOS_Data';
 // v70：API 每日消费永久汇总。
 // v73：角色外部账号档案。完整保存游戏厅注册/登录返回，模型只引用 accountRef。
 // v74：API 未计价请求永久待处理 Store；确保已升级到 v73 的用户仍会触发建表。
-const DB_VERSION = 74;
+const DB_VERSION = 75;
 
 const STORE_CHARACTERS = 'characters';
 const STORE_CHAR_GROUPS = 'character_groups'; // 角色分组定义（角色通过 groupId 指向；与群聊 groups 无关）
@@ -324,6 +324,17 @@ export const openDB = (): Promise<IDBDatabase> => {
           store.createIndex('charId', 'charId', { unique: false });
           store.createIndex('updatedAt', 'updatedAt', { unique: false });
       }
+
+      // GAME_HALL_MULTI_ACCOUNT_INDEX_V2
+      // 旧版把 char/provider/server 做成 unique，导致第二个账号覆盖/ConstraintError。
+      // 升级时显式删除并重建为非唯一索引；只改索引，不改任何账号原文。
+      if (db.objectStoreNames.contains(STORE_GAME_HALL_CHARACTER_EXTERNAL_ACCOUNTS)) {
+          const accountStore = request.transaction!.objectStore(STORE_GAME_HALL_CHARACTER_EXTERNAL_ACCOUNTS);
+          if (accountStore.indexNames.contains('charProviderServer')) {
+              accountStore.deleteIndex('charProviderServer');
+          }
+          accountStore.createIndex('charProviderServer', ['charId', 'provider', 'serverId'], { unique: false });
+      }
       if (!db.objectStoreNames.contains(STORE_GAME_HALL_MESSAGES)) {
           const store = db.createObjectStore(STORE_GAME_HALL_MESSAGES, { keyPath: 'id' });
           store.createIndex('sessionId', 'sessionId', { unique: false });
@@ -364,7 +375,7 @@ export const openDB = (): Promise<IDBDatabase> => {
           store.createIndex('charId', 'charId', { unique: false });
           store.createIndex('provider', 'provider', { unique: false });
           store.createIndex('serverId', 'serverId', { unique: false });
-          store.createIndex('charProviderServer', ['charId', 'provider', 'serverId'], { unique: true });
+          store.createIndex('charProviderServer', ['charId', 'provider', 'serverId'], { unique: false });
           store.createIndex('updatedAt', 'updatedAt', { unique: false });
       }
       createStore(STORE_API_COST_DAILY, { keyPath: 'dateKey' });
