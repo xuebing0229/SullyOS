@@ -100,8 +100,6 @@ export interface BuildChatPayloadInput {
     worldbookQueryMessages?: Message[];
     /** 是否允许通用 MCP 聊天工具；默认 true。 */
     allowMcpChat?: boolean;
-    /** 游戏厅即时连续状态；由 caller 预读 IndexedDB，builder 不隐式访问数据库。 */
-    gameHallBridgeBlock?: string;
 }
 
 export interface BuildChatPayloadResult {

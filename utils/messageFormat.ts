@@ -201,6 +201,14 @@ export function normalizeMessageContent(
         return '[音乐卡片]';
     }
 
+    // 游戏厅交接卡：摘要已进入主 messages 表，正常聊天、世界书匹配、归档和记忆宫殿都读同一正文。
+    if (type === 'game_hall_card') {
+        const summary = typeof msg.content === 'string' && msg.content.trim()
+            ? msg.content.trim()
+            : (typeof msg.metadata?.summary === 'string' ? msg.metadata.summary.trim() : '');
+        return summary ? `[游戏厅交接] ${summary}` : '[游戏厅交接]';
+    }
+
     // TRPG 跑团片段：从 TRPG 游戏里多选转发到聊天的剧情。必须翻成完整可读文本，
     // 让上下文 / 归档 / palace 都能读到"和用户一起玩游戏时发生了什么"，并标明来自 TRPG。
     if (type === 'trpg_card') {

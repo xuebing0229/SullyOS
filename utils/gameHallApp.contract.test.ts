@@ -10,13 +10,18 @@ const storeSource = readFileSync(
   new URL('./gameHallStore.ts', import.meta.url),
   'utf8',
 );
+const agentSource = readFileSync(
+  new URL('./gameHallAgent.ts', import.meta.url),
+  'utf8',
+);
 
 describe('GameHall tool result and history contracts', () => {
-  it('feeds recent persisted messages back into the companion prompt', () => {
-    expect(appSource).toContain(
-      'history: [...messages, ...(userMessage ? [userMessage] : [])]',
-    );
+  it('feeds the user-selected game hall range through the full main-chat context chain', () => {
+    expect(appSource).toContain('history: turnHistory');
     expect(appSource).toContain('respondToGameHallToolResult');
+    expect(agentSource).toContain('loadCharacterContextRange(input.char)');
+    expect(agentSource).toContain('buildChatRequestPayload({');
+    expect(agentSource).toContain('gameHallMessages: context.messages');
   });
 
   it('shows the real successful tool result instead of a success-only placeholder', () => {
@@ -25,10 +30,12 @@ describe('GameHall tool result and history contracts', () => {
     expect(appSource).toContain('getGameHallToolResultPayload(message.toolResult)');
   });
 
-  it('does not turn a successful account action into failure because no state tool exists', () => {
-    expect(appSource).toContain('hasCallableStateTool');
-    expect(appSource).toContain('canCallWithoutGuessing(tool, {})');
-    expect(appSource).toContain('await refreshState(false)');
+  it('does not guess or silently call a state tool after a successful action', () => {
+    expect(appSource).not.toContain('hasCallableStateTool');
+    expect(appSource).not.toContain('canCallWithoutGuessing(tool, {})');
+    expect(appSource).not.toContain('refreshState');
+    expect(agentSource).not.toContain('hasCallableStateTool');
+    expect(agentSource).not.toContain('refreshState');
   });
 
   it('keeps the current conversation active when merely leaving the app', () => {

@@ -8,9 +8,11 @@ import {
   FloppyDisk,
   GameController,
   GearSix,
+  ImageSquare,
   LinkSimple,
   PaperPlaneRight,
   ShieldCheck,
+  SpinnerGap,
   Trash,
   X,
 } from '@phosphor-icons/react';
@@ -26,17 +28,15 @@ import {
   saveCedarConnection,
 } from '../utils/cedarToyMcpAdapter';
 import {
-  canCallWithoutGuessing,
   executePendingGameHallAction,
   planGameHallTurn,
-  readCedarGameState,
   respondToGameHallToolResult,
+  stateFromGameHallToolResult,
 } from '../utils/gameHallAgent';
 import {
   formatGameHallToolResult,
   getGameHallToolResultPayload,
-  isAccountTool,
-  persistCharacterAccountFromToolResult,
+  persistCharacterAccountFromToolResultIfPresent,
 } from '../utils/gameHallAccount';
 import {
   deleteCharacterExternalAccount,
@@ -44,6 +44,8 @@ import {
   saveCharacterExternalAccount,
 } from '../utils/characterExternalAccountStore';
 import { createGameHallMainChatHandoff } from '../utils/gameHallHandoff';
+import { gameHallContextLabel, selectGameHallContext } from '../utils/gameHallContext';
+import { prepareChatImageForSend } from '../utils/chatImage';
 import {
   gameHallId,
   getActiveGameHallSession,
@@ -72,15 +74,6 @@ const MODES: Array<{ id: GameHallCompanionMode; label: string }> = [
   { id: 'auto-turn', label: '自动回合' },
 ];
 
-const uniqueTools = <T extends { name: string }>(tools: T[]): T[] => {
-  const seen = new Set<string>();
-  return tools.filter(tool => {
-    if (seen.has(tool.name)) return false;
-    seen.add(tool.name);
-    return true;
-  });
-};
-
 const GameHallApp: React.FC = () => {
   const {
     closeApp,
@@ -92,6 +85,8 @@ const GameHallApp: React.FC = () => {
     apiConfig,
     userProfile,
     memoryPalaceConfig,
+    groups,
+    realtimeConfig,
   } = useOS();
 
   const [charId, setCharId] = useState(activeCharacterId || characters[0]?.id || '');
@@ -112,23 +107,28 @@ const GameHallApp: React.FC = () => {
   const [messages, setMessages] = useState<GameHallMessage[]>([]);
   const [pending, setPending] = useState<GameHallPendingAction[]>([]);
   const [accounts, setAccounts] = useState<CharacterExternalAccount[]>([]);
-  const [gameState, setGameState] = useState<NormalizedCedarGameState>();
+  const [gameState, setGameState] = useState<NormalizedCedarGameState | undefined>(undefined);
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
   const [handoffBusy, setHandoffBusy] = useState(false);
+  const [runStatus, setRunStatus] = useState('');
   const [accountEditorRef, setAccountEditorRef] = useState<string | null>(null);
   const [accountEditorText, setAccountEditorText] = useState('');
   const [accountEditorError, setAccountEditorError] = useState('');
   const listRef = useRef<HTMLDivElement>(null);
+  const imageInputRef = useRef<HTMLInputElement>(null);
+  const executingActionIdsRef = useRef<Set<string>>(new Set());
 
   const selected = useMemo(
     () => characters.find(character => character.id === charId) || characters[0],
     [characters, charId],
   );
   const sheetOpen = sheetSnap !== 'collapsed';
-  const agentTools = useMemo(
-    () => uniqueTools([...(capabilities?.account || []), ...(capabilities?.action || [])]),
-    [capabilities],
+  // 原始 tools/list：保留顺序、重复工具和完整 schema，不经过任何白名单或去重。
+  const availableTools = connection.tools || [];
+  const contextSelection = useMemo(
+    () => selectGameHallContext(messages, session?.contextMessageLimit),
+    [messages, session?.contextMessageLimit],
   );
 
   const handleWebState = useCallback((state: GameHallWebState) => setWebState(state), []);
@@ -176,6 +176,10 @@ const GameHallApp: React.FC = () => {
           charId: selected.id,
           mode,
           status: 'active',
+          contextMessageLimit: null,
+          schemaValidationMode: 'off',
+          planRepairAttempts: 0,
+          autoArchiveAccounts: true,
           createdAt: now,
           updatedAt: now,
         };
@@ -212,7 +216,7 @@ const GameHallApp: React.FC = () => {
   useEffect(() => {
     if (!sheetOpen) return;
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight });
-  }, [messages, pending, sheetOpen]);
+  }, [messages, pending, runStatus, sheetOpen]);
 
   const changeMode = async (next: GameHallCompanionMode) => {
     setMode(next);
@@ -222,85 +226,88 @@ const GameHallApp: React.FC = () => {
     await saveGameHallSession(updated);
   };
 
-  const refreshState = async (manageBusy = true) => {
-    if (manageBusy) setBusy(true);
-    try {
-      const read = await readCedarGameState(connection);
-      setGameState(read.state);
-      if (session) {
-        const updated = {
-          ...session,
-          lastStateHash: read.state.stateHash,
-          gameId: read.state.gameId,
-          gameName: read.state.gameName,
-          updatedAt: Date.now(),
-        };
-        setSession(updated);
-        await saveGameHallSession(updated);
-      }
-      await append('tool', `已通过 ${read.toolName} 读取同一存档状态。`, {
-        toolName: read.toolName,
-      });
-      return read.state;
-    } catch (error: any) {
-      await append('system', error?.message || String(error));
-      throw error;
-    } finally {
-      if (manageBusy) setBusy(false);
-    }
+
+  const changeContextLimit = async (raw: number) => {
+    if (!session) return;
+    const contextMessageLimit = Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : null;
+    const updated: GameHallSession = {
+      ...session,
+      contextMessageLimit,
+      updatedAt: Date.now(),
+    };
+    setSession(updated);
+    await saveGameHallSession(updated);
   };
 
+  const updateSessionSettings = async (patch: Partial<GameHallSession>) => {
+    if (!session) return;
+    const updated: GameHallSession = { ...session, ...patch, updatedAt: Date.now() };
+    setSession(updated);
+    await saveGameHallSession(updated);
+  };
+
+
   const executeAction = async (action: GameHallPendingAction, automatic = false) => {
-    if (!selected) return;
+    if (!selected || executingActionIdsRef.current.has(action.id)) return;
+    executingActionIdsRef.current.add(action.id);
     setBusy(true);
+    setRunStatus(`正在执行 ${action.toolName}…`);
     const running = { ...action, status: 'confirmed' as const, updatedAt: Date.now() };
+    setPending(value => value.some(item => item.id === action.id)
+      ? value.map(item => item.id === action.id ? running : item)
+      : [...value, running]);
     await savePendingGameHallAction(running);
 
-    let result;
     try {
-      result = await executePendingGameHallAction(connection, running);
-      if (!result.success) throw new Error(result.error || '行动失败');
-    } catch (error: any) {
-      const failed = {
-        ...running,
-        status: 'failed' as const,
-        error: error?.message || String(error),
-        updatedAt: Date.now(),
-      };
-      await savePendingGameHallAction(failed);
-      await append('system', `行动失败：${failed.error}`);
-      setBusy(false);
-      return;
-    }
+      const execution = await executePendingGameHallAction(
+        connection,
+        running,
+        session?.schemaValidationMode || 'off',
+      );
+      const { result, request } = execution;
+      if (!result.success) {
+        const failed = {
+          ...running,
+          status: 'failed' as const,
+          error: result.error || '行动失败',
+          updatedAt: Date.now(),
+        };
+        await savePendingGameHallAction(failed);
+        setPending(value => value.map(item => item.id === action.id ? failed : item));
+        await append('tool', `执行 ${action.toolName} 失败。`, {
+          toolName: action.toolName,
+          toolRequest: request,
+          toolResult: result,
+          accountRef: action.accountRef,
+        });
+        await append('system', `行动失败：${failed.error}`);
+        return;
+      }
 
-    const done = { ...running, status: 'executed' as const, updatedAt: Date.now() };
-    await savePendingGameHallAction(done);
-    setPending(value => value.filter(item => item.id !== action.id));
+      const done = { ...running, status: 'executed' as const, updatedAt: Date.now() };
+      await savePendingGameHallAction(done);
+      setPending(value => value.filter(item => item.id !== action.id));
 
-    let savedAccount: CharacterExternalAccount | undefined;
-    try {
-      // 账号档案必须是工具成功后的第一项副作用。后续角色回复/状态刷新失败都不影响它。
-      if (isAccountTool(action.toolName, capabilities?.account || [])) {
-        savedAccount = await persistCharacterAccountFromToolResult({
+      let savedAccount: CharacterExternalAccount | undefined;
+      setRunStatus('正在保存工具结果…');
+      if (session?.autoArchiveAccounts !== false) {
+        setRunStatus('正在检查工具结果中的账号资料…');
+        savedAccount = await persistCharacterAccountFromToolResultIfPresent({
           charId: selected.id,
           connection,
           toolName: action.toolName,
           result,
         });
-        const bindingKey = `${savedAccount.provider}:${savedAccount.serverId}`;
-        if (session) {
+        if (savedAccount && session) {
           const updatedSession: GameHallSession = {
             ...session,
-            accountBinding: {
-              ...(session.accountBinding || {}),
-              [bindingKey]: savedAccount.accountRef,
-            },
+            activeAccountRef: savedAccount.accountRef,
             updatedAt: Date.now(),
           };
           setSession(updatedSession);
           await saveGameHallSession(updatedSession);
+          await reloadAccounts();
         }
-        await reloadAccounts();
       }
 
       const executionLabel = automatic ? '自动回合' : '已确认';
@@ -311,49 +318,58 @@ const GameHallApp: React.FC = () => {
         }`,
         {
           toolName: action.toolName,
+          toolRequest: request,
           toolResult: result,
-          accountRef: savedAccount?.accountRef,
+          accountRef: savedAccount?.accountRef || action.accountRef,
         },
       );
 
+      setRunStatus('正在整理工具结果…');
       try {
+        const history = session ? await getGameHallMessages(session.id) : [...messages, ...(toolMessage ? [toolMessage] : [])];
         const reply = await respondToGameHallToolResult({
           apiConfig,
           char: selected,
           userProfile,
+          groups,
+          realtimeConfig,
           action,
           toolResult: result,
-          accountRef: savedAccount?.accountRef,
-          history: [...messages, ...(toolMessage ? [toolMessage] : [])],
+          accountRef: savedAccount?.accountRef || action.accountRef,
+          history,
+          contextMessageLimit: session?.contextMessageLimit,
         });
         if (reply) await append('assistant', reply);
-      } catch {
-        // 工具完整结果与账号档案已经落库；角色化复述失败不能推翻工具成功。
+      } catch (error: any) {
+        await append('system', `工具已成功，但角色整理结果失败：${error?.message || String(error)}`);
       }
 
-      const hasCallableStateTool = (capabilities?.state || []).some(tool =>
-        canCallWithoutGuessing(tool, {}),
-      );
-      if (hasCallableStateTool) {
-        try {
-          await refreshState(false);
-        } catch {
-          // 状态刷新只是后处理，失败不能推翻已成功工具或已保存账号。
-        }
+      const nextState = stateFromGameHallToolResult(result);
+      setGameState(nextState);
+      if (session && (nextState.gameId || nextState.gameName)) {
+        const updatedSession: GameHallSession = {
+          ...session,
+          gameId: nextState.gameId || session.gameId,
+          gameName: nextState.gameName || session.gameName,
+          updatedAt: Date.now(),
+        };
+        setSession(updatedSession);
+        await saveGameHallSession(updatedSession);
       }
     } catch (error: any) {
-      // result 仍完整存在，尽最大努力把它落成工具消息，不能改判工具失败。
-      await append('tool', `工具 ${action.toolName} 已执行成功。`, {
-        toolName: action.toolName,
-        toolResult: result,
-        accountRef: savedAccount?.accountRef,
-      }).catch(() => undefined);
-      await append(
-        'system',
-        `工具已经执行成功，但本地后处理失败：${error?.message || String(error)}`,
-      ).catch(() => undefined);
+      const failed = {
+        ...running,
+        status: 'failed' as const,
+        error: error?.message || String(error),
+        updatedAt: Date.now(),
+      };
+      await savePendingGameHallAction(failed).catch(() => undefined);
+      setPending(value => value.map(item => item.id === action.id ? failed : item));
+      await append('system', `行动失败：${failed.error}`).catch(() => undefined);
     } finally {
+      executingActionIdsRef.current.delete(action.id);
       setBusy(false);
+      setRunStatus('');
     }
   };
 
@@ -366,51 +382,45 @@ const GameHallApp: React.FC = () => {
     setPending(value => value.filter(item => item.id !== action.id));
   };
 
-  const send = async () => {
-    const text = input.trim();
-    if (!text || !session || !selected || busy) return;
-
-    setInput('');
+  const runTurn = async (
+    text: string,
+    image?: GameHallMessage['image'],
+  ) => {
+    if ((!text.trim() && !image) || !session || !selected || busy || handoffBusy) return;
     setBusy(true);
+    setRunStatus(image ? '正在保存图片…' : '正在保存消息…');
     try {
-      const userMessage = await append('user', text);
+      const userMessage = await append('user', text.trim() || '[图片]', image ? { image } : {});
+      const turnHistory = [...messages, ...(userMessage ? [userMessage] : [])];
 
-      let state = gameState;
-      try {
-        state = await readCedarGameState(connection).then(result => result.state);
-        setGameState(state);
-      } catch {
-        // 状态工具不可用时仍允许正常聊天和账号操作。
-      }
-
+      const state = gameState;
+      setRunStatus(`${selected.name}正在思考…`);
       const plan = await planGameHallTurn({
         apiConfig,
         char: selected,
         userProfile,
+        groups,
+        realtimeConfig,
         mode,
-        userText: text,
+        userText: text.trim() || '[用户发送了一张图片]',
         state,
-        actionTools: agentTools,
+        availableTools,
         sessionId: session.id,
-        history: [...messages, ...(userMessage ? [userMessage] : [])],
+        history: turnHistory,
         accounts,
+        preferredAccountRef: session.activeAccountRef,
+        contextMessageLimit: session.contextMessageLimit,
+        schemaValidationMode: session.schemaValidationMode || 'off',
+        repairAttempts: session.planRepairAttempts || 0,
       });
 
       await append('assistant', plan.reply);
+      if (plan.validationWarnings?.length) {
+        await append('system', `本轮工具规划提示：${plan.validationWarnings.join('；')}`);
+      }
 
       if (plan.pending) {
-        if (
-          mode === 'auto-turn' &&
-          state?.allowsAiAction &&
-          session.lastAutoActionStateHash !== state.stateHash
-        ) {
-          const updated = {
-            ...session,
-            lastAutoActionStateHash: state.stateHash,
-            updatedAt: Date.now(),
-          };
-          setSession(updated);
-          await saveGameHallSession(updated);
+        if (mode === 'auto-turn') {
           await executeAction(plan.pending, true);
         } else {
           await savePendingGameHallAction(plan.pending);
@@ -421,14 +431,48 @@ const GameHallApp: React.FC = () => {
       await append('system', error?.message || String(error));
     } finally {
       setBusy(false);
+      setRunStatus('');
+    }
+  };
+
+  const send = async () => {
+    const text = input.trim();
+    if (!text) return;
+    setInput('');
+    await runTurn(text);
+  };
+
+  const handleImageSelect = async (file: File) => {
+    if (!file || busy || handoffBusy) return;
+    const caption = input.trim();
+    setInput('');
+    setBusy(true);
+    setRunStatus('正在处理图片…');
+    try {
+      const prepared = await prepareChatImageForSend(file);
+      setBusy(false);
+      await runTurn(caption || '[图片]', {
+        displayDataUrl: prepared.displayDataUrl,
+        visionDataUrl: prepared.visionDataUrl,
+        fileName: file.name,
+        mimeType: file.type,
+        isAnimatedGif: prepared.isAnimatedGif,
+      });
+    } catch (error: any) {
+      await append('system', `图片处理失败：${error?.message || String(error)}`);
+      setBusy(false);
+      setRunStatus('');
+    } finally {
+      if (imageInputRef.current) imageInputRef.current.value = '';
     }
   };
 
   const handoffToMainChat = async () => {
-    if (!session || !selected || handoffBusy) return;
+    if (!session || !selected || handoffBusy || busy) return;
     setHandoffBusy(true);
+    setRunStatus('正在准备游戏厅交接…');
     try {
-      await createGameHallMainChatHandoff({
+      const result = await createGameHallMainChatHandoff({
         session,
         messages,
         accounts,
@@ -436,24 +480,23 @@ const GameHallApp: React.FC = () => {
         userProfile,
         apiConfig,
         memoryPalaceConfig,
+        onProgress: (_stage, text) => setRunStatus(text),
       });
-      const latestMessageAt = messages.reduce(
-        (max, message) => Math.max(max, message.createdAt),
-        session.lastHandoffMessageAt || 0,
-      );
-      setSession({
-        ...session,
+      const deleted = new Set(result.deletedMessageIds);
+      setMessages(value => value.filter(message => !deleted.has(message.id)));
+      setSession(value => value ? {
+        ...value,
         lastHandoffAt: Date.now(),
-        lastHandoffMessageAt: latestMessageAt,
+        lastHandoffMessageAt: result.lastHandoffMessageAt,
         updatedAt: Date.now(),
-      });
-      // 真正切进该角色的主聊天。交接卡已经先写入 messages 主表，Chat 挂载后直接可见。
+      } : value);
       setActiveCharacterId(selected.id);
       openApp('chat');
     } catch (error: any) {
       await append('system', `回主对话交接失败：${error?.message || String(error)}`);
     } finally {
       setHandoffBusy(false);
+      setRunStatus('');
     }
   };
 
@@ -481,13 +524,7 @@ const GameHallApp: React.FC = () => {
     const map = result.capabilities || buildCedarCapabilityMap(result.tools || []);
     setCapabilities(map);
     setDiagnostic(
-      `${result.message}。${
-        !map.state.length
-          ? '连接成功，但暂未识别出游戏状态工具。'
-          : !map.action.length && !map.account.length
-            ? '已识别状态工具，但暂未识别行动/账号工具。'
-            : '已识别状态、行动或账号能力。'
-      }`,
+      `${result.message}。角色实际可见 ${result.tools?.length || 0} 个原始工具；下面分类只作辅助说明，不参与任何执行判断。`,
     );
   };
 
@@ -501,13 +538,15 @@ const GameHallApp: React.FC = () => {
     if (!selected || !accountEditorRef) return;
     try {
       const parsed = JSON.parse(accountEditorText) as CharacterExternalAccount;
-      if (parsed.accountRef !== accountEditorRef) {
-        throw new Error('accountRef 不可在编辑器中改名；需要新账号请重新注册。');
-      }
-      if (parsed.charId !== selected.id) {
-        throw new Error('charId 必须保持为当前角色。');
-      }
       await saveCharacterExternalAccount({ ...parsed, updatedAt: Date.now() });
+      if (parsed.accountRef !== accountEditorRef) {
+        await deleteCharacterExternalAccount(accountEditorRef);
+        if (session?.activeAccountRef === accountEditorRef) {
+          const updated = { ...session, activeAccountRef: parsed.accountRef, updatedAt: Date.now() };
+          setSession(updated);
+          await saveGameHallSession(updated);
+        }
+      }
       await reloadAccounts();
       setAccountEditorError('已保存。');
     } catch (error: any) {
@@ -549,7 +588,7 @@ const GameHallApp: React.FC = () => {
           </p>
         </div>
         <button
-          disabled={!selected || handoffBusy}
+          disabled={!selected || handoffBusy || busy}
           onClick={() => void handoffToMainChat()}
           className="flex items-center gap-1 rounded-xl bg-violet-500/20 px-2 py-1.5 text-[11px] text-violet-100 disabled:opacity-40"
           title="把刚才的游戏厅对话写进主聊天并继续"
@@ -593,20 +632,22 @@ const GameHallApp: React.FC = () => {
                 </span>
               )}
 
+
+              <button
+                type="button"
+                onClick={() => setSettingsOpen(true)}
+                className="whitespace-nowrap rounded-full bg-sky-500/15 px-2 py-1 text-[10px] text-sky-200"
+                title="查看并设置角色本轮能看到的游戏厅原文"
+              >
+                {contextSelection.limit == null
+                  ? `上下文 全部 ${contextSelection.includedCount}/${contextSelection.totalCount}`
+                  : `上下文 ${contextSelection.includedCount}/${contextSelection.totalCount}`}
+              </button>
+
               {pending.length > 0 && (
                 <span className="whitespace-nowrap rounded-full bg-amber-500/20 px-2 py-1 text-[10px] text-amber-200">
                   {pending.length} 个待确认
                 </span>
-              )}
-
-              {sheetOpen && (
-                <button
-                  disabled={busy || !capabilities?.state.length}
-                  onClick={() => void refreshState()}
-                  className="rounded-lg bg-slate-800 px-2 py-2 text-[11px] disabled:opacity-40"
-                >
-                  读状态
-                </button>
               )}
 
               <button
@@ -639,7 +680,7 @@ const GameHallApp: React.FC = () => {
                   ref={listRef}
                   className="mt-2 min-h-0 flex-1 space-y-2 overflow-y-auto overscroll-contain text-xs"
                 >
-                  {messages.slice(-30).map(message => (
+                  {messages.map(message => (
                     <div
                       key={message.id}
                       className={`whitespace-pre-wrap break-words rounded-xl px-3 py-2 ${
@@ -651,6 +692,21 @@ const GameHallApp: React.FC = () => {
                       }`}
                     >
                       <div>{message.content}</div>
+                      {message.image && (
+                        <img
+                          src={message.image.displayDataUrl}
+                          alt={message.image.fileName || '游戏厅图片'}
+                          className="mt-2 max-h-72 w-full rounded-xl object-contain"
+                        />
+                      )}
+                      {message.toolRequest && (
+                        <details className="mt-2 rounded-lg bg-black/30 p-2">
+                          <summary className="cursor-pointer font-semibold text-sky-200">完整工具请求</summary>
+                          <pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap break-all font-mono text-[10px] text-slate-200">
+                            {JSON.stringify(message.toolRequest, null, 2)}
+                          </pre>
+                        </details>
+                      )}
                       {message.accountRef && (
                         <div className="mt-2 rounded-lg bg-emerald-950/50 px-2 py-1 font-mono text-[10px] text-emerald-200">
                           accountRef: {message.accountRef}
@@ -674,10 +730,29 @@ const GameHallApp: React.FC = () => {
                     </div>
                   ))}
 
+                  {runStatus && (
+                    <div className="flex items-end gap-2 pr-8 animate-fade-in" role="status" aria-live="polite">
+                      {selected?.avatar ? (
+                        <img src={selected.avatar} className="h-8 w-8 rounded-full object-cover" alt="" />
+                      ) : <span>🎮</span>}
+                      <div className="flex items-center gap-2 rounded-xl bg-slate-800 px-3 py-2 text-[11px] text-slate-200">
+                        <SpinnerGap size={15} className="animate-spin text-violet-300" />
+                        <span>{runStatus}</span>
+                      </div>
+                    </div>
+                  )}
+
                   {pending.map(action => (
                     <div key={action.id} className="rounded-xl border border-amber-400/30 bg-amber-950/40 p-3">
                       <b>建议行动：{action.toolName}</b>
                       <p className="my-1 text-slate-300">{action.reason}</p>
+                      {action.status === 'failed' && <p className="mb-2 text-rose-300">上次失败：{action.error}</p>}
+                      {!!action.validationWarnings?.length && (
+                        <details className="mb-2 rounded-lg bg-amber-950/40 p-2 text-[10px] text-amber-200">
+                          <summary>schema 提示（当前设置未必阻止执行）</summary>
+                          <pre className="mt-1 whitespace-pre-wrap">{action.validationWarnings.join('\n')}</pre>
+                        </details>
+                      )}
                       {action.accountRef && (
                         <p className="mb-2 break-all font-mono text-[10px] text-emerald-200">
                           使用账号档案：{action.accountRef}
@@ -689,7 +764,7 @@ const GameHallApp: React.FC = () => {
                           onClick={() => void executeAction(action)}
                           className="rounded-lg bg-emerald-600 px-3 py-1.5 disabled:opacity-40"
                         >
-                          确认执行
+                          {action.status === 'failed' ? '原样重试' : '确认执行'}
                         </button>
                         <button
                           onClick={() => void cancelAction(action)}
@@ -704,11 +779,27 @@ const GameHallApp: React.FC = () => {
 
                 <div className="mt-2 flex shrink-0 gap-2">
                   <input
+                    ref={imageInputRef}
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    onChange={event => {
+                      const file = event.target.files?.[0];
+                      if (file) void handleImageSelect(file);
+                    }}
+                  />
+                  <button
+                    type="button"
+                    disabled={busy || handoffBusy}
+                    onClick={() => imageInputRef.current?.click()}
+                    className="rounded-xl bg-slate-800 p-2 text-sky-200 disabled:opacity-40"
+                    aria-label="发送图片"
+                  >
+                    <ImageSquare size={20} />
+                  </button>
+                  <input
                     value={input}
                     onChange={event => setInput(event.target.value)}
-                    onFocus={() => {
-                      if (sheetSnap === 'collapsed') setSheetSnap('half');
-                    }}
                     onKeyDown={event => {
                       if (event.key === 'Enter') void send();
                     }}
@@ -716,7 +807,7 @@ const GameHallApp: React.FC = () => {
                     className="min-w-0 flex-1 rounded-xl bg-slate-800 px-3 py-2 text-sm"
                   />
                   <button
-                    disabled={busy || !input.trim()}
+                    disabled={busy || handoffBusy || !input.trim()}
                     onClick={() => void send()}
                     className="rounded-xl bg-violet-600 p-2 disabled:opacity-40"
                     aria-label="发送"
@@ -784,7 +875,7 @@ const GameHallApp: React.FC = () => {
 
             <div className="mt-4 rounded-2xl bg-slate-900 p-4 text-xs">
               <div className="mb-2 flex gap-2 font-semibold">
-                <ShieldCheck />协议诊断
+                <ShieldCheck />协议诊断（分类仅供参考）
               </div>
               <p>{diagnostic}</p>
               {capabilities && (
@@ -794,14 +885,121 @@ const GameHallApp: React.FC = () => {
                   ))}
                 </ul>
               )}
+
+              {!!connection.tools?.length && (
+                <div className="mt-3 rounded-xl bg-black/25 p-2">
+                  <div className="font-bold text-violet-200">角色实际可见的全部工具（{connection.tools.length}）</div>
+                  {connection.tools.map((tool, index) => (
+                    <details key={`${index}:${tool.name}`} className="mt-2">
+                      <summary className="cursor-pointer font-mono text-emerald-200">#{index} · {tool.name}</summary>
+                      <pre className="mt-1 overflow-auto whitespace-pre-wrap break-all text-[9px] text-slate-300">{JSON.stringify(tool, null, 2)}</pre>
+                    </details>
+                  ))}
+                </div>
+              )}
             </div>
+
+            <section className="mt-4 rounded-2xl border border-sky-400/20 bg-slate-900 p-4">
+              <h3 className="text-sm font-bold">游戏厅上下文</h3>
+              <p className="mt-1 text-[10px] leading-relaxed text-slate-400">
+                只决定角色本轮读取多少条原文。未进入上下文的消息仍完整保存，不会因为范围设置而删除。
+                填 0 表示全部，不设置隐藏上限。
+              </p>
+              <label className="mt-3 block text-xs">
+                最近多少条进入上下文（0 = 全部）
+                <input
+                  type="number"
+                  min={0}
+                  step={1}
+                  value={session?.contextMessageLimit ?? 0}
+                  onChange={event => void changeContextLimit(Number(event.target.value))}
+                  className="mt-1 w-full rounded-xl bg-slate-950 p-3 font-mono"
+                />
+              </label>
+              <div className="mt-2 rounded-xl bg-black/25 px-3 py-2 text-[11px] text-sky-200">
+                {gameHallContextLabel(contextSelection)}
+                {contextSelection.excludedCount > 0 && (
+                  <div className="mt-1 text-slate-400">
+                    另有 {contextSelection.excludedCount} 条不进入本轮模型上下文，但仍保存在游戏厅。
+                  </div>
+                )}
+              </div>
+              <details className="mt-3 rounded-xl bg-black/25 p-3">
+                <summary className="cursor-pointer text-xs font-bold text-sky-200">查看本轮准确上下文</summary>
+                <div className="mt-2 max-h-72 space-y-2 overflow-y-auto">
+                  {messages.map(message => {
+                    const included = contextSelection.messages.some(item => item.id === message.id);
+                    return (
+                      <div key={message.id} className={`rounded-lg px-2 py-1.5 text-[10px] ${included ? 'bg-sky-950/45 text-sky-100' : 'bg-slate-950 text-slate-500'}`}>
+                        <b>{included ? '进入上下文' : '保留但不进入'} · {message.role}</b>
+                        <div className="mt-1 whitespace-pre-wrap break-words">{message.content || (message.image ? '[图片]' : '')}</div>
+                        {message.image && <div className="mt-1 text-sky-300">🖼 {message.image.fileName || '图片'}</div>}
+                        {message.toolName && <div className="mt-1 font-mono">tool: {message.toolName}</div>}
+                      </div>
+                    );
+                  })}
+                  {!messages.length && <p className="text-[10px] text-slate-500">还没有游戏厅消息。</p>}
+                </div>
+              </details>
+            </section>
+
+            <section className="mt-4 rounded-2xl border border-amber-400/20 bg-slate-900 p-4">
+              <h3 className="text-sm font-bold">执行规则（全部可见、手动设置）</h3>
+              <label className="mt-3 block text-xs">
+                schema 校验
+                <select
+                  value={session?.schemaValidationMode || 'off'}
+                  onChange={event => void updateSessionSettings({ schemaValidationMode: event.target.value as any })}
+                  className="mt-1 w-full rounded-xl bg-slate-950 p-3"
+                >
+                  <option value="off">关闭：不因 schema 阻止调用</option>
+                  <option value="warn">提示：显示问题但仍允许调用</option>
+                  <option value="strict">严格：不符合 schema 时阻止调用</option>
+                </select>
+              </label>
+              <label className="mt-3 block text-xs">
+                规划失败自动修正次数（0 = 不额外调用）
+                <input
+                  type="number" min={0} max={5} step={1}
+                  value={session?.planRepairAttempts || 0}
+                  onChange={event => void updateSessionSettings({ planRepairAttempts: Math.max(0, Math.min(5, Number(event.target.value) || 0)) })}
+                  className="mt-1 w-full rounded-xl bg-slate-950 p-3 font-mono"
+                />
+              </label>
+              <label className="mt-3 flex items-center justify-between gap-3 rounded-xl bg-black/25 p-3 text-xs">
+                <span>工具成功结果含账号/凭证时自动建档</span>
+                <input
+                  type="checkbox"
+                  checked={session?.autoArchiveAccounts !== false}
+                  onChange={event => void updateSessionSettings({ autoArchiveAccounts: event.target.checked })}
+                />
+              </label>
+              <label className="mt-3 block text-xs">
+                当前角色身份（所有工具调用都使用这个身份端点；可改回基础连接）
+                <select
+                  value={session?.activeAccountRef || ''}
+                  onChange={event => void updateSessionSettings({ activeAccountRef: event.target.value || undefined })}
+                  className="mt-1 w-full rounded-xl bg-slate-950 p-3 font-mono text-[10px]"
+                >
+                  <option value="">基础 MCP 连接</option>
+                  {accounts.map(account => (
+                    <option key={account.accountRef} value={account.accountRef}>
+                      {account.username || account.accountId || account.accountRef}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <p className="mt-2 text-[10px] leading-relaxed text-slate-400">
+                自动回合会直接执行角色本轮选中的一次真实工具调用，不再依赖隐藏的 state/turn 正则、allowsAiAction 或状态哈希闸门。
+              </p>
+            </section>
 
             <section className="mt-4 rounded-2xl border border-violet-400/20 bg-slate-900 p-4">
               <div className="mb-3 flex items-center justify-between gap-2">
                 <div>
                   <h3 className="text-sm font-bold">{selected?.name || '角色'}的外部账号档案</h3>
                   <p className="mt-1 text-[10px] text-slate-400">
-                    注册成功即自动保存。模型只引用 accountRef，登录凭证由客户端逐字注入。
+                    注册成功即自动保存。账号资料完整可见、可编辑；accountRef 只是便捷引用，客户端只补缺失参数，不删除或覆盖已有参数。
                   </p>
                 </div>
                 <button onClick={() => void reloadAccounts()} className="rounded-lg bg-slate-800 px-2 py-1 text-[10px]">
@@ -829,6 +1027,9 @@ const GameHallApp: React.FC = () => {
                         <button
                           onClick={async () => {
                             await deleteCharacterExternalAccount(account.accountRef);
+                            if (session?.activeAccountRef === account.accountRef) {
+                              await updateSessionSettings({ activeAccountRef: undefined });
+                            }
                             if (accountEditorRef === account.accountRef) {
                               setAccountEditorRef(null);
                               setAccountEditorText('');

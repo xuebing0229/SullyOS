@@ -33,7 +33,6 @@ import { parseImageToolClientOptions, type AfterGenerateAction } from '../utils/
 import { inspectGeneratedImages } from '../utils/generatedImageInspect';
 import { buildToolResultMessage, normalizeToolCallsForCompat } from '../utils/toolCallCompat';
 import { buildChatRequestPayload } from '../utils/chatRequestPayload';
-import { getGameHallBridgeBlock } from '../utils/gameHallMemoryBridge';
 import { persistMcpGeneratedImages } from '../utils/mcpImagePersistence';
 import { prepareBuiltinImageToolArguments, sanitizeNovelAiReferenceToolArguments } from '../utils/novelAiReference';
 import {
@@ -868,13 +867,10 @@ export const useChatAI = ({
             const mcdInheritMeta = mcdMiniOpen ? { fromMcdMiniApp: true } : undefined;
             const luckinMiniSnap = luckinMiniAppRef?.current;
             const luckinMiniOpen = !!luckinMiniSnap?.open;
-
-            const gameHallBridgeBlock = await stageT('gameHallBridge', getGameHallBridgeBlock(char.id).catch(() => ''));
             const payload = await stageT('payload', buildChatRequestPayload({
                 char: charForGen, userProfile, groups, emojis, categories,
                 historyMsgs: contextMsgs,
                 recentMsgsHint: currentMsgs,
-                gameHallBridgeBlock,
                 contextLimit: limit,
                 realtimeConfig,
                 innerState: skipEmotionInjection ? undefined : (evolvedNarrative || undefined),
