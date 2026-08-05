@@ -6,6 +6,7 @@ import type {
   ApiPricingSnapshot,
   ApiPreset,
 } from '../types';
+import { matchApiPresetRoute } from './apiPresetRouteIdentity';
 
 const MICROS_PER_YUAN = 1_000_000n;
 const TOKENS_PER_MILLION = 1_000_000n;
@@ -545,17 +546,13 @@ export function calculateApiCallCost(
   };
 }
 
-const stripTrailingSlash = (
-  value: string,
-): string =>
-  value.replace(/\/+$/, '');
-
 export function matchApiPresetForBilling(
   presets: ApiPreset[],
   input: {
     baseUrl: string;
     model: string;
     activePresetId?: string | null;
+    apiKey?: string;
   },
 ): {
   preset?: ApiPreset;
@@ -563,54 +560,20 @@ export function matchApiPresetForBilling(
     | 'preset_not_found'
     | 'preset_ambiguous';
 } {
-  const normalizedBase =
-    stripTrailingSlash(
-      input.baseUrl,
-    );
-
-  const matches = presets.filter(
-    preset =>
-      stripTrailingSlash(
-        preset.config?.baseUrl
-        || '',
-      ) === normalizedBase
-      && (
-        preset.config?.model
-        || ''
-      ) === input.model,
+  const matched = matchApiPresetRoute(
+    presets,
+    {
+      baseUrl: input.baseUrl,
+      model: input.model,
+      preferredPresetId:
+        input.activePresetId,
+      apiKey: input.apiKey,
+    },
   );
 
-  if (input.activePresetId) {
-    const active = matches.find(
-      preset =>
-        preset.id
-        === input.activePresetId,
-    );
-
-    if (active) {
-      return {
-        preset: active,
-      };
-    }
-  }
-
-  if (matches.length === 1) {
-    return {
-      preset: matches[0],
-    };
-  }
-
-  if (matches.length > 1) {
-    return {
-      reason:
-        'preset_ambiguous',
-    };
-  }
-
-  return {
-    reason:
-      'preset_not_found',
-  };
+  return matched.preset
+    ? { preset: matched.preset }
+    : { reason: matched.reason };
 }
 
 export function snapshotPricing(

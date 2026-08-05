@@ -1004,8 +1004,22 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
           }
 
           const requestMeta = (sendArgs[1] as any)?.__sullyMeta || (config as any)?.__sullyMeta || ambientMetaAtStart;
+          const requestHeaders =
+              (sendArgs[1] as RequestInit | undefined)?.headers
+              || (
+                  typeof Request !== 'undefined'
+                  && resource instanceof Request
+                      ? resource.headers
+                      : undefined
+              );
           const billingCapture = urlStr.includes('/chat/completions')
-              ? captureApiBillingContext(urlStr, (sendArgs[1] as any)?.body, requestMeta?.failoverPresetId)
+              ? captureApiBillingContext(
+                  urlStr,
+                  (sendArgs[1] as any)?.body,
+                  requestMeta?.apiPresetId
+                      || requestMeta?.failoverPresetId,
+                  requestHeaders,
+              )
               : undefined;
           try {
               let response = await originalFetch(...sendArgs);

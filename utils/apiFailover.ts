@@ -9,6 +9,7 @@ import {
 
 import type { APIConfig, ApiPreset } from '../types';
 import { analyzeApiFailoverGroup } from './apiFailoverGroupAnalysis';
+import { findApiPresetForConfig } from './apiPresetRouteIdentity';
 import type { ApiCallMeta } from './apiCallLog';
 import { safeFetchJson, type StreamHooks } from './safeApi';
 
@@ -282,9 +283,18 @@ export function resolveApiExecutionPlanWithData(
     presets: ApiPreset[],
     allowFailover = true,
 ): ApiExecutionPlan {
+    const directPreset =
+        findApiPresetForConfig(
+            presets,
+            fallbackApi,
+        );
     const directRoute: ResolvedApiRoute = {
-        presetId: '__direct__',
-        presetName: '当前 API',
+        presetId:
+            directPreset?.id
+            || '__direct__',
+        presetName:
+            directPreset?.name
+            || '当前 API',
         api: fallbackApi,
         routeIndex: 0,
     };
@@ -297,6 +307,7 @@ export function resolveApiExecutionPlanWithData(
             routes: [directRoute],
             cacheIdentity: [
                 'direct',
+                directRoute.presetId,
                 fallbackApi.baseUrl?.trim().replace(/\/+$/, ''),
                 fallbackApi.model,
             ].join('|'),
@@ -314,6 +325,7 @@ export function resolveApiExecutionPlanWithData(
             routes: [directRoute],
             cacheIdentity: [
                 'direct',
+                directRoute.presetId,
                 fallbackApi.baseUrl?.trim().replace(/\/+$/, ''),
                 fallbackApi.model,
             ].join('|'),
@@ -943,6 +955,17 @@ export async function executeOpenAiChatPlan(
             .trim()
             .replace(/\/+$/, '');
         const startedAt = Date.now();
+        const directMeta: ApiCallMeta = {
+            ...(options.meta || {}),
+            ...(route.presetId !== '__direct__'
+                ? {
+                    apiPresetId:
+                        route.presetId,
+                    apiPresetName:
+                        route.presetName,
+                }
+                : {}),
+        };
         const value = await safeFetchJson(
             `${baseUrl}/chat/completions`,
             {
@@ -957,7 +980,7 @@ export async function executeOpenAiChatPlan(
             },
             options.directMaxRetries ?? 2,
             options.directTimeoutMs ?? 0,
-            options.meta,
+            directMeta,
             options.streamHooks,
         );
         const requestId = createRequestId();
@@ -994,6 +1017,10 @@ export async function executeOpenAiChatPlan(
 
             const meta = {
                 ...(options.meta || {}),
+                apiPresetId:
+                    route.presetId,
+                apiPresetName:
+                    route.presetName,
                 failoverRequestId: context.requestId,
                 failoverGroupId: options.plan.group?.id,
                 failoverGroupName: options.plan.group?.name,
