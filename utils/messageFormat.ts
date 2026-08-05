@@ -381,6 +381,7 @@ export function formatMessageWithTime(
  * voice 只要带转写文字就属于语义上下文，应该与文字和卡片一起参与统计与总结。
  */
 export function isMessageSemanticallyRelevant(msg: Message): boolean {
+    if (msg?.metadata?.skipMemoryExtraction === true) return false;
     const type = msg.type as string;
     if (type === 'image' || type === 'emoji') return false;
     if (type === 'voice') return !!getVoiceTranscript(msg);

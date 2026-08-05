@@ -2438,6 +2438,33 @@ const MessageItem = React.memo(({
         return commonLayout(<GameHallHandoffCard message={m} charName={charName} />);
     }
 
+
+    if (m.type === 'app_memory_card') {
+        const md: any = m.metadata || {};
+        const isSimulator = md.sourceApp === 'simulator';
+        const title = String(md.title || '一段共同经历');
+        const tags = Array.isArray(md.tags) ? md.tags : [];
+        const roomNames: Record<string, string> = { living_room: '客厅', bedroom: '卧室', study: '书房', user_room: '用户房间', self_room: '自我房间', attic: '阁楼', windowsill: '窗台' };
+        return commonLayout(
+            <div className="w-64 overflow-hidden rounded-xl border border-amber-300/40 bg-gradient-to-br from-[#fff8e8] to-[#f4ecff] shadow-[0_4px_16px_rgba(80,60,120,0.14)]">
+                <div className="flex items-center gap-2 border-b border-amber-300/30 px-3 py-2">
+                    <span className="text-base">{isSimulator ? '◇' : '⌑'}</span>
+                    <div className="min-w-0 flex-1">
+                        <div className="text-[9px] font-bold tracking-[0.18em] text-violet-600/70">{isSimulator ? '万象匣 · 记忆卡' : '素页同栖 · 记忆卡'}</div>
+                        <div className="truncate text-[13px] font-semibold text-stone-800">{title}</div>
+                    </div>
+                    <span className="text-[9px] text-stone-500">重要度 {md.importance || 5}</span>
+                </div>
+                <div className="px-3 py-2.5 text-[12px] leading-relaxed text-stone-700">{m.content?.split('\n').slice(2).join('\n') || m.content}</div>
+                <div className="flex flex-wrap items-center gap-1 px-3 pb-2">
+                    {md.room && <span className="rounded-full bg-violet-100 px-2 py-0.5 text-[9px] text-violet-700">{roomNames[md.room] || md.room}</span>}
+                    {tags.slice(0, 5).map((tag: string) => <span key={tag} className="rounded-full bg-amber-100 px-2 py-0.5 text-[9px] text-amber-800">#{tag}</span>)}
+                </div>
+                <div className="border-t border-amber-300/20 px-3 py-1.5 text-[9px] italic text-stone-500">已由你确认写入主聊天与主记忆</div>
+            </div>
+        );
+    }
+
     if (m.type === 'vr_card') {
         const md: any = m.metadata || {};
         const roomNameMap: Record<string, string> = {
