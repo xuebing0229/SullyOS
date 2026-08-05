@@ -30,6 +30,34 @@ describe('MCP generated image persistence', () => {
         expect(await DB.getBlobAsset(id)).toBeInstanceOf(Blob);
     });
 
+    it('stores a meeting CG as blob plus gallery without creating a chat message', async () => {
+        const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB';
+        const result = await persistMcpGeneratedImages({
+            result: { success: true, images: [{ data: png, mimeType: 'image/png' }], data: {} },
+            char: { id: 'char-1', name: '角色' } as any,
+            server: { id: 'srv', name: 'GPT 生图' },
+            toolName: 'generate_image',
+            toolArgs: { prompt: '线下剧情 CG' },
+            recentMessages: [
+                { id: 1, charId: 'char-1', role: 'user', type: 'text', content: '线下当前对话', timestamp: 1 },
+            ] as any,
+            ownerType: 'meeting-cg',
+            allowTemporaryUrlFallback: false,
+            extraGallerySourceMeta: { meetingCgGenerated: true },
+        });
+
+        expect(result.persisted).toBe(1);
+        expect(result.assets).toHaveLength(1);
+        expect(await DB.getMessagesByCharId('char-1')).toHaveLength(0);
+        const gallery = await DB.getGalleryImages('char-1');
+        expect(gallery).toHaveLength(1);
+        expect(gallery[0].url).toBe(result.assets[0].blobRef);
+        expect(gallery[0].chatContext).toEqual(['用户：线下当前对话']);
+        expect(gallery[0].sourceMeta).toMatchObject({ meetingCgGenerated: true });
+        const blobId = result.assets[0].blobRef.slice('blobref:'.length);
+        expect(await DB.getBlobAsset(blobId)).toBeInstanceOf(Blob);
+    });
+
     it('deleting gallery record does not break chat blob reference', async () => {
         const id = 'img_shared_gallery';
         const ref = blobRefFromId(id);

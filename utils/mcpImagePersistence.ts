@@ -10,8 +10,17 @@ export interface PersistMcpImageInput {
     toolName: string; toolArgs?: Record<string, any>; recentMessages?: Message[]; seenKeys?: Set<string>;
     extraMessageMetadata?: Record<string, unknown>; extraGallerySourceMeta?: Record<string, unknown>;
     allowTemporaryUrlFallback?: boolean;
+    /** meeting-cg keeps the image out of the ordinary chat message store. */
+    ownerType?: 'chat' | 'meeting-cg';
 }
-export interface PersistMcpImageOutput { persisted: number; temporary: number; failed: number; errors: string[]; }
+export interface PersistedMcpImageAsset {
+    blobRef: string;
+    galleryImageId: string;
+    createdAt: number;
+    engine?: string;
+    prompt?: string;
+}
+export interface PersistMcpImageOutput { persisted: number; temporary: number; failed: number; errors: string[]; assets: PersistedMcpImageAsset[]; }
 
 const base64ByteLength = (base64: string): number => {
     const clean = base64.replace(/\s+/g, '');
@@ -89,7 +98,7 @@ const saveTemporaryUrlMessage = async (candidate: Extract<McpImageCandidate,{kin
 export async function persistMcpGeneratedImages(input: PersistMcpImageInput): Promise<PersistMcpImageOutput> {
     const candidates=extractMcpImageCandidates(input.result);
     const seenKeys=input.seenKeys ?? new Set<string>();
-    const output:PersistMcpImageOutput={persisted:0,temporary:0,failed:0,errors:[]};
+    const output:PersistMcpImageOutput={persisted:0,temporary:0,failed:0,errors:[],assets:[]};
     for (const candidate of candidates) {
         const key=getMcpImageCandidateKey(candidate); if (seenKeys.has(key)) continue; seenKeys.add(key);
         try {
@@ -99,15 +108,20 @@ export async function persistMcpGeneratedImages(input: PersistMcpImageInput): Pr
             const gallery:GalleryImage={ id:galleryId,charId:input.char.id,url:blobRef,timestamp:createdAt,
                 savedDate:new Date(createdAt).toISOString().slice(0,10),chatContext:buildRecentChatContext(input.recentMessages),
                 source:'mcp-generated',sourceMeta:{serverId:input.server?.id,serverName:input.server?.name,toolName:input.toolName,engine,prompt,originalUrl:candidate.kind==='url'?candidate.url:undefined,...(input.extraGallerySourceMeta || {})} };
-            await DB.saveGeneratedImageBundle({blobId,blob,createdAt,gallery,message:{charId:input.char.id,role:'assistant',type:'image',content:blobRef,metadata:{
-                mcpGeneratedImage:true,persistedLocally:true,galleryImageId:galleryId,mcpServerId:input.server?.id,mcpServerName:input.server?.name,
-                mcpToolName:input.toolName,imageEngine:engine,imagePrompt:prompt,originalRemoteUrl:candidate.kind==='url'?candidate.url:undefined,
-                ...(input.extraMessageMetadata || {}),
-            }} as any});
+            if (input.ownerType === 'meeting-cg') {
+                await DB.saveGeneratedImageAssetBundle({ blobId, blob, createdAt, gallery });
+            } else {
+                await DB.saveGeneratedImageBundle({blobId,blob,createdAt,gallery,message:{charId:input.char.id,role:'assistant',type:'image',content:blobRef,metadata:{
+                    mcpGeneratedImage:true,persistedLocally:true,galleryImageId:galleryId,mcpServerId:input.server?.id,mcpServerName:input.server?.name,
+                    mcpToolName:input.toolName,imageEngine:engine,imagePrompt:prompt,originalRemoteUrl:candidate.kind==='url'?candidate.url:undefined,
+                    ...(input.extraMessageMetadata || {}),
+                }} as any});
+            }
+            output.assets.push({ blobRef, galleryImageId: galleryId, createdAt, engine, prompt });
             output.persisted++;
         } catch(error) {
             const message=error instanceof Error?error.message:String(error); output.errors.push(message);
-            if(candidate.kind==='url' && input.allowTemporaryUrlFallback !== false) { try { await saveTemporaryUrlMessage(candidate,input,error); output.temporary++; continue; } catch(e) { output.errors.push(e instanceof Error?e.message:String(e)); } }
+            if(input.ownerType !== 'meeting-cg' && candidate.kind==='url' && input.allowTemporaryUrlFallback !== false) { try { await saveTemporaryUrlMessage(candidate,input,error); output.temporary++; continue; } catch(e) { output.errors.push(e instanceof Error?e.message:String(e)); } }
             output.failed++;
         }
     }

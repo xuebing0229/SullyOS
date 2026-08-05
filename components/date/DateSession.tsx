@@ -8,20 +8,8 @@ import ObserveHUD from './ObserveHUD';
 import { extractObservation, hasObservation } from '../../utils/datePrompts';
 import { pickDateFallbackSprite } from '../../utils/dateSprites';
 import { isBlobRef, useBlobRefUrl } from '../../utils/blobRef';
-import { getBuiltinImageMcpServers, loadBuiltinImageSettings } from '../../utils/builtinImageMcp';
-import { callMcpTool } from '../../utils/mcpClient';
-import { persistMcpGeneratedImages } from '../../utils/mcpImagePersistence';
-import { prepareBuiltinImageToolArguments } from '../../utils/novelAiReference';
-import {
-    buildMeetingCgPrompt,
-    getMeetingCgButtonLabel,
-    makeMeetingCgBackground,
-    normalizeMcpImageResult,
-    prepareMeetingCgArguments,
-    resolveMeetingCgEngine,
-    type MeetingCgBackground,
-} from '../../utils/meetingCg';
-import { buildMeetingCgRecentContext } from '../../utils/meetingCgContext';
+import { getMeetingCgButtonLabel, type MeetingCgBackground } from '../../utils/meetingCg';
+import { generateMeetingCgViaChatPlanner } from '../../utils/dateCgPlanner';
 import { clearDateResumeAttempt } from '../../utils/dateSessionRecovery';
 import { cleanTextForTts, VALID_EMOTIONS } from '../../utils/minimaxTts';
 import { synthesizeSpeech, characterHasVoice } from '../../utils/ttsRouter';
@@ -126,22 +114,22 @@ interface DateSessionProps {
     onSettings: () => void;
 }
 
-const DateSession: React.FC<DateSessionProps> = ({ 
-    char, 
+const DateSession: React.FC<DateSessionProps> = ({
+    char,
     userProfile,
-    messages, 
-    peekStatus, 
+    messages,
+    peekStatus,
     initialState,
-    onSendMessage, 
-    onReroll, 
+    onSendMessage,
+    onReroll,
     onExit,
     onEditMessage,
     onDeleteMessage,
     onDeleteMessages,
     onSettings
 }) => {
-    const { addToast, registerBackHandler, apiConfig, updateCharacter } = useOS();
-    
+    const { addToast, registerBackHandler, apiConfig, updateCharacter, groups } = useOS();
+
     // Core VN State
     const [isNovelMode, setIsNovelMode] = useState(false);
     const [bgImage, setBgImage] = useState<string>(char.dateBackground || '');
@@ -151,10 +139,10 @@ const DateSession: React.FC<DateSessionProps> = ({
     const mountedRef = useRef(true);
     const cgBackgroundUrl = useBlobRefUrl(meetingCgBackground?.imageUrl);
     const defaultBackgroundUrl = useBlobRefUrl(bgImage);
-    const effectiveBackgroundUrl = cgBackgroundUrl || defaultBackgroundUrl;
+    // CG remains a separate foreground layer; it never replaces the default background.
     const [currentSprite, setCurrentSprite] = useState<string>('');
     const [spriteConfig, setSpriteConfig] = useState(char.spriteConfig || { scale: 1, x: 0, y: 0 });
-    
+
     // Dialogue Engine State
     const [dialogueQueue, setDialogueQueue] = useState<DialogueItem[]>([]);
     const [dialogueBatch, setDialogueBatch] = useState<DialogueItem[]>([]); // For replaying current batch
@@ -165,7 +153,7 @@ const DateSession: React.FC<DateSessionProps> = ({
     // 观测协议 OBSERVE：当前批次解析出的结构化观测，驱动全息 HUD
     const observeEnabled = !!char.dateObserve?.enabled;
     const [observation, setObservation] = useState<DateObservation | null>(initialState?.observation ?? null);
-    
+
     // Interaction State
     const [input, setInput] = useState('');
     const [showInputBox, setShowInputBox] = useState(false);
@@ -173,7 +161,7 @@ const DateSession: React.FC<DateSessionProps> = ({
     useEffect(() => () => { mountedRef.current = false; }, []);
     const [isShowingOpening, setIsShowingOpening] = useState(!initialState); // True until first user interaction
     const [showExitModal, setShowExitModal] = useState(false);
-    
+
     // Settings Overlay State (Internal)
     const [showSettings, setShowSettings] = useState(false);
 
@@ -397,7 +385,7 @@ const DateSession: React.FC<DateSessionProps> = ({
                 return char.sprites;
             })();
             setCurrentSprite(pickDateFallbackSprite(s, dateEmotionKeys, char.avatar) || '');
-            
+
             // Parse Peek Status as opening — 先剥出观测块（开了 OBSERVE 才有）
             const startText = peekStatus || "Waiting for connection...";
             const { observation: peekObs, rest: peekRest } = extractObservation(startText, { lenient: observeEnabled, custom: char.dateObserve?.custom });
@@ -405,7 +393,7 @@ const DateSession: React.FC<DateSessionProps> = ({
             const items = parseDialogue(peekRest, 'normal');
             setDialogueBatch(items);
             setDialogueQueue(items);
-            
+
             if (items.length > 0) {
                 // Manually trigger first item processing
                 const first = items[0];
@@ -678,7 +666,7 @@ const DateSession: React.FC<DateSessionProps> = ({
 
     const handleMsgTouchMove = (e: React.TouchEvent | React.MouseEvent) => {
         if (!longPressTimer.current || !touchStartRef.current) return;
-        
+
         let clientX, clientY;
         if ('touches' in e) {
             clientX = e.touches[0].clientX;
@@ -733,88 +721,29 @@ const DateSession: React.FC<DateSessionProps> = ({
         setShowMenu(false);
         setShowVoiceLangPicker(false);
         try {
-            const settings = loadBuiltinImageSettings();
-            const resolved = resolveMeetingCgEngine({
-                gptEnabled: settings.engines['gpt-image'].enabled,
-                novelaiEnabled: settings.engines.novelai.enabled,
-                preferred: settings.preferredEngine === 'gpt-image' ? 'gpt' : settings.preferredEngine,
-            });
-            const serverId = resolved.engine === 'gpt'
-                ? 'builtin_image_gpt-image'
-                : 'builtin_image_novelai';
-            const server = getBuiltinImageMcpServers().find(item => item.id === serverId && item.enabled);
-            if (!server) throw new Error(`${resolved.engine === 'gpt' ? 'GPT' : 'NovelAI'} 生图当前未启用。`);
-            const recentMessages = messages.slice(-6);
-            const meetingCgRecentContext = buildMeetingCgRecentContext(recentMessages, {
-                userName: userProfile.name || '用户',
-                characterName: char.name,
-                maxMessages: 3,
-                maxCharsPerMessage: 300,
-                maxTotalChars: 1000,
-            });
-            const built = buildMeetingCgPrompt(resolved.engine, {
-                id: char.id,
-                name: char.name,
-                description: char.description,
-                systemPrompt: char.systemPrompt,
-            }, {
-                scene: observation?.detail || peekStatus || currentText,
-                mood: observation?.state,
-                location: observation?.place,
-                timeLabel: observation?.time,
-                lastMessages: meetingCgRecentContext,
-            }, Boolean(meetingCgBackground));
-            const toolName = resolved.engine === 'gpt' ? 'generate_image' : 'novelai_generate_image';
-            const rawArgs: Record<string, any> = resolved.engine === 'gpt'
-                ? { prompt: built.prompt, size: '1024x1536', quality: 'high', background: 'opaque', output_format: 'png' }
-                : { prompt: built.prompt, undesired_content: 'text, watermark, speech bubble, UI, logo', model: 'full', size: 'portrait', steps: 23, guidance: 5, uc_preset: 'heavy', quality_tags: true };
-            const preparedArgs = await prepareMeetingCgArguments(
-                resolved.engine,
-                rawArgs,
-                args => prepareBuiltinImageToolArguments({ server, toolName, args, character: char }),
-            );
-            const result = await callMcpTool(server, toolName, preparedArgs);
-            if (!result.success) throw new Error(result.error || '见面 CG 生成失败');
-            normalizeMcpImageResult(result);
-            const meetingCgToken = `meeting_cg_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-            const outcome = await persistMcpGeneratedImages({
-                result,
+            const asset = await generateMeetingCgViaChatPlanner({
+                apiConfig,
                 char,
-                server: { id: server.id, name: server.name },
-                toolName,
-                toolArgs: preparedArgs,
-                recentMessages,
-                allowTemporaryUrlFallback: false,
-                extraMessageMetadata: { meetingCgGenerated: true, meetingCgToken },
-                extraGallerySourceMeta: { meetingCgGenerated: true, meetingCgToken, promptSummary: built.summary },
+                userProfile,
+                groups,
+                meetingMessages: sessionMessages,
+                observation,
+                peekStatus,
+                currentText,
+                regenerate: Boolean(meetingCgBackground),
             });
-            if (outcome.persisted <= 0) {
-                throw new Error(outcome.errors[0] || '见面 CG 保存到相册失败');
-            }
-                const savedMessages = await DB.getRecentMessagesByCharId(char.id, 200, true);
-            const imageMessage = [...savedMessages].reverse().find(message => message.metadata?.meetingCgToken === meetingCgToken);
-            if (!imageMessage?.content || !isBlobRef(imageMessage.content)) {
-                throw new Error('见面 CG 已保存，但未找到本地图片引用');
-            }
-            const background = makeMeetingCgBackground({
-                imageUrl: imageMessage.content,
-                imageMessageId: imageMessage.id,
-                galleryImageId: imageMessage.metadata?.galleryImageId,
-                engine: resolved.engine,
-                promptSummary: built.summary,
-            });
-            if (mountedRef.current) setMeetingCgBackground(background);
+            if (mountedRef.current) setMeetingCgBackground(asset);
             updateCharacter(char.id, {
                 savedDateState: {
                     ...buildCurrentState(),
-                    meetingCgBackground: background,
+                    meetingCgBackground: asset,
                     timestamp: Date.now(),
                 },
             });
-            addToast('见面 CG 已生成并设为背景', 'success');
+            addToast('本次线下 CG 已更新', 'success');
         } catch (error: any) {
-            console.error('[Meeting CG] failed', error);
-            addToast(error?.message || '见面 CG 生成失败', 'error');
+            console.error('[Meeting CG planner] failed', error);
+            addToast(error?.message || '线下 CG 生成失败', 'error');
         } finally {
             meetingCgLockRef.current = false;
             if (mountedRef.current) setIsGeneratingMeetingCg(false);
@@ -832,16 +761,16 @@ const DateSession: React.FC<DateSessionProps> = ({
         });
         setShowMenu(false);
         setShowVoiceLangPicker(false);
-        addToast('已恢复默认见面背景', 'success');
+        addToast('已隐藏本次线下 CG', 'success');
     };
 
     return (
         <div className="h-full w-full relative bg-black overflow-hidden font-sans select-none" onClick={handleScreenClick}>
-            
-            {/* Background Layer */}
-            <div 
-                className={`absolute inset-0 bg-cover bg-center transition-all duration-1000 ${isNovelMode ? 'blur-xl opacity-30' : 'opacity-80'}`} 
-                style={{ backgroundImage: effectiveBackgroundUrl ? `url(${effectiveBackgroundUrl})` : 'none' }}
+
+            {/* Default meeting background. CG is rendered separately in front of the sprite. */}
+            <div
+                className={`absolute inset-0 z-0 bg-cover bg-center transition-all duration-1000 ${isNovelMode ? 'blur-xl opacity-30' : 'opacity-80'}`}
+                style={{ backgroundImage: defaultBackgroundUrl ? `url(${defaultBackgroundUrl})` : 'none' }}
             ></div>
 
             {/* Menu Layer — 常驻只留「输入」+「菜单」两钮，其余操作收进带文字标签的下拉菜单 */}
@@ -870,7 +799,7 @@ const DateSession: React.FC<DateSessionProps> = ({
                             {getMeetingCgButtonLabel(Boolean(meetingCgBackground), isGeneratingMeetingCg)}
                         </button>
                         <div className="flex gap-1">
-                            {meetingCgBackground && <button disabled={isGeneratingMeetingCg} onClick={handleResetMeetingCgBackground} className="h-7 px-2.5 rounded-full text-[10px] font-bold bg-black/40 border border-white/15 text-white/75 disabled:opacity-50">默认背景</button>}
+                            {meetingCgBackground && <button disabled={isGeneratingMeetingCg} onClick={handleResetMeetingCgBackground} className="h-7 px-2.5 rounded-full text-[10px] font-bold bg-black/40 border border-white/15 text-white/75 disabled:opacity-50">隐藏 CG</button>}
                         </div>
                         {!isTyping && canReroll && (
                             <button onClick={() => { setShowMenu(false); setShowVoiceLangPicker(false); handleRerollClick(); }} className="h-9 px-3.5 rounded-full flex items-center gap-2 text-xs font-bold border shadow-lg active:scale-95 transition-all bg-black/40 backdrop-blur-md border-white/15 text-white hover:bg-white/20">
@@ -1075,6 +1004,11 @@ const DateSession: React.FC<DateSessionProps> = ({
                     <div className="absolute inset-x-0 bottom-0 h-[90%] flex items-end justify-center pointer-events-none z-10 overflow-hidden">
                         {currentSprite && <img src={currentSprite} className="max-h-full max-w-full object-contain drop-shadow-[0_10px_20px_rgba(0,0,0,0.5)] transition-all duration-300 origin-bottom" style={{ filter: showInputBox ? 'brightness(1)' : (isTextAnimating ? 'brightness(1.05)' : 'brightness(1)'), transform: `translate(${spriteConfig.x}%, ${spriteConfig.y}%) scale(${isTextAnimating ? spriteConfig.scale * 1.02 : spriteConfig.scale})` }} />}
                     </div>
+                    {cgBackgroundUrl && (
+                        <div className="absolute inset-0 z-20 pointer-events-none overflow-hidden">
+                            <img src={cgBackgroundUrl} className="h-full w-full object-cover opacity-100" alt="线下剧情 CG" />
+                        </div>
+                    )}
                     {!isTyping && (
                         <div className="absolute inset-x-0 bottom-8 z-30 flex justify-center">
                             <div className="w-[90%] max-w-lg bg-black/60 backdrop-blur-xl rounded-2xl border border-white/10 p-6 min-h-[140px] shadow-2xl animate-slide-up hover:bg-black/70 cursor-pointer">
