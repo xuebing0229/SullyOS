@@ -3,6 +3,7 @@ import type { LocalBackgroundImageJob } from './backgroundImageJobs';
 import {
     IMAGE_JOB_CARD_AUTO_HIDE_MS,
     imageJobPromptPreview,
+    isImageJobCardSelectable,
     toImageJobCard,
     visibleImageJobCards,
 } from './imageJobCards';
@@ -79,4 +80,14 @@ describe('imageJobCards', () => {
         expect(preview).not.toContain('negative');
         expect(imageJobPromptPreview({})).toBe('生成图片');
     });
+
+    it('only allows failed and cancelled source jobs to enter selection', () => {
+        expect(isImageJobCardSelectable(toImageJobCard(makeJob({ status: 'failed' })))).toBe(true);
+        expect(isImageJobCardSelectable(toImageJobCard(makeJob({ status: 'cancelled' })))).toBe(true);
+        expect(isImageJobCardSelectable(toImageJobCard(makeJob({ status: 'queued' })))).toBe(false);
+        expect(isImageJobCardSelectable(toImageJobCard(makeJob({ status: 'running' })))).toBe(false);
+        expect(isImageJobCardSelectable(toImageJobCard(makeJob({ status: 'succeeded' })))).toBe(false);
+        expect(isImageJobCardSelectable(toImageJobCard(makeJob({ status: 'succeeded', resultAppliedAt: 10 })))).toBe(false);
+    });
+
 });

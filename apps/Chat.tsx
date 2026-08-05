@@ -39,10 +39,12 @@ import MessageItem, { ThinkingChainBlock } from '../components/chat/MessageItem'
 import ImageJobCard from '../components/chat/ImageJobCard';
 import {
     BACKGROUND_IMAGE_JOB_EVENT,
+    dismissBackgroundImageJobs,
     getBackgroundImageJobs,
 } from '../utils/backgroundImageJobs';
 import {
     IMAGE_JOB_CARD_AUTO_HIDE_MS,
+    isImageJobCardSelectable,
     visibleImageJobCards,
     type LocalImageJobCard,
 } from '../utils/imageJobCards';
@@ -199,6 +201,7 @@ const Chat: React.FC = () => {
     // --- Multi-Select State ---
     const [selectionMode, setSelectionMode] = useState(false);
     const [selectedMsgIds, setSelectedMsgIds] = useState<Set<number>>(new Set());
+    const [selectedImageJobIds, setSelectedImageJobIds] = useState<Set<string>>(new Set());
     // 思维链是 metadata.thinkingChain，没有独立 id，所以用宿主消息 id 作为键，
     // 与 selectedMsgIds 并行存在 —— 只勾思维链时只清 metadata，宿主消息保留。
     const [selectedThinkingMsgIds, setSelectedThinkingMsgIds] = useState<Set<number>>(new Set());
@@ -846,6 +849,8 @@ const Chat: React.FC = () => {
             setReplyTarget(null);
             setSelectionMode(false);
             setSelectedMsgIds(new Set());
+            setSelectedImageJobIds(new Set());
+            setSelectedThinkingMsgIds(new Set());
             setShowingTargetIds(new Set());
             setWindowedFocusMsgId(null);
             setFlashMsgId(null);
@@ -2618,14 +2623,40 @@ const Chat: React.FC = () => {
         setModalType('message-options');
     }, []);
 
+    const enterImageJobSelection = useCallback((jobId: string) => {
+        setSelectionMode(true);
+        setSelectedImageJobIds(prev => {
+            const next = new Set(prev);
+            next.add(jobId);
+            return next;
+        });
+    }, []);
+
+    const toggleImageJobSelection = useCallback((jobId: string) => {
+        setSelectedImageJobIds(prev => {
+            const next = new Set(prev);
+            if (next.has(jobId)) next.delete(jobId);
+            else next.add(jobId);
+            return next;
+        });
+    }, []);
+
+    const clearBatchSelection = useCallback(() => {
+        setSelectionMode(false);
+        setSelectedMsgIds(new Set());
+        setSelectedImageJobIds(new Set());
+        setSelectedThinkingMsgIds(new Set());
+    }, []);
+
     const handleBatchDelete = async () => {
         const msgIdsToDelete = new Set<number>(selectedMsgIds);
+        const imageJobIdsToDismiss = Array.from(selectedImageJobIds);
         // 思维链单独勾选、但宿主消息没选 -> 只清 metadata.thinkingChain，保留消息
         const thinkingIdsToClear = new Set<number>();
         selectedThinkingMsgIds.forEach(id => {
             if (!msgIdsToDelete.has(id)) thinkingIdsToClear.add(id);
         });
-        if (msgIdsToDelete.size === 0 && thinkingIdsToClear.size === 0) return;
+        if (msgIdsToDelete.size === 0 && thinkingIdsToClear.size === 0 && imageJobIdsToDismiss.length === 0) return;
 
         // 删消息时，如果它身上的思维链没被勾选，就尝试迁移到同一轮里下一条 assistant 消息上，
         // 让"只想删第一条输出，但想留思维链"成立
@@ -2664,6 +2695,9 @@ const Chat: React.FC = () => {
             await DB.deleteMessages(ids);
             discardVoiceForMessages(ids);
         }
+        const dismissedImageJobCount = imageJobIdsToDismiss.length > 0
+            ? await dismissBackgroundImageJobs(imageJobIdsToDismiss)
+            : 0;
 
         const migMap = new Map(migrations.map(m => [m.targetId, m.chain]));
         setMessages(prev => prev
@@ -2684,11 +2718,10 @@ const Chat: React.FC = () => {
         const parts: string[] = [];
         if (msgIdsToDelete.size > 0) parts.push(`已删除 ${msgIdsToDelete.size} 条消息`);
         if (thinkingIdsToClear.size > 0) parts.push(`已清除 ${thinkingIdsToClear.size} 条思维链`);
+        if (dismissedImageJobCount > 0) parts.push(`已删除 ${dismissedImageJobCount} 个失败生图任务`);
         addToast(parts.join('，'), 'success');
 
-        setSelectionMode(false);
-        setSelectedMsgIds(new Set());
-        setSelectedThinkingMsgIds(new Set());
+        clearBatchSelection();
     };
 
     // --- Forward Chat Records ---
@@ -2754,6 +2787,8 @@ const Chat: React.FC = () => {
         setShowForwardModal(false);
         setSelectionMode(false);
         setSelectedMsgIds(new Set());
+        setSelectedImageJobIds(new Set());
+        setSelectedThinkingMsgIds(new Set());
     };
 
     // hideBeforeMessageId 不在视觉层过滤：用户依旧能往上翻到旧消息，只是 LLM 拉不到。
@@ -3224,8 +3259,8 @@ const Chat: React.FC = () => {
 
              <ChatHeader
                 selectionMode={selectionMode}
-                selectedCount={selectedMsgIds.size + Array.from(selectedThinkingMsgIds).filter(id => !selectedMsgIds.has(id)).length}
-                onCancelSelection={() => { setSelectionMode(false); setSelectedMsgIds(new Set()); setSelectedThinkingMsgIds(new Set()); }}
+                selectedCount={selectedMsgIds.size + selectedImageJobIds.size + Array.from(selectedThinkingMsgIds).filter(id => !selectedMsgIds.has(id)).length}
+                onCancelSelection={clearBatchSelection}
                 activeCharacter={char}
                 isTyping={isTyping}
                 isSummarizing={isSummarizing}
@@ -3464,9 +3499,24 @@ const Chat: React.FC = () => {
                     );
                 })}
 
-                {!selectionMode && imageJobCards.map(card => (
-                    <ImageJobCard key={card.id} card={card} />
-                ))}
+                {imageJobCards.map(card => {
+                    const selectable = isImageJobCardSelectable(card);
+                    return (
+                        <ImageJobCard
+                            key={card.id}
+                            card={card}
+                            selectable={selectable}
+                            selectionMode={selectionMode}
+                            selected={selectedImageJobIds.has(card.id)}
+                            onLongPress={() => {
+                                if (selectable) enterImageJobSelection(card.id);
+                            }}
+                            onToggleSelect={() => {
+                                if (selectable) toggleImageJobSelection(card.id);
+                            }}
+                        />
+                    );
+                })}
                 
                 {/* 纯前端「发送准备中」三个点: 不走 MessageItem (那条逐条路径实测渲染不出来), 直接挂在
                     消息列表末尾、靠右(用户侧). 跟 header「发送中」同源 instantSendingActive 一起亮灭.
@@ -3650,7 +3700,7 @@ const Chat: React.FC = () => {
                     onSend={handleSendCallback}
                     onDeleteSelected={handleBatchDelete}
                     onForwardSelected={handleForwardSelected}
-                    selectedCount={selectedMsgIds.size + Array.from(selectedThinkingMsgIds).filter(id => !selectedMsgIds.has(id)).length}
+                    selectedCount={selectedMsgIds.size + selectedImageJobIds.size + Array.from(selectedThinkingMsgIds).filter(id => !selectedMsgIds.has(id)).length}
                     emojis={filteredEmojis}
                     characters={characters} activeCharacterId={activeCharacterId}
                     onCharSelect={handleCharSelectCallback}

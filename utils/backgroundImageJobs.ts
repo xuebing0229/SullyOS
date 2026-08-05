@@ -336,6 +336,10 @@ const writeState = (
     );
 };
 
+const restoreStateWithoutPruning = (state: LocalState): void => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(clone(state)));
+};
+
 const upsertJob = (
     job: LocalBackgroundImageJob,
 ): void => {
@@ -576,7 +580,7 @@ const remoteStatusToLocal = (
                     : 'queued';
 
 const dispatchJobEvent = (
-    type: 'completed' | 'failed' | 'updated',
+    type: 'completed' | 'failed' | 'updated' | 'dismissed',
     job: LocalBackgroundImageJob,
 ): void => {
     if (
@@ -987,6 +991,68 @@ const queuedToolResult = (
 
 export const getBackgroundImageJobById = (id: string): LocalBackgroundImageJob | null =>
     readState().jobs.find(job => job.id === id) || null;
+
+
+const failureMessageMatchesJob = (
+    message: Message,
+    job: LocalBackgroundImageJob,
+): boolean => message.metadata?.backgroundImageJobFailure === true
+    && (
+        message.metadata?.backgroundImageLocalJobId === job.id
+        || message.metadata?.backgroundImageClientRequestId === job.clientRequestId
+        || (
+            Boolean(job.remoteJobId)
+            && message.metadata?.backgroundImageJobId === job.remoteJobId
+        )
+    );
+
+/**
+ * 只移除已经失败或取消的本地任务卡，并精确清理它们派生的失败提示消息。
+ * 进行中、保存中和已成功任务不会被删除。
+ */
+export async function dismissBackgroundImageJobs(jobIds: string[]): Promise<number> {
+    const wanted = new Set(jobIds.filter(Boolean));
+    if (!wanted.size) return 0;
+
+    const state = readState();
+    const dismissible = state.jobs.filter(job =>
+        wanted.has(job.id)
+        && (job.status === 'failed' || job.status === 'cancelled'),
+    );
+    if (!dismissible.length) return 0;
+
+    const charIds = Array.from(new Set(dismissible.map(job => job.charId)));
+    const failureMessageIds = new Set<number>();
+    for (const charId of charIds) {
+        const messages = await DB.getMessagesByCharId(charId, true);
+        messages.forEach(message => {
+            if (dismissible.some(job => job.charId === charId && failureMessageMatchesJob(message, job))) {
+                failureMessageIds.add(message.id);
+            }
+        });
+    }
+    const dismissedIds = new Set(dismissible.map(job => job.id));
+    const originalState = clone(state);
+    state.jobs = state.jobs.filter(job => !dismissedIds.has(job.id));
+    writeState(state);
+    try {
+        if (failureMessageIds.size) {
+            await DB.deleteMessages(Array.from(failureMessageIds));
+        }
+    } catch (error) {
+        // localStorage 与 IndexedDB 无法共享事务；消息清理失败时恢复任务记录，
+        // 避免卡片消失但失败提示仍留在聊天里。
+        restoreStateWithoutPruning(originalState);
+        throw error;
+    }
+
+    dismissible.forEach(job => dispatchJobEvent('dismissed', job));
+    return dismissible.length;
+}
+
+export async function dismissBackgroundImageJob(jobId: string): Promise<boolean> {
+    return (await dismissBackgroundImageJobs([jobId])) > 0;
+}
 
 export const getPendingBackgroundImageInspectJobs = (charId: string): LocalBackgroundImageJob[] =>
     readState().jobs.filter(job =>
