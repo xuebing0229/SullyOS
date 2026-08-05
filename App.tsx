@@ -1,4 +1,5 @@
 
+import GameHallAutoplayHost from './components/GameHallAutoplayHost';
 import React from 'react';
 import { OSProvider } from './context/OSContext';
 import { MusicProvider } from './context/MusicContext';
@@ -37,6 +38,7 @@ const App: React.FC = () => {
           <OSProvider>
             <MusicProvider>
               <PhoneShell />
+          <GameHallAutoplayHost />
             </MusicProvider>
           </OSProvider>
         </div>

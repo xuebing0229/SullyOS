@@ -44,6 +44,16 @@ import {
   saveCharacterExternalAccount,
 } from '../utils/characterExternalAccountStore';
 import { createGameHallMainChatHandoff } from '../utils/gameHallHandoff';
+import {
+  createGameHallAutoplayUiCommand,
+  enqueueGameHallAutoplayCommands,
+  GAME_HALL_AUTOPLAY_STATE_EVENT,
+} from '../utils/gameHallAutoplayIntent';
+import {
+  loadGameHallApiSettings,
+  saveGameHallApiSettings,
+  resolveGameHallApiConfig,
+} from '../utils/gameHallApiPreset';
 import { gameHallContextLabel, selectGameHallContext } from '../utils/gameHallContext';
 import { prepareChatImageForSend } from '../utils/chatImage';
 import {
@@ -83,6 +93,7 @@ const GameHallApp: React.FC = () => {
     activeCharacterId,
     isLocked,
     apiConfig,
+    apiPresets,
     userProfile,
     memoryPalaceConfig,
     groups,
@@ -94,6 +105,7 @@ const GameHallApp: React.FC = () => {
   const [sheetSnap, setSheetSnap] = useState<GameHallSheetSnap>('collapsed');
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [connection, setConnection] = useState<CedarToyConnection>(() => loadCedarConnection());
+  const [gameHallApiSettings, setGameHallApiSettings] = useState(loadGameHallApiSettings);
   const [capabilities, setCapabilities] = useState<CedarCapabilityMap | null>(() =>
     connection.tools ? buildCedarCapabilityMap(connection.tools) : null,
   );
@@ -122,6 +134,10 @@ const GameHallApp: React.FC = () => {
   const selected = useMemo(
     () => characters.find(character => character.id === charId) || characters[0],
     [characters, charId],
+  );
+  const resolvedGameHallApi = useMemo(
+    () => resolveGameHallApiConfig(apiConfig, apiPresets, gameHallApiSettings),
+    [apiConfig, apiPresets, gameHallApiSettings],
   );
   const sheetOpen = sheetSnap !== 'collapsed';
   // 原始 tools/list：保留顺序、重复工具和完整 schema，不经过任何白名单或去重。
@@ -211,6 +227,27 @@ const GameHallApp: React.FC = () => {
     return () => {
       alive = false;
     };
+  }, [selected?.id]);
+
+  useEffect(() => {
+    const reload = (event: Event) => {
+      const detail = (event as CustomEvent<{ sessionId?: string; charId?: string }>).detail;
+      if (!selected || (detail?.charId && detail.charId !== selected.id)) return;
+      void (async () => {
+        const current = await getActiveGameHallSession(selected.id);
+        if (!current) return;
+        const [nextMessages, nextPending] = await Promise.all([
+          getGameHallMessages(current.id),
+          getPendingGameHallActions(current.id),
+        ]);
+        setSession(current);
+        setMessages(nextMessages);
+        setPending(nextPending);
+        if (current.autoplay?.latestState) setGameState(current.autoplay.latestState);
+      })();
+    };
+    window.addEventListener(GAME_HALL_AUTOPLAY_STATE_EVENT, reload);
+    return () => window.removeEventListener(GAME_HALL_AUTOPLAY_STATE_EVENT, reload);
   }, [selected?.id]);
 
   useEffect(() => {
@@ -328,7 +365,7 @@ const GameHallApp: React.FC = () => {
       try {
         const history = session ? await getGameHallMessages(session.id) : [...messages, ...(toolMessage ? [toolMessage] : [])];
         const reply = await respondToGameHallToolResult({
-          apiConfig,
+          apiConfig: resolvedGameHallApi.config,
           char: selected,
           userProfile,
           groups,
@@ -396,7 +433,7 @@ const GameHallApp: React.FC = () => {
       const state = gameState;
       setRunStatus(`${selected.name}正在思考…`);
       const plan = await planGameHallTurn({
-        apiConfig,
+        apiConfig: resolvedGameHallApi.config,
         char: selected,
         userProfile,
         groups,
@@ -435,10 +472,32 @@ const GameHallApp: React.FC = () => {
     }
   };
 
+  const autoplayRunning = session?.autoplay?.status === 'queued'
+    || session?.autoplay?.status === 'running'
+    || session?.autoplay?.status === 'stopping';
+
+  const sendAutoplayCommand = (type: 'start' | 'pause' | 'resume' | 'stop') => {
+    if (!selected) return;
+    enqueueGameHallAutoplayCommands([
+      createGameHallAutoplayUiCommand(
+        selected.id,
+        type,
+        type === 'start' ? {
+          instruction: '自己选择想玩的内容，连续玩到自然告一段落。',
+          returnToMainChat: false,
+        } : undefined,
+      ),
+    ]);
+  };
+
   const send = async () => {
     const text = input.trim();
     if (!text) return;
     setInput('');
+    if (autoplayRunning) {
+      await append('user', text);
+      return;
+    }
     await runTurn(text);
   };
 
@@ -451,13 +510,15 @@ const GameHallApp: React.FC = () => {
     try {
       const prepared = await prepareChatImageForSend(file);
       setBusy(false);
-      await runTurn(caption || '[图片]', {
+      const image = {
         displayDataUrl: prepared.displayDataUrl,
         visionDataUrl: prepared.visionDataUrl,
         fileName: file.name,
         mimeType: file.type,
         isAnimatedGif: prepared.isAnimatedGif,
-      });
+      };
+      if (autoplayRunning) await append('user', caption || '[图片]', { image });
+      else await runTurn(caption || '[图片]', image);
     } catch (error: any) {
       await append('system', `图片处理失败：${error?.message || String(error)}`);
       setBusy(false);
@@ -478,7 +539,7 @@ const GameHallApp: React.FC = () => {
         accounts,
         char: selected,
         userProfile,
-        apiConfig,
+        apiConfig: resolvedGameHallApi.config,
         memoryPalaceConfig,
         onProgress: (_stage, text) => setRunStatus(text),
       });
@@ -674,6 +735,22 @@ const GameHallApp: React.FC = () => {
                       {item.label}
                     </button>
                   ))}
+                </div>
+
+                <div className="mt-2 flex shrink-0 flex-wrap gap-2 rounded-xl bg-black/20 p-2 text-[11px]">
+                  {(!session?.autoplay || ['completed', 'cancelled', 'failed'].includes(session.autoplay.status)) ? (
+                    <button onClick={() => sendAutoplayCommand('start')} className="rounded-lg bg-emerald-600 px-3 py-1.5">开始自主连玩</button>
+                  ) : session.autoplay.status === 'paused' ? (
+                    <button onClick={() => sendAutoplayCommand('resume')} className="rounded-lg bg-emerald-600 px-3 py-1.5">继续</button>
+                  ) : (
+                    <button onClick={() => sendAutoplayCommand('pause')} className="rounded-lg bg-amber-600 px-3 py-1.5">暂停</button>
+                  )}
+                  {session?.autoplay && !['completed', 'cancelled', 'failed'].includes(session.autoplay.status) && (
+                    <button onClick={() => sendAutoplayCommand('stop')} className="rounded-lg bg-rose-700 px-3 py-1.5">停止</button>
+                  )}
+                  {session?.autoplay && (
+                    <span className="self-center text-slate-300">{session.autoplay.status} · 已完成 {session.autoplay.turnCount} 步</span>
+                  )}
                 </div>
 
                 <div
@@ -941,6 +1018,33 @@ const GameHallApp: React.FC = () => {
                   {!messages.length && <p className="text-[10px] text-slate-500">还没有游戏厅消息。</p>}
                 </div>
               </details>
+            </section>
+
+            <section className="mt-4 rounded-2xl border border-emerald-400/20 bg-slate-900 p-4">
+              <h3 className="text-sm font-bold">自主连玩与 API</h3>
+              <label className="mt-3 block text-xs">游戏厅 API 预设
+                <select value={gameHallApiSettings.activePresetId || ''} onChange={event => {
+                  const next = { ...gameHallApiSettings, activePresetId: event.target.value || null };
+                  setGameHallApiSettings(next); saveGameHallApiSettings(next);
+                }} className="mt-1 w-full rounded-xl bg-slate-950 p-3">
+                  <option value="">跟随当前聊天 API</option>
+                  {apiPresets.map(preset => <option key={preset.id} value={preset.id}>{preset.name}</option>)}
+                </select>
+              </label>
+              <label className="mt-3 block text-xs">步骤间隔（毫秒，0 = 不额外等待）
+                <input type="number" min={0} value={gameHallApiSettings.stepDelayMs} onChange={event => {
+                  const next = { ...gameHallApiSettings, stepDelayMs: Math.max(0, Number(event.target.value) || 0) };
+                  setGameHallApiSettings(next); saveGameHallApiSettings(next);
+                }} className="mt-1 w-full rounded-xl bg-slate-950 p-3 font-mono" />
+              </label>
+              <label className="mt-3 block text-xs">回合上限（留空 = 不限）
+                <input type="number" min={0} placeholder="不限" value={gameHallApiSettings.maxTurns ?? ''} onChange={event => {
+                  const raw = event.target.value;
+                  const next = { ...gameHallApiSettings, maxTurns: raw === '' || Number(raw) <= 0 ? null : Math.floor(Number(raw)) };
+                  setGameHallApiSettings(next); saveGameHallApiSettings(next);
+                }} className="mt-1 w-full rounded-xl bg-slate-950 p-3 font-mono" />
+              </label>
+              <p className="mt-2 text-[10px] text-slate-400">只要前端进程仍运行就会连续执行；WebView 被系统冻结或杀掉时会暂停，恢复后从已持久化进度继续。</p>
             </section>
 
             <section className="mt-4 rounded-2xl border border-amber-400/20 bg-slate-900 p-4">

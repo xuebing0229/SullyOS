@@ -149,6 +149,7 @@ const buildGameHallFullMessages = async (input: FullContextInput): Promise<ChatP
     },
     ephemeralMessages: input.gameHallMessages.map(toPayloadMessage),
     allowMcpChat: false,
+    allowGameHallAutoplayControl: false,
   });
   return [
     ...payload.fullMessages,
@@ -291,6 +292,7 @@ export async function planGameHallTurn(input: {
   contextMessageLimit?: number | null;
   schemaValidationMode?: GameHallSchemaValidationMode;
   repairAttempts?: number;
+  autonomousRun?: { runId: string; instruction: string; turnCount: number };
 }): Promise<{
   reply: string;
   pending?: GameHallPendingAction;
@@ -306,6 +308,14 @@ export async function planGameHallTurn(input: {
     description: tool.description,
     inputSchema: tool.inputSchema,
   }));
+  const autonomousBlock = input.autonomousRun ? `
+这是连续自主游玩第 ${input.autonomousRun.turnCount + 1} 步。
+用户已经明确允许你自己玩，不需要等待用户逐回合确认。
+总指令：${input.autonomousRun.instruction}
+只要你还想继续，就必须在 action 中选择一个真实工具。
+当游戏结束、你自己觉得告一段落、或确实无事可做时，action 返回 null。
+不要因为用户没发新消息而停下。
+` : '';
   const instruction = `你现在位于 SullyOS 游戏厅。你已经通过正常主聊天完整上下文链获得角色设定、用户档案、世界书、主聊天原文、记忆宫殿召回、日程与实时状态；下面是本轮游戏厅执行协议。
 模式：${input.mode}。
 游戏厅上下文：${context.limit == null ? '全部' : `最近 ${context.limit} 条`}，实际 ${context.includedCount}/${context.totalCount} 条。
@@ -316,7 +326,7 @@ MCP tools/list 原始工具数组如下。每项都可见，不筛选、不去�
 
 请只输出一个 JSON 对象：
 {"reply":"自然回复","action":null 或 {"toolIndex":0,"toolName":"真实工具名","args":{},"accountRef":"可选，省略则使用当前显式选择账号","reason":"原因"}}
-observe 模式 action 必须为 null。不要编造工具名。参数是否严格阻断由用户设置决定；你应尽量遵守 schema，但客户端不会在用户未开启 strict 时替用户拒绝调用。`;
+observe 模式 action 必须为 null。不要编造工具名。参数是否严格阻断由用户设置决定；你应尽量遵守 schema，但客户端不会在用户未开启 strict 时替用户拒绝调用。${autonomousBlock}`;
   const gameHallMessages = [
     ...context.messages,
     ...(!context.messages.length || context.messages.at(-1)?.role !== 'user'

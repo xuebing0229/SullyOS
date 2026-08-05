@@ -47,7 +47,8 @@ export type Directive =
   // 写日记: 短形态 [[DIARY: title|content]] 或长形态 [[DIARY_START: title|mood]]\n content \n[[DIARY_END]],
   // 飞书同形态 (FS_ 前缀). title 可空 → 客户端兜底用 `${char.name}的日记 - M/D`. mood 可空.
   | { type: 'notion_write_diary'; title: string; content: string; mood?: string }
-  | { type: 'feishu_write_diary'; title: string; content: string; mood?: string };
+  | { type: 'feishu_write_diary'; title: string; content: string; mood?: string }
+  | { type: 'game_hall_autoplay'; action: 'start' | 'pause' | 'resume' | 'stop'; payload?: { instruction?: string; gameHint?: string; goal?: string; returnToMainChat?: boolean } };
 
 export type ClassificationResult =
   | {
@@ -61,6 +62,7 @@ export type ClassificationResult =
        */
       sanitizedPrefix: string;
       toolCalls: ToolCall[];
+      directives: Directive[];
     }
   | {
       kind: 'finish';
@@ -73,6 +75,38 @@ export type ClassificationResult =
       sanitizedBody: string;
       directives: Directive[];
     };
+
+
+const GAME_HALL_AUTOPLAY_RE =
+  /\[\[GAME_HALL_AUTOPLAY_(START|PAUSE|RESUME|STOP)(?:\s+([\s\S]*?))?\]\]/gi;
+
+function extractGameHallAutoplayDirectives(text: string): { text: string; directives: Directive[] } {
+  const directives: Directive[] = [];
+  const cleaned = text.replace(
+    GAME_HALL_AUTOPLAY_RE,
+    (_full, actionRaw: string, payloadRaw?: string) => {
+      const action = actionRaw.toLowerCase() as 'start' | 'pause' | 'resume' | 'stop';
+      let payload: Record<string, unknown> | undefined;
+      if (action === 'start' && payloadRaw?.trim()) {
+        try {
+          const parsed = JSON.parse(payloadRaw);
+          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) payload = parsed;
+        } catch {
+          payload = { instruction: payloadRaw.trim() };
+        }
+      }
+      const startPayload = payload ? {
+        instruction: typeof payload.instruction === 'string' ? payload.instruction : undefined,
+        gameHint: typeof payload.gameHint === 'string' ? payload.gameHint : undefined,
+        goal: typeof payload.goal === 'string' ? payload.goal : undefined,
+        returnToMainChat: typeof payload.returnToMainChat === 'boolean' ? payload.returnToMainChat : undefined,
+      } : undefined;
+      directives.push({ type: 'game_hall_autoplay', action, payload: startPayload });
+      return '';
+    },
+  ).replace(/\n{3,}/g, '\n\n').trim();
+  return { text: cleaned, directives };
+}
 
 // ── 数据型 (tool-request) ────────────────────────────────────────────────
 
@@ -289,6 +323,9 @@ function parseDiaryShort(m: RegExpMatchArray, type: DiaryDirectiveType): Directi
  *              格式. 但保留兼容性: 空字符串 → finish + 空 cleanedText)
  */
 export function classifyLLMOutput(text: string): ClassificationResult {
+  const autoplay = extractGameHallAutoplayDirectives(text);
+  text = autoplay.text;
+
   // 1. 先扫数据标签. 任意一个命中就走 tool-request, 同一轮多个 SEARCH/RECALL 也一次性收集.
   const toolCalls: ToolCall[] = [];
   for (const spec of DATA_TAGS) {
@@ -312,11 +349,11 @@ export function classifyLLMOutput(text: string): ClassificationResult {
     for (const spec of DATA_TAGS) prefix = prefix.replace(spec.re, '');
     prefix = prefix.trim();
     const sanitizedPrefix = sanitizeForNotification(prefix);
-    return { kind: 'tool-request', prefix, sanitizedPrefix, toolCalls };
+    return { kind: 'tool-request', prefix, sanitizedPrefix, toolCalls, directives: autoplay.directives };
   }
 
   // 2. 没数据标签 → 扫副作用标签, 凑成 directives.
-  const directives: Directive[] = [];
+  const directives: Directive[] = [...autoplay.directives];
 
   // 2.0 转账先走 utils/transferFormat —— 跟客户端 chatParser 共用同一份解析, 规范标签
   // (`[[ACTION:TRANSFER:520元]]` 这类金额写法一并容错) 和模仿历史日志的口语形态

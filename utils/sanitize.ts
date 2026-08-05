@@ -127,6 +127,10 @@ const stripThinkBlocks = (t: string): string =>
 /** `[[INNER_STATE:...]]` */
 const stripInnerState = (t: string): string => t.replace(/\[\[INNER_STATE:\s*[\s\S]*?\]\]/g, '');
 
+/** 游戏厅自主游玩控制标记绝不进入正文、通知、历史或交接摘要。 */
+const stripGameHallAutoplayCommands = (t: string): string =>
+  t.replace(/\[\[GAME_HALL_AUTOPLAY_(?:START|PAUSE|RESUME|STOP)[\s\S]*?\]\]/gi, '');
+
 /** `[text](url)` → `[链接：text]` (全角冒号) */
 const replaceMarkdownLinks = (t: string): string =>
   t.replace(/\[([^\]]+)\]\([^)]+\)/g, '[链接：$1]');
@@ -367,6 +371,7 @@ export function sanitizeForNotification(text: string): string {
   result = stripSourceTags(result);
   // 8. 内部状态 / 业务标签 / 引用
   result = stripInnerState(result);
+  result = stripGameHallAutoplayCommands(result);
   result = stripBusinessTagsForNotification(result);
   result = stripQuotes(result);
   // 9. 链接 → [链接：text] (必须先于 markdown header/bold strip, 避免 [text](url) 内的 # 被误剥)
@@ -409,6 +414,7 @@ export function sanitizeForBubble(
   result = stripSystemLogLeak(result);
   result = stripMarkdownHeaders(result);
   result = stripBusinessTagsForBubble(result);
+  result = stripGameHallAutoplayCommands(result);
   if (!options?.keepCitations) {
     result = stripQuotes(result);
   }
@@ -520,6 +526,7 @@ export function sanitizeIntoSegments(text: string): Segment[] {
 
   cleaned = extractTranslationOriginal(cleaned); // 兜底吃残留的 <译文> / <翻译> 标签
   cleaned = stripInnerState(cleaned);
+  cleaned = stripGameHallAutoplayCommands(cleaned);
   cleaned = stripBusinessTagsForNotification(cleaned);
   cleaned = stripTimestamps(cleaned);
   cleaned = stripChineseDate(cleaned);

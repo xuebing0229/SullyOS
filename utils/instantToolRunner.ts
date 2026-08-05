@@ -16,6 +16,10 @@
  *   - 走"先 ack 后处理"是为了不让重投 push 把 toolCalls 跑两遍 (LLM 费用 + UI 重复)
  */
 
+import {
+  createGameHallAutoplayUiCommand,
+  enqueueGameHallAutoplayCommands,
+} from './gameHallAutoplayIntent';
 import { ActiveMsgStore } from './activeMsgStore';
 import { DB } from './db';
 import { dispatchAgenticTool, type AgenticToolCtx } from './agenticTools';
@@ -57,6 +61,25 @@ function emitToolStatus(
       detail,
     }));
   } catch { /* ignore */ }
+}
+
+export function enqueueInstantToolAutoplayDirectives(
+  item: Pick<InstantPushPendingToolCall, 'charId' | 'directives'>,
+): number {
+  const directives = (item.directives || []).filter((directive: any) =>
+    directive?.type === 'game_hall_autoplay'
+      && ['start', 'pause', 'resume', 'stop'].includes(directive.action),
+  );
+  if (directives.length === 0) return 0;
+  enqueueGameHallAutoplayCommands(directives.map((directive: any) => ({
+    ...createGameHallAutoplayUiCommand(
+      item.charId,
+      directive.action,
+      directive.action === 'start' ? directive.payload : undefined,
+    ),
+    source: 'assistant-output' as const,
+  })));
+  return directives.length;
 }
 
 /** 跑一轮 ToolRequest → POST /continue. 失败时返回 false (上层决定要不要 toast). */
@@ -106,6 +129,8 @@ async function runOnePendingToolCall(item: InstantPushPendingToolCall): Promise<
       emitToolStatus(item.charId, 'running', `${text}，请先停留在此页。`, item.sessionId);
     },
   };
+
+  enqueueInstantToolAutoplayDirectives(item);
 
   // 1. 跑所有 tool, 串行 — agenticTools 内部多步 (XHS retry / DIARY fallback) 不能并发.
   const toolResults: Array<{ tool_call_id: string; role: 'tool'; content: string }> = [];

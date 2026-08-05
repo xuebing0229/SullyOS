@@ -53,6 +53,43 @@ export interface CharacterExternalAccount {
   lastUsedAt?: number;
 }
 
+
+export type GameHallAutoplayStatus =
+  | 'queued' | 'running' | 'paused' | 'stopping'
+  | 'completed' | 'cancelled' | 'failed';
+
+export type GameHallAutoplayStopReason =
+  | 'character-finished' | 'user-paused' | 'user-stopped'
+  | 'visible-turn-limit' | 'api-error' | 'mcp-error'
+  | 'handoff-error' | 'session-replaced';
+
+export interface GameHallAutoplayState {
+  version: 1;
+  runId: string;
+  status: GameHallAutoplayStatus;
+  requestedFrom: 'main-chat' | 'game-hall';
+  instruction: string;
+  gameHint?: string;
+  goal?: string;
+  returnToMainChat: boolean;
+  turnCount: number;
+  maxTurns: number | null;
+  stepDelayMs: number;
+  createdAt: number;
+  startedAt?: number;
+  updatedAt: number;
+  completedAt?: number;
+  lastPlannedAt?: number;
+  lastActionAt?: number;
+  lastActionId?: string;
+  latestState?: NormalizedCedarGameState;
+  stopReason?: GameHallAutoplayStopReason;
+  lastError?: string;
+  handoffMessageId?: number;
+  handoffCompletedAt?: number;
+  handoffError?: string;
+}
+
 export interface GameHallSession {
   id: string;
   charId: string;
@@ -75,6 +112,7 @@ export interface GameHallSession {
   planRepairAttempts?: number;
   /** 成功结果里检测到账号/凭证时是否自动建档。默认 true，设置页可见。 */
   autoArchiveAccounts?: boolean;
+  autoplay?: GameHallAutoplayState;
 }
 
 export type GameHallToolResultSnapshot = McpToolResult;

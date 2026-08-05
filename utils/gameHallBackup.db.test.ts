@@ -62,4 +62,39 @@ describe.sequential('Game Hall database backup restore', () => {
       expect(await DB.getRawStoreData(descriptor.storeName)).toEqual([]);
     }
   });
+
+  it('preserves the persisted autoplay state inside the existing session store', async () => {
+    const session = {
+      id: 'session-autoplay',
+      charId: 'char-1',
+      mode: 'auto-turn',
+      status: 'active',
+      createdAt: 1,
+      updatedAt: 2,
+      autoplay: {
+        version: 1,
+        runId: 'run-1',
+        status: 'paused',
+        requestedFrom: 'main-chat',
+        instruction: '继续玩到告一段落',
+        returnToMainChat: true,
+        turnCount: 4,
+        maxTurns: null,
+        stepDelayMs: 0,
+        createdAt: 1,
+        updatedAt: 2,
+        latestState: { gameId: 'game-1', raw: { score: 9 } },
+        stopReason: 'user-paused',
+      },
+    };
+    const empty = Object.fromEntries(GAME_HALL_BACKUP_STORES.map(item => [item.field, []]));
+    await DB.importFullData({
+      timestamp: Date.now(),
+      version: 3,
+      ...empty,
+      gameHallSessions: [session],
+    } as FullBackupData);
+
+    expect(await DB.getRawStoreData('gameHallSessions')).toEqual([session]);
+  });
 });

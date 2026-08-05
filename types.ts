@@ -373,6 +373,8 @@ export interface InstantPushPendingToolCall {
    * worker rejects non-incrementing values with HTTP 400. Default 0 for safety when the
    * push didn't carry metadata.iteration (e.g. legacy worker).
    */
+  /** Structured directives attached to the tool-request push. Existing stores keep this optional field without migration. */
+  directives?: Array<Record<string, unknown>>;
   iteration: number;
   createdAt: number;
 }
