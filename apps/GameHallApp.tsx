@@ -19,6 +19,9 @@ import {
 import { useOS } from '../context/OSContext';
 import CedarToySurface from '../components/gameHall/CedarToySurface';
 import GameHallBottomSheet from '../components/gameHall/GameHallBottomSheet';
+import { ThinkingChainBlock } from '../components/chat/MessageItem';
+import { DB } from '../utils/db';
+import type { AssistantDisplayPart } from '../utils/assistantDisplayPipeline';
 import {
   buildCedarCapabilityMap,
   clearCedarConnection,
@@ -47,19 +50,27 @@ import { createGameHallMainChatHandoff } from '../utils/gameHallHandoff';
 import { gameHallContextLabel, selectGameHallContext } from '../utils/gameHallContext';
 import { prepareChatImageForSend } from '../utils/chatImage';
 import {
+  completeGameHallReplyTurn,
+  failGameHallReplyTurn,
   gameHallId,
   getActiveGameHallSession,
+  getGameHallSession,
+  getOpenGameHallUserMessages,
   getGameHallMessages,
   getPendingGameHallActions,
+  recoverInterruptedGameHallReplyTurn,
   saveGameHallMessage,
+  saveGameHallMessages,
   saveGameHallSession,
   savePendingGameHallAction,
+  sealGameHallTurnForReply,
 } from '../utils/gameHallStore';
 import type { GameHallSheetSnap } from '../utils/gameHallPanelLayout';
 import type {
   CedarCapabilityMap,
   CedarToyConnection,
   CharacterExternalAccount,
+  GameHallActiveReplyTurn,
   GameHallCompanionMode,
   GameHallMessage,
   GameHallPendingAction,
@@ -109,7 +120,9 @@ const GameHallApp: React.FC = () => {
   const [accounts, setAccounts] = useState<CharacterExternalAccount[]>([]);
   const [gameState, setGameState] = useState<NormalizedCedarGameState | undefined>(undefined);
   const [input, setInput] = useState('');
-  const [busy, setBusy] = useState(false);
+  const [replyBusy, setReplyBusy] = useState(false);
+  const [toolBusy, setToolBusy] = useState(false);
+  const [imageBusy, setImageBusy] = useState(false);
   const [handoffBusy, setHandoffBusy] = useState(false);
   const [runStatus, setRunStatus] = useState('');
   const [accountEditorRef, setAccountEditorRef] = useState<string | null>(null);
@@ -126,6 +139,10 @@ const GameHallApp: React.FC = () => {
   const sheetOpen = sheetSnap !== 'collapsed';
   // 原始 tools/list：保留顺序、重复工具和完整 schema，不经过任何白名单或去重。
   const availableTools = connection.tools || [];
+  const openUserMessages = useMemo(
+    () => getOpenGameHallUserMessages(messages, session?.openTurnId),
+    [messages, session?.openTurnId],
+  );
   const contextSelection = useMemo(
     () => selectGameHallContext(messages, session?.contextMessageLimit),
     [messages, session?.contextMessageLimit],
@@ -180,6 +197,7 @@ const GameHallApp: React.FC = () => {
           schemaValidationMode: 'off',
           planRepairAttempts: 0,
           autoArchiveAccounts: true,
+          openTurnId: gameHallId('ghturn'),
           createdAt: now,
           updatedAt: now,
         };
@@ -192,6 +210,7 @@ const GameHallApp: React.FC = () => {
         };
         await saveGameHallSession(current);
       }
+      current = await recoverInterruptedGameHallReplyTurn(current);
       const [nextMessages, nextPending, nextAccounts] = await Promise.all([
         getGameHallMessages(current.id),
         getPendingGameHallActions(current.id),
@@ -250,7 +269,7 @@ const GameHallApp: React.FC = () => {
   const executeAction = async (action: GameHallPendingAction, automatic = false) => {
     if (!selected || executingActionIdsRef.current.has(action.id)) return;
     executingActionIdsRef.current.add(action.id);
-    setBusy(true);
+    setToolBusy(true);
     setRunStatus(`正在执行 ${action.toolName}…`);
     const running = { ...action, status: 'confirmed' as const, updatedAt: Date.now() };
     setPending(value => value.some(item => item.id === action.id)
@@ -279,8 +298,9 @@ const GameHallApp: React.FC = () => {
           toolRequest: request,
           toolResult: result,
           accountRef: action.accountRef,
+          turnId: action.turnId,
         });
-        await append('system', `行动失败：${failed.error}`);
+        await append('system', `行动失败：${failed.error}`, { turnId: action.turnId });
         return;
       }
 
@@ -299,8 +319,9 @@ const GameHallApp: React.FC = () => {
           result,
         });
         if (savedAccount && session) {
+          const latestSession = await getGameHallSession(session.id) || session;
           const updatedSession: GameHallSession = {
-            ...session,
+            ...latestSession,
             activeAccountRef: savedAccount.accountRef,
             updatedAt: Date.now(),
           };
@@ -321,6 +342,7 @@ const GameHallApp: React.FC = () => {
           toolRequest: request,
           toolResult: result,
           accountRef: savedAccount?.accountRef || action.accountRef,
+          turnId: action.turnId,
         },
       );
 
@@ -339,18 +361,23 @@ const GameHallApp: React.FC = () => {
           history,
           contextMessageLimit: session?.contextMessageLimit,
         });
-        if (reply) await append('assistant', reply);
+        await appendAssistantDisplayParts({
+          turnId: action.turnId || gameHallId('ghturn'),
+          parts: reply.replies,
+          thinkingChain: reply.thinkingChain,
+        });
       } catch (error: any) {
-        await append('system', `工具已成功，但角色整理结果失败：${error?.message || String(error)}`);
+        await append('system', `工具已成功，但角色整理结果失败：${error?.message || String(error)}`, { turnId: action.turnId });
       }
 
       const nextState = stateFromGameHallToolResult(result);
       setGameState(nextState);
       if (session && (nextState.gameId || nextState.gameName)) {
+        const latestSession = await getGameHallSession(session.id) || session;
         const updatedSession: GameHallSession = {
-          ...session,
-          gameId: nextState.gameId || session.gameId,
-          gameName: nextState.gameName || session.gameName,
+          ...latestSession,
+          gameId: nextState.gameId || latestSession.gameId,
+          gameName: nextState.gameName || latestSession.gameName,
           updatedAt: Date.now(),
         };
         setSession(updatedSession);
@@ -365,10 +392,10 @@ const GameHallApp: React.FC = () => {
       };
       await savePendingGameHallAction(failed).catch(() => undefined);
       setPending(value => value.map(item => item.id === action.id ? failed : item));
-      await append('system', `行动失败：${failed.error}`).catch(() => undefined);
+      await append('system', `行动失败：${failed.error}`, { turnId: action.turnId }).catch(() => undefined);
     } finally {
       executingActionIdsRef.current.delete(action.id);
-      setBusy(false);
+      setToolBusy(false);
       setRunStatus('');
     }
   };
@@ -382,93 +409,153 @@ const GameHallApp: React.FC = () => {
     setPending(value => value.filter(item => item.id !== action.id));
   };
 
-  const runTurn = async (
-    text: string,
-    image?: GameHallMessage['image'],
-  ) => {
-    if ((!text.trim() && !image) || !session || !selected || busy || handoffBusy) return;
-    setBusy(true);
-    setRunStatus(image ? '正在保存图片…' : '正在保存消息…');
-    try {
-      const userMessage = await append('user', text.trim() || '[图片]', image ? { image } : {});
-      const turnHistory = [...messages, ...(userMessage ? [userMessage] : [])];
+  const appendAssistantDisplayParts = async (input: {
+    turnId: string;
+    parts: AssistantDisplayPart[];
+    thinkingChain?: string;
+  }) => {
+    if (!session || !selected) return;
+    const emojis = await DB.getEmojis();
+    const persisted: GameHallMessage[] = [];
+    let firstVisible = true;
+    for (let index = 0; index < input.parts.length; index++) {
+      const part = input.parts[index];
+      if (part.type === 'emoji') {
+        const emoji = emojis.find(item => item.name === part.name);
+        if (!emoji) continue;
+        persisted.push({
+          id: gameHallId('ghmsg'), sessionId: session.id, charId: selected.id, role: 'assistant',
+          content: '[表情包]', createdAt: Date.now() + index, turnId: input.turnId, batchIndex: index,
+          displayType: 'emoji', emojiName: part.name, emojiUrl: emoji.url,
+          thinkingChain: firstVisible ? input.thinkingChain : undefined,
+        });
+      } else {
+        persisted.push({
+          id: gameHallId('ghmsg'), sessionId: session.id, charId: selected.id, role: 'assistant',
+          content: part.content, createdAt: Date.now() + index, turnId: input.turnId, batchIndex: index,
+          displayType: 'text', thinkingChain: firstVisible ? input.thinkingChain : undefined,
+        });
+      }
+      firstVisible = false;
+    }
+    await saveGameHallMessages(persisted);
+    setMessages(value => [...value, ...persisted]);
+  };
 
-      const state = gameState;
-      setRunStatus(`${selected.name}正在思考…`);
+  const queueUserMessage = async (text: string, image?: GameHallMessage['image']) => {
+    if ((!text.trim() && !image) || !session || !selected || handoffBusy) return;
+    let latestSession = await getGameHallSession(session.id) || session;
+    const turnId = latestSession.openTurnId || gameHallId('ghturn');
+    if (!latestSession.openTurnId) {
+      latestSession = { ...latestSession, openTurnId: turnId, updatedAt: Date.now() };
+      setSession(latestSession);
+      await saveGameHallSession(latestSession);
+    }
+    const persistedMessages = await getGameHallMessages(latestSession.id);
+    await append('user', text.trim() || '[图片]', {
+      image, turnId, displayType: 'text',
+      batchIndex: persistedMessages.filter(message => message.turnId === turnId && message.role === 'user').length,
+    });
+  };
+
+  const runSealedGameHallTurn = async (turn: GameHallActiveReplyTurn) => {
+    if (!session || !selected || replyBusy || toolBusy || handoffBusy) return;
+    setReplyBusy(true);
+    setRunStatus(`${selected.name}正在思考…`);
+    try {
+      const history = await getGameHallMessages(session.id);
+      const batch = turn.userMessageIds
+        .map(id => history.find(message => message.id === id))
+        .filter((message): message is GameHallMessage => !!message);
+      const userText = batch.map((message, index) =>
+        `[本轮用户消息 ${index + 1}] ${message.content || (message.image ? '[图片]' : '')}`,
+      ).join('\n');
       const plan = await planGameHallTurn({
-        apiConfig,
-        char: selected,
-        userProfile,
-        groups,
-        realtimeConfig,
-        mode,
-        userText: text.trim() || '[用户发送了一张图片]',
-        state,
-        availableTools,
-        sessionId: session.id,
-        history: turnHistory,
-        accounts,
-        preferredAccountRef: session.activeAccountRef,
-        contextMessageLimit: session.contextMessageLimit,
-        schemaValidationMode: session.schemaValidationMode || 'off',
+        apiConfig, char: selected, userProfile, groups, realtimeConfig, mode, userText, state: gameState,
+        availableTools, sessionId: session.id, history, accounts, preferredAccountRef: session.activeAccountRef,
+        contextMessageLimit: session.contextMessageLimit, schemaValidationMode: session.schemaValidationMode || 'off',
         repairAttempts: session.planRepairAttempts || 0,
       });
-
-      await append('assistant', plan.reply);
-      if (plan.validationWarnings?.length) {
-        await append('system', `本轮工具规划提示：${plan.validationWarnings.join('；')}`);
-      }
-
+      await appendAssistantDisplayParts({ turnId: turn.turnId, parts: plan.replies, thinkingChain: plan.thinkingChain });
+      if (plan.validationWarnings?.length) await append('system', `本轮工具规划提示：${plan.validationWarnings.join('；')}`, { turnId: turn.turnId });
       if (plan.pending) {
-        if (mode === 'auto-turn') {
-          await executeAction(plan.pending, true);
-        } else {
-          await savePendingGameHallAction(plan.pending);
-          setPending(value => [...value, plan.pending!]);
-        }
+        const action = { ...plan.pending, turnId: turn.turnId };
+        if (mode === 'auto-turn') await executeAction(action, true);
+        else { await savePendingGameHallAction(action); setPending(value => [...value, action]); }
       }
+      const completed = await completeGameHallReplyTurn(session.id, turn.turnId);
+      setSession(completed);
+      setMessages(await getGameHallMessages(session.id));
     } catch (error: any) {
-      await append('system', error?.message || String(error));
+      const message = error?.message || String(error);
+      const failed = await failGameHallReplyTurn(session.id, turn.turnId, message).catch(() => null);
+      if (failed) setSession(failed);
     } finally {
-      setBusy(false);
+      setReplyBusy(false);
       setRunStatus('');
     }
+  };
+
+  const requestCharacterReply = async () => {
+    if (!session || !selected || replyBusy || toolBusy || handoffBusy || !session.openTurnId) return;
+    const batch = getOpenGameHallUserMessages(messages, session.openTurnId);
+    if (!batch.length) return;
+    try {
+      const sealed = await sealGameHallTurnForReply({
+        sessionId: session.id, expectedOpenTurnId: session.openTurnId, userMessageIds: batch.map(message => message.id),
+      });
+      setSession(sealed);
+      setMessages(await getGameHallMessages(session.id));
+      await runSealedGameHallTurn(sealed.activeReplyTurn!);
+    } catch (error: any) {
+      const latest = await getGameHallSession(session.id);
+      if (latest) setSession(latest);
+      setMessages(await getGameHallMessages(session.id));
+      setRunStatus(error?.message || String(error));
+    }
+  };
+
+  const retryFailedReplyTurn = async () => {
+    if (!session?.activeReplyTurn || session.activeReplyTurn.status !== 'failed' || replyBusy || toolBusy) return;
+    const running: GameHallSession = {
+      ...session, activeReplyTurn: { ...session.activeReplyTurn, status: 'running', error: undefined, updatedAt: Date.now() },
+      updatedAt: Date.now(),
+    };
+    await saveGameHallSession(running);
+    setSession(running);
+    await runSealedGameHallTurn(running.activeReplyTurn!);
   };
 
   const send = async () => {
     const text = input.trim();
     if (!text) return;
     setInput('');
-    await runTurn(text);
+    await queueUserMessage(text);
   };
 
   const handleImageSelect = async (file: File) => {
-    if (!file || busy || handoffBusy) return;
+    if (!file || imageBusy || handoffBusy) return;
     const caption = input.trim();
     setInput('');
-    setBusy(true);
+    setImageBusy(true);
     setRunStatus('正在处理图片…');
     try {
       const prepared = await prepareChatImageForSend(file);
-      setBusy(false);
-      await runTurn(caption || '[图片]', {
-        displayDataUrl: prepared.displayDataUrl,
-        visionDataUrl: prepared.visionDataUrl,
-        fileName: file.name,
-        mimeType: file.type,
-        isAnimatedGif: prepared.isAnimatedGif,
+      await queueUserMessage(caption || '[图片]', {
+        displayDataUrl: prepared.displayDataUrl, visionDataUrl: prepared.visionDataUrl, fileName: file.name,
+        mimeType: file.type, isAnimatedGif: prepared.isAnimatedGif,
       });
     } catch (error: any) {
       await append('system', `图片处理失败：${error?.message || String(error)}`);
-      setBusy(false);
-      setRunStatus('');
     } finally {
+      setImageBusy(false);
+      setRunStatus('');
       if (imageInputRef.current) imageInputRef.current.value = '';
     }
   };
 
   const handoffToMainChat = async () => {
-    if (!session || !selected || handoffBusy || busy) return;
+    if (!session || !selected || handoffBusy || replyBusy || toolBusy) return;
     setHandoffBusy(true);
     setRunStatus('正在准备游戏厅交接…');
     try {
@@ -588,7 +675,7 @@ const GameHallApp: React.FC = () => {
           </p>
         </div>
         <button
-          disabled={!selected || handoffBusy || busy}
+          disabled={!selected || handoffBusy || replyBusy || toolBusy}
           onClick={() => void handoffToMainChat()}
           className="flex items-center gap-1 rounded-xl bg-violet-500/20 px-2 py-1.5 text-[11px] text-violet-100 disabled:opacity-40"
           title="把刚才的游戏厅对话写进主聊天并继续"
@@ -691,7 +778,18 @@ const GameHallApp: React.FC = () => {
                             : 'bg-black/25 text-slate-300'
                       }`}
                     >
-                      <div>{message.content}</div>
+                      {message.role === 'assistant' && message.thinkingChain && (
+                        <div className="mb-2"><ThinkingChainBlock
+                          chain={message.thinkingChain}
+                          styleId={(selected as any)?.thinkingChainStyle}
+                          customColors={(selected as any)?.thinkingChainCustomColors}
+                        /></div>
+                      )}
+                      {message.displayType === 'emoji' && message.emojiUrl ? (
+                        <img src={message.emojiUrl} alt={message.emojiName || '表情包'} className="max-h-32 max-w-32 object-contain" />
+                      ) : (
+                        <div>{message.content}</div>
+                      )}
                       {message.image && (
                         <img
                           src={message.image.displayDataUrl}
@@ -760,7 +858,7 @@ const GameHallApp: React.FC = () => {
                       )}
                       <div className="flex gap-2">
                         <button
-                          disabled={busy}
+                          disabled={toolBusy}
                           onClick={() => void executeAction(action)}
                           className="rounded-lg bg-emerald-600 px-3 py-1.5 disabled:opacity-40"
                         >
@@ -777,6 +875,23 @@ const GameHallApp: React.FC = () => {
                   ))}
                 </div>
 
+                <div className="mt-2 flex items-center justify-between gap-3 rounded-xl bg-black/20 px-3 py-2 text-xs">
+                  <span className="text-slate-300">
+                    {session?.activeReplyTurn?.status === 'running'
+                      ? '角色正在回复，仍可继续发送下一轮消息'
+                      : session?.activeReplyTurn?.status === 'failed'
+                        ? `本轮回复失败：${session.activeReplyTurn.error || '可手动重试'}`
+                        : openUserMessages.length
+                          ? `已发 ${openUserMessages.length} 条，等你说“轮到你了”`
+                          : '连续发送完成后，再说“轮到你了”'}
+                  </span>
+                  {session?.activeReplyTurn?.status === 'failed' ? (
+                    <button disabled={replyBusy || toolBusy} onClick={() => void retryFailedReplyTurn()} className="shrink-0 rounded-lg bg-rose-600 px-3 py-1.5 disabled:opacity-40">重试本轮回复</button>
+                  ) : (
+                    <button disabled={!openUserMessages.length || replyBusy || toolBusy || !!session?.activeReplyTurn} onClick={() => void requestCharacterReply()} className="shrink-0 rounded-lg bg-emerald-600 px-3 py-1.5 disabled:opacity-40">{replyBusy ? '回复中' : '轮到你了'}</button>
+                  )}
+                </div>
+
                 <div className="mt-2 flex shrink-0 gap-2">
                   <input
                     ref={imageInputRef}
@@ -790,7 +905,7 @@ const GameHallApp: React.FC = () => {
                   />
                   <button
                     type="button"
-                    disabled={busy || handoffBusy}
+                    disabled={imageBusy || handoffBusy}
                     onClick={() => imageInputRef.current?.click()}
                     className="rounded-xl bg-slate-800 p-2 text-sky-200 disabled:opacity-40"
                     aria-label="发送图片"
@@ -807,7 +922,7 @@ const GameHallApp: React.FC = () => {
                     className="min-w-0 flex-1 rounded-xl bg-slate-800 px-3 py-2 text-sm"
                   />
                   <button
-                    disabled={busy || handoffBusy || !input.trim()}
+                    disabled={handoffBusy || !input.trim()}
                     onClick={() => void send()}
                     className="rounded-xl bg-violet-600 p-2 disabled:opacity-40"
                     aria-label="发送"

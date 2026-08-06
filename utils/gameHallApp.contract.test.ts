@@ -17,7 +17,7 @@ const agentSource = readFileSync(
 
 describe('GameHall tool result and history contracts', () => {
   it('feeds the user-selected game hall range through the full main-chat context chain', () => {
-    expect(appSource).toContain('history: turnHistory');
+    expect(appSource).toContain('const history = await getGameHallMessages(session.id)');
     expect(appSource).toContain('respondToGameHallToolResult');
     expect(agentSource).toContain('loadCharacterContextRange(input.char)');
     expect(agentSource).toContain('buildChatRequestPayload({');
@@ -47,5 +47,29 @@ describe('GameHall tool result and history contracts', () => {
     expect(storeSource).toContain(
       "latest.find(session => session.status === 'active') || latest[0]",
     );
+  });
+
+  it('queues paper-plane messages locally and plans only after an explicit sealed turn', () => {
+    const queueStart = appSource.indexOf('const queueUserMessage');
+    const queueEnd = appSource.indexOf('const runSealedGameHallTurn');
+    expect(queueStart).toBeGreaterThan(-1);
+    expect(appSource.slice(queueStart, queueEnd)).not.toContain('planGameHallTurn');
+    expect(appSource).toContain('await queueUserMessage(text)');
+    expect(appSource).toContain('sealGameHallTurnForReply({');
+    expect(appSource).toContain('轮到你了');
+  });
+
+  it('stores all parsed bubbles before display and keeps input enabled during replies', () => {
+    expect(appSource).toContain('await saveGameHallMessages(persisted)');
+    expect(appSource).toContain('thinkingChain: firstVisible ? input.thinkingChain : undefined');
+    expect(appSource).toContain('chain={message.thinkingChain}');
+    expect(appSource).toContain('styleId={(selected as any)?.thinkingChainStyle}');
+    expect(appSource).toContain('disabled={handoffBusy || !input.trim()}');
+  });
+
+  it('does not use raw model output as a reply fallback', () => {
+    expect(agentSource).not.toContain('parsed?.reply || raw');
+    expect(agentSource).toContain("throw new Error('游戏厅回复格式解析失败')");
+    expect(agentSource).toContain('!!parsed.action &&');
   });
 });

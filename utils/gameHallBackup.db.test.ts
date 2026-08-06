@@ -62,4 +62,26 @@ describe.sequential('Game Hall database backup restore', () => {
       expect(await DB.getRawStoreData(descriptor.storeName)).toEqual([]);
     }
   });
+
+  it('preserves optional batched-turn fields in the existing session and message stores', async () => {
+    const rows = makeRows();
+    rows.gameHallSessions = [{
+      id: 'session-batch', charId: 'char-1', mode: 'ask-before-action', status: 'active',
+      openTurnId: 'turn-next',
+      activeReplyTurn: {
+        turnId: 'turn-failed', userMessageIds: ['message-1'], status: 'failed',
+        requestedAt: 10, updatedAt: 11, error: '手动重试',
+      },
+      lastCompletedTurnId: 'turn-done', createdAt: 1, updatedAt: 11,
+    }];
+    rows.gameHallMessages = [{
+      id: 'message-1', sessionId: 'session-batch', charId: 'char-1', role: 'user', content: '原消息',
+      turnId: 'turn-failed', batchIndex: 0, displayType: 'text', replyRequestedAt: 10, createdAt: 2,
+    }];
+    const expectedSessions = structuredClone(rows.gameHallSessions);
+    const expectedMessages = structuredClone(rows.gameHallMessages);
+    await DB.importFullData({ timestamp: Date.now(), version: 3, ...rows } as FullBackupData);
+    expect(await DB.getRawStoreData('gameHallSessions')).toEqual(expectedSessions);
+    expect(await DB.getRawStoreData('gameHallMessages')).toEqual(expectedMessages);
+  });
 });

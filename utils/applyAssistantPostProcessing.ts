@@ -48,22 +48,9 @@ import {
     runXhsDetail,
 } from './agenticTools';
 import { getLocalDateKey } from './localDate';
+import { extractAssistantThinking, normalizeAssistantContent, splitAssistantDisplayUnits } from './assistantDisplayPipeline';
 
 // ─── 模块内辅助 ──────────────────────────────────────────────────────────────
-
-/** 第一遍粗洗 — 剥 <think> / 时间戳 / 历史里漏出的 [聊天]/[通话]/[约会] / 表情包反向 tag */
-const normalizeAiContent = (raw: string): string => {
-    let cleaned = raw || '';
-    // Strip hidden chain-of-thought blocks: <think> / <thinking> / <thought>
-    cleaned = cleaned.replace(/<(think|thinking|thought)>[\s\S]*?<\/\1>/gi, '');
-    cleaned = cleaned.replace(/<(?:think|thinking|thought)>[\s\S]*$/gi, '');
-    cleaned = cleaned.replace(/\[\d{4}[-/年]\d{1,2}[-/月]\d{1,2}.*?\]/g, '');
-    cleaned = cleaned.replace(/^[\w一-龥]+:\s*/, '');
-    // Strip source tags [聊天]/[通话]/[约会] leaked from history context — replace with newline to preserve intended splits
-    cleaned = cleaned.replace(/\s*\[(?:聊天|通话|约会)\]\s*/g, '\n');
-    cleaned = cleaned.replace(/\[(?:你|User|用户|System)\s*发送了表情包[:：]\s*(.*?)\]/g, '[[SEND_EMOJI: $1]]');
-    return cleaned;
-};
 
 interface MimickedXhsShareBlock {
     title: string;
@@ -472,7 +459,7 @@ export async function applyAssistantPostProcessing(
 
     // ─── Step 1: 初次粗洗 ───
     let aiContent = replayedTagPrefix ? `${replayedTagPrefix}${rawAiContent}` : rawAiContent;
-    aiContent = normalizeAiContent(aiContent);
+    aiContent = normalizeAssistantContent(aiContent);
     // 在任何 lead-in/二轮渲染之前先剥掉仿卡片文本，防止它被 chunkText 拆成灰色普通气泡。
     const mimickedXhsShares = extractMimickedXhsShares(aiContent);
     aiContent = mimickedXhsShares.cleanedContent;
@@ -492,29 +479,15 @@ export async function applyAssistantPostProcessing(
     const REPLY_CLEAN_CN = /\[回复\s*[""“][^""”]*?[""”](?:\.{0,3})\]\s*[：:]?\s*/g;
     const QUOTE_CLEAN_NL = /\[[^\[\]\n「」]{0,24}引用了[^\[\]\n「」]{0,24}「[^」\n]*?」[^\[\]\n]{0,24}\]\s*/g;
 
-    // 抽取思考链 (showThinkingChain 开启时): reasoning_content + 内联 <think> 块。
-    const extractThinkingChain = (dataObj: any, reasoningOverride?: string): string | null => {
-        if (!(char as any).showThinkingChain) return null;
-        const lastRaw = dataObj?.choices?.[0]?.message?.content || '';
-        const lastReasoning = (
-            (reasoningOverride && reasoningOverride.trim())
-            || dataObj?.choices?.[0]?.message?.reasoning_content
-            || ''
-        ).trim();
-        const thinkBlocks: string[] = [];
-        const thinkPat = /<(think|thinking|thought)>([\s\S]*?)<\/\1>/gi;
-        let tm: RegExpExecArray | null;
-        while ((tm = thinkPat.exec(lastRaw)) !== null) {
-            const t = tm[2].trim();
-            if (t) thinkBlocks.push(t);
-        }
-        if (!/<\/(?:think|thinking|thought)>/i.test(lastRaw)) {
-            const openOnly = lastRaw.match(/<(?:think|thinking|thought)>([\s\S]*$)/i);
-            if (openOnly && openOnly[1].trim()) thinkBlocks.push(openOnly[1].trim());
-        }
-        const chain = [lastReasoning, ...thinkBlocks].filter(s => !!s).join('\n\n').trim();
-        return chain || null;
-    };
+    // 思考链纯提取与游戏厅共享；展示和 metadata 落库仍由主聊天负责。
+    const extractThinkingChain = (dataObj: any, reasoningOverride?: string): string | null =>
+        extractAssistantThinking({
+            rawContent: dataObj?.choices?.[0]?.message?.content || '',
+            reasoningContent: (reasoningOverride && reasoningOverride.trim())
+                || dataObj?.choices?.[0]?.message?.reasoning_content
+                || '',
+            enabled: !!(char as any).showThinkingChain,
+        }) || null;
 
     // 把一段文本 (parseAndExecuteActions / HTML 之外的部分) 渲染成气泡并落库 —— 双语 / 表情 / 引用 / 分段
     // 与原 inline 末尾逻辑一致。抽出来是为了让"执行功能前的本轮正文 A"能在二轮前先展示, 二轮结果 B 复用同一套。
@@ -632,57 +605,45 @@ export async function applyAssistantPostProcessing(
             const textAfter = content.slice(lastIndex).trim();
             if (textAfter) await renderPlainSegment(textAfter.replace(/<\/?翻译>|<\/?原文>|<\/?译文>/g, '').trim());
         } else {
-            // ─── normal path (splitResponse → chunkText → per-chunk save) ───
-            const parts = ChatParser.splitResponse(content);
-            // 模型常把 [[QUOTE:]] 单独写一行 (后面紧跟换行或 [[SEND_EMOJI:]]), chunkText/splitResponse
-            // 会把它拆成一个"只有标签没有正文"的 chunk — 剥标签后 hasDisplayContent 为 false 不落库,
-            // 解析出的引用目标若不暂存就会随之丢失。挂到下一条真正落库的文字气泡上。
+            // ─── normal path (shared splitResponse → --- → chunkText units, then main-chat quote/save logic) ───
+            const units = splitAssistantDisplayUnits(content);
+            // 模型常把 [[QUOTE:]] 单独写一行 (后面紧跟换行或 [[SEND_EMOJI:]]), 拆分后
+            // 会成为一个“只有标签没有正文”的 unit；引用目标暂存到下一条真正落库的文字气泡。
             let pendingReplyTarget: { id: number, content: string, name: string } | undefined;
-            for (let partIndex = 0; partIndex < parts.length; partIndex++) {
-                const part = parts[partIndex];
-
-                if (part.type === 'emoji') {
-                    const foundEmoji = emojis.find(e => e.name === part.content);
+            for (const unit of units) {
+                if (unit.type === 'emoji') {
+                    const foundEmoji = emojis.find(e => e.name === unit.name);
                     if (foundEmoji) {
                         await typingPause(Math.random() * 500 + 300);
                         await DB.saveMessage({ charId: char.id, role: 'assistant', type: 'emoji', content: foundEmoji.url, metadata: takeMeta(mcdInheritMeta) } as any);
                         setMessages(await DB.getRecentMessagesByCharId(char.id, 200));
                     }
-                } else {
-                    const rawBlocks = part.content.split(/^\s*---\s*$/m).filter(b => b.trim());
-                    const allChunks: string[] = [];
-                    for (const block of rawBlocks) {
-                        allChunks.push(...ChatParser.chunkText(block.trim()));
-                    }
-                    if (allChunks.length === 0 && part.content.trim()) allChunks.push(part.content.trim());
+                    continue;
+                }
 
-                    for (let i = 0; i < allChunks.length; i++) {
-                        let chunk = allChunks[i];
-                        const delay = Math.min(Math.max(chunk.length * 50, 500), 2000);
-                        await typingPause(delay);
+                let chunk = unit.content;
+                const delay = Math.min(Math.max(chunk.length * 50, 500), 2000);
+                await typingPause(delay);
 
-                        let chunkReplyTarget: { id: number, content: string, name: string } | undefined;
-                        const chunkQuoteMatch = chunk.match(QUOTE_RE_DOUBLE) || chunk.match(QUOTE_RE_SINGLE) || chunk.match(REPLY_RE_CN) || chunk.match(QUOTE_RE_NL);
-                        if (chunkQuoteMatch) {
-                            chunkReplyTarget = resolveQuoteTarget(chunkQuoteMatch[1]);
-                            chunk = chunk.replace(QUOTE_CLEAN_DOUBLE, '').replace(QUOTE_CLEAN_SINGLE, '').replace(REPLY_CLEAN_CN, '').replace(QUOTE_CLEAN_NL, '').trim();
-                        }
+                let chunkReplyTarget: { id: number, content: string, name: string } | undefined;
+                const chunkQuoteMatch = chunk.match(QUOTE_RE_DOUBLE) || chunk.match(QUOTE_RE_SINGLE) || chunk.match(REPLY_RE_CN) || chunk.match(QUOTE_RE_NL);
+                if (chunkQuoteMatch) {
+                    chunkReplyTarget = resolveQuoteTarget(chunkQuoteMatch[1]);
+                    chunk = chunk.replace(QUOTE_CLEAN_DOUBLE, '').replace(QUOTE_CLEAN_SINGLE, '').replace(REPLY_CLEAN_CN, '').replace(QUOTE_CLEAN_NL, '').trim();
+                }
 
-                        const replyData = chunkReplyTarget ?? pendingReplyTarget;
-
-                        let chunkSaved = false;
-                        if (ChatParser.hasDisplayContent(chunk)) {
-                            const cleanChunk = ChatParser.sanitize(chunk);
-                            if (cleanChunk) {
-                                await DB.saveMessage({ charId: char.id, role: 'assistant', type: 'text', content: cleanChunk, replyTo: replyData, metadata: takeMeta(mcdInheritMeta) } as any);
-                                setMessages(await DB.getRecentMessagesByCharId(char.id, 200));
-                                globalMsgIndex++;
-                                chunkSaved = true;
-                            }
-                        }
-                        pendingReplyTarget = chunkSaved ? undefined : replyData;
+                const replyData = chunkReplyTarget ?? pendingReplyTarget;
+                let chunkSaved = false;
+                if (ChatParser.hasDisplayContent(chunk)) {
+                    const cleanChunk = ChatParser.sanitize(chunk);
+                    if (cleanChunk) {
+                        await DB.saveMessage({ charId: char.id, role: 'assistant', type: 'text', content: cleanChunk, replyTo: replyData, metadata: takeMeta(mcdInheritMeta) } as any);
+                        setMessages(await DB.getRecentMessagesByCharId(char.id, 200));
+                        globalMsgIndex++;
+                        chunkSaved = true;
                     }
                 }
+                pendingReplyTarget = chunkSaved ? undefined : replyData;
             }
         }
     };
@@ -746,7 +707,7 @@ export async function applyAssistantPostProcessing(
                 }, 2, 0, { ...apiLogMeta, purpose: '调阅记忆' });
                 updateTokenUsage(data, historyMsgCount, 'recall');
                 aiContent = data.choices?.[0]?.message?.content || '';
-                aiContent = normalizeAiContent(aiContent);
+                aiContent = normalizeAssistantContent(aiContent);
                 addToast(`已调用 ${year}-${month} 详细记忆`, 'info');
             } catch (recallErr: any) {
                 console.error('Recall API failed:', recallErr.message);
@@ -786,7 +747,7 @@ export async function applyAssistantPostProcessing(
                 updateTokenUsage(data, historyMsgCount, 'search');
                 aiContent = data.choices?.[0]?.message?.content || '';
                 console.log('🔍 [Search] AI基于搜索结果生成的新回复:', aiContent.slice(0, 100) + '...');
-                aiContent = normalizeAiContent(aiContent);
+                aiContent = normalizeAssistantContent(aiContent);
                 addToast(`🔍 搜索完成: ${searchQuery}`, 'success');
             } else if (sr.reason === 'no_api_key') {
                 console.log('🔍 [Search] 检测到搜索意图但未配置API Key');
@@ -912,7 +873,7 @@ export async function applyAssistantPostProcessing(
             }, 2, 0, { ...apiLogMeta, purpose: '写日记' });
             updateTokenUsage(data, historyMsgCount, 'diary-fallback');
             aiContent = data.choices?.[0]?.message?.content || '';
-            aiContent = normalizeAiContent(aiContent);
+            aiContent = normalizeAssistantContent(aiContent);
         } catch (fallbackErr) {
             console.error('📖 [Diary Fallback] 也失败了:', fallbackErr);
             aiContent = aiContent.replace(tagPattern, '').trim();
@@ -965,7 +926,7 @@ export async function applyAssistantPostProcessing(
                         }, 2, 0, { ...apiLogMeta, purpose: '翻阅日记' });
                         updateTokenUsage(data, historyMsgCount, 'read-diary-notion');
                         aiContent = data.choices?.[0]?.message?.content || '';
-                        aiContent = normalizeAiContent(aiContent);
+                        aiContent = normalizeAssistantContent(aiContent);
                         addToast(`📖 ${char.name}翻阅了${targetDate}的日记`, 'info');
                     } else if (rdr.reason === 'empty_content') {
                         console.log('📖 [ReadDiary] 日记内容为空');
@@ -987,7 +948,7 @@ export async function applyAssistantPostProcessing(
                         }, 2, 0, { ...apiLogMeta, purpose: '翻阅日记' });
                         updateTokenUsage(data, historyMsgCount, 'no-diary-notion');
                         aiContent = data.choices?.[0]?.message?.content || '';
-                        aiContent = normalizeAiContent(aiContent);
+                        aiContent = normalizeAssistantContent(aiContent);
                     }
                 } catch (e) {
                     console.error('📖 [ReadDiary] 读取异常:', e);
@@ -1122,7 +1083,7 @@ export async function applyAssistantPostProcessing(
                         }, 2, 0, { ...apiLogMeta, purpose: '翻阅日记' });
                         updateTokenUsage(data, historyMsgCount, 'read-diary-feishu');
                         aiContent = data.choices?.[0]?.message?.content || '';
-                        aiContent = normalizeAiContent(aiContent);
+                        aiContent = normalizeAssistantContent(aiContent);
                         addToast(`📖 ${char.name}翻阅了${targetDate}的飞书日记`, 'info');
                     } else if (fsrdr.reason === 'empty_content') {
                         console.log('📖 [Feishu ReadDiary] 日记内容为空');
@@ -1143,7 +1104,7 @@ export async function applyAssistantPostProcessing(
                         }, 2, 0, { ...apiLogMeta, purpose: '翻阅日记' });
                         updateTokenUsage(data, historyMsgCount, 'no-diary-feishu');
                         aiContent = data.choices?.[0]?.message?.content || '';
-                        aiContent = normalizeAiContent(aiContent);
+                        aiContent = normalizeAssistantContent(aiContent);
                     }
                 } catch (e) {
                     console.error('📖 [Feishu ReadDiary] 读取异常:', e);
@@ -1193,7 +1154,7 @@ export async function applyAssistantPostProcessing(
                     }, 2, 0, { ...apiLogMeta, purpose: '翻阅笔记' });
                     updateTokenUsage(data, historyMsgCount, 'read-note');
                     aiContent = data.choices?.[0]?.message?.content || '';
-                    aiContent = normalizeAiContent(aiContent);
+                    aiContent = normalizeAssistantContent(aiContent);
                     addToast(`📝 ${char.name}翻阅了关于"${keyword}"的笔记`, 'info');
                 } else if (rnr.reason === 'empty_content') {
                     console.log('📝 [ReadNote] 笔记内容为空');
@@ -1215,7 +1176,7 @@ export async function applyAssistantPostProcessing(
                     }, 2, 0, { ...apiLogMeta, purpose: '翻阅笔记' });
                     updateTokenUsage(data, historyMsgCount, 'read-note-empty');
                     aiContent = data.choices?.[0]?.message?.content || '';
-                    aiContent = normalizeAiContent(aiContent);
+                    aiContent = normalizeAssistantContent(aiContent);
                 }
             } catch (e) {
                 console.error('📝 [ReadNote] 读取异常:', e);
@@ -1257,7 +1218,7 @@ export async function applyAssistantPostProcessing(
                 }, 2, 0, { ...apiLogMeta, purpose: '小红书搜索' });
                 updateTokenUsage(data, historyMsgCount, 'xhs-search');
                 aiContent = data.choices?.[0]?.message?.content || '';
-                aiContent = normalizeAiContent(aiContent);
+                aiContent = normalizeAssistantContent(aiContent);
                 await DB.saveMessage({
                     charId: char.id,
                     role: 'system',
@@ -1303,7 +1264,7 @@ export async function applyAssistantPostProcessing(
                 }, 2, 0, { ...apiLogMeta, purpose: '小红书浏览' });
                 updateTokenUsage(data, historyMsgCount, 'xhs-browse');
                 aiContent = data.choices?.[0]?.message?.content || '';
-                aiContent = normalizeAiContent(aiContent);
+                aiContent = normalizeAssistantContent(aiContent);
                 addToast(`📕 ${char.name}刷了会儿小红书`, 'info');
             } else {
                 // xbr.reason === 'no_results' (not_enabled 已被外层 if 排除)
@@ -1595,7 +1556,7 @@ export async function applyAssistantPostProcessing(
                 }, 2, 0, { ...apiLogMeta, purpose: '小红书主页' });
                 updateTokenUsage(data, historyMsgCount, 'xhs-profile');
                 aiContent = data.choices?.[0]?.message?.content || '';
-                aiContent = normalizeAiContent(aiContent);
+                aiContent = normalizeAssistantContent(aiContent);
                 addToast(`📕 ${char.name}看了看自己的小红书`, 'info');
             } else if (xmpr.reason === 'no_identity') {
                 console.warn('📕 [XHS] 无昵称也无userId，无法查看主页。请在设置中填写。');
@@ -1613,7 +1574,7 @@ export async function applyAssistantPostProcessing(
                 }, 2, 0, { ...apiLogMeta, purpose: '小红书主页' });
                 updateTokenUsage(data, historyMsgCount, 'xhs-profile');
                 aiContent = data.choices?.[0]?.message?.content || '';
-                aiContent = normalizeAiContent(aiContent);
+                aiContent = normalizeAssistantContent(aiContent);
                 addToast(`📕 ${char.name}看了看自己的小红书`, 'info');
             }
         } catch (e) {
@@ -1662,7 +1623,7 @@ export async function applyAssistantPostProcessing(
             }, 2, 0, { ...apiLogMeta, purpose: '小红书详情' });
             updateTokenUsage(data, historyMsgCount, 'xhs-detail');
             aiContent = data.choices?.[0]?.message?.content || '';
-            aiContent = normalizeAiContent(aiContent);
+            aiContent = normalizeAssistantContent(aiContent);
             addToast(`📕 ${char.name}${detailFailed ? '尝试查看一条笔记（加载失败）' : '看了一条笔记的详情'}`, 'info');
             }  // end of else (xdr.ok)
         } catch (e) {
