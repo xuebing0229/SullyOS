@@ -901,8 +901,9 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
   const schedulerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const interceptorsInitialized = useRef(false);
   
-  // Back Handler Ref
-  const backHandlerRef = useRef<(() => boolean) | null>(null);
+  // Back handlers form a stack so temporary global overlays can sit above
+  // the active app and reveal its original handler again when dismissed.
+  const backHandlerStackRef = useRef<Array<() => boolean>>([]);
 
   // Call Suspend
   const [suspendedCall, setSuspendedCall] = useState<{ charId: string; charName: string; charAvatar?: string; startedAt: number; bubbles?: any[]; sessionId?: string; elapsedSeconds?: number; voiceLang?: string } | null>(null);
@@ -4434,18 +4435,18 @@ recordApiCall({ requestId: (config as any)?.__sullyApiCallId, url: urlStr, body:
 
   // --- Back Handler Logic ---
   const registerBackHandler = useCallback((handler: () => boolean) => {
-      backHandlerRef.current = handler;
+      const stack = backHandlerStackRef.current;
+      stack.push(handler);
       return () => {
-          if (backHandlerRef.current === handler) {
-              backHandlerRef.current = null;
-          }
+          const index = stack.lastIndexOf(handler);
+          if (index >= 0) stack.splice(index, 1);
       };
   }, []);
 
   const handleBack = useCallback(() => {
-      if (backHandlerRef.current) {
-          const handled = backHandlerRef.current();
-          if (handled) return;
+      const stack = backHandlerStackRef.current;
+      for (let index = stack.length - 1; index >= 0; index -= 1) {
+          if (stack[index]()) return;
       }
       // Default: Close App
       if (activeApp !== AppID.Launcher) {

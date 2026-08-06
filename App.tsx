@@ -1,5 +1,6 @@
 
 import GameHallAutoplayHost from './components/GameHallAutoplayHost';
+import ChatImageViewerHost from './components/media/ChatImageViewerHost';
 import React from 'react';
 import { OSProvider } from './context/OSContext';
 import { MusicProvider } from './context/MusicContext';
@@ -38,8 +39,9 @@ const App: React.FC = () => {
           <OSProvider>
             <MusicProvider>
               <PhoneShell />
-          <GameHallAutoplayHost />
+              <GameHallAutoplayHost />
             </MusicProvider>
+            <ChatImageViewerHost />
           </OSProvider>
         </div>
       </div>

@@ -14,6 +14,7 @@ import LuckinCard from './LuckinCard';
 import LuckinCheckoutCard from './LuckinCheckoutCard';
 import GameHallHandoffCard from './GameHallHandoffCard';
 import BlobImage from '../media/BlobImage';
+import { openChatImageViewer } from '../../utils/chatImageViewer';
 import TokenImg from '../os/TokenImg';
 
 // 思考链卡片支持的 12 种风格预设 — 同时被 MessageItem 与 ThinkingChainSettingsModal 复用
@@ -780,7 +781,24 @@ const ForwardCard: React.FC<{
                                     <div className={`max-w-[80%] ${isUser ? 'items-end' : 'items-start'} flex flex-col`}>
                                         <div className="text-[10px] text-slate-400 mb-1 px-1">{senderName} {msg.timestamp ? formatTime(msg.timestamp) : ''}</div>
                                         <div className={`px-4 py-2.5 rounded-2xl text-sm leading-relaxed whitespace-pre-wrap break-all ${isUser ? 'bg-primary text-white rounded-br-sm' : 'bg-white text-slate-700 rounded-bl-sm shadow-sm border border-slate-100'}`}>
-                                            {msg.type === 'image' ? <BlobImage src={msg.content} alt="" className="max-w-[200px] rounded-xl" fallback={<span className="italic opacity-60">[图片已丢失]</span>} /> :
+                                            {msg.type === 'image' ? (
+                                                <button
+                                                    type="button"
+                                                    aria-label="查看大图"
+                                                    className="block cursor-zoom-in"
+                                                    onClick={(event) => {
+                                                        event.stopPropagation();
+                                                        openChatImageViewer({
+                                                            src: msg.content,
+                                                            alt: '转发聊天图片',
+                                                            messageId: msg.id,
+                                                            charId: msg.charId,
+                                                        });
+                                                    }}
+                                                >
+                                                    <BlobImage src={msg.content} alt="" className="max-w-[200px] rounded-xl" fallback={<span className="italic opacity-60">[图片已丢失]</span>} />
+                                                </button>
+                                            ) :
                                              msg.type === 'emoji' ? (msg.content ? <TokenImg value={msg.content} className="max-w-[100px]" /> : <span className="italic opacity-60">[表情已丢失]</span>) :
                                              msg.content}
                                         </div>
@@ -1478,6 +1496,7 @@ const MessageItem = React.memo(({
     const activePointerType = useRef<string>('');
     const replyGestureActiveRef = useRef(false);
     const replyReadyRef = useRef(false);
+    const suppressNextClickRef = useRef(false);
 
     const styleConfig = isUser ? activeTheme.user : activeTheme.ai;
     const [showVoiceText, setShowVoiceText] = useState(false);
@@ -1503,6 +1522,7 @@ const MessageItem = React.memo(({
         if (selectionMode || e.button !== 0) return;
         activePointerId.current = e.pointerId;
         activePointerType.current = e.pointerType;
+        suppressNextClickRef.current = false;
         startPos.current = { x: e.clientX, y: e.clientY };
         document.getSelection()?.removeAllRanges();
 
@@ -1512,6 +1532,7 @@ const MessageItem = React.memo(({
             activePointerId.current = null;
             activePointerType.current = '';
             resetReplyGesture();
+            suppressNextClickRef.current = true;
             onLongPress(m);
         }, 600);
     };
@@ -1589,6 +1610,7 @@ const MessageItem = React.memo(({
             activePointerId.current = null;
             activePointerType.current = '';
             resetReplyGesture();
+            suppressNextClickRef.current = true;
             onLongPress(m);
         },
         onDragStart: (e: React.DragEvent) => e.preventDefault(),
@@ -3301,14 +3323,37 @@ const MessageItem = React.memo(({
 
     if (m.type === 'image') {
         return commonLayout(
-            <div className="relative group">
+            <button
+                type="button"
+                className="relative group block max-w-full cursor-zoom-in text-left"
+                aria-label="查看大图"
+                onClick={(event) => {
+                    event.stopPropagation();
+                    if (selectionMode) {
+                        event.preventDefault();
+                        onToggleSelect(m.id);
+                        return;
+                    }
+                    if (suppressNextClickRef.current) {
+                        suppressNextClickRef.current = false;
+                        event.preventDefault();
+                        return;
+                    }
+                    openChatImageViewer({
+                        src: m.content,
+                        alt: '聊天图片',
+                        messageId: m.id,
+                        charId: m.charId,
+                    });
+                }}
+            >
                 <BlobImage
                     src={m.content}
                     className="max-w-[200px] max-h-[300px] rounded-2xl object-contain"
                     alt="图片" loading="lazy" decoding="async" draggable={false}
                     fallback={<div className="px-4 py-6 rounded-2xl bg-slate-100 text-slate-400 text-xs italic text-center min-w-[120px]">[图片已丢失]</div>}
                 />
-            </div>
+            </button>
         );
     }
 
