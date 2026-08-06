@@ -1,10 +1,11 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { APIConfig, ApiPreset } from '../types';
 import {
     ApiRouteError,
     classifyApiError,
     createDefaultApiFailoverGroup,
+    clearApiFailoverRouteCooldowns,
     resetApiFailoverRuntime,
     resolveApiExecutionPlanWithData,
     runApiFailover,
@@ -55,6 +56,39 @@ function plan(overrides: Record<string, unknown> = {}): ApiExecutionPlan {
 
 beforeEach(() => {
     resetApiFailoverRuntime();
+    clearApiFailoverRouteCooldowns();
+});
+
+describe('fixed failover policy', () => {
+    it('normalizes legacy user-controlled values to one attempt and three minutes', () => {
+        const group = createDefaultApiFailoverGroup('chat');
+        const normalized = resolveApiExecutionPlanWithData(
+            'chat',
+            api('https://a.example/v1'),
+            [{
+                ...group,
+                enabled: true,
+                members: [
+                    { presetId: 'a', enabled: true },
+                    { presetId: 'b', enabled: true },
+                ],
+                policy: {
+                    ...group.policy,
+                    routeMaxAttempts: 3,
+                    consecutiveFailureThreshold: 10,
+                    cooldownMs: 5000,
+                },
+            }],
+            presets,
+            true,
+        );
+
+        expect(normalized.group?.policy).toMatchObject({
+            routeMaxAttempts: 1,
+            consecutiveFailureThreshold: 1,
+            cooldownMs: 180_000,
+        });
+    });
 });
 
 describe('error classification', () => {
@@ -176,10 +210,14 @@ describe('plan resolution', () => {
 });
 
 describe('failover execution', () => {
-    it('retries primary twice, then succeeds on secondary', async () => {
+    it('calls a failed route once and immediately switches to backup', async () => {
         const calls: string[] = [];
         const result = await runApiFailover({
-            plan: plan({ routeMaxAttempts: 2 }),
+            plan: plan({
+                routeMaxAttempts: 3,
+                consecutiveFailureThreshold: 10,
+                cooldownMs: 5000,
+            }),
             execute: async route => {
                 calls.push(route.presetId);
                 if (route.presetId === 'a') {
@@ -189,7 +227,7 @@ describe('failover execution', () => {
             },
         });
 
-        expect(calls).toEqual(['a', 'a', 'b']);
+        expect(calls).toEqual(['a', 'b']);
         expect(result.value).toBe('ok');
         expect(result.route.presetId).toBe('b');
     });
@@ -222,6 +260,16 @@ describe('failover execution', () => {
         })).rejects.toBeInstanceOf(ApiRouteError);
 
         expect(calls).toEqual(['a']);
+
+        const later: string[] = [];
+        await runApiFailover({
+            plan: plan(),
+            execute: async route => {
+                later.push(route.presetId);
+                return 'ok';
+            },
+        });
+        expect(later).toEqual(['a']);
     });
 
     it('does not fail over after stream started', async () => {
@@ -236,40 +284,66 @@ describe('failover execution', () => {
         })).rejects.toBeInstanceOf(ApiRouteError);
 
         expect(calls).toEqual(['a']);
+
+        const later: string[] = [];
+        await runApiFailover({
+            plan: plan(),
+            execute: async route => {
+                later.push(route.presetId);
+                return 'ok';
+            },
+        });
+        expect(later).toEqual(['a']);
     });
 
-    it('opens the primary circuit and skips it on a later request', async () => {
-        const breakerPlan = plan({
-            routeMaxAttempts: 1,
-            consecutiveFailureThreshold: 2,
-            cooldownMs: 60_000,
+    it('skips the failed route for three minutes', async () => {
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date('2026-08-06T12:00:00Z'));
+        const p = plan();
+
+        const firstCalls: string[] = [];
+        await runApiFailover({
+            plan: p,
+            execute: async route => {
+                firstCalls.push(route.presetId);
+                if (route.presetId === 'a') {
+                    throw new TypeError('Failed to fetch');
+                }
+                return 'backup';
+            },
         });
-        const calls: string[] = [];
+        expect(firstCalls).toEqual(['a', 'b']);
 
-        const execute = async (route: any) => {
-            calls.push(route.presetId);
-            if (route.presetId === 'a') {
-                throw new TypeError('Failed to fetch');
-            }
-            return 'backup';
-        };
-
-        await runApiFailover({ plan: breakerPlan, execute });
-        await runApiFailover({ plan: breakerPlan, execute });
-        calls.length = 0;
-
-        const third = await runApiFailover({
-            plan: breakerPlan,
-            execute,
+        const secondCalls: string[] = [];
+        const second = await runApiFailover({
+            plan: p,
+            execute: async route => {
+                secondCalls.push(route.presetId);
+                return 'backup';
+            },
         });
+        expect(secondCalls).toEqual(['b']);
+        expect(second.attempts).toEqual(expect.arrayContaining([
+            expect.objectContaining({
+                presetId: 'a',
+                phase: 'skipped',
+                classification: expect.objectContaining({
+                    kind: 'route_cooldown',
+                }),
+            }),
+        ]));
 
-        expect(calls).toEqual(['b']);
-        expect(third.route.presetId).toBe('b');
-        expect(third.attempts.some(item =>
-            item.presetId === 'a'
-            && item.phase === 'skipped'
-            && item.classification?.kind === 'circuit_open'
-        )).toBe(true);
+        vi.advanceTimersByTime(180_000);
+        const thirdCalls: string[] = [];
+        await runApiFailover({
+            plan: p,
+            execute: async route => {
+                thirdCalls.push(route.presetId);
+                return 'primary-back';
+            },
+        });
+        expect(thirdCalls).toEqual(['a']);
+        vi.useRealTimers();
     });
 });
 

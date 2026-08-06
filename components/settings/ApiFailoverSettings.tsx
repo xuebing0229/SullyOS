@@ -1,16 +1,22 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 
 import { useOS } from '../../context/OSContext';
 import {
     createDefaultApiFailoverGroup,
     loadApiFailoverGroups,
+    clearApiFailoverRouteCooldowns,
     normalizeApiFailoverGroup,
-    resetApiFailoverRuntime,
     saveApiFailoverGroups,
     type ApiFailoverGroup,
     type ApiFailoverScope,
 } from '../../utils/apiFailover';
 import { analyzeApiFailoverGroup, apiFailoverIssueLabel } from '../../utils/apiFailoverGroupAnalysis';
+import {
+    API_FAILOVER_ROUTE_COOLDOWN_EVENT,
+    formatApiRouteCooldownRemaining,
+    listActiveApiRouteCooldowns,
+    type ApiRouteCooldownEntry,
+} from '../../utils/apiFailoverRouteCooldown';
 
 interface Props {
     addToast: (
@@ -39,6 +45,22 @@ const ApiFailoverSettings: React.FC<Props> = ({ addToast }) => {
     );
     const [advancedScope, setAdvancedScope] =
         useState<ApiFailoverScope | null>(null);
+    const [cooldowns, setCooldowns] = useState<ApiRouteCooldownEntry[]>(
+        () => listActiveApiRouteCooldowns(),
+    );
+
+    useEffect(() => {
+        const refresh = () => setCooldowns(listActiveApiRouteCooldowns());
+        const timer = window.setInterval(refresh, 1000);
+        window.addEventListener(API_FAILOVER_ROUTE_COOLDOWN_EVENT, refresh);
+        return () => {
+            window.clearInterval(timer);
+            window.removeEventListener(
+                API_FAILOVER_ROUTE_COOLDOWN_EVENT,
+                refresh,
+            );
+        };
+    }, []);
 
     const presetMap = useMemo(
         () => new Map(apiPresets.map(preset => [
@@ -169,6 +191,28 @@ const ApiFailoverSettings: React.FC<Props> = ({ addToast }) => {
                 第一版只作用于本地模式的主聊天和情绪评估。
                 Instant Push 仍只使用第一线路；同组最好放同一个模型的不同 API 站。
             </div>
+
+            <div className="rounded-xl border border-sky-100 bg-sky-50 p-2 text-[10px] text-sky-700">
+                每条线路只真实请求一次。出现网络、超时、限流、服务器、鉴权、模型不存在或网关解析故障后，该线路固定冷却 3 分钟，本次立即尝试下一条。
+            </div>
+
+            {cooldowns.length > 0 && (
+                <div className="space-y-1 rounded-xl border border-amber-100 bg-amber-50 p-2">
+                    {cooldowns.map(item => (
+                        <div
+                            key={item.key}
+                            className="flex justify-between gap-2 text-[10px] text-amber-700"
+                        >
+                            <span className="truncate">
+                                {item.presetName} · {item.model}
+                            </span>
+                            <span className="shrink-0">
+                                剩余 {formatApiRouteCooldownRemaining(item.blockedUntil)}
+                            </span>
+                        </div>
+                    ))}
+                </div>
+            )}
 
             {groups.map(group => {
                 const analysis = analyzeApiFailoverGroup(group, apiPresets);
@@ -355,33 +399,7 @@ const ApiFailoverSettings: React.FC<Props> = ({ addToast }) => {
 
                         {advanced && (
                             <div className="grid grid-cols-2 gap-3 rounded-xl bg-slate-50 p-3">
-                                <label className="text-[10px] text-slate-500">
-                                    单线路总尝试
-                                    <input
-                                        type="number"
-                                        min={1}
-                                        max={3}
-                                        value={group.policy.routeMaxAttempts}
-                                        onChange={event =>
-                                            updateGroup(
-                                                group.scope,
-                                                current => ({
-                                                    ...current,
-                                                    policy: {
-                                                        ...current.policy,
-                                                        routeMaxAttempts:
-                                                            Number(
-                                                                event.target.value,
-                                                            ),
-                                                    },
-                                                }),
-                                            )
-                                        }
-                                        className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-2 py-2 text-xs"
-                                    />
-                                </label>
-
-                                <label className="text-[10px] text-slate-500">
+                                <label className="col-span-2 text-[10px] text-slate-500">
                                     单次超时（秒）
                                     <input
                                         type="number"
@@ -409,63 +427,6 @@ const ApiFailoverSettings: React.FC<Props> = ({ addToast }) => {
                                     />
                                 </label>
 
-                                <label className="text-[10px] text-slate-500">
-                                    连续失败熔断
-                                    <input
-                                        type="number"
-                                        min={1}
-                                        max={10}
-                                        value={
-                                            group.policy
-                                                .consecutiveFailureThreshold
-                                        }
-                                        onChange={event =>
-                                            updateGroup(
-                                                group.scope,
-                                                current => ({
-                                                    ...current,
-                                                    policy: {
-                                                        ...current.policy,
-                                                        consecutiveFailureThreshold:
-                                                            Number(
-                                                                event.target.value,
-                                                            ),
-                                                    },
-                                                }),
-                                            )
-                                        }
-                                        className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-2 py-2 text-xs"
-                                    />
-                                </label>
-
-                                <label className="text-[10px] text-slate-500">
-                                    冷却（秒）
-                                    <input
-                                        type="number"
-                                        min={5}
-                                        max={1800}
-                                        value={Math.round(
-                                            group.policy.cooldownMs / 1000,
-                                        )}
-                                        onChange={event =>
-                                            updateGroup(
-                                                group.scope,
-                                                current => ({
-                                                    ...current,
-                                                    policy: {
-                                                        ...current.policy,
-                                                        cooldownMs:
-                                                            Number(
-                                                                event.target.value,
-                                                            ) * 1000,
-                                                    },
-                                                }),
-                                            )
-                                        }
-                                        className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-2 py-2 text-xs"
-                                    />
-                                </label>
-
                                 <label className="col-span-2 flex items-center justify-between gap-3 text-[10px] text-slate-500">
                                     <span>
                                         只允许同模型家族
@@ -475,9 +436,7 @@ const ApiFailoverSettings: React.FC<Props> = ({ addToast }) => {
                                     </span>
                                     <input
                                         type="checkbox"
-                                        checked={
-                                            group.policy.strictSameModel
-                                        }
+                                        checked={group.policy.strictSameModel}
                                         onChange={event =>
                                             updateGroup(
                                                 group.scope,
@@ -502,8 +461,9 @@ const ApiFailoverSettings: React.FC<Props> = ({ addToast }) => {
             <button
                 type="button"
                 onClick={() => {
-                    resetApiFailoverRuntime();
-                    addToast('已清除线路冷却状态', 'success');
+                    clearApiFailoverRouteCooldowns();
+                    setCooldowns([]);
+                    addToast('已清除所有线路的三分钟冷却状态', 'success');
                 }}
                 className="w-full rounded-xl bg-slate-100 py-2.5 text-[11px] font-bold text-slate-600"
             >

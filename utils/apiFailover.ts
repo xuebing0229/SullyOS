@@ -1,10 +1,8 @@
 import {
     BrokenCircuitError,
     ConsecutiveBreaker,
-    ExponentialBackoff,
     circuitBreaker,
     handleWhen,
-    retry,
 } from 'cockatiel';
 
 import type { APIConfig, ApiPreset } from '../types';
@@ -12,6 +10,14 @@ import { analyzeApiFailoverGroup } from './apiFailoverGroupAnalysis';
 import { findApiPresetForConfig } from './apiPresetRouteIdentity';
 import type { ApiCallMeta } from './apiCallLog';
 import { safeFetchJson, type StreamHooks } from './safeApi';
+import {
+    API_FAILOVER_ROUTE_FAILURE_COOLDOWN_MS,
+    clearAllApiRouteCooldowns,
+    clearApiRouteCooldown,
+    formatApiRouteCooldownRemaining,
+    getApiRouteCooldown,
+    markApiRouteCooldown,
+} from './apiFailoverRouteCooldown';
 
 export const API_FAILOVER_STORAGE_KEY = 'os_api_failover_groups_v1';
 const API_PRESETS_STORAGE_KEY = 'os_api_presets';
@@ -76,6 +82,7 @@ export type ApiFailureKind =
     | 'safety'
     | 'gateway_parse'
     | 'circuit_open'
+    | 'route_cooldown'
     | 'unknown';
 
 export interface ClassifiedApiError {
@@ -85,6 +92,8 @@ export interface ClassifiedApiError {
     retrySameRoute: boolean;
     failoverEligible: boolean;
     circuitFailure: boolean;
+    cooldownUntil?: number;
+    remainingMs?: number;
 }
 
 export interface ApiFailoverAttempt {
@@ -129,10 +138,10 @@ export interface RunApiFailoverOptions<T> {
 }
 
 export const DEFAULT_API_FAILOVER_POLICY: ApiFailoverPolicy = {
-    routeMaxAttempts: 2,
+    routeMaxAttempts: 1,
     timeoutMs: 240_000,
-    consecutiveFailureThreshold: 2,
-    cooldownMs: 60_000,
+    consecutiveFailureThreshold: 1,
+    cooldownMs: API_FAILOVER_ROUTE_FAILURE_COOLDOWN_MS,
     strictSameModel: true,
 };
 
@@ -186,30 +195,15 @@ export function normalizeApiFailoverGroup(
         enabled: Boolean(input?.enabled),
         members,
         policy: {
-            routeMaxAttempts: finiteInt(
-                input?.policy?.routeMaxAttempts,
-                DEFAULT_API_FAILOVER_POLICY.routeMaxAttempts,
-                1,
-                3,
-            ),
+            routeMaxAttempts: 1,
             timeoutMs: finiteInt(
                 input?.policy?.timeoutMs,
                 DEFAULT_API_FAILOVER_POLICY.timeoutMs,
                 30_000,
                 600_000,
             ),
-            consecutiveFailureThreshold: finiteInt(
-                input?.policy?.consecutiveFailureThreshold,
-                DEFAULT_API_FAILOVER_POLICY.consecutiveFailureThreshold,
-                1,
-                10,
-            ),
-            cooldownMs: finiteInt(
-                input?.policy?.cooldownMs,
-                DEFAULT_API_FAILOVER_POLICY.cooldownMs,
-                5_000,
-                30 * 60_000,
-            ),
+            consecutiveFailureThreshold: 1,
+            cooldownMs: API_FAILOVER_ROUTE_FAILURE_COOLDOWN_MS,
             strictSameModel:
                 input?.policy?.strictSameModel
                 ?? DEFAULT_API_FAILOVER_POLICY.strictSameModel,
@@ -594,9 +588,11 @@ export class ApiFailoverExhaustedError extends Error {
                 item.phase === 'failure'
                 || item.phase === 'skipped')
             .map(item => {
-                const suffix = item.classification?.status
-                    ? `HTTP ${item.classification.status}`
-                    : item.classification?.kind || '失败';
+                const suffix = item.classification?.kind === 'route_cooldown'
+                    ? item.classification.message || '线路冷却中'
+                    : item.classification?.status
+                        ? `HTTP ${item.classification.status}`
+                        : item.classification?.kind || '失败';
                 return `${item.presetName}：${suffix}`;
             });
 
@@ -659,6 +655,11 @@ export function resetApiFailoverRuntime(): void {
     breakerCache.clear();
 }
 
+export function clearApiFailoverRouteCooldowns(): void {
+    breakerCache.clear();
+    clearAllApiRouteCooldowns();
+}
+
 function createRequestId(): string {
     try {
         return crypto.randomUUID();
@@ -695,135 +696,108 @@ export async function runApiFailover<T>(
     const requestId = createRequestId();
     const attempts: ApiFailoverAttempt[] = [];
     const routeCount = options.plan.routes.length;
-    const policy =
-        options.plan.group?.policy
-        || DEFAULT_API_FAILOVER_POLICY;
 
     for (const route of options.plan.routes) {
-        const breaker = getRouteBreaker(options.plan, route);
-        const retryPolicy = retry(
-            handleWhen(
-                (error: unknown) =>
-                    error instanceof ApiRouteError
-                    && error.classification.retrySameRoute,
-            ),
-            {
-                // Cockatiel maxAttempts means retry count, not total calls.
-                maxAttempts: Math.max(0, policy.routeMaxAttempts - 1),
-                backoff: new ExponentialBackoff({
-                    initialDelay: 500,
-                    maxDelay: 2_000,
-                }),
-            },
+        const activeCooldown = getApiRouteCooldown(
+            options.plan.scope,
+            route,
         );
+        if (activeCooldown) {
+            const now = Date.now();
+            emitAttempt(attempts, {
+                requestId,
+                groupId: options.plan.group?.id,
+                groupName: options.plan.group?.name,
+                presetId: route.presetId,
+                presetName: route.presetName,
+                routeIndex: route.routeIndex,
+                routeCount,
+                attempt: 0,
+                phase: 'skipped',
+                startedAt: now,
+                durationMs: 0,
+                classification: {
+                    kind: 'route_cooldown',
+                    message: `线路失败后冷却中，剩余 ${formatApiRouteCooldownRemaining(activeCooldown.blockedUntil, now)}`,
+                    status: activeCooldown.status,
+                    retrySameRoute: false,
+                    failoverEligible: true,
+                    circuitFailure: false,
+                    cooldownUntil: activeCooldown.blockedUntil,
+                    remainingMs: Math.max(
+                        0,
+                        activeCooldown.blockedUntil - now,
+                    ),
+                },
+            }, options.onAttempt);
+            continue;
+        }
+
+        const breaker = getRouteBreaker(options.plan, route);
+        const startedAt = Date.now();
+        const attemptNumber = 1;
+        const signal = options.signal ?? new AbortController().signal;
+        let streamStarted = false;
+
+        emitAttempt(attempts, {
+            requestId,
+            groupId: options.plan.group?.id,
+            groupName: options.plan.group?.name,
+            presetId: route.presetId,
+            presetName: route.presetName,
+            routeIndex: route.routeIndex,
+            routeCount,
+            attempt: attemptNumber,
+            phase: 'start',
+            startedAt,
+        }, options.onAttempt);
 
         try {
-            const value = await retryPolicy.execute(
-                async ({ attempt, signal }) => {
-                    const attemptNumber = Math.max(
-                        1,
-                        Number(attempt) || 1,
-                    );
-                    const startedAt = Date.now();
-                    let streamStarted = false;
-
-                    emitAttempt(attempts, {
-                        requestId,
-                        groupId: options.plan.group?.id,
-                        groupName: options.plan.group?.name,
-                        presetId: route.presetId,
-                        presetName: route.presetName,
-                        routeIndex: route.routeIndex,
-                        routeCount,
-                        attempt: attemptNumber,
-                        phase: 'start',
-                        startedAt,
-                    }, options.onAttempt);
-
+            const value = await breaker.execute(
+                async () => {
                     try {
-                        const result = await breaker.execute(
-                            async () => {
-                                try {
-                                    return await options.execute(route, {
-                                        requestId,
-                                        routeIndex: route.routeIndex,
-                                        routeCount,
-                                        attempt: attemptNumber,
-                                        signal,
-                                        markStreamStarted: () => {
-                                            streamStarted = true;
-                                        },
-                                    });
-                                } catch (error) {
-                                    if (error instanceof ApiRouteError) {
-                                        throw error;
-                                    }
-                                    throw new ApiRouteError(
-                                        route,
-                                        classifyApiError(error, {
-                                            externalSignalAborted:
-                                                Boolean(options.signal?.aborted),
-                                            streamStarted,
-                                        }),
-                                        error,
-                                    );
-                                }
-                            },
-                            signal,
-                        );
-
-                        emitAttempt(attempts, {
+                        return await options.execute(route, {
                             requestId,
-                            groupId: options.plan.group?.id,
-                            groupName: options.plan.group?.name,
-                            presetId: route.presetId,
-                            presetName: route.presetName,
                             routeIndex: route.routeIndex,
                             routeCount,
                             attempt: attemptNumber,
-                            phase: 'success',
-                            startedAt,
-                            durationMs: Date.now() - startedAt,
-                        }, options.onAttempt);
-
-                        return result;
+                            signal,
+                            markStreamStarted: () => {
+                                streamStarted = true;
+                            },
+                        });
                     } catch (error) {
-                        if (error instanceof BrokenCircuitError) {
+                        if (error instanceof ApiRouteError) {
                             throw error;
                         }
-
-                        const wrapped = error instanceof ApiRouteError
-                            ? error
-                            : new ApiRouteError(
-                                route,
-                                classifyApiError(error, {
-                                    externalSignalAborted:
-                                        Boolean(options.signal?.aborted),
-                                    streamStarted,
-                                }),
-                                error,
-                            );
-
-                        emitAttempt(attempts, {
-                            requestId,
-                            groupId: options.plan.group?.id,
-                            groupName: options.plan.group?.name,
-                            presetId: route.presetId,
-                            presetName: route.presetName,
-                            routeIndex: route.routeIndex,
-                            routeCount,
-                            attempt: attemptNumber,
-                            phase: 'failure',
-                            startedAt,
-                            durationMs: Date.now() - startedAt,
-                            classification: wrapped.classification,
-                        }, options.onAttempt);
-
-                        throw wrapped;
+                        throw new ApiRouteError(
+                            route,
+                            classifyApiError(error, {
+                                externalSignalAborted:
+                                    Boolean(options.signal?.aborted),
+                                streamStarted,
+                            }),
+                            error,
+                        );
                     }
                 },
-                options.signal,
+                signal,
             );
+
+            clearApiRouteCooldown(options.plan.scope, route);
+            emitAttempt(attempts, {
+                requestId,
+                groupId: options.plan.group?.id,
+                groupName: options.plan.group?.name,
+                presetId: route.presetId,
+                presetName: route.presetName,
+                routeIndex: route.routeIndex,
+                routeCount,
+                attempt: attemptNumber,
+                phase: 'success',
+                startedAt,
+                durationMs: Date.now() - startedAt,
+            }, options.onAttempt);
 
             return {
                 value,
@@ -857,14 +831,45 @@ export async function runApiFailover<T>(
                 continue;
             }
 
-            if (
-                error instanceof ApiRouteError
-                && error.classification.failoverEligible
-            ) {
-                continue;
+            const wrapped = error instanceof ApiRouteError
+                ? error
+                : new ApiRouteError(
+                    route,
+                    classifyApiError(error, {
+                        externalSignalAborted:
+                            Boolean(options.signal?.aborted),
+                        streamStarted,
+                    }),
+                    error,
+                );
+
+            if (wrapped.classification.circuitFailure) {
+                markApiRouteCooldown(
+                    options.plan.scope,
+                    route,
+                    wrapped.classification,
+                );
             }
 
-            throw error;
+            emitAttempt(attempts, {
+                requestId,
+                groupId: options.plan.group?.id,
+                groupName: options.plan.group?.name,
+                presetId: route.presetId,
+                presetName: route.presetName,
+                routeIndex: route.routeIndex,
+                routeCount,
+                attempt: attemptNumber,
+                phase: 'failure',
+                startedAt,
+                durationMs: Date.now() - startedAt,
+                classification: wrapped.classification,
+            }, options.onAttempt);
+
+            if (wrapped.classification.failoverEligible) {
+                continue;
+            }
+            throw wrapped;
         }
     }
 
