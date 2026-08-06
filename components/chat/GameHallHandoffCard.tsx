@@ -7,7 +7,7 @@ const GameHallHandoffCard: React.FC<{ message: Message; charName: string }> = ({
   const accounts = Array.isArray(meta.accountRefs) ? meta.accountRefs : [];
   const time = new Date(message.timestamp).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
   return (
-    <div className="w-72 overflow-hidden rounded-2xl border border-violet-300/35 bg-gradient-to-br from-[#251d4c] via-[#17152f] to-[#0e1022] shadow-[0_8px_28px_rgba(61,44,130,0.35)]">
+    <div className="w-64 max-w-full overflow-hidden rounded-2xl border border-violet-300/35 bg-gradient-to-br from-[#251d4c] via-[#17152f] to-[#0e1022] shadow-[0_8px_28px_rgba(61,44,130,0.35)]">
       <div className="flex items-center gap-2 border-b border-white/10 px-3 py-2.5">
         <span className="text-lg">🎮</span>
         <div className="min-w-0 flex-1">
@@ -17,7 +17,7 @@ const GameHallHandoffCard: React.FC<{ message: Message; charName: string }> = ({
         <span className="text-[9px] text-white/35">{time}</span>
       </div>
       <div className="px-3 py-3">
-        <p className="whitespace-pre-wrap text-[12px] leading-relaxed text-violet-50/90">
+        <p className="whitespace-pre-wrap break-words [overflow-wrap:anywhere] text-[12px] leading-relaxed text-violet-50/90">
           {meta.summary || `${charName}从游戏厅回到主对话继续。`}
         </p>
         <div className="mt-2 rounded-xl bg-white/5 px-2.5 py-2 text-[9px] text-violet-100/60">

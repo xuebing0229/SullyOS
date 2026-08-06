@@ -582,6 +582,13 @@ export interface GeneratedImageBundleInput {
     gallery: GalleryImage;
 }
 
+export interface GeneratedImageAssetBundleInput {
+    blobId: string;
+    blob: Blob;
+    createdAt: number;
+    gallery: GalleryImage;
+}
+
 const healMessageHighWaterMarks = (msg: Omit<Message, 'id' | 'timestamp'>, newId: number): void => {
     try {
         const staleKeys = [`mp_lastMsgId_${msg.charId}`];
@@ -1469,6 +1476,18 @@ export const DB = {
               : reject(new Error('generated image transaction completed without message id'));
           tx.onerror = () => reject(tx.error || new Error('generated image transaction failed'));
           tx.onabort = () => reject(tx.error || new Error('generated image transaction aborted'));
+      });
+  },
+
+  saveGeneratedImageAssetBundle: async (input: GeneratedImageAssetBundleInput): Promise<void> => {
+      const db = await openDB();
+      return new Promise((resolve, reject) => {
+          const tx = db.transaction([STORE_BLOB_ASSETS, STORE_GALLERY], 'readwrite');
+          tx.objectStore(STORE_BLOB_ASSETS).put({ id: input.blobId, blob: input.blob, createdAt: input.createdAt });
+          tx.objectStore(STORE_GALLERY).put(input.gallery);
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => reject(tx.error || new Error('generated image asset transaction failed'));
+          tx.onabort = () => reject(tx.error || new Error('generated image asset transaction aborted'));
       });
   },
 
