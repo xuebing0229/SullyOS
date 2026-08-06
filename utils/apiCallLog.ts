@@ -1,5 +1,6 @@
 import type { ApiBillingUsage, ApiCallCostStatus, ApiCallUnpricedReason, ApiPricingSnapshot, ApiPreset } from '../types';
 import { calculateApiCallCost, matchApiPresetForBilling, normalizeApiBillingUsage, snapshotPricing } from './apiPricing';
+import { extractBearerCredential } from './apiPresetRouteIdentity';
 
 /**
  * 全局 API 调用记录（给 设置 → API 调用记录 页面用）。
@@ -32,7 +33,7 @@ export interface ApiCallMeta {
     charName?: string;
     /** 具体用途，如 '聊天回复' / '情绪评估' / '记忆提取'，可空 */
     purpose?: string;
-    /** 调用方明确选择的 API 预设；计费匹配优先使用该 ID。 */
+    /** 本次请求实际使用的预设身份；显式选择、直连与故障转移都填写。 */
     apiPresetId?: string;
     apiPresetName?: string;
     failoverRequestId?: string;
@@ -110,14 +111,75 @@ export interface PromptBlockStat {
 
 const PRESETS_STORAGE_KEY = 'os_api_presets';
 const ACTIVE_PRESET_KEY = 'os_active_api_preset_id';
-export interface ApiBillingCapture { presetId?: string; presetName: string; pricingSnapshot?: ApiPricingSnapshot; missingPresetReason?: 'preset_not_found' | 'preset_ambiguous'; }
-function loadApiPresets(): ApiPreset[] { try { const raw=localStorage.getItem(PRESETS_STORAGE_KEY); const parsed=raw?JSON.parse(raw):[]; return Array.isArray(parsed)?parsed:[]; } catch { return []; } }
-export function captureApiBillingContext(url:string, body:unknown, preferredPresetId?: string): ApiBillingCapture {
- const baseUrl=deriveBaseUrl(url), model=extractModel(body); let activePresetId:string|null=null;
- try { activePresetId=localStorage.getItem(ACTIVE_PRESET_KEY); } catch {}
- const matched=matchApiPresetForBilling(loadApiPresets(),{baseUrl,model,activePresetId:preferredPresetId || activePresetId});
- if(!matched.preset) return {presetName:resolvePresetName(baseUrl,model),missingPresetReason:matched.reason};
- return {presetId:matched.preset.id,presetName:matched.preset.name,pricingSnapshot:snapshotPricing(matched.preset)};
+
+function loadApiPresets(): ApiPreset[] {
+    try {
+        const raw =
+            localStorage.getItem(
+                PRESETS_STORAGE_KEY,
+            );
+        const parsed = raw
+            ? JSON.parse(raw)
+            : [];
+        return Array.isArray(parsed)
+            ? parsed
+            : [];
+    } catch {
+        return [];
+    }
+}
+export interface ApiBillingCapture {
+    presetId?: string;
+    presetName: string;
+    pricingSnapshot?: ApiPricingSnapshot;
+    missingPresetReason?:
+        | 'preset_not_found'
+        | 'preset_ambiguous';
+}
+
+export function captureApiBillingContext(
+    url: string,
+    body: unknown,
+    preferredPresetId?: string,
+    headers?: HeadersInit,
+): ApiBillingCapture {
+    const baseUrl = deriveBaseUrl(url);
+    const model = extractModel(body);
+    let activePresetId: string | null = null;
+
+    try {
+        activePresetId =
+            localStorage.getItem(ACTIVE_PRESET_KEY);
+    } catch {}
+
+    const matched = matchApiPresetForBilling(
+        loadApiPresets(),
+        {
+            baseUrl,
+            model,
+            activePresetId:
+                preferredPresetId
+                || activePresetId,
+            apiKey:
+                extractBearerCredential(headers),
+        },
+    );
+
+    if (!matched.preset) {
+        return {
+            presetName:
+                resolvePresetName(baseUrl, model),
+            missingPresetReason:
+                matched.reason,
+        };
+    }
+
+    return {
+        presetId: matched.preset.id,
+        presetName: matched.preset.name,
+        pricingSnapshot:
+            snapshotPricing(matched.preset),
+    };
 }
 const localDateKey=(timestamp:number):string=>{const d=new Date(timestamp),pad=(v:number)=>String(v).padStart(2,'0');return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;};
 
@@ -510,8 +572,16 @@ export function recordApiCall(input: {
         const entry: ApiCallLogEntry = {
 id: input.requestId || input.entryId || `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
             timestamp: Date.now(),
-            presetId: input.presetId ?? capture.presetId,
-            presetName: input.presetName ?? capture.presetName ?? resolvePresetName(baseUrl, model),
+            presetId:
+                input.presetId
+                ?? capture.presetId
+                ?? meta.apiPresetId
+                ?? meta.failoverPresetId,
+            presetName:
+                input.presetName
+                ?? capture.presetName
+                ?? meta.apiPresetName
+                ?? resolvePresetName(baseUrl, model),
             baseUrl,
             model,
             backendModel,
