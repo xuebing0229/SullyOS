@@ -42,7 +42,7 @@ import {
 
 const baseSession = () => ({ id: 'session-1', charId: 'char-1', mode: 'auto-turn', status: 'active', contextMessageLimit: null, schemaValidationMode: 'off', planRepairAttempts: 0, autoArchiveAccounts: true, createdAt: 1, updatedAt: 1 });
 const pending = (id: string) => ({ id, sessionId: 'session-1', charId: 'char-1', toolIndex: 0, toolName: 'play', args: { move: id }, reason: 'continue', status: 'proposed', createdAt: Date.now(), updatedAt: Date.now() });
-const deps = () => ({ sessionId: 'session-1', connection: { url: 'https://mcp.example', tools: [{ name: 'play' }] }, apiConfig: { baseUrl: 'https://api.example/v1', apiKey: 'k', model: 'm' }, char: { id: 'char-1', name: 'Sully' }, userProfile: { name: 'User' }, groups: [] });
+const deps = () => ({ sessionId: 'session-1', connection: { url: 'https://mcp.example', tools: [{ name: 'play' }] }, resolveApi: () => ({ apiConfig: { baseUrl: 'https://api.example/v1', apiKey: 'k', model: 'm' }, apiIdentity: { source: 'global' } }), char: { id: 'char-1', name: 'Sully' }, userProfile: { name: 'User' }, groups: [] });
 
 beforeEach(() => {
   fakes.session = null; fakes.messages = []; fakes.actions = []; fakes.ids = 0;

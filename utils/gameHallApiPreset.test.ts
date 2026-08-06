@@ -4,81 +4,76 @@ import {
   expect,
   it,
 } from 'vitest';
-import type { APIConfig, ApiPreset } from '../types';
 import {
   DEFAULT_GAME_HALL_API_SETTINGS,
   loadGameHallApiSettings,
-  resolveGameHallApiConfig,
   saveGameHallApiSettings,
 } from './gameHallApiPreset';
 
-const main: APIConfig = {
-  baseUrl: 'https://main.example/v1',
-  apiKey: 'main-key',
-  model: 'main-model',
-};
-
-const preset: ApiPreset = {
-  id: 'p1',
-  name: '游戏专用',
-  config: {
-    baseUrl: 'https://game.example/v1',
-    apiKey: 'game-key',
-    model: 'game-model',
-  },
-};
-
-describe('gameHallApiPreset', () => {
+describe('gameHallApiPreset autoplay settings', () => {
   beforeEach(() => localStorage.clear());
 
-  it('follows current chat API by default', () => {
-    const result = resolveGameHallApiConfig(
-      main,
-      [preset],
+  it('uses unlimited turns, a 1200ms delay, and automatic handoff by default', () => {
+    expect(loadGameHallApiSettings()).toEqual(
       DEFAULT_GAME_HALL_API_SETTINGS,
     );
-    expect(result.config).toBe(main);
-    expect(result.presetId).toBeNull();
   });
 
-  it('uses selected preset without mutating global API', () => {
-    const settings = {
-      ...DEFAULT_GAME_HALL_API_SETTINGS,
-      activePresetId: 'p1',
-    };
-    const result = resolveGameHallApiConfig(
-      main,
-      [preset],
-      settings,
-    );
-    expect(result.config.model).toBe('game-model');
-    expect(main.model).toBe('main-model');
-  });
-
-  it('falls back visibly if preset was deleted', () => {
-    const result = resolveGameHallApiConfig(
-      main,
-      [],
-      {
-        ...DEFAULT_GAME_HALL_API_SETTINGS,
-        activePresetId: 'missing',
-      },
-    );
-    expect(result.config).toBe(main);
-    expect(result.fellBackToDefault).toBe(true);
-  });
-
-  it('preserves null maxTurns and zero delay', () => {
+  it('saves and restores autonomous run settings while preserving zero delay', () => {
     saveGameHallApiSettings({
       version: 1,
-      activePresetId: null,
-      maxTurns: null,
+      maxTurns: 12,
       stepDelayMs: 0,
+      autoHandoffOnFinish: false,
+    });
+
+    expect(loadGameHallApiSettings()).toEqual({
+      version: 1,
+      maxTurns: 12,
+      stepDelayMs: 0,
+      autoHandoffOnFinish: false,
+    });
+  });
+
+  it('normalizes invalid values without reviving the legacy API preset field', () => {
+    localStorage.setItem(
+      'sullyos_game_hall_api_settings_v1',
+      JSON.stringify({
+        version: 1,
+        activePresetId: 'legacy-game-preset',
+        maxTurns: -3,
+        stepDelayMs: -1,
+        autoHandoffOnFinish: true,
+      }),
+    );
+
+    expect(loadGameHallApiSettings()).toEqual({
+      version: 1,
+      maxTurns: null,
+      stepDelayMs: 1200,
       autoHandoffOnFinish: true,
     });
+    expect(loadGameHallApiSettings()).not.toHaveProperty('activePresetId');
+  });
+
+  it('floors positive turn limits and falls back safely for malformed storage', () => {
+    localStorage.setItem(
+      'sullyos_game_hall_api_settings_v1',
+      JSON.stringify({
+        maxTurns: 4.9,
+        stepDelayMs: '250',
+        autoHandoffOnFinish: undefined,
+      }),
+    );
     expect(loadGameHallApiSettings()).toMatchObject({
-      maxTurns: null,
-      stepDelayMs: 0,
+      maxTurns: 4,
+      stepDelayMs: 250,
+      autoHandoffOnFinish: true,
     });
+
+    localStorage.setItem('sullyos_game_hall_api_settings_v1', '{bad json');
+    expect(loadGameHallApiSettings()).toEqual(
+      DEFAULT_GAME_HALL_API_SETTINGS,
+    );
   });
 });

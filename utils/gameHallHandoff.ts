@@ -1,6 +1,7 @@
 import type { APIConfig, CharacterProfile, UserProfile } from '../types';
 import { DB } from './db';
 import { safeResponseJson } from './safeApi';
+import type { GameHallApiIdentity } from './gameHallAiSettings';
 import { processNewMessages } from './memoryPalace/pipeline';
 import type {
   CharacterExternalAccount,
@@ -11,6 +12,16 @@ import type {
 } from './gameHallTypes';
 import { commitGameHallHandoff, gameHallId } from './gameHallStore';
 import { formatGameHallToolResult, getGameHallToolResultPayload } from './gameHallAccount';
+
+type GameHallRequestMeta = {
+  appId: string;
+  appName: string;
+  charId: string;
+  charName: string;
+  purpose: string;
+  apiPresetId?: string;
+  apiPresetName?: string;
+};
 
 interface MemoryConfigLike {
   embedding?: { baseUrl?: string; apiKey?: string; model?: string; dimensions?: number };
@@ -63,10 +74,11 @@ const summarizeHandoff = async (input: {
   char: CharacterProfile;
   userProfile: UserProfile;
   apiConfig: APIConfig;
+  apiIdentity?: GameHallApiIdentity;
   accounts: CharacterExternalAccount[];
   gameName: string;
 }): Promise<string> => {
-  const { source, char, userProfile, apiConfig, accounts, gameName } = input;
+  const { source, char, userProfile, apiConfig, apiIdentity, accounts, gameName } = input;
   if (!apiConfig.baseUrl || !apiConfig.model) throw new Error('没有可用的聊天 API，无法完成游戏厅交接总结。原文未删除。');
   const accountRefs = accounts.filter(account => account.status === 'active').map(account => account.accountRef);
   const parts: any[] = [{
@@ -93,11 +105,21 @@ ${source.map(sourceLine).join('\n\n')}`,
   if (typeof apiConfig.temperature === 'number' && Number.isFinite(apiConfig.temperature)) {
     body.temperature = apiConfig.temperature;
   }
+  const meta: GameHallRequestMeta = {
+    appId: 'game-hall',
+    appName: '游戏厅',
+    charId: char.id,
+    charName: char.name,
+    purpose: '回主对话交接总结',
+    apiPresetId: apiIdentity?.presetId,
+    apiPresetName: apiIdentity?.presetName,
+  };
   const response = await fetch(`${apiConfig.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiConfig.apiKey}` },
     body: JSON.stringify(body),
-  });
+    __sullyMeta: meta,
+  } as RequestInit);
   if (!response.ok) throw new Error(`游戏厅交接总结失败：HTTP ${response.status}。原文未删除。`);
   const data = await safeResponseJson(response);
   const summary = String(data?.choices?.[0]?.message?.content || '').trim();
@@ -152,6 +174,7 @@ export async function createGameHallMainChatHandoff(input: {
   char: CharacterProfile;
   userProfile: UserProfile;
   apiConfig: APIConfig;
+  apiIdentity?: GameHallApiIdentity;
   memoryPalaceConfig?: MemoryConfigLike;
   onProgress?: (stage: ProgressStage, text: string) => void;
 }): Promise<{
@@ -161,7 +184,7 @@ export async function createGameHallMainChatHandoff(input: {
   transferredImageMessageIds: number[];
   lastHandoffMessageAt: number;
 }> {
-  const { session, messages, accounts, char, userProfile, apiConfig, memoryPalaceConfig, onProgress } = input;
+  const { session, messages, accounts, char, userProfile, apiConfig, apiIdentity, memoryPalaceConfig, onProgress } = input;
   const source = sourceMessagesForHandoff(session, messages);
   if (!source.length) throw new Error('没有新的游戏厅原文需要交接。');
 
@@ -171,6 +194,7 @@ export async function createGameHallMainChatHandoff(input: {
     char,
     userProfile,
     apiConfig,
+    apiIdentity,
     accounts,
     gameName: session.gameName || 'Cedar Toy',
   });

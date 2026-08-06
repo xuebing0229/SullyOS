@@ -5,6 +5,7 @@ import type {
   RealtimeConfig,
   UserProfile,
 } from '../types';
+import type { GameHallApiIdentity } from './gameHallAiSettings';
 import {
   executePendingGameHallAction,
   planGameHallTurn,
@@ -61,7 +62,7 @@ interface MemoryConfigLike {
 export interface GameHallAutoplayRunnerDeps {
   sessionId: string;
   connection: CedarToyConnection;
-  apiConfig: APIConfig;
+  resolveApi: () => { apiConfig: APIConfig; apiIdentity: GameHallApiIdentity };
   char: CharacterProfile;
   userProfile: UserProfile;
   groups: GroupProfile[];
@@ -287,13 +288,15 @@ async function finalizeRun(
       getGameHallMessages(next.id),
       listCharacterExternalAccounts(next.charId),
     ]);
+    const requestAi = deps.resolveApi();
     const handoff = await createGameHallMainChatHandoff({
       session: next,
       messages,
       accounts,
       char: deps.char,
       userProfile: deps.userProfile,
-      apiConfig: deps.apiConfig,
+      apiConfig: requestAi.apiConfig,
+      apiIdentity: requestAi.apiIdentity,
       memoryPalaceConfig: deps.memoryPalaceConfig,
     });
     const committed =
@@ -402,8 +405,10 @@ async function runUnlocked(
 
     let plan;
     try {
+      const requestAi = deps.resolveApi();
       plan = await planGameHallTurn({
-        apiConfig: deps.apiConfig,
+        apiConfig: requestAi.apiConfig,
+        apiIdentity: requestAi.apiIdentity,
         char: deps.char,
         userProfile: deps.userProfile,
         groups: deps.groups,

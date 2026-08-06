@@ -32,6 +32,9 @@ export interface ApiCallMeta {
     charName?: string;
     /** 具体用途，如 '聊天回复' / '情绪评估' / '记忆提取'，可空 */
     purpose?: string;
+    /** 调用方明确选择的 API 预设；计费匹配优先使用该 ID。 */
+    apiPresetId?: string;
+    apiPresetName?: string;
     failoverRequestId?: string;
     failoverGroupId?: string;
     failoverGroupName?: string;

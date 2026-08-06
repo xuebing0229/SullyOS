@@ -1,5 +1,11 @@
 import { createMcpServer, testMcpConnection, type McpServerConfig, type McpToolDef } from './mcpClient';
 import type { CedarCapabilityMap, CedarToyConnection } from './gameHallTypes';
+import {
+  loadGameHallAiSettings,
+  normalizeGameHallAiSettings,
+  saveGameHallAiSettings,
+  type GameHallAiSettings,
+} from './gameHallAiSettings';
 
 export const CEDAR_CONNECTION_KEY = 'sullyos.gameHall.cedar.connection.v1';
 
@@ -75,20 +81,33 @@ export const saveCedarConnection = (connection: CedarToyConnection): void => {
 export const clearCedarConnection = (): void => localStorage.removeItem(CEDAR_CONNECTION_KEY);
 
 export interface CedarToyConnectionBackup {
-  version: 1;
+  version: 2;
   connection: CedarToyConnection;
+  /** 游戏厅自己的可切换 AI 预设选择。 */
+  aiSettings: GameHallAiSettings;
 }
 
 export const exportCedarToyConnectionForBackup = (): CedarToyConnectionBackup => ({
-  version: 1,
+  version: 2,
   connection: normalizeCedarConnection(loadCedarConnection()),
+  aiSettings: normalizeGameHallAiSettings(loadGameHallAiSettings()),
 });
 
 export const importCedarToyConnectionFromBackup = (data: unknown): boolean => {
-  if (!data || typeof data !== 'object' || Array.isArray(data) || (data as any).version !== 1) return false;
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return false;
+  const version = Number((data as any).version);
+  if (version !== 1 && version !== 2) return false;
+
   const connection = (data as any).connection;
   if (!connection || typeof connection !== 'object' || Array.isArray(connection)) return false;
   saveCedarConnection(normalizeCedarConnection(connection));
+
+  // v1 备份没有游戏厅 AI 设置：只恢复旧连接，不覆盖用户当前选择。
+  if (version === 2 && (data as any).aiSettings) {
+    saveGameHallAiSettings(
+      normalizeGameHallAiSettings((data as any).aiSettings),
+    );
+  }
   return true;
 };
 

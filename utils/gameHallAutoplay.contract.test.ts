@@ -60,9 +60,12 @@ describe('game hall autoplay integration contract', () => {
   it('game hall UI uses its own API preset and queues user messages while autoplay remains context-aware', () => {
     const source = read('apps/GameHallApp.tsx');
     const runner = read('utils/gameHallAutoplayRunner.ts');
-    expect(source).toContain('resolvedGameHallApi.config');
+    expect(source).toContain('resolveGameHallAiForRequest');
+    expect(source).toContain('resolvedGameHallAi.apiConfig');
+    expect(source).toContain('apiIdentity: requestAi.identity');
     expect(source).toContain('await queueUserMessage(text);');
     expect(source).toContain("await queueUserMessage(caption || '[图片]'");
+    expect(runner).toContain('resolveApi: () =>');
     expect(runner).toContain('getGameHallMessages(session.id)');
     expect(runner).toContain('下一步立刻可见');
   });

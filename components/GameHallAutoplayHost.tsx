@@ -18,10 +18,8 @@ import {
   GAME_HALL_AUTOPLAY_STATE_EVENT,
   peekGameHallAutoplayCommands,
 } from '../utils/gameHallAutoplayIntent';
-import {
-  loadGameHallApiSettings,
-  resolveGameHallApiConfig,
-} from '../utils/gameHallApiPreset';
+import { loadGameHallApiSettings } from '../utils/gameHallApiPreset';
+import { loadGameHallAiSettings, resolveGameHallAi } from '../utils/gameHallAiSettings';
 import {
   getActiveGameHallSession,
   saveGameHallSession,
@@ -51,6 +49,7 @@ const GameHallAutoplayHost: React.FC = () => {
     characters,
     apiConfig,
     apiPresets,
+    activeApiPresetId,
     userProfile,
     groups,
     realtimeConfig,
@@ -64,6 +63,18 @@ const GameHallAutoplayHost: React.FC = () => {
     useState<BannerState | null>(null);
   const processingCommandsRef = useRef(false);
   const wakeRef = useRef(0);
+  const apiRuntimeRef = useRef({ apiConfig, apiPresets, activeApiPresetId });
+  apiRuntimeRef.current = { apiConfig, apiPresets, activeApiPresetId };
+  const resolveGameHallAiForRequest = useCallback(() => {
+    const runtime = apiRuntimeRef.current;
+    const resolved = resolveGameHallAi({
+      settings: loadGameHallAiSettings(),
+      apiConfig: runtime.apiConfig,
+      apiPresets: runtime.apiPresets,
+      activeApiPresetId: runtime.activeApiPresetId,
+    });
+    return { apiConfig: resolved.apiConfig, apiIdentity: resolved.identity };
+  }, []);
 
   const charMap = useMemo(
     () => new Map(characters.map(char => [char.id, char])),
@@ -120,12 +131,6 @@ const GameHallAutoplayHost: React.FC = () => {
         return;
       }
 
-      const settings = loadGameHallApiSettings();
-      const resolved = resolveGameHallApiConfig(
-        apiConfig,
-        apiPresets,
-        settings,
-      );
       const connection = loadCedarConnection();
       if (!connection.url) {
         const failed = {
@@ -151,7 +156,7 @@ const GameHallAutoplayHost: React.FC = () => {
       void runGameHallAutoplay({
         sessionId: session.id,
         connection,
-        apiConfig: resolved.config,
+        resolveApi: resolveGameHallAiForRequest,
         char,
         userProfile,
         groups,
@@ -164,9 +169,8 @@ const GameHallAutoplayHost: React.FC = () => {
     },
     [
       addToast,
-      apiConfig,
-      apiPresets,
       charMap,
+      resolveGameHallAiForRequest,
       groups,
       memoryPalaceConfig,
       progress,
