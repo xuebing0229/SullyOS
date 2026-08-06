@@ -12,8 +12,7 @@ import { RealtimeContextManager, NotionManager, FeishuManager, defaultRealtimeCo
 import { isScheduleFeatureOn } from './scheduleFeature';
 import { VOICE_ACTING_GUIDE } from './minimaxTts';
 import { FISH_VOICE_ACTING_GUIDE } from './fishAudioTts';
-import { ELEVENLABS_VOICE_ACTING_GUIDE, ELEVENLABS_V2_VOICE_ACTING_GUIDE } from './elevenLabsTts';
-import { getTtsProvider, getVoicePromptOverride, getElevenLabsModel } from './ttsProvider';
+import { getTtsProvider, getVoicePromptOverride } from './ttsProvider';
 import { resolveCharTimeZone, nowInTimeZone } from './timezone';
 import { buildLifeRecordInjection } from './lifeRecords';
 import { getCharNameById } from './charNameRegistry';
@@ -28,9 +27,7 @@ const voiceActingGuide = (): string => {
   const provider = getTtsProvider();
   const custom = getVoicePromptOverride(provider);
   if (custom) return custom;
-  if (provider === 'fishaudio') return FISH_VOICE_ACTING_GUIDE;
-  if (provider === 'elevenlabs') return getElevenLabsModel() === 'eleven_v3' ? ELEVENLABS_VOICE_ACTING_GUIDE : ELEVENLABS_V2_VOICE_ACTING_GUIDE;
-  return VOICE_ACTING_GUIDE;
+  return provider === 'fishaudio' ? FISH_VOICE_ACTING_GUIDE : VOICE_ACTING_GUIDE;
 };
 
 // 群活动注入专用：把一条群消息压成"适合塞进别人私聊背景"的短文本。

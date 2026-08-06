@@ -48,7 +48,7 @@ import { extractHtmlBlocks } from '../utils/htmlPrompt';
 import { loadMusicPlaybackSnapshot } from './MusicContext';
 import { setCharNameRegistry } from '../utils/charNameRegistry';
 import { setMinimaxRegion } from '../utils/minimaxEndpoint';
-import { setTtsProvider, setVoicePromptOverrides, setElevenLabsModel } from '../utils/ttsProvider';
+import { setTtsProvider, setVoicePromptOverrides } from '../utils/ttsProvider';
 import { LocalNotifications } from '@capacitor/local-notifications';
 import { Capacitor } from '@capacitor/core';
 import { formatBytes } from '../utils/format';
@@ -1879,9 +1879,6 @@ recordApiCall({ requestId: (config as any)?.__sullyApiCallId, url: urlStr, body:
   useEffect(() => {
     setVoicePromptOverrides(apiConfig.voicePrompts);
   }, [apiConfig.voicePrompts]);
-  useEffect(() => {
-    setElevenLabsModel(apiConfig.elevenLabsModel);
-  }, [apiConfig.elevenLabsModel]);
   const userProfileRef = useRef(userProfile);
   userProfileRef.current = userProfile;
   const groupsRef = useRef(groups);

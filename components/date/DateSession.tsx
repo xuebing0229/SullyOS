@@ -199,8 +199,7 @@ const DateSession: React.FC<DateSessionProps> = ({
         if (!characterHasVoice(char, apiConfig)) return null;
         try {
             // 鱼声保留 inline cue，用 Fish 专属清洗；MiniMax 走原来的清洗。
-            const provider = resolveTtsProvider(apiConfig);
-            let ttsText = provider === 'fishaudio' || provider === 'elevenlabs' ? cleanTextForTtsFish(text) : cleanTextForTts(text);
+            let ttsText = resolveTtsProvider(apiConfig) === 'fishaudio' ? cleanTextForTtsFish(text) : cleanTextForTts(text);
             if (!ttsText || ttsText.length < 2) return null;
             if (voiceLang) {
                 const langLabel = VOICE_LANG_LABELS[voiceLang] || voiceLang;

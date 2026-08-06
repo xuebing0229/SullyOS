@@ -404,9 +404,7 @@ const Chat: React.FC = () => {
     /** Whether this character can synthesize real voice under the active TTS provider (key + a voice profile). */
     const isMinimaxReady = useCallback(() => {
         if (!characterHasVoice(char, apiConfig)) return false;
-        const provider = resolveTtsProvider(apiConfig);
-        if (provider === 'fishaudio') return !!resolveFishAudioApiKey(apiConfig);
-        if (provider === 'elevenlabs') return !!apiConfig.elevenLabsApiKey?.trim();
+        if (resolveTtsProvider(apiConfig) === 'fishaudio') return !!resolveFishAudioApiKey(apiConfig);
         return !!resolveMiniMaxApiKey(apiConfig);
     }, [char, apiConfig]);
 
@@ -507,13 +505,11 @@ const Chat: React.FC = () => {
         const parsedVoice = parseVoiceOutput(msg.content);
         // 鱼声用原生 inline cue（[happy]/[whispering]…），要拿未剥离的 rawSpeech 送 API；
         // MiniMax 用清洗过的 speech。
-        const activeTtsProvider = resolveTtsProvider(apiConfig);
-        const isFishTts = activeTtsProvider === 'fishaudio';
-        const isElevenLabsTts = activeTtsProvider === 'elevenlabs';
+        const isFishTts = resolveTtsProvider(apiConfig) === 'fishaudio';
         const voiceTagContent = parsedVoice.hasVoiceTag ? (isFishTts ? parsedVoice.rawSpeech : parsedVoice.speech) : '';
         const voiceEmotion = parsedVoice.emotion;
         // F12 调试：打印 LLM 这条消息的带标签原文，方便核对语音标签写法是否正确。
-        console.log('[voice] LLM 原文(带标签):', { provider: activeTtsProvider, content: msg.content, voiceTagContent, emotion: voiceEmotion });
+        console.log('[voice] LLM 原文(带标签):', { provider: isFishTts ? 'fishaudio' : 'minimax', content: msg.content, voiceTagContent, emotion: voiceEmotion });
 
         // Auto-TTS: only generate voice when AI explicitly used <语音> tag
         if (autoTriggered && !parsedVoice.hasVoiceTag) return;
@@ -525,11 +521,9 @@ const Chat: React.FC = () => {
         if (!isMinimaxReady()) {
             if (!autoTriggered && !minimaxWarnedRef.current) {
                 minimaxWarnedRef.current = true;
-                const tip = activeTtsProvider === 'fishaudio'
+                const tip = resolveTtsProvider(apiConfig) === 'fishaudio'
                     ? '该角色未配置鱼声音色或缺少 Fish API Key，无法播放真实语音，可点「转文字」查看内容'
-                    : activeTtsProvider === 'elevenlabs'
-                      ? '该角色未配置 ElevenLabs Voice ID 或缺少 ElevenLabs API Key，无法播放真实语音，可点「转文字」查看内容'
-                      : '该角色未配置 MiniMax 语音，无法播放真实语音，可点「转文字」查看内容';
+                    : '该角色未配置 MiniMax 语音，无法播放真实语音，可点「转文字」查看内容';
                 addToast(tip, 'info');
             }
             return;

@@ -8,7 +8,6 @@ import { hashTtsParams, getCachedTts, saveCachedTts } from '../utils/ttsCache';
 import { cleanTextForTts, insertSpeechBreaks, convertHexAudioToBlob, fetchRemoteAudioBlob, VALID_EMOTIONS, stripEmotionTags, VOICE_ACTING_GUIDE, cleanVoiceMarkupForDisplay } from '../utils/minimaxTts';
 import { normalizeVoiceTags } from '../utils/sanitize';
 import { FISH_VOICE_ACTING_GUIDE, synthesizeSpeechFishDetailed, resolveFishAudioApiKey, cleanTextForTtsFish, stripFishMarkupForDisplay } from '../utils/fishAudioTts';
-import { ELEVENLABS_VOICE_ACTING_GUIDE, ELEVENLABS_V2_VOICE_ACTING_GUIDE, synthesizeSpeechElevenLabsDetailed } from '../utils/elevenLabsTts';
 import { resolveTtsProvider, getTtsProvider, getVoicePromptOverride } from '../utils/ttsProvider';
 import { startStt, isSttSupported, type SttSession } from '../utils/speechToText';
 import { ContextBuilder } from '../utils/context';
@@ -411,14 +410,13 @@ const CallApp: React.FC = () => {
     };
   };
   // ── TTS 服务商分发：电话语音也支持 MiniMax ↔ 鱼声二选一 ──
-  const ttsProvider = resolveTtsProvider(apiConfig);
-  const isFishTts = ttsProvider === 'fishaudio';
-  const isElevenLabsTts = ttsProvider === 'elevenlabs';
+  const isFishTts = resolveTtsProvider(apiConfig) === 'fishaudio';
   // 当前服务商下，这个角色能否合成语音（决定要不要走 TTS / 给"语音未配置"提示）。
   const canSpeakVoice = (): boolean => {
     if (!isSpeakerOn) return false;
-    if (isFishTts) return !!resolveFishAudioApiKey(apiConfig) && !!selectedChar?.voiceProfile?.fishReferenceId;
-    if (isElevenLabsTts) return !!apiConfig.elevenLabsApiKey?.trim() && !!selectedChar?.voiceProfile?.elevenLabsVoiceId?.trim();
+    if (isFishTts) {
+      return !!resolveFishAudioApiKey(apiConfig) && !!selectedChar?.voiceProfile?.fishReferenceId;
+    }
     const voiceId = resolveVoiceId();
     const hasTimber = (selectedChar?.voiceProfile?.timberWeights?.length || 0) > 1;
     return !!resolveMiniMaxApiKey(apiConfig) && (!!voiceId || hasTimber);
@@ -434,10 +432,6 @@ const CallApp: React.FC = () => {
       emotion,
     });
     return url;
-  };
-  const synthesizeElevenLabsCallUrl = async (rawText: string, emotion?: string): Promise<string> => {
-    if (!selectedChar) throw new Error('未选择角色');
-    return (await synthesizeSpeechElevenLabsDetailed(rawText, selectedChar, apiConfig, { languageBoost: voiceLang || undefined, emotion })).url;
   };
   // 键盘避让统一交给全局机制：index.html 的 meta interactive-widget=resizes-content
   // 让软键盘弹出时可视区自动缩小、布局回流；iOS 全屏 PWA 则由 utils/iosStandalone.ts
@@ -543,11 +537,7 @@ const CallApp: React.FC = () => {
         let greetingAudioPlayed = false;
         if (canSpeakVoice()) {
           try {
-            if (isElevenLabsTts) {
-              const greetingEmotion = extractVoiceTag(greetingText).emotion || greetingLeadEmotion;
-              const elevenUrl = await synthesizeElevenLabsCallUrl(greetingText, greetingEmotion);
-              trackBlobUrl(elevenUrl); setAudioUrl(elevenUrl); setBubbles(prev => prev.map(b => b.id === greetingBubble.id ? { ...b, audioUrl: elevenUrl } : b)); setTimeout(() => playAudio(elevenUrl), 0); greetingAudioPlayed = true;
-            } else if (isFishTts) {
+            if (isFishTts) {
               const greetingEmotion = extractVoiceTag(greetingText).emotion || greetingLeadEmotion;
               const fishUrl = await synthesizeFishCallUrl(greetingText, greetingEmotion);
               if (fishUrl) {
@@ -826,11 +816,7 @@ const CallApp: React.FC = () => {
       return;
     }
     try {
-      if (isElevenLabsTts) {
-        const turnEmotion = extractVoiceTag(assistantText).emotion || turnLeadEmotion;
-        const elevenUrl = await synthesizeElevenLabsCallUrl(assistantText, turnEmotion);
-        trackBlobUrl(elevenUrl); setAudioUrl(elevenUrl); setTimeout(() => playAudio(elevenUrl), 0); setBubbles(prev => prev.map(b => b.id === assistantBubbleId ? { ...b, audioUrl: elevenUrl } : b)); setCallState('listening'); return;
-      } else if (isFishTts) {
+      if (isFishTts) {
         const turnEmotion = extractVoiceTag(assistantText).emotion || turnLeadEmotion;
         const fishUrl = await synthesizeFishCallUrl(assistantText, turnEmotion);
         if (!fishUrl) throw new Error('未获得可播放音频');
@@ -1051,10 +1037,7 @@ const CallApp: React.FC = () => {
         try {
           setCallState('speaking');
           const rerollEmotion = extractVoiceTag(rerolled).emotion || rerollLeadEmotion;
-          if (isElevenLabsTts) {
-            const elevenUrl = await synthesizeElevenLabsCallUrl(rerolled, rerollEmotion);
-            trackBlobUrl(elevenUrl); setAudioUrl(elevenUrl); setBubbles(prev => prev.map(b => b.id === bubble.id ? { ...b, audioUrl: elevenUrl } : b)); setTimeout(() => playAudio(elevenUrl), 0); setCallState('listening'); return;
-          } else if (isFishTts) {
+          if (isFishTts) {
             const fishUrl = await synthesizeFishCallUrl(rerolled, rerollEmotion);
             if (fishUrl) {
               trackBlobUrl(fishUrl);

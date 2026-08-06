@@ -121,7 +121,7 @@ await requireFile('utils/aiCompletionPipeline.ts');
 await requireFile('utils/aiCompletionPipeline.test.ts');
 
 await requireContains('utils/db.ts', [
-    'const DB_VERSION = 72',
+    'const DB_VERSION = 76',
     "STORE_AI_RESPONSE_CACHE = 'ai_response_cache'",
     "STORE_API_COST_DAILY = 'api_cost_daily'",
     'cleanupLegacyTurnContextSnapshots',
@@ -179,16 +179,6 @@ await requireContains('utils/mcpImagePersistence.ts', [
     'MAX_MCP_IMAGE_BYTES',
 ]);
 
-await requireContains('utils/ttsRouter.ts', [
-    'elevenlabs',
-]);
-
-await requireContains('worker/index.js', [
-    '/api/elevenlabs/tts',
-    'X-ElevenLabs-API-Key',
-]);
-
-await requireFile('utils/elevenLabsTts.ts');
 await requireFile(
     'components/character/NovelAiReferenceSettings.tsx',
 );
