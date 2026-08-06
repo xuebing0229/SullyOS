@@ -9,6 +9,7 @@ import type {
   UserProfile,
 } from '../types';
 import { safeResponseJson } from './safeApi';
+import type { GameHallApiIdentity } from './gameHallAiSettings';
 import { buildChatRequestPayload, type ChatPayloadMessage } from './chatRequestPayload';
 import { loadCharacterContextRange } from './chatContextRange';
 import { DB } from './db';
@@ -165,7 +166,21 @@ const extractAssistantText = (data: any): string => {
   return '';
 };
 
-const requestAgent = async (apiConfig: APIConfig, messages: ChatPayloadMessage[]): Promise<string> => {
+type GameHallRequestMeta = {
+  appId: string;
+  appName: string;
+  charId: string;
+  charName: string;
+  purpose: string;
+  apiPresetId?: string;
+  apiPresetName?: string;
+};
+
+const requestAgent = async (
+  apiConfig: APIConfig,
+  messages: ChatPayloadMessage[],
+  meta: GameHallRequestMeta,
+): Promise<string> => {
   const body: Record<string, unknown> = {
     model: apiConfig.model,
     messages,
@@ -177,12 +192,27 @@ const requestAgent = async (apiConfig: APIConfig, messages: ChatPayloadMessage[]
   const response = await fetch(`${apiConfig.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiConfig.apiKey}` },
-    // 跟随用户当前 API 的 stream / temperature；不强制 JSON 模式或私自写其它采样参数。
+    // 跟随游戏厅当前选中的 API 预设；不强制 JSON 模式或私自写其它采样参数。
     body: JSON.stringify(body),
-  });
+    __sullyMeta: meta,
+  } as RequestInit);
   if (!response.ok) throw new Error(`游戏厅 Agent HTTP ${response.status}`);
   return extractAssistantText(await safeResponseJson(response));
 };
+
+const gameHallApiMeta = (input: {
+  char: CharacterProfile;
+  purpose: string;
+  apiIdentity?: GameHallApiIdentity;
+}): GameHallRequestMeta => ({
+  appId: 'game-hall',
+  appName: '游戏厅',
+  charId: input.char.id,
+  charName: input.char.name,
+  purpose: input.purpose,
+  apiPresetId: input.apiIdentity?.presetId,
+  apiPresetName: input.apiIdentity?.presetName,
+});
 
 const parseAgentJson = (text: string): any => {
   const cleaned = text.replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
@@ -276,6 +306,7 @@ const resolveTool = (
 
 export async function planGameHallTurn(input: {
   apiConfig: APIConfig;
+  apiIdentity?: GameHallApiIdentity;
   char: CharacterProfile;
   userProfile: UserProfile;
   groups: GroupProfile[];
@@ -337,7 +368,15 @@ observe 模式 action 必须为 null。不要编造工具名。参数是否严�
 
   const validationMode = input.schemaValidationMode || 'off';
   const maxRepairs = Math.max(0, Math.min(5, Math.floor(input.repairAttempts || 0)));
-  let raw = await requestAgent(input.apiConfig, baseMessages);
+  let raw = await requestAgent(
+    input.apiConfig,
+    baseMessages,
+    gameHallApiMeta({
+      char: input.char,
+      purpose: '角色规划',
+      apiIdentity: input.apiIdentity,
+    }),
+  );
   let parsed = parseAgentJson(raw);
   let warnings: string[] = [];
   let resolved: ReturnType<typeof resolveTool> = { warnings: [] };
@@ -363,11 +402,19 @@ observe 模式 action 必须为 null。不要编造工具名。参数是否严�
   inspect();
 
   for (let attempt = 0; attempt < maxRepairs && (!parsed || !resolved.tool || (validationMode === 'strict' && warnings.length)); attempt++) {
-    raw = await requestAgent(input.apiConfig, [
-      ...baseMessages,
-      { role: 'assistant', content: raw || '' },
-      { role: 'system', content: `上一次规划存在这些问题：${warnings.join('；') || '无法解析'}。这是用户显式设置的第 ${attempt + 1} 次修正，请重新输出 JSON。` },
-    ]);
+    raw = await requestAgent(
+      input.apiConfig,
+      [
+        ...baseMessages,
+        { role: 'assistant', content: raw || '' },
+        { role: 'system', content: `上一次规划存在这些问题：${warnings.join('；') || '无法解析'}。这是用户显式设置的第 ${attempt + 1} 次修正，请重新输出 JSON。` },
+      ],
+      gameHallApiMeta({
+        char: input.char,
+        purpose: `角色规划修正 ${attempt + 1}`,
+        apiIdentity: input.apiIdentity,
+      }),
+    );
     parsed = parseAgentJson(raw);
     inspect();
   }
@@ -407,6 +454,7 @@ observe 模式 action 必须为 null。不要编造工具名。参数是否严�
 
 export async function respondToGameHallToolResult(input: {
   apiConfig: APIConfig;
+  apiIdentity?: GameHallApiIdentity;
   char: CharacterProfile;
   userProfile: UserProfile;
   groups: GroupProfile[];
@@ -434,7 +482,15 @@ export async function respondToGameHallToolResult(input: {
     finalInstruction: instruction,
   });
   try {
-    const text = (await requestAgent(input.apiConfig, messages)).trim();
+    const text = (await requestAgent(
+      input.apiConfig,
+      messages,
+      gameHallApiMeta({
+        char: input.char,
+        purpose: '工具结果回复',
+        apiIdentity: input.apiIdentity,
+      }),
+    )).trim();
     return text || `拿到了，${input.action.toolName} 的完整返回是：${exactResult}`;
   } catch {
     return `拿到了，${input.action.toolName} 的完整返回是：${exactResult}`;

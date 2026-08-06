@@ -6,6 +6,7 @@ import {
   loadCedarConnection,
   saveCedarConnection,
 } from './cedarToyMcpAdapter';
+import { loadGameHallAiSettings, saveGameHallAiSettings } from './gameHallAiSettings';
 
 describe('Cedar Toy connection backup', () => {
   beforeEach(() => localStorage.clear());
@@ -43,6 +44,46 @@ describe('Cedar Toy connection backup', () => {
       url: '', token: '', proxyUrl: '', proxyKey: '', updatedAt: 0,
     });
     expect(loadCedarConnection().tools).toBeUndefined();
+  });
+
+  it('round-trips the Game Hall AI selection in backup v2', () => {
+    saveGameHallAiSettings({
+      source: 'preset',
+      selectedPresetId: 'game-hall-line-b',
+      updatedAt: 1,
+    });
+
+    const backup = exportCedarToyConnectionForBackup();
+    expect(backup.version).toBe(2);
+    expect(backup.aiSettings).toMatchObject({
+      source: 'preset',
+      selectedPresetId: 'game-hall-line-b',
+    });
+
+    saveGameHallAiSettings({ source: 'global', updatedAt: 2 });
+    expect(importCedarToyConnectionFromBackup(backup)).toBe(true);
+    expect(loadGameHallAiSettings()).toMatchObject({
+      source: 'preset',
+      selectedPresetId: 'game-hall-line-b',
+    });
+  });
+
+  it('imports a v1 backup without overwriting the current Game Hall AI selection', () => {
+    saveGameHallAiSettings({
+      source: 'preset',
+      selectedPresetId: 'keep-this-line',
+      updatedAt: 1,
+    });
+
+    expect(importCedarToyConnectionFromBackup({
+      version: 1,
+      connection: { url: 'https://legacy.example/mcp', updatedAt: 3 },
+    })).toBe(true);
+    expect(loadCedarConnection().url).toBe('https://legacy.example/mcp');
+    expect(loadGameHallAiSettings()).toMatchObject({
+      source: 'preset',
+      selectedPresetId: 'keep-this-line',
+    });
   });
 
   it('rejects malformed backup objects without changing current config', () => {

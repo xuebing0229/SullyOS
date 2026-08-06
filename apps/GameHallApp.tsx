@@ -45,6 +45,12 @@ import {
 } from '../utils/characterExternalAccountStore';
 import { createGameHallMainChatHandoff } from '../utils/gameHallHandoff';
 import { gameHallContextLabel, selectGameHallContext } from '../utils/gameHallContext';
+import {
+  loadGameHallAiSettings,
+  resolveGameHallAi,
+  saveGameHallAiSettings,
+  type GameHallAiSettings,
+} from '../utils/gameHallAiSettings';
 import { prepareChatImageForSend } from '../utils/chatImage';
 import {
   gameHallId,
@@ -83,6 +89,8 @@ const GameHallApp: React.FC = () => {
     activeCharacterId,
     isLocked,
     apiConfig,
+    apiPresets,
+    activeApiPresetId,
     userProfile,
     memoryPalaceConfig,
     groups,
@@ -93,6 +101,9 @@ const GameHallApp: React.FC = () => {
   const [mode, setMode] = useState<GameHallCompanionMode>('ask-before-action');
   const [sheetSnap, setSheetSnap] = useState<GameHallSheetSnap>('collapsed');
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [gameHallAiSettings, setGameHallAiSettings] = useState<GameHallAiSettings>(() =>
+    loadGameHallAiSettings(),
+  );
   const [connection, setConnection] = useState<CedarToyConnection>(() => loadCedarConnection());
   const [capabilities, setCapabilities] = useState<CedarCapabilityMap | null>(() =>
     connection.tools ? buildCedarCapabilityMap(connection.tools) : null,
@@ -123,6 +134,31 @@ const GameHallApp: React.FC = () => {
     () => characters.find(character => character.id === charId) || characters[0],
     [characters, charId],
   );
+  const resolvedGameHallAi = useMemo(
+    () => resolveGameHallAi({
+      settings: gameHallAiSettings,
+      apiConfig,
+      apiPresets,
+      activeApiPresetId,
+    }),
+    [
+      gameHallAiSettings,
+      apiConfig,
+      apiPresets,
+      activeApiPresetId,
+    ],
+  );
+  const gameHallAiRuntimeRef = useRef({ apiConfig, apiPresets, activeApiPresetId });
+  gameHallAiRuntimeRef.current = { apiConfig, apiPresets, activeApiPresetId };
+  const resolveGameHallAiForRequest = useCallback(() => {
+    const runtime = gameHallAiRuntimeRef.current;
+    return resolveGameHallAi({
+      settings: loadGameHallAiSettings(),
+      apiConfig: runtime.apiConfig,
+      apiPresets: runtime.apiPresets,
+      activeApiPresetId: runtime.activeApiPresetId,
+    });
+  }, []);
   const sheetOpen = sheetSnap !== 'collapsed';
   // 原始 tools/list：保留顺序、重复工具和完整 schema，不经过任何白名单或去重。
   const availableTools = connection.tools || [];
@@ -246,6 +282,18 @@ const GameHallApp: React.FC = () => {
     await saveGameHallSession(updated);
   };
 
+  const updateGameHallAiSettings = (
+    patch: Partial<GameHallAiSettings>,
+  ) => {
+    setGameHallAiSettings(current =>
+      saveGameHallAiSettings({
+        ...current,
+        ...patch,
+        updatedAt: Date.now(),
+      }),
+    );
+  };
+
 
   const executeAction = async (action: GameHallPendingAction, automatic = false) => {
     if (!selected || executingActionIdsRef.current.has(action.id)) return;
@@ -327,8 +375,10 @@ const GameHallApp: React.FC = () => {
       setRunStatus('正在整理工具结果…');
       try {
         const history = session ? await getGameHallMessages(session.id) : [...messages, ...(toolMessage ? [toolMessage] : [])];
+        const requestAi = resolveGameHallAiForRequest();
         const reply = await respondToGameHallToolResult({
-          apiConfig,
+          apiConfig: requestAi.apiConfig,
+          apiIdentity: requestAi.identity,
           char: selected,
           userProfile,
           groups,
@@ -395,8 +445,10 @@ const GameHallApp: React.FC = () => {
 
       const state = gameState;
       setRunStatus(`${selected.name}正在思考…`);
+      const requestAi = resolveGameHallAiForRequest();
       const plan = await planGameHallTurn({
-        apiConfig,
+        apiConfig: requestAi.apiConfig,
+        apiIdentity: requestAi.identity,
         char: selected,
         userProfile,
         groups,
@@ -472,13 +524,15 @@ const GameHallApp: React.FC = () => {
     setHandoffBusy(true);
     setRunStatus('正在准备游戏厅交接…');
     try {
+      const requestAi = resolveGameHallAiForRequest();
       const result = await createGameHallMainChatHandoff({
         session,
         messages,
         accounts,
         char: selected,
         userProfile,
-        apiConfig,
+        apiConfig: requestAi.apiConfig,
+        apiIdentity: requestAi.identity,
         memoryPalaceConfig,
         onProgress: (_stage, text) => setRunStatus(text),
       });
@@ -829,13 +883,92 @@ const GameHallApp: React.FC = () => {
           >
             <div className="mb-4 flex items-center">
               <div className="flex-1">
-                <h2 className="font-bold">Cedar Toy MCP</h2>
-                <p className="text-xs text-slate-400">所有配置与工具返回均完整显示，不自动打码</p>
+                <h2 className="font-bold">游戏厅设置</h2>
+                <p className="text-xs text-slate-400">AI 线路可随时切换；MCP 配置与工具返回完整显示</p>
               </div>
               <button onClick={() => setSettingsOpen(false)}>
                 <X size={22} />
               </button>
             </div>
+
+            <section className="mb-4 rounded-2xl border border-fuchsia-400/20 bg-slate-900 p-4">
+              <h3 className="text-sm font-bold">游戏厅 AI 线路</h3>
+              <p className="mt-1 text-[10px] leading-relaxed text-slate-400">
+                可以随时切换。新选择从下一次游戏厅 AI 请求开始生效；正在生成中的请求继续使用发起时的线路。
+                这里只影响游戏厅的角色规划、工具结果回复、规划修正和回主对话交接总结，不改变主聊天或其他 App。
+              </p>
+
+              <label className="mt-3 block text-xs">
+                线路来源
+                <select
+                  value={gameHallAiSettings.source}
+                  onChange={event => updateGameHallAiSettings({
+                    source: event.target.value === 'preset' ? 'preset' : 'global',
+                  })}
+                  className="mt-1 w-full rounded-xl bg-slate-950 p-3"
+                >
+                  <option value="global">跟随当前全局预设</option>
+                  <option value="preset">单独选择预设</option>
+                </select>
+              </label>
+
+              {gameHallAiSettings.source === 'preset' && (
+                <label className="mt-3 block text-xs">
+                  游戏厅当前预设（可随时更换）
+                  <select
+                    value={gameHallAiSettings.selectedPresetId || ''}
+                    onChange={event => updateGameHallAiSettings({
+                      source: 'preset',
+                      selectedPresetId: event.target.value || undefined,
+                    })}
+                    className="mt-1 w-full rounded-xl bg-slate-950 p-3"
+                  >
+                    <option value="">请选择一个预设</option>
+                    {gameHallAiSettings.selectedPresetId
+                      && !apiPresets.some(preset => preset.id === gameHallAiSettings.selectedPresetId)
+                      && (
+                        <option value={gameHallAiSettings.selectedPresetId}>
+                          已删除的预设：{gameHallAiSettings.selectedPresetId}
+                        </option>
+                      )}
+                    {apiPresets.map(preset => (
+                      <option key={preset.id} value={preset.id}>
+                        {preset.name} · {preset.config.model}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
+
+              <div className="mt-3 rounded-xl bg-black/25 p-3 text-[10px] leading-relaxed">
+                <div className="font-bold text-fuchsia-200">
+                  当前实际使用：{resolvedGameHallAi.identity.presetName || '未命名 API'}
+                </div>
+                <div className="mt-1 break-all text-slate-300">
+                  模型：{resolvedGameHallAi.apiConfig.model || '未配置'}
+                </div>
+                <div className="mt-1 break-all text-slate-400">
+                  Base URL：{resolvedGameHallAi.apiConfig.baseUrl || '未配置'}
+                </div>
+                <div className="mt-1 text-slate-400">
+                  来源：{gameHallAiSettings.source === 'preset' && !resolvedGameHallAi.fallbackToGlobal
+                    ? '游戏厅单独选择'
+                    : '跟随全局'}
+                </div>
+              </div>
+
+              {resolvedGameHallAi.warning && (
+                <div className="mt-2 rounded-xl border border-amber-400/30 bg-amber-950/40 p-3 text-[10px] leading-relaxed text-amber-100">
+                  {resolvedGameHallAi.warning}
+                </div>
+              )}
+
+              {!apiPresets.length && gameHallAiSettings.source === 'preset' && (
+                <div className="mt-2 text-[10px] text-amber-200">
+                  当前没有可选 API 预设，请先在系统 API 设置中保存预设，或切回跟随全局。
+                </div>
+              )}
+            </section>
 
             <label className="mb-3 block text-xs">
               MCP URL
