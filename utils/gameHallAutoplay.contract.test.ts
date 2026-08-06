@@ -57,11 +57,14 @@ describe('game hall autoplay integration contract', () => {
     expect(db).not.toContain('gameHallAutoplayState');
   });
 
-  it('game hall UI uses its own API preset and inserts messages during autoplay', () => {
+  it('game hall UI uses its own API preset and queues user messages while autoplay remains context-aware', () => {
     const source = read('apps/GameHallApp.tsx');
+    const runner = read('utils/gameHallAutoplayRunner.ts');
     expect(source).toContain('resolvedGameHallApi.config');
-    expect(source).toContain("if (autoplayRunning) {\n      await append('user', text);");
-    expect(source).toContain("if (autoplayRunning) await append('user', caption || '[图片]', { image });");
+    expect(source).toContain('await queueUserMessage(text);');
+    expect(source).toContain("await queueUserMessage(caption || '[图片]'");
+    expect(runner).toContain('getGameHallMessages(session.id)');
+    expect(runner).toContain('下一步立刻可见');
   });
 
   it('hidden commands are stripped from bubbles, notifications and push segments', () => {

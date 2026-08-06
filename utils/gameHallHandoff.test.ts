@@ -58,4 +58,10 @@ describe('game hall main-chat handoff meta', () => {
     expect(handoffSource).toContain('await DB.deleteMessages(rollbackIds).catch(() => undefined)');
   });
 
+  it('excludes the unsealed open turn and failed/running active reply turn from handoff deletion', () => {
+    expect(handoffSource).toContain('session.openTurnId');
+    expect(handoffSource).toContain('session.activeReplyTurn?.turnId');
+    expect(handoffSource).toContain('!excludedTurnIds.has(message.turnId)');
+  });
+
 });

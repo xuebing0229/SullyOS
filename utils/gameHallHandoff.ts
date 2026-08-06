@@ -32,8 +32,13 @@ const sourceMessagesForHandoff = (
   messages: GameHallMessage[],
 ): GameHallMessage[] => {
   const after = session.lastHandoffMessageAt || 0;
+  const excludedTurnIds = new Set([
+    session.openTurnId,
+    session.activeReplyTurn?.turnId,
+  ].filter((value): value is string => !!value));
   return [...messages]
     .filter(message => message.createdAt > after)
+    .filter(message => !message.turnId || !excludedTurnIds.has(message.turnId))
     .sort((a, b) => a.createdAt - b.createdAt);
 };
 
@@ -47,7 +52,10 @@ const sourceLine = (message: GameHallMessage): string => {
   const result = message.toolResult
     ? `\n工具完整返回：${formatGameHallToolResult(getGameHallToolResultPayload(message.toolResult))}`
     : '';
-  return `${who}：${message.content}${image}${request}${result}`;
+  const content = message.displayType === 'emoji'
+    ? `[表情包：${message.emojiName || '未知'}]`
+    : message.content;
+  return `${who}：${content}${image}${request}${result}`;
 };
 
 const summarizeHandoff = async (input: {

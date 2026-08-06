@@ -32,6 +32,7 @@ import {
   isCredentialFieldName,
 } from './gameHallAccount';
 import { selectGameHallContext, type GameHallContextSelection } from './gameHallContext';
+import { buildAssistantDisplayResult, splitAssistantDisplayParts, type AssistantDisplayPart } from './assistantDisplayPipeline';
 
 const stableJson = (value: unknown): string => {
   if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
@@ -166,23 +167,28 @@ const extractAssistantText = (data: any): string => {
   return '';
 };
 
-const requestAgent = async (apiConfig: APIConfig, messages: ChatPayloadMessage[]): Promise<string> => {
-  const body: Record<string, unknown> = {
-    model: apiConfig.model,
-    messages,
-    stream: apiConfig.stream === true,
-  };
-  if (typeof apiConfig.temperature === 'number' && Number.isFinite(apiConfig.temperature)) {
-    body.temperature = apiConfig.temperature;
-  }
+interface GameHallAgentResponse {
+  data: any;
+  content: string;
+  reasoningContent?: string;
+}
+
+const requestAgent = async (apiConfig: APIConfig, messages: ChatPayloadMessage[]): Promise<GameHallAgentResponse> => {
+  const body: Record<string, unknown> = { model: apiConfig.model, messages, stream: apiConfig.stream === true };
+  if (typeof apiConfig.temperature === 'number' && Number.isFinite(apiConfig.temperature)) body.temperature = apiConfig.temperature;
   const response = await fetch(`${apiConfig.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiConfig.apiKey}` },
-    // 跟随用户当前 API 的 stream / temperature；不强制 JSON 模式或私自写其它采样参数。
     body: JSON.stringify(body),
   });
   if (!response.ok) throw new Error(`游戏厅 Agent HTTP ${response.status}`);
-  return extractAssistantText(await safeResponseJson(response));
+  const data = await safeResponseJson(response);
+  const message = data?.choices?.[0]?.message || {};
+  return {
+    data,
+    content: extractAssistantText(data),
+    reasoningContent: typeof message.reasoning_content === 'string' ? message.reasoning_content : undefined,
+  };
 };
 
 const parseAgentJson = (text: string): any => {
@@ -191,6 +197,25 @@ const parseAgentJson = (text: string): any => {
   const end = cleaned.lastIndexOf('}');
   if (start < 0 || end < start) return null;
   try { return JSON.parse(cleaned.slice(start, end + 1)); } catch { return null; }
+};
+
+export const parseGameHallAgentDisplay = (input: {
+  rawContent: string;
+  reasoningContent?: string;
+  showThinkingChain: boolean;
+}): { parsed: any; replies: AssistantDisplayPart[]; thinkingChain?: string; cleanedContent: string } => {
+  const display = buildAssistantDisplayResult(input);
+  const parsed = parseAgentJson(display.cleanedContent);
+  if (!parsed) throw new Error('游戏厅回复格式解析失败');
+  const replySources = Array.isArray(parsed.replies)
+    ? parsed.replies
+    : parsed.reply != null ? [parsed.reply] : [];
+  return {
+    parsed,
+    replies: replySources.flatMap((source: unknown) => splitAssistantDisplayParts(String(source || ''))),
+    thinkingChain: display.thinkingChain,
+    cleanedContent: display.cleanedContent,
+  };
 };
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -294,7 +319,8 @@ export async function planGameHallTurn(input: {
   repairAttempts?: number;
   autonomousRun?: { runId: string; instruction: string; turnCount: number };
 }): Promise<{
-  reply: string;
+  replies: AssistantDisplayPart[];
+  thinkingChain?: string;
   pending?: GameHallPendingAction;
   context: GameHallContextSelection;
   validationWarnings?: string[];
@@ -325,7 +351,8 @@ export async function planGameHallTurn(input: {
 MCP tools/list 原始工具数组如下。每项都可见，不筛选、不去重；toolIndex 就是原始数组下标：\n${JSON.stringify(toolSchemas, null, 2)}
 
 请只输出一个 JSON 对象：
-{"reply":"自然回复","action":null 或 {"toolIndex":0,"toolName":"真实工具名","args":{},"accountRef":"可选，省略则使用当前显式选择账号","reason":"原因"}}
+{"replies":["第一条自然回复","第二条自然回复"],"action":null 或 {"toolIndex":0,"toolName":"真实工具名","args":{},"accountRef":"可选，省略则使用当前显式选择账号","reason":"原因"}}
+replies 是本轮依次发送的聊天消息数组，可返回 1～8 条，不要为了凑数强行拆句。一次 JSON 只能规划一个 action。不要在 replies 中输出 think/thought/analysis 标签。
 observe 模式 action 必须为 null。不要编造工具名。参数是否严格阻断由用户设置决定；你应尽量遵守 schema，但客户端不会在用户未开启 strict 时替用户拒绝调用。${autonomousBlock}`;
   const gameHallMessages = [
     ...context.messages,
@@ -347,8 +374,14 @@ observe 模式 action 必须为 null。不要编造工具名。参数是否严�
 
   const validationMode = input.schemaValidationMode || 'off';
   const maxRepairs = Math.max(0, Math.min(5, Math.floor(input.repairAttempts || 0)));
-  let raw = await requestAgent(input.apiConfig, baseMessages);
-  let parsed = parseAgentJson(raw);
+  let response = await requestAgent(input.apiConfig, baseMessages);
+  let raw = response.content;
+  let display = buildAssistantDisplayResult({
+    rawContent: raw,
+    reasoningContent: response.reasoningContent,
+    showThinkingChain: !!(input.char as any).showThinkingChain,
+  });
+  let parsed = parseAgentJson(display.cleanedContent);
   let warnings: string[] = [];
   let resolved: ReturnType<typeof resolveTool> = { warnings: [] };
   let args: Record<string, unknown> | undefined;
@@ -365,35 +398,47 @@ observe 模式 action 必须为 null。不要编造工具名。参数是否严�
     warnings.push(...resolved.warnings);
     if (resolved.tool && args && validationMode !== 'off') {
       const plannedAccountRef = typeof parsed?.action?.accountRef === 'string' && parsed.action.accountRef.trim()
-        ? parsed.action.accountRef.trim()
-        : input.preferredAccountRef;
+        ? parsed.action.accountRef.trim() : input.preferredAccountRef;
       warnings.push(...validateGameHallToolArgs(resolved.tool, args, plannedAccountRef));
     }
   };
   inspect();
 
-  for (let attempt = 0; attempt < maxRepairs && (!parsed || !resolved.tool || (validationMode === 'strict' && warnings.length)); attempt++) {
-    raw = await requestAgent(input.apiConfig, [
+  for (let attempt = 0; attempt < maxRepairs && (!parsed || (!!parsed.action && (!resolved.tool || (validationMode === 'strict' && warnings.length)))); attempt++) {
+    response = await requestAgent(input.apiConfig, [
       ...baseMessages,
       { role: 'assistant', content: raw || '' },
       { role: 'system', content: `上一次规划存在这些问题：${warnings.join('；') || '无法解析'}。这是用户显式设置的第 ${attempt + 1} 次修正，请重新输出 JSON。` },
     ]);
-    parsed = parseAgentJson(raw);
+    raw = response.content;
+    display = buildAssistantDisplayResult({
+      rawContent: raw,
+      reasoningContent: response.reasoningContent,
+      showThinkingChain: !!(input.char as any).showThinkingChain,
+    });
+    parsed = parseAgentJson(display.cleanedContent);
     inspect();
   }
 
-  const reply = String(parsed?.reply || raw || '我在。').trim() || '我在。';
-  if (input.mode === 'observe' || !parsed?.action || !resolved.tool || !args) {
-    return { reply, context, validationWarnings: warnings.length ? warnings : undefined, modelRaw: raw };
+  if (!parsed) throw new Error('游戏厅回复格式解析失败');
+  const parsedDisplay = parseGameHallAgentDisplay({
+    rawContent: raw,
+    reasoningContent: response.reasoningContent,
+    showThinkingChain: !!(input.char as any).showThinkingChain,
+  });
+  const replies = parsedDisplay.replies;
+  if (input.mode === 'observe' || !parsed.action || !resolved.tool || !args) {
+    return { replies, thinkingChain: display.thinkingChain, context, validationWarnings: warnings.length ? warnings : undefined, modelRaw: raw };
   }
   if (validationMode === 'strict' && warnings.length) {
-    return { reply, context, validationWarnings: warnings, modelRaw: raw };
+    return { replies, thinkingChain: display.thinkingChain, context, validationWarnings: warnings, modelRaw: raw };
   }
   const explicitAccount = typeof parsed.action.accountRef === 'string' && parsed.action.accountRef.trim()
     ? parsed.action.accountRef.trim() : undefined;
   const accountRef = explicitAccount || input.preferredAccountRef || undefined;
   return {
-    reply,
+    replies,
+    thinkingChain: display.thinkingChain,
     context,
     validationWarnings: warnings.length ? warnings : undefined,
     modelRaw: raw,
@@ -426,9 +471,9 @@ export async function respondToGameHallToolResult(input: {
   accountRef?: string;
   history?: GameHallMessage[];
   contextMessageLimit?: number | null;
-}): Promise<string> {
+}): Promise<{ replies: AssistantDisplayPart[]; thinkingChain?: string }> {
   const exactResult = formatGameHallToolResult(getGameHallToolResultPayload(input.toolResult));
-  if (!input.apiConfig.baseUrl || !input.apiConfig.model) return `拿到了，${input.action.toolName} 的完整返回是：${exactResult}`;
+  if (!input.apiConfig.baseUrl || !input.apiConfig.model) return { replies: splitAssistantDisplayParts(`拿到了，${input.action.toolName} 的完整返回是：${exactResult}`) };
   const context = selectGameHallContext(input.history, input.contextMessageLimit);
   const instruction = `你刚刚真实执行了游戏厅工具 ${input.action.toolName}（toolIndex=${input.action.toolIndex ?? '未指定'}）。
 执行原因：${input.action.reason}
@@ -444,10 +489,20 @@ export async function respondToGameHallToolResult(input: {
     finalInstruction: instruction,
   });
   try {
-    const text = (await requestAgent(input.apiConfig, messages)).trim();
-    return text || `拿到了，${input.action.toolName} 的完整返回是：${exactResult}`;
+    const response = await requestAgent(input.apiConfig, messages);
+    const display = buildAssistantDisplayResult({
+      rawContent: response.content,
+      reasoningContent: response.reasoningContent,
+      showThinkingChain: !!(input.char as any).showThinkingChain,
+    });
+    return {
+      replies: display.parts.length
+        ? display.parts
+        : splitAssistantDisplayParts(`拿到了，${input.action.toolName} 的完整返回是：${exactResult}`),
+      thinkingChain: display.thinkingChain,
+    };
   } catch {
-    return `拿到了，${input.action.toolName} 的完整返回是：${exactResult}`;
+    return { replies: splitAssistantDisplayParts(`拿到了，${input.action.toolName} 的完整返回是：${exactResult}`) };
   }
 }
 

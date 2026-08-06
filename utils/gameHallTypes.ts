@@ -88,6 +88,16 @@ export interface GameHallAutoplayState {
   handoffMessageId?: number;
   handoffCompletedAt?: number;
   handoffError?: string;
+
+export type GameHallDisplayMessageType = 'text' | 'emoji';
+
+export interface GameHallActiveReplyTurn {
+  turnId: string;
+  userMessageIds: string[];
+  status: 'running' | 'failed';
+  requestedAt: number;
+  updatedAt: number;
+  error?: string;
 }
 
 export interface GameHallSession {
@@ -99,6 +109,11 @@ export interface GameHallSession {
   updatedAt: number;
   gameId?: string;
   gameName?: string;
+  /** 用户正在连续发送、尚未封口的回合。 */
+  openTurnId?: string;
+  /** 当前正在请求或请求失败、可手动重试的已封口回合。 */
+  activeReplyTurn?: GameHallActiveReplyTurn;
+  lastCompletedTurnId?: string;
   /** 当前显式选择的角色身份；空值表示使用基础 MCP 连接。 */
   activeAccountRef?: string;
   accountBinding?: Record<string, string>;
@@ -145,6 +160,13 @@ export interface GameHallMessage {
   role: GameHallMessageRole;
   content: string;
   createdAt: number;
+  turnId?: string;
+  batchIndex?: number;
+  displayType?: GameHallDisplayMessageType;
+  emojiUrl?: string;
+  emojiName?: string;
+  thinkingChain?: string;
+  replyRequestedAt?: number;
   image?: GameHallImageAttachment;
   toolName?: string;
   toolRequest?: GameHallToolRequestSnapshot;
@@ -157,6 +179,7 @@ export interface GameHallPendingAction {
   id: string;
   sessionId: string;
   charId: string;
+  turnId?: string;
   toolName: string;
   toolIndex?: number;
   args: Record<string, unknown>;
