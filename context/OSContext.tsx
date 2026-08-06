@@ -62,6 +62,14 @@ import { assertSupportedSullyBackup } from '../utils/backupImportPolicy';
 import { exportBackgroundImageJobsForBackup, importBackgroundImageJobsFromBackup, startBackgroundImageJobMonitor } from '../utils/backgroundImageJobs';
 import { exportCedarToyConnectionForBackup, importCedarToyConnectionFromBackup } from '../utils/cedarToyMcpAdapter';
 import { GAME_HALL_BACKUP_FIELD_BY_STORE, GAME_HALL_BACKUP_STORES } from '../utils/gameHallBackup';
+import {
+  backupContainsGameHallAutoplayData,
+  countAutoplaySessionsNeedingRestorePause,
+  exportGameHallAutoplayBackup,
+  exportLegacySullyEventFlags,
+  importGameHallAutoplayBackup,
+  stripGameHallAutoplayKeysFromLegacyFlags,
+} from '../utils/gameHallAutoplayBackup';
 import { migrateApiCostV1, markApiCostMigrationComplete } from '../utils/apiCostMigration';
 import { resolveBackedUpActiveApiPresetId } from '../utils/apiPresetBackup';
 
@@ -3388,17 +3396,12 @@ recordApiCall({ requestId: (config as any)?.__sullyApiCallId, url: urlStr, body:
               })() : undefined,
               bm25Mode: (mode === 'text_only' || mode === 'full') ? (localStorage.getItem('bm25_mode') || undefined) : undefined,
               lastActiveCharId: (mode === 'text_only' || mode === 'full') ? (localStorage.getItem('os_last_active_char_id') || undefined) : undefined,
-              eventNotifFlags: (mode === 'text_only' || mode === 'full') ? (() => {
-                  const flags: Record<string, string> = {};
-                  for (let i = 0; i < localStorage.length; i++) {
-                      const key = localStorage.key(i);
-                      if (!key) continue;
-                      if (key.startsWith('sullyos_')) {
-                          flags[key] = localStorage.getItem(key) || '';
-                      }
-                  }
-                  return Object.keys(flags).length > 0 ? flags : undefined;
-              })() : undefined,
+              gameHallAutoplayLocal: (mode === 'text_only' || mode === 'full')
+                  ? exportGameHallAutoplayBackup()
+                  : undefined,
+              eventNotifFlags: (mode === 'text_only' || mode === 'full')
+                  ? exportLegacySullyEventFlags()
+                  : undefined,
 
               // 本机 localStorage 配置（导入端 importFullData 已支持恢复，之前导出漏发导致丢失）
               //  · 瑞幸 / 麦当劳 MCP 的点单 token + 启用状态（用户说的「那个码」）
@@ -4079,6 +4082,22 @@ recordApiCall({ requestId: (config as any)?.__sullyApiCallId, url: urlStr, body:
               }
           };
 
+          let restoredAutoplayPausedCount = 0;
+          if (backupContainsGameHallAutoplayData(data)) {
+              restoredAutoplayPausedCount =
+                  countAutoplaySessionsNeedingRestorePause(
+                      data.gameHallSessions,
+                  );
+              importGameHallAutoplayBackup(
+                  data.gameHallAutoplayLocal,
+                  data.eventNotifFlags,
+              );
+              data.eventNotifFlags =
+                  stripGameHallAutoplayKeysFromLegacyFlags(
+                      data.eventNotifFlags,
+                  );
+          }
+
           showImportProgress('database', '正在写入数据库...', 50, { current: '准备写入数据库', currentFile: '' });
           const importedApiCostHistory = data.apiCostDailySummaries !== undefined;
           await DB.importFullData(data, {
@@ -4332,10 +4351,19 @@ recordApiCall({ requestId: (config as any)?.__sullyApiCallId, url: urlStr, body:
           
           setSysOperation({ status: 'idle', message: '', progress: 100 });
           clearImportInProgress();
+          const restoreMessages = ['恢复成功'];
+          if (cleanedLegacyTurnContextCount > 0) {
+              restoreMessages.push(
+                  `已清理 ${cleanedLegacyTurnContextCount} 条旧上下文快照`,
+              );
+          }
+          if (restoredAutoplayPausedCount > 0) {
+              restoreMessages.push(
+                  `已暂停 ${restoredAutoplayPausedCount} 场从备份恢复的游戏厅自主游玩；可在游戏厅继续`,
+              );
+          }
           addToast(
-              cleanedLegacyTurnContextCount > 0
-                  ? `恢复成功，已清理 ${cleanedLegacyTurnContextCount} 条旧上下文快照，系统即将重启...`
-                  : '恢复成功，系统即将重启...',
+              `${restoreMessages.join('，')}，系统即将重启...`,
               'success',
           );
           setTimeout(() => window.location.reload(), 1500);

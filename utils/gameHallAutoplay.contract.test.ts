@@ -52,7 +52,7 @@ describe('game hall autoplay integration contract', () => {
 
   it('does not add a store or upgrade IndexedDB', () => {
     const db = read('utils/db.ts');
-    expect(db).toContain('const DB_VERSION = 75');
+    expect(db).toContain('const DB_VERSION = 76');
     expect(db).not.toContain('gameHallAutoplaySessions');
     expect(db).not.toContain('gameHallAutoplayState');
   });

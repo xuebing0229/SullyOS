@@ -50,4 +50,15 @@ describe('backup coverage contract', () => {
     expect(osContext).not.toContain("'ai_response_cache'");
     expect(osContext).not.toContain("'gameHallProtocolCache'");
   });
+
+  it('backs up Game Hall local settings without runtime commands', () => {
+    expect(typesSource).toContain('gameHallAutoplayLocal?');
+    expect(osContext).toContain('gameHallAutoplayLocal:');
+    expect(osContext).toContain('exportGameHallAutoplayBackup');
+    expect(osContext).toContain('importGameHallAutoplayBackup');
+    expect(osContext).toContain('exportLegacySullyEventFlags');
+    const backupSource = read('utils/gameHallAutoplayBackup.ts');
+    expect(backupSource).toContain('GAME_HALL_AUTOPLAY_COMMAND_QUEUE_STORAGE_KEY');
+    expect(backupSource).toContain('clearGameHallAutoplayCommandQueue');
+  });
 });

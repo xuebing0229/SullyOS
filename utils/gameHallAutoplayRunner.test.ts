@@ -89,6 +89,26 @@ describe('GameHall autonomous runner', () => {
     await runGameHallAutoplay(deps() as any); expect(fakes.plan).toHaveBeenCalledTimes(1);
   });
 
+  it('resumes a restored session without losing progress', async () => {
+    await start();
+    fakes.session.autoplay = {
+      ...fakes.session.autoplay,
+      status: 'paused',
+      stopReason: 'restored-from-backup',
+      restoredFromBackupAt: 1000,
+      turnCount: 3,
+      latestState: { gameId: 'g1', raw: { score: 9 } },
+    };
+    fakes.session = await resumeGameHallAutoplay(fakes.session);
+    expect(fakes.session.autoplay).toMatchObject({
+      status: 'queued',
+      turnCount: 3,
+      latestState: { gameId: 'g1', raw: { score: 9 } },
+    });
+    expect(fakes.session.autoplay.stopReason).toBeUndefined();
+    expect(fakes.session.autoplay.restoredFromBackupAt).toBeUndefined();
+  });
+
   it('turns stopping into cancelled without a new plan', async () => {
     await start(); fakes.session = await requestStopGameHallAutoplay(fakes.session);
     await runGameHallAutoplay(deps() as any);

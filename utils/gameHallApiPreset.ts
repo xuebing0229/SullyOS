@@ -1,7 +1,8 @@
 export const GAME_HALL_API_SETTINGS_EVENT =
   'sullyos:game-hall-api-settings-changed';
 
-const KEY = 'sullyos_game_hall_api_settings_v1';
+export const GAME_HALL_API_SETTINGS_STORAGE_KEY =
+  'sullyos_game_hall_api_settings_v1';
 
 export interface GameHallApiSettings {
   version: 1;
@@ -23,31 +24,38 @@ export const DEFAULT_GAME_HALL_API_SETTINGS: GameHallApiSettings = {
   autoHandoffOnFinish: true,
 };
 
-const finiteNonNegative = (value: unknown, fallback: number): number => {
-  const n = Number(value);
-  return Number.isFinite(n) && n >= 0 ? n : fallback;
-};
+export function normalizeGameHallApiSettings(
+  value: unknown,
+): GameHallApiSettings {
+  const raw =
+    value && typeof value === 'object' && !Array.isArray(value)
+      ? value as Record<string, unknown>
+      : {};
+  const maxTurns = Number(raw.maxTurns);
+  const stepDelayMs = Number(raw.stepDelayMs);
+  return {
+    version: 1,
+    maxTurns:
+      Number.isFinite(maxTurns) && maxTurns > 0
+        ? Math.floor(maxTurns)
+        : null,
+    stepDelayMs:
+      Number.isFinite(stepDelayMs) && stepDelayMs >= 0
+        ? stepDelayMs
+        : DEFAULT_GAME_HALL_API_SETTINGS.stepDelayMs,
+    autoHandoffOnFinish: raw.autoHandoffOnFinish !== false,
+  };
+}
 
 export function loadGameHallApiSettings(): GameHallApiSettings {
   try {
-    const raw = JSON.parse(localStorage.getItem(KEY) || 'null');
-    if (!raw || typeof raw !== 'object') {
-      return { ...DEFAULT_GAME_HALL_API_SETTINGS };
-    }
-    const max = Number(raw.maxTurns);
-    return {
-      version: 1,
-      maxTurns:
-        Number.isFinite(max) && max > 0
-          ? Math.floor(max)
-          : null,
-      stepDelayMs: finiteNonNegative(
-        raw.stepDelayMs,
-        DEFAULT_GAME_HALL_API_SETTINGS.stepDelayMs,
+    return normalizeGameHallApiSettings(
+      JSON.parse(
+        localStorage.getItem(
+          GAME_HALL_API_SETTINGS_STORAGE_KEY,
+        ) || 'null',
       ),
-      autoHandoffOnFinish:
-        raw.autoHandoffOnFinish !== false,
-    };
+    );
   } catch {
     return { ...DEFAULT_GAME_HALL_API_SETTINGS };
   }
@@ -56,10 +64,10 @@ export function loadGameHallApiSettings(): GameHallApiSettings {
 export function saveGameHallApiSettings(
   settings: GameHallApiSettings,
 ): void {
-  localStorage.setItem(KEY, JSON.stringify({
-    ...settings,
-    version: 1,
-  }));
+  localStorage.setItem(
+    GAME_HALL_API_SETTINGS_STORAGE_KEY,
+    JSON.stringify(normalizeGameHallApiSettings(settings)),
+  );
   try {
     window.dispatchEvent(
       new CustomEvent(GAME_HALL_API_SETTINGS_EVENT),

@@ -5,7 +5,8 @@ export const GAME_HALL_AUTOPLAY_COMMAND_EVENT =
 export const GAME_HALL_AUTOPLAY_STATE_EVENT =
   'sullyos:game-hall-autoplay-state';
 
-const QUEUE_KEY = 'sullyos_game_hall_autoplay_commands_v1';
+export const GAME_HALL_AUTOPLAY_COMMAND_QUEUE_STORAGE_KEY =
+  'sullyos_game_hall_autoplay_commands_v1';
 
 export type GameHallAutoplayCommandType =
   | 'start'
@@ -102,7 +103,7 @@ export function stripAndParseGameHallAutoplayCommands(
 
 function readQueue(): GameHallAutoplayCommand[] {
   try {
-    const parsed = JSON.parse(localStorage.getItem(QUEUE_KEY) || '[]');
+    const parsed = JSON.parse(localStorage.getItem(GAME_HALL_AUTOPLAY_COMMAND_QUEUE_STORAGE_KEY) || '[]');
     return Array.isArray(parsed) ? parsed : [];
   } catch {
     return [];
@@ -110,7 +111,10 @@ function readQueue(): GameHallAutoplayCommand[] {
 }
 
 function writeQueue(value: GameHallAutoplayCommand[]): void {
-  localStorage.setItem(QUEUE_KEY, JSON.stringify(value));
+  localStorage.setItem(
+    GAME_HALL_AUTOPLAY_COMMAND_QUEUE_STORAGE_KEY,
+    JSON.stringify(value),
+  );
 }
 
 export function enqueueGameHallAutoplayCommands(
@@ -135,6 +139,19 @@ export function enqueueGameHallAutoplayCommands(
 
 export function peekGameHallAutoplayCommands(): GameHallAutoplayCommand[] {
   return readQueue().sort((a, b) => a.createdAt - b.createdAt);
+}
+
+export function clearGameHallAutoplayCommandQueue(): void {
+  localStorage.removeItem(
+    GAME_HALL_AUTOPLAY_COMMAND_QUEUE_STORAGE_KEY,
+  );
+  try {
+    window.dispatchEvent(
+      new CustomEvent(GAME_HALL_AUTOPLAY_COMMAND_EVENT),
+    );
+  } catch {
+    // SSR / test
+  }
 }
 
 export function acknowledgeGameHallAutoplayCommand(commandId: string): void {

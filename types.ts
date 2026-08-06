@@ -3489,6 +3489,8 @@ export interface FullBackupData {
     gameHallEvents?: Record<string, unknown>[];
     gameHallMemoryCandidates?: Record<string, unknown>[];
     gameHallPreferenceEvidence?: Record<string, unknown>[];
+    /** 游戏厅独立 AI 线路与自主运行参数；临时命令队列永不备份。 */
+    gameHallAutoplayLocal?: import('./utils/gameHallAutoplayBackup').GameHallAutoplayBackup;
     worldbooks?: Worldbook[]; 
     roomCustomAssets?: { id?: string; name: string; image: string; defaultScale: number; description?: string; visibility?: 'public' | 'character'; assignedCharIds?: string[] }[]; 
     
@@ -3623,7 +3625,8 @@ export interface FullBackupData {
     browserConfig?: { braveKey?: string; useRealSearch?: boolean };
     bm25Mode?: string;
     lastActiveCharId?: string;
-    eventNotifFlags?: Record<string, string>;  // sullyos_* 事件通知标记
+    /** 仅兼容旧版 sullyos_ 事件标记；游戏厅设置走 gameHallAutoplayLocal。 */
+    eventNotifFlags?: Record<string, string>;
     hotNewsSnapshots?: HotNewsSnapshot[];
     dreamCollection?: Record<string, { firstAt: number; count: number }>;  // 梦境盲盒收藏册（os_dream_collection，账号级 localStorage）
     gotchiAccentHue?: string;  // 桌面电子宠物主题主色调偏好（tama_accent_hue，账号级 localStorage）

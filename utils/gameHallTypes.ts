@@ -61,7 +61,7 @@ export type GameHallAutoplayStatus =
 export type GameHallAutoplayStopReason =
   | 'character-finished' | 'user-paused' | 'user-stopped'
   | 'visible-turn-limit' | 'api-error' | 'mcp-error'
-  | 'handoff-error' | 'session-replaced';
+  | 'handoff-error' | 'session-replaced' | 'restored-from-backup';
 
 export interface GameHallAutoplayState {
   version: 1;
@@ -84,10 +84,12 @@ export interface GameHallAutoplayState {
   lastActionId?: string;
   latestState?: NormalizedCedarGameState;
   stopReason?: GameHallAutoplayStopReason;
+  restoredFromBackupAt?: number;
   lastError?: string;
   handoffMessageId?: number;
   handoffCompletedAt?: number;
   handoffError?: string;
+}
 
 export type GameHallDisplayMessageType = 'text' | 'emoji';
 

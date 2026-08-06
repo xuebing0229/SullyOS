@@ -23,6 +23,7 @@ import { exportWorldHomeLocal, importWorldHomeLocal } from './worldHome/localBac
 import { exportDesktopSkinLocal, importDesktopSkinLocal } from './desktopSkinBackup';
 import { applyGalleryReview } from './galleryReview';
 import { GAME_HALL_BACKUP_STORES, GAME_HALL_PROTOCOL_CACHE_STORE } from './gameHallBackup';
+import { prepareGameHallSessionsForRestore } from './gameHallAutoplayBackup';
 
 const DB_NAME = 'AetherOS_Data';
 // v67：两条并行线各自用掉了 v65/v66（A线: blob_assets + 生活记录；B线: room_plates 门牌 + digest_reports 消化日志），
@@ -3699,7 +3700,13 @@ export const DB = {
       }, data.games?.length || 0);
 
       for (const descriptor of GAME_HALL_BACKUP_STORES) {
-          const items = (data as any)[descriptor.field] as any[] | undefined;
+          let items = (data as any)[descriptor.field] as any[] | undefined;
+          if (
+              descriptor.storeName === 'gameHallSessions'
+              && Array.isArray(items)
+          ) {
+              items = prepareGameHallSessionsForRestore(items).sessions;
+          }
           await runSection(descriptor.label, items !== undefined, async () => {
               await clearAndAdd(descriptor.storeName, items || [], descriptor.label, false);
               (data as any)[descriptor.field] = undefined;

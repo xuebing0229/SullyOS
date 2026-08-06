@@ -215,6 +215,7 @@ export async function resumeGameHallAutoplay(
   return saveSessionState(session, {
     status: 'queued',
     stopReason: undefined,
+    restoredFromBackupAt: undefined,
     lastError: undefined,
   });
 }
@@ -342,10 +343,14 @@ async function runUnlocked(
     const autoplay = session.autoplay;
 
     if (autoplay.status === 'paused') {
+      const restored =
+        autoplay.stopReason === 'restored-from-backup';
       emitState(
         session,
         deps.char.name,
-        `${deps.char.name}已暂停自主游玩`,
+        restored
+          ? `${deps.char.name}有一场从备份恢复的游玩，已暂停`
+          : `${deps.char.name}已暂停自主游玩`,
         deps.onProgress,
       );
       return;
