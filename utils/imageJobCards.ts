@@ -16,6 +16,7 @@ export interface LocalImageJobCard {
     engineLabel: 'GPT 生图' | 'NovelAI 生图';
     promptPreview: string;
     status: ImageJobCardStatus;
+    sourceStatus: LocalBackgroundImageJob['status'];
     error?: string;
     createdAt: number;
     updatedAt: number;
@@ -72,6 +73,7 @@ export const toImageJobCard = (
             : 'GPT 生图',
         promptPreview: imageJobPromptPreview(job.toolArgs),
         status,
+        sourceStatus: job.status,
         error: status === 'failed' ? job.lastError : undefined,
         createdAt: job.createdAt,
         updatedAt: job.updatedAt,
@@ -99,3 +101,6 @@ export const visibleImageJobCards = (
     .map(toImageJobCard)
     .filter(card => !shouldHideImageJobCard(card, at))
     .sort((a, b) => a.createdAt - b.createdAt);
+
+export const isImageJobCardSelectable = (card: LocalImageJobCard): boolean =>
+    card.sourceStatus === 'failed' || card.sourceStatus === 'cancelled';

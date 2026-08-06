@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('./mcpClient', async () => {
     const actual = await vi.importActual<typeof import('./mcpClient')>('./mcpClient');
@@ -12,6 +12,7 @@ import { DB } from './db';
 import {
     callMcpToolWithBackgroundImage,
     clearBackgroundImageJobs,
+    dismissBackgroundImageJobs,
     getBackgroundImageJobs,
     isBackgroundImageToolCall,
     persistBackgroundImageFailureMessage,
@@ -61,6 +62,10 @@ describe('background image jobs', () => {
         localStorage.clear();
         vi.restoreAllMocks();
         vi.mocked(callMcpTool).mockReset();
+    });
+
+    afterEach(() => {
+        vi.unstubAllGlobals();
     });
 
     it('only backgrounds the matching built-in image tool', () => {
@@ -225,4 +230,93 @@ describe('background image jobs', () => {
             backgroundImageClientRequestId: job.clientRequestId,
         });
     });
+
+    it('dismisses failed/cancelled jobs, deletes only linked failure messages, and emits refresh events', async () => {
+        const failed = makeJob({ id: 'failed-job', status: 'failed' });
+        const cancelled = makeJob({
+            id: 'cancelled-job', clientRequestId: 'cancelled-client',
+            remoteJobId: 'cancelled-remote', status: 'cancelled',
+        });
+        const running = makeJob({
+            id: 'running-job', clientRequestId: 'running-client',
+            remoteJobId: 'running-remote', status: 'running',
+        });
+        localStorage.setItem('aetheros.imageGeneration.backgroundJobs.v1', JSON.stringify({
+            version: 1, jobs: [failed, cancelled, running],
+        }));
+
+        vi.spyOn(DB, 'getMessagesByCharId').mockResolvedValue([
+            {
+                id: 11, charId: 'char-1', role: 'system', type: 'text', content: '[生图失败] failed',
+                metadata: { backgroundImageJobFailure: true, backgroundImageLocalJobId: failed.id },
+            },
+            {
+                id: 12, charId: 'char-1', role: 'system', type: 'text', content: '[生图失败] cancelled',
+                metadata: { backgroundImageJobFailure: true, backgroundImageClientRequestId: cancelled.clientRequestId },
+            },
+            {
+                id: 13, charId: 'char-1', role: 'assistant', type: 'image', content: 'data:image/png;base64,ok',
+                metadata: { backgroundImageJobId: failed.remoteJobId, backgroundGenerated: true },
+            },
+            {
+                id: 14, charId: 'char-1', role: 'system', type: 'text', content: 'unrelated',
+                metadata: { backgroundImageJobFailure: true, backgroundImageLocalJobId: 'other-job' },
+            },
+        ] as any);
+        const deleteMessages = vi.spyOn(DB, 'deleteMessages').mockResolvedValue(undefined);
+
+        const events: any[] = [];
+        const eventTarget = new EventTarget();
+        eventTarget.addEventListener('sullyos:background-image-job-event', event => events.push(event));
+        vi.stubGlobal('window', eventTarget);
+        if (typeof CustomEvent === 'undefined') {
+            class TestCustomEvent<T = unknown> extends Event {
+                detail: T;
+                constructor(type: string, init?: CustomEventInit<T>) {
+                    super(type);
+                    this.detail = init?.detail as T;
+                }
+            }
+            vi.stubGlobal('CustomEvent', TestCustomEvent);
+        }
+
+        expect(await dismissBackgroundImageJobs([failed.id, cancelled.id])).toBe(2);
+        expect(deleteMessages).toHaveBeenCalledWith([11, 12]);
+        expect(getBackgroundImageJobs().map(job => job.id)).toEqual(['running-job']);
+        expect(events).toHaveLength(2);
+        expect(events.map(event => event.detail.type)).toEqual(['dismissed', 'dismissed']);
+    });
+
+    it('does not dismiss queued/running/succeeded jobs or touch messages', async () => {
+        const jobs = [
+            makeJob({ id: 'queued-job', status: 'queued' }),
+            makeJob({ id: 'running-job', status: 'running' }),
+            makeJob({ id: 'succeeded-job', status: 'succeeded' }),
+        ];
+        localStorage.setItem('aetheros.imageGeneration.backgroundJobs.v1', JSON.stringify({ version: 1, jobs }));
+        const getMessages = vi.spyOn(DB, 'getMessagesByCharId');
+        const deleteMessages = vi.spyOn(DB, 'deleteMessages');
+
+        expect(await dismissBackgroundImageJobs(jobs.map(job => job.id))).toBe(0);
+        expect(getMessages).not.toHaveBeenCalled();
+        expect(deleteMessages).not.toHaveBeenCalled();
+        expect(getBackgroundImageJobs().map(job => job.id)).toEqual(jobs.map(job => job.id));
+    });
+
+
+    it('restores the task card when linked failure-message cleanup fails', async () => {
+        const failed = makeJob({ id: 'rollback-job', status: 'failed' });
+        localStorage.setItem('aetheros.imageGeneration.backgroundJobs.v1', JSON.stringify({
+            version: 1, jobs: [failed],
+        }));
+        vi.spyOn(DB, 'getMessagesByCharId').mockResolvedValue([{
+            id: 21, charId: 'char-1', role: 'system', type: 'text', content: '[生图失败] failed',
+            metadata: { backgroundImageJobFailure: true, backgroundImageLocalJobId: failed.id },
+        }] as any);
+        vi.spyOn(DB, 'deleteMessages').mockRejectedValue(new Error('delete failed'));
+
+        await expect(dismissBackgroundImageJobs([failed.id])).rejects.toThrow('delete failed');
+        expect(getBackgroundImageJobs().map(job => job.id)).toEqual([failed.id]);
+    });
+
 });
