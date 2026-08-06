@@ -29,6 +29,7 @@ import ApiCallLogModal from '../components/settings/ApiCallLogModal';
 import ApiFailoverSettings from '../components/settings/ApiFailoverSettings';
 import ApiPricingEditor from '../components/settings/ApiPricingEditor';
 import type { ApiPricing } from '../types';
+import { buildApiPresetConfig } from '../utils/apiPresetConfig';
 import { backfillUnpricedCallsForPreset } from '../utils/apiCostBackfill';
 import ImageGenerationSettings from '../components/settings/ImageGenerationSettings';
 import OrphanImageCleanupCard from '../components/settings/OrphanImageCleanupCard';
@@ -698,6 +699,17 @@ const Settings: React.FC = () => {
       [apiPresets, selectedPresetId],
   );
 
+  const buildCurrentApiPresetConfig = useCallback(
+      () => buildApiPresetConfig({
+          baseUrl: localUrl,
+          apiKey: localKey,
+          model: localModel,
+          stream: localStream,
+          temperature: localTemperature,
+      }),
+      [localUrl, localKey, localModel, localStream, localTemperature],
+  );
+
   const loadPreset = (preset: typeof apiPresets[0]) => {
       setSelectedPresetId(preset.id);
       setSelectedPresetName(preset.name);
@@ -750,43 +762,33 @@ const Settings: React.FC = () => {
   };
 
   const handleSavePreset = () => {
-      if (!newPresetName.trim()) {
+      const name = newPresetName.trim();
+      if (!name) {
           addToast('请输入预设名称', 'error');
           return;
       }
-      addApiPreset(newPresetName, {
-        baseUrl: localUrl,
-        apiKey: localKey,
-        model: localModel,
-        stream: localStream,
-        temperature: localTemperature,
-      }, newPresetPricing);
+      const preset = addApiPreset(name, buildCurrentApiPresetConfig(), newPresetPricing);
+      setSelectedPresetId(preset.id);
+      setSelectedPresetName(preset.name);
       setNewPresetName('');
       setShowPresetModal(false);
-      addToast('预设已保存', 'success');
+      addToast(`已创建并启用预设「${name}」`, 'success');
   };
 
   const handleSaveApi = () => {
-    const presetName = selectedPresetName.trim();
-    if (selectedApiPreset && !presetName) {
-      addToast('预设名称不能为空', 'error');
-      return;
-    }
-    const nextConfig = {
-      apiKey: localKey,
-      baseUrl: localUrl,
-      model: localModel,
-      stream: localStream,
-      temperature: localTemperature,
-    };
-    updateApiConfig(nextConfig);
+    const nextConfig = buildCurrentApiPresetConfig();
     if (selectedApiPreset) {
-      updateApiPreset(selectedApiPreset.id, presetName, {
-        ...selectedApiPreset.config,
-        ...nextConfig,
-      });
+      const presetName = selectedPresetName.trim();
+      if (!presetName) {
+        addToast('预设名称不能为空', 'error');
+        return;
+      }
+      updateApiPreset(selectedApiPreset.id, { name: presetName, config: nextConfig });
+      setStatusMsg(`已保存到「${presetName}」`);
+    } else {
+      updateApiConfig(nextConfig);
+      setStatusMsg('配置已保存');
     }
-    setStatusMsg(selectedApiPreset ? '配置和预设已保存' : '配置已保存');
     setTimeout(() => setStatusMsg(''), 2000);
   };
 
@@ -1595,7 +1597,7 @@ const Settings: React.FC = () => {
             }
             actions={
                 <button onClick={() => { setNewPresetName(''); setShowPresetModal(true); }} className="text-[10px] bg-slate-100 text-slate-600 px-3 py-1.5 rounded-full font-bold shadow-sm active:scale-95 transition-transform">
-                    新建预设
+                    另存为预设
                 </button>
             }
         >
@@ -1763,8 +1765,14 @@ const Settings: React.FC = () => {
                     </button>
                 </div>
 
-                <button onClick={handleSaveApi} className="w-full py-3 rounded-2xl font-bold text-white shadow-lg shadow-primary/20 bg-primary active:scale-95 transition-all mt-2">
-                    {statusMsg || (selectedApiPreset ? `保存配置并更新「${selectedPresetName.trim() || selectedApiPreset.name}」` : '保存配置')}
+                <button
+                    onClick={handleSaveApi}
+                    title={selectedApiPreset ? `保存到预设「${selectedPresetName.trim() || selectedApiPreset.name}」` : '保存当前 API 配置'}
+                    className="w-full py-3 rounded-2xl font-bold text-white shadow-lg shadow-primary/20 bg-primary active:scale-95 transition-all mt-2"
+                >
+                    <span className="block truncate px-3">
+                        {statusMsg || (selectedApiPreset ? `保存到「${selectedPresetName.trim() || selectedApiPreset.name}」` : '保存配置')}
+                    </span>
                 </button>
 
                 <button
@@ -2856,7 +2864,7 @@ const Settings: React.FC = () => {
       <ApiCallLogModal isOpen={showApiCallLog} onClose={() => setShowApiCallLog(false)} />
 
       {/* Preset Name Modal */}
-      <Modal isOpen={showPresetModal} title="新建预设" onClose={() => setShowPresetModal(false)} footer={<button onClick={handleSavePreset} className="w-full py-3 bg-primary text-white font-bold rounded-2xl">新建</button>}>
+      <Modal isOpen={showPresetModal} title="另存为预设" onClose={() => setShowPresetModal(false)} footer={<button onClick={handleSavePreset} className="w-full py-3 bg-primary text-white font-bold rounded-2xl">另存</button>}>
           <div className="space-y-2">
               <label className="text-[10px] font-bold text-slate-400 uppercase">预设名称 (例如: DeepSeek)</label>
               <input value={newPresetName} onChange={e => setNewPresetName(e.target.value)} className="w-full bg-slate-100 rounded-xl px-4 py-3 text-sm focus:outline-primary" autoFocus placeholder="Name..." />

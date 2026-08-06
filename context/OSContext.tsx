@@ -8,6 +8,7 @@ import {
   resolveApiExecutionPlan,
 } from '../utils/apiFailover';
 import { deleteRemoteNovelAiReference, stripNovelAiReferenceForTextOnlyBackup } from '../utils/novelAiReference';
+import { applyApiPresetConfig, mergeApiPresetPatch } from '../utils/apiPresetConfig';
 import { modelRejectsSamplingParams, stripSamplingParams, isSamplingParamError } from '../utils/samplingParamCompat';
 import { extractImagesInPlace, deepCloneForExport } from '../utils/backupExport';
 import { isBlobRef, getBlobForRef, migrateDataUrlToRef, migrateAppearancePresetBlobRefs, resolveBlobRefsDeep, BLOBREF_PREFIX, deleteBlobRefIfUnreferenced } from '../utils/blobRef';
@@ -324,7 +325,7 @@ interface OSContextType {
   apiPresets: ApiPreset[];
   activeApiPresetId: string | null;
   activateApiPreset: (preset: ApiPreset) => void;
-  addApiPreset: (name: string, config: APIConfig, pricing?: ApiPricing) => void;
+  addApiPreset: (name: string, config: APIConfig, pricing?: ApiPricing) => ApiPreset;
   updateApiPreset: (id: string, patch: Partial<ApiPreset>) => void;
   removeApiPreset: (id: string) => void;
 
@@ -2556,14 +2557,20 @@ recordApiCall({ requestId: (config as any)?.__sullyApiCallId, url: urlStr, body:
         addToast('主题没能保存到本地（存储空间可能已满），重启后可能会还原', 'error');
     }
   };
+  const persistCurrentApiConfig = (next: APIConfig) => {
+      setApiConfig(next);
+      localStorage.setItem('os_api_config', JSON.stringify(next));
+  };
+  const persistActiveApiPresetId = (id: string | null) => {
+      setActiveApiPresetId(id);
+      if (id) localStorage.setItem('os_active_api_preset_id', id);
+      else localStorage.removeItem('os_active_api_preset_id');
+  };
   const updateApiConfig = (updates: Partial<APIConfig>) => {
       if ('baseUrl' in updates || 'model' in updates || 'apiKey' in updates) {
-          setActiveApiPresetId(null);
-          localStorage.removeItem('os_active_api_preset_id');
+          persistActiveApiPresetId(null);
       }
-      const newConfig = { ...apiConfig, ...updates };
-      setApiConfig(newConfig);
-      localStorage.setItem('os_api_config', JSON.stringify(newConfig));
+      persistCurrentApiConfig({ ...apiConfig, ...updates });
   };
   const updateRealtimeConfig = (updates: Partial<RealtimeConfig>) => { const newConfig = { ...realtimeConfig, ...updates }; setRealtimeConfig(newConfig); localStorage.setItem('os_realtime_config', JSON.stringify(newConfig)); };
 
@@ -2674,11 +2681,37 @@ recordApiCall({ requestId: (config as any)?.__sullyApiCallId, url: urlStr, body:
     localStorage.setItem('os_remote_vector_config', JSON.stringify(newConfig));
   };
   const saveModels = (models: string[]) => { setAvailableModels(models); localStorage.setItem('os_available_models', JSON.stringify(models)); };
-  const persistApiPresets = (next: ApiPreset[]) => { setApiPresets(next); localStorage.setItem('os_api_presets', JSON.stringify(next)); resetApiFailoverRuntime(); };
-  const activateApiPreset = (preset: ApiPreset) => { updateApiConfig(preset.config); setActiveApiPresetId(preset.id); localStorage.setItem('os_active_api_preset_id', preset.id); };
-  const addApiPreset = (name: string, config: APIConfig, pricing?: ApiPricing) => { const preset={id:Date.now().toString(),name,config,pricing}; persistApiPresets([...apiPresets,preset]); setActiveApiPresetId(preset.id); localStorage.setItem('os_active_api_preset_id',preset.id); };
-  const updateApiPreset = (id: string, patch: Partial<ApiPreset>) => { persistApiPresets(apiPresets.map(p=>p.id===id?{...p,...patch,config:patch.config??p.config}:p)); };
-  const removeApiPreset = (id: string) => { persistApiPresets(apiPresets.filter(p=>p.id!==id)); if(activeApiPresetId===id){setActiveApiPresetId(null);localStorage.removeItem('os_active_api_preset_id');} };
+  const persistApiPresets = (next: ApiPreset[]) => {
+      setApiPresets(next);
+      localStorage.setItem('os_api_presets', JSON.stringify(next));
+      resetApiFailoverRuntime();
+  };
+  const activateApiPreset = (preset: ApiPreset) => {
+      persistCurrentApiConfig(applyApiPresetConfig(apiConfig, preset.config));
+      persistActiveApiPresetId(preset.id);
+      resetApiFailoverRuntime();
+  };
+  const addApiPreset = (name: string, config: APIConfig, pricing?: ApiPricing): ApiPreset => {
+      const preset: ApiPreset = { id: Date.now().toString(), name, config, pricing };
+      persistApiPresets([...apiPresets, preset]);
+      persistCurrentApiConfig(applyApiPresetConfig(apiConfig, preset.config));
+      persistActiveApiPresetId(preset.id);
+      return preset;
+  };
+  const updateApiPreset = (id: string, patch: Partial<ApiPreset>) => {
+      const previous = apiPresets.find(preset => preset.id === id);
+      if (!previous) return;
+      const updated = mergeApiPresetPatch(previous, patch);
+      persistApiPresets(apiPresets.map(preset => preset.id === id ? updated : preset));
+      if (activeApiPresetId === id && patch.config) {
+          persistCurrentApiConfig(applyApiPresetConfig(apiConfig, updated.config));
+          persistActiveApiPresetId(id);
+      }
+  };
+  const removeApiPreset = (id: string) => {
+      persistApiPresets(apiPresets.filter(preset => preset.id !== id));
+      if (activeApiPresetId === id) persistActiveApiPresetId(null);
+  };
   const savePresets = (presets: ApiPreset[]) => { setApiPresets(presets); localStorage.setItem('os_api_presets', JSON.stringify(presets)); resetApiFailoverRuntime(); };
   const addCharacter = async () => {
     const name = 'New Character';
