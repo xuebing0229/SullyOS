@@ -3215,6 +3215,7 @@ recordApiCall({ requestId: (config as any)?.__sullyApiCallId, url: urlStr, body:
               'user_profile', 'diaries', 'tasks', 'anniversaries', 'room_todos',
               'room_notes', 'groups', 'journal_stickers', 'social_posts', 'courses', 'games',
               ...GAME_HALL_BACKUP_STORES.map(item => item.storeName),
+              'simulator_projects', 'simulator_sessions', 'reading_projects', 'reading_records', 'reading_writings', 'reading_style_presets', 'app_memory_candidates',
               'worldbooks', 'novels', 'songs',
               'bank_transactions', 'bank_data',
               'xhs_activities', 'xhs_stock',
@@ -3527,6 +3528,13 @@ recordApiCall({ requestId: (config as any)?.__sullyApiCallId, url: urlStr, body:
               social_posts: 'socialPosts',
               courses: 'courses',
               games: 'games',
+              simulator_projects: 'simulatorProjects',
+              simulator_sessions: 'simulatorSessions',
+              reading_projects: 'readingProjects',
+              reading_records: 'readingRecords',
+              reading_writings: 'readingWritings',
+              reading_style_presets: 'readingStylePresets',
+              app_memory_candidates: 'appMemoryCandidates',
               worldbooks: 'worldbooks',
               novels: 'novels',
               songs: 'songs',
@@ -3727,6 +3735,13 @@ recordApiCall({ requestId: (config as any)?.__sullyApiCallId, url: urlStr, body:
                   case 'social_posts': backupData.socialPosts = processedData; break;
                   case 'courses': backupData.courses = processedData; break;
                   case 'games': backupData.games = processedData; break;
+                  case 'simulator_projects': backupData.simulatorProjects = processedData; break;
+                  case 'simulator_sessions': backupData.simulatorSessions = processedData; break;
+                  case 'reading_projects': backupData.readingProjects = processedData; break;
+                  case 'reading_records': backupData.readingRecords = processedData; break;
+                  case 'reading_writings': backupData.readingWritings = processedData; break;
+                  case 'reading_style_presets': backupData.readingStylePresets = processedData; break;
+                  case 'app_memory_candidates': backupData.appMemoryCandidates = processedData; break;
                   case 'worldbooks': backupData.worldbooks = processedData; break;
                   case 'novels': backupData.novels = processedData; break;
                   case 'songs': backupData.songs = processedData; break;

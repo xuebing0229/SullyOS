@@ -10,7 +10,7 @@ import {
     LifeRecord, MedPlan, LifeRecordSettings, CharacterGroup,
     VRWorldNovel, VRNovelAnnotation, CustomCreatorPart, VRMusicRoomState, VRGuestbookState, VRScript, VRStagedPlay, VRLetter,
     ApiCallUnpricedReason, ApiCostBucket, ApiCostDailySummary, ApiCostOverview, ApiCostResolution, ApiCostUnresolvedEntry,
-    WorldProfile, WorldEpisode
+    WorldProfile, WorldEpisode, AppMemoryCandidate, SimulatorProject, SimulatorSession, ReadingProject, ReadingRecord, ReadingWriting, ReadingStylePreset
 } from '../types';
 import type { ApiCallLogEntry } from './apiCallLog';
 import { applyUnpricedResolutionToSummary, normalizeApiCostDailySummary, toApiCostUnresolvedEntry } from './apiCostResolution';
@@ -32,7 +32,8 @@ const DB_NAME = 'AetherOS_Data';
 // v70：API 每日消费永久汇总。
 // v73：角色外部账号档案。完整保存游戏厅注册/登录返回，模型只引用 accountRef。
 // v74：API 未计价请求永久待处理 Store；确保已升级到 v73 的用户仍会触发建表。
-const DB_VERSION = 75;
+// v76：万象匣、素页同栖与用户确认式 App 记忆候选。
+const DB_VERSION = 76;
 
 const STORE_CHARACTERS = 'characters';
 const STORE_CHAR_GROUPS = 'character_groups'; // 角色分组定义（角色通过 groupId 指向；与群聊 groups 无关）
@@ -97,7 +98,15 @@ const STORE_WORLDS = 'worlds';                    // 家园·世界定义（成�
 const STORE_WORLD_EPISODES = 'world_episodes';    // 家园·演绎历史（每轮一条，index worldId）
 const STORE_LIFE_RECORDS = 'life_records';        // 生活记录：生理期/药盒打卡/锻炼（记账走 bank_transactions）
 const STORE_MED_PLANS = 'med_plans';              // 药盒计划（每天几点吃什么药）
-const STORE_LIFE_SETTINGS = 'life_record_settings'; // 生活记录设置单例（id='main'：周期长度等）
+const STORE_LIFE_SETTINGS = 'life_record_settings';
+const STORE_SIMULATOR_PROJECTS = 'simulator_projects';
+const STORE_SIMULATOR_SESSIONS = 'simulator_sessions';
+const STORE_READING_PROJECTS = 'reading_projects';
+const STORE_READING_RECORDS = 'reading_records';
+const STORE_READING_WRITINGS = 'reading_writings';
+const STORE_READING_STYLE_PRESETS = 'reading_style_presets';
+const STORE_APP_MEMORY_CANDIDATES = 'app_memory_candidates';
+ // 生活记录设置单例（id='main'：周期长度等）
 
 // API 调用记录：保留近 5 天，超期丢弃；再加一个硬上限防止异常情况撑爆
 const API_CALL_LOG_MAX_AGE_MS = 5 * 24 * 60 * 60 * 1000;
@@ -433,6 +442,41 @@ export const openDB = (): Promise<IDBDatabase> => {
 
       createStore(STORE_HOTNEWS, { keyPath: 'id' });
 
+      // ─── v76 schema：万象匣 + 素页同栖 + 用户确认式记忆候选 ───
+      if (!db.objectStoreNames.contains(STORE_SIMULATOR_PROJECTS)) {
+          db.createObjectStore(STORE_SIMULATOR_PROJECTS, { keyPath: 'id' });
+      }
+      if (!db.objectStoreNames.contains(STORE_SIMULATOR_SESSIONS)) {
+          const store = db.createObjectStore(STORE_SIMULATOR_SESSIONS, { keyPath: 'id' });
+          store.createIndex('projectId', 'projectId', { unique: false });
+          store.createIndex('charId', 'charId', { unique: false });
+          store.createIndex('updatedAt', 'updatedAt', { unique: false });
+      }
+      if (!db.objectStoreNames.contains(STORE_READING_PROJECTS)) {
+          db.createObjectStore(STORE_READING_PROJECTS, { keyPath: 'id' });
+      }
+      if (!db.objectStoreNames.contains(STORE_READING_RECORDS)) {
+          const store = db.createObjectStore(STORE_READING_RECORDS, { keyPath: 'id' });
+          store.createIndex('projectId', 'projectId', { unique: false });
+          store.createIndex('segmentId', 'segmentId', { unique: false });
+          store.createIndex('charId', 'charId', { unique: false });
+      }
+      if (!db.objectStoreNames.contains(STORE_READING_WRITINGS)) {
+          const store = db.createObjectStore(STORE_READING_WRITINGS, { keyPath: 'id' });
+          store.createIndex('projectId', 'projectId', { unique: false });
+          store.createIndex('charId', 'charId', { unique: false });
+      }
+      if (!db.objectStoreNames.contains(STORE_READING_STYLE_PRESETS)) {
+          db.createObjectStore(STORE_READING_STYLE_PRESETS, { keyPath: 'id' });
+      }
+      if (!db.objectStoreNames.contains(STORE_APP_MEMORY_CANDIDATES)) {
+          const store = db.createObjectStore(STORE_APP_MEMORY_CANDIDATES, { keyPath: 'id' });
+          store.createIndex('charId', 'charId', { unique: false });
+          store.createIndex('sourceApp', 'sourceApp', { unique: false });
+          store.createIndex('sourceRecordId', 'sourceRecordId', { unique: false });
+          store.createIndex('status', 'status', { unique: false });
+      }
+
       // ─── Memory Palace (记忆宫殿) stores ───
       if (!db.objectStoreNames.contains('memory_nodes')) {
           const mnStore = db.createObjectStore('memory_nodes', { keyPath: 'id' });
@@ -633,6 +677,55 @@ export const applyEntryToDailySummary = (original: ApiCostDailySummary | undefin
     x.unpricedCallCount++;
   }
   return x;
+};
+
+
+const waitTransaction = (tx: IDBTransaction): Promise<void> => new Promise((resolve, reject) => {
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error || new Error('IndexedDB transaction failed'));
+    tx.onabort = () => reject(tx.error || new Error('IndexedDB transaction aborted'));
+});
+const getAllStore = async <T,>(storeName: string): Promise<T[]> => {
+    const db = await openDB();
+    if (!db.objectStoreNames.contains(storeName)) return [];
+    return new Promise((resolve, reject) => {
+        const tx = db.transaction(storeName, 'readonly');
+        const req = tx.objectStore(storeName).getAll();
+        req.onsuccess = () => resolve((req.result || []) as T[]);
+        req.onerror = () => reject(req.error || tx.error);
+    });
+};
+const getAllIndex = async <T,>(storeName: string, indexName: string, key: IDBValidKey): Promise<T[]> => {
+    const db = await openDB();
+    if (!db.objectStoreNames.contains(storeName)) return [];
+    return new Promise((resolve, reject) => {
+        const tx = db.transaction(storeName, 'readonly');
+        const req = tx.objectStore(storeName).index(indexName).getAll(IDBKeyRange.only(key));
+        req.onsuccess = () => resolve((req.result || []) as T[]);
+        req.onerror = () => reject(req.error || tx.error);
+    });
+};
+const putStore = async <T,>(storeName: string, item: T): Promise<void> => {
+    const db = await openDB();
+    const tx = db.transaction(storeName, 'readwrite');
+    tx.objectStore(storeName).put(item);
+    await waitTransaction(tx);
+};
+const putManyStore = async <T,>(storeName: string, items: T[]): Promise<void> => {
+    if (!items.length) return;
+    const db = await openDB();
+    const tx = db.transaction(storeName, 'readwrite');
+    const store = tx.objectStore(storeName);
+    items.forEach(item => store.put(item));
+    await waitTransaction(tx);
+};
+const replaceStore = async <T,>(storeName: string, items: T[]): Promise<void> => {
+    const db = await openDB();
+    const tx = db.transaction(storeName, 'readwrite');
+    const store = tx.objectStore(storeName);
+    store.clear();
+    items.forEach(item => store.put(item));
+    await waitTransaction(tx);
 };
 
 export const DB = {
@@ -3083,6 +3176,53 @@ export const DB = {
       transaction.objectStore(STORE_LIFE_SIM).clear();
   },
 
+
+  // --- 万象匣 / 素页同栖 / App 记忆候选（v76） ---
+  getSimulatorProjects: async (): Promise<SimulatorProject[]> => getAllStore<SimulatorProject>(STORE_SIMULATOR_PROJECTS),
+  saveSimulatorProject: async (item: SimulatorProject): Promise<void> => putStore(STORE_SIMULATOR_PROJECTS, item),
+  deleteSimulatorProject: async (id: string): Promise<void> => {
+      const db = await openDB();
+      const tx = db.transaction([STORE_SIMULATOR_PROJECTS, STORE_SIMULATOR_SESSIONS], 'readwrite');
+      tx.objectStore(STORE_SIMULATOR_PROJECTS).delete(id);
+      const sessions = tx.objectStore(STORE_SIMULATOR_SESSIONS);
+      sessions.index('projectId').openKeyCursor(IDBKeyRange.only(id)).onsuccess = event => {
+          const cursor = (event.target as IDBRequest<IDBCursor | null>).result;
+          if (cursor) { sessions.delete(cursor.primaryKey); cursor.continue(); }
+      };
+      await waitTransaction(tx);
+  },
+  getSimulatorSessionsByProject: async (projectId: string): Promise<SimulatorSession[]> => getAllIndex<SimulatorSession>(STORE_SIMULATOR_SESSIONS, 'projectId', projectId),
+  saveSimulatorSession: async (item: SimulatorSession): Promise<void> => putStore(STORE_SIMULATOR_SESSIONS, item),
+
+  getReadingProjects: async (): Promise<ReadingProject[]> => getAllStore<ReadingProject>(STORE_READING_PROJECTS),
+  saveReadingProject: async (item: ReadingProject): Promise<void> => putStore(STORE_READING_PROJECTS, item),
+  deleteReadingProject: async (id: string): Promise<void> => {
+      const db = await openDB();
+      const stores = [STORE_READING_PROJECTS, STORE_READING_RECORDS, STORE_READING_WRITINGS];
+      const tx = db.transaction(stores, 'readwrite');
+      tx.objectStore(STORE_READING_PROJECTS).delete(id);
+      for (const name of [STORE_READING_RECORDS, STORE_READING_WRITINGS]) {
+          const target = tx.objectStore(name);
+          target.index('projectId').openKeyCursor(IDBKeyRange.only(id)).onsuccess = event => {
+              const cursor = (event.target as IDBRequest<IDBCursor | null>).result;
+              if (cursor) { target.delete(cursor.primaryKey); cursor.continue(); }
+          };
+      }
+      await waitTransaction(tx);
+  },
+  getReadingRecordsByProject: async (projectId: string): Promise<ReadingRecord[]> => getAllIndex<ReadingRecord>(STORE_READING_RECORDS, 'projectId', projectId),
+  saveReadingRecord: async (item: ReadingRecord): Promise<void> => putStore(STORE_READING_RECORDS, item),
+  saveReadingWriting: async (item: ReadingWriting): Promise<void> => putStore(STORE_READING_WRITINGS, item),
+  getReadingStylePresets: async (): Promise<ReadingStylePreset[]> => getAllStore<ReadingStylePreset>(STORE_READING_STYLE_PRESETS),
+  saveReadingStylePresets: async (items: ReadingStylePreset[]): Promise<void> => replaceStore(STORE_READING_STYLE_PRESETS, items),
+
+  getAppMemoryCandidatesBySource: async (charId: string, sourceApp: string, sourceRecordId?: string): Promise<AppMemoryCandidate[]> => {
+      const items = await getAllIndex<AppMemoryCandidate>(STORE_APP_MEMORY_CANDIDATES, 'charId', charId);
+      return items.filter(item => item.sourceApp === sourceApp && (!sourceRecordId || item.sourceRecordId === sourceRecordId));
+  },
+  saveAppMemoryCandidate: async (item: AppMemoryCandidate): Promise<void> => putStore(STORE_APP_MEMORY_CANDIDATES, item),
+  saveAppMemoryCandidates: async (items: AppMemoryCandidate[]): Promise<void> => putManyStore(STORE_APP_MEMORY_CANDIDATES, items),
+
   getRawStoreData: async (storeName: string): Promise<any[]> => {
       const db = await openDB();
       if (!db.objectStoreNames.contains(storeName)) return [];
@@ -3227,6 +3367,7 @@ export const DB = {
           STORE_VR_NOVELS, STORE_VR_ANNOTATIONS, STORE_CC_PARTS, STORE_VR_MUSIC, STORE_VR_GUESTBOOK, STORE_VR_SCRIPTS, STORE_VR_PLAYS, STORE_VR_PRESETS, STORE_VR_LETTERS, STORE_VR_SETTINGS,
           STORE_API_CALL_LOG, STORE_API_COST_DAILY, STORE_API_COST_UNRESOLVED,
           STORE_WORLDS, STORE_WORLD_EPISODES,
+          STORE_SIMULATOR_PROJECTS, STORE_SIMULATOR_SESSIONS, STORE_READING_PROJECTS, STORE_READING_RECORDS, STORE_READING_WRITINGS, STORE_READING_STYLE_PRESETS, STORE_APP_MEMORY_CANDIDATES,
           'memory_nodes', 'memory_vectors', 'memory_links', 'topic_boxes', 'anticipations', 'event_boxes',
           'room_plates', 'digest_reports',
               ...GAME_HALL_BACKUP_STORES.map(item => item.storeName), GAME_HALL_PROTOCOL_CACHE_STORE,
@@ -3284,6 +3425,7 @@ export const DB = {
           data.socialPosts !== undefined,
           data.courses !== undefined,
           data.games !== undefined,
+          data.simulatorProjects !== undefined, data.simulatorSessions !== undefined, data.readingProjects !== undefined, data.readingRecords !== undefined, data.readingWritings !== undefined, data.readingStylePresets !== undefined, data.appMemoryCandidates !== undefined,
           ...GAME_HALL_BACKUP_STORES.map(({ field }) => (data as any)[field] !== undefined),
           data.apiCallLog !== undefined,
           data.worldbooks !== undefined,
@@ -3563,6 +3705,14 @@ export const DB = {
               (data as any)[descriptor.field] = undefined;
           }, items?.length || 0);
       }
+
+      await runSection('万象匣项目', data.simulatorProjects !== undefined, async () => { await clearAndAdd(STORE_SIMULATOR_PROJECTS, data.simulatorProjects, '万象匣项目', false); data.simulatorProjects = undefined as any; }, data.simulatorProjects?.length || 0);
+      await runSection('万象匣会话', data.simulatorSessions !== undefined, async () => { await clearAndAdd(STORE_SIMULATOR_SESSIONS, data.simulatorSessions, '万象匣会话', false); data.simulatorSessions = undefined as any; }, data.simulatorSessions?.length || 0);
+      await runSection('素页项目', data.readingProjects !== undefined, async () => { await clearAndAdd(STORE_READING_PROJECTS, data.readingProjects, '素页项目', false); data.readingProjects = undefined as any; }, data.readingProjects?.length || 0);
+      await runSection('素页记录', data.readingRecords !== undefined, async () => { await clearAndAdd(STORE_READING_RECORDS, data.readingRecords, '素页记录', false); data.readingRecords = undefined as any; }, data.readingRecords?.length || 0);
+      await runSection('共同写作', data.readingWritings !== undefined, async () => { await clearAndAdd(STORE_READING_WRITINGS, data.readingWritings, '共同写作', false); data.readingWritings = undefined as any; }, data.readingWritings?.length || 0);
+      await runSection('素页文风预设', data.readingStylePresets !== undefined, async () => { await clearAndAdd(STORE_READING_STYLE_PRESETS, data.readingStylePresets, '素页文风预设', false); data.readingStylePresets = undefined as any; }, data.readingStylePresets?.length || 0);
+      await runSection('App 记忆候选', data.appMemoryCandidates !== undefined, async () => { await clearAndAdd(STORE_APP_MEMORY_CANDIDATES, data.appMemoryCandidates, 'App 记忆候选', false); data.appMemoryCandidates = undefined as any; }, data.appMemoryCandidates?.length || 0);
       await runSection('世界书', data.worldbooks !== undefined, async () => {
           await clearAndAdd(STORE_WORLDBOOKS, data.worldbooks, '世界书', false);
           data.worldbooks = undefined as any;

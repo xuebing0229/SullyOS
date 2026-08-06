@@ -36,6 +36,8 @@ import {
   Planet,
   Wrench,
   HouseLine,
+  Cube,
+  BookOpen,
 } from '@phosphor-icons/react';
 
 // SVG 图标库 - Phosphor Icons
@@ -77,6 +79,8 @@ export const Icons: Record<string, React.FC<{ className?: string }>> = {
   VRWorld: ({ className }) => <Planet className={className} weight="regular" />,
   CharCreatorDev: ({ className }) => <Wrench className={className} weight="regular" />,
   WorldHome: ({ className }) => <HouseLine className={className} weight="regular" />,
+  Simulator: ({ className }) => <Cube className={className} weight="regular" />,
+  ReadingTogether: ({ className }) => <BookOpen className={className} weight="regular" />,
 };
 
 export const INSTALLED_APPS: AppConfig[] = [
@@ -99,6 +103,8 @@ export const INSTALLED_APPS: AppConfig[] = [
   { id: AppID.Study, name: '自习室', icon: 'Study', color: 'emerald' },
   { id: AppID.Game, name: 'TRPG', icon: 'Game', color: 'orange' },
   { id: AppID.GameHall, name: '游戏厅', icon: 'GameHall', color: 'violet' },
+  { id: AppID.Simulator, name: '万象匣', icon: 'Simulator', color: 'violet' },
+  { id: AppID.ReadingTogether, name: '素页同栖', icon: 'ReadingTogether', color: 'amber' },
   { id: AppID.Novel, name: '笔友会', icon: 'Novel', color: 'amber' },
   { id: AppID.Songwriting, name: '写歌', icon: 'Songwriting', color: 'fuchsia' },
   { id: AppID.VRWorld, name: '彼方', icon: 'VRWorld', color: 'indigo' },

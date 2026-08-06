@@ -40,6 +40,8 @@ export enum AppID {
   VRWorld = 'vrworld', // 彼方 — 角色自主登入的虚拟世界（定时驱动，房间里看小说/听歌/留言，产出活动卡注入聊天+记忆）
   CharCreatorDev = 'char_creator_dev', // 捏脸系统开发模式 — 仅开发模式可见，向捏人器指定类目追加自定义部件
   WorldHome = 'world_home', // 家园 — 同世界观多角色共同生活的大世界（观测驱动演绎，每角色独立 LLM 调用 + NPC 世界引擎）
+  Simulator = 'simulator',
+  ReadingTogether = 'reading_together',
 }
 
 export interface SystemLog {
@@ -3266,7 +3268,141 @@ export interface GameSession {
     lastPlayedAt: number;
 }
 
-export type MessageType = 'text' | 'image' | 'emoji' | 'voice' | 'interaction' | 'transfer' | 'system' | 'social_card' | 'chat_forward' | 'xhs_card' | 'score_card' | 'music_card' | 'mcd_card' | 'luckin_card' | 'html_card' | 'news_card' | 'vr_card' | 'trpg_card' | 'novel_card' | 'world_card' | 'sim_card' | 'phone_card' | 'webpage_card' | 'theater_card' | 'room_card' | 'life_card' | 'group_topic_card';
+export type AppMemorySource = 'simulator' | 'reading_together';
+export type AppMemoryCandidateStatus = 'pending' | 'committed' | 'dismissed';
+
+export interface AppMemoryCandidate {
+  id: string;
+  charId: string;
+  sourceApp: AppMemorySource;
+  sourceRecordId: string;
+  title: string;
+  summary: string;
+  room:
+    | 'living_room'
+    | 'bedroom'
+    | 'study'
+    | 'user_room'
+    | 'self_room'
+    | 'attic'
+    | 'windowsill';
+  tags: string[];
+  importance: number; // 1..10
+  mood: string;
+  valence?: number;   // -1..1
+  arousal?: number;   // -1..1
+  status: AppMemoryCandidateStatus;
+  createdAt: number;
+  updatedAt: number;
+  committedAt?: number;
+  memoryNodeId?: string;
+  chatMessageId?: number;
+}
+
+export type SimulatorMode = 'html' | 'text' | 'hybrid' | 'frontend_ai';
+
+export interface SimulatorProject {
+  id: string;
+  name: string;
+  description?: string;
+  mode: SimulatorMode;
+  charId: string;
+  html: string;
+  prompt: string;
+  breaker?: string;
+  worldbookEnabled: boolean;
+  regexEnabled: boolean;
+  mainContextEnabled: boolean;
+  localContextLimit: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface SimulatorTurn {
+  id: string;
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+  action?: string;
+  payload?: unknown;
+  createdAt: number;
+}
+
+export interface SimulatorSession {
+  id: string;
+  projectId: string;
+  charId: string;
+  status: 'active' | 'ended';
+  turns: SimulatorTurn[];
+  frontendState?: unknown;
+  createdAt: number;
+  updatedAt: number;
+  endedAt?: number;
+}
+
+export interface ReadingSegment {
+  id: string;
+  index: number;
+  text: string;
+  chars: number;
+}
+
+export interface ReadingProject {
+  id: string;
+  title: string;
+  sourceName: string;
+  format: 'txt' | 'md';
+  charId: string;
+  segments: ReadingSegment[];
+  progressIndex: number;
+  stylePresetId?: string;
+  localContextLimit: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export type ReadingRecordType =
+  | 'annotation'
+  | 'inner_voice'
+  | 'question'
+  | 'answer'
+  | 'user_note';
+
+export interface ReadingRecord {
+  id: string;
+  projectId: string;
+  segmentId: string;
+  charId: string;
+  type: ReadingRecordType;
+  role: 'user' | 'assistant';
+  content: string;
+  createdAt: number;
+}
+
+export type ReadingWritingType = 'free' | 'user_char_story' | 'continue';
+
+export interface ReadingWriting {
+  id: string;
+  projectId?: string;
+  charId: string;
+  type: ReadingWritingType;
+  title: string;
+  prompt: string;
+  content: string;
+  stylePresetId?: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface ReadingStylePreset {
+  id: string;
+  name: string;
+  prompt: string;
+  target: 'all' | 'reading' | 'writing';
+  createdAt: number;
+  updatedAt: number;
+}
+
+export type MessageType = 'text' | 'image' | 'emoji' | 'voice' | 'interaction' | 'transfer' | 'system' | 'social_card' | 'chat_forward' | 'xhs_card' | 'score_card' | 'music_card' | 'mcd_card' | 'luckin_card' | 'html_card' | 'news_card' | 'vr_card' | 'trpg_card' | 'novel_card' | 'world_card' | 'sim_card' | 'phone_card' | 'webpage_card' | 'theater_card' | 'room_card' | 'life_card' | 'group_topic_card' | 'app_memory_card';
 
 export interface Message {
     id: number;
@@ -3317,6 +3453,13 @@ export interface FullBackupData {
     memoryPalaceConfig?: MemoryPalaceBackupConfig;
     customIcons?: Record<string, string>;
     appearancePresets?: AppearancePreset[];
+    simulatorProjects?: SimulatorProject[];
+    simulatorSessions?: SimulatorSession[];
+    readingProjects?: ReadingProject[];
+    readingRecords?: ReadingRecord[];
+    readingWritings?: ReadingWriting[];
+    readingStylePresets?: ReadingStylePreset[];
+    appMemoryCandidates?: AppMemoryCandidate[];
     characters?: CharacterProfile[];
     characterGroups?: CharacterGroup[];
     groups?: GroupProfile[];
