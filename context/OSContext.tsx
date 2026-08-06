@@ -1,7 +1,12 @@
 import React, { createContext, useContext, useEffect, useState, useRef, useCallback } from 'react';
 import { APIConfig, AppID, OSTheme, VirtualTime, CharacterProfile, CharacterGroup, ChatTheme, Toast, FullBackupData, UserProfile, ApiPreset, ApiPricing, GroupProfile, SystemLog, Worldbook, NovelBook, SongSheet, Message, RealtimeConfig, AppearancePreset, CloudBackupConfig, CloudBackupFile } from '../types';
 import { DB } from '../utils/db';
-import { API_FAILOVER_STORAGE_KEY, resetApiFailoverRuntime } from '../utils/apiFailover';
+import {
+  API_FAILOVER_STORAGE_KEY,
+  executeOpenAiChatPlan,
+  resetApiFailoverRuntime,
+  resolveApiExecutionPlan,
+} from '../utils/apiFailover';
 import { deleteRemoteNovelAiReference, stripNovelAiReferenceForTextOnlyBackup } from '../utils/novelAiReference';
 import { modelRejectsSamplingParams, stripSamplingParams, isSamplingParamError } from '../utils/samplingParamCompat';
 import { extractImagesInPlace, deepCloneForExport } from '../utils/backupExport';
@@ -1944,8 +1949,15 @@ recordApiCall({ requestId: (config as any)?.__sullyApiCallId, url: urlStr, body:
 
           // Determine which API to use
           const pCfg = char.proactiveConfig;
-          const useSecondary = pCfg?.useSecondaryApi && pCfg.secondaryApi?.baseUrl;
-          const api = useSecondary ? pCfg!.secondaryApi! : currentApiConfig;
+          const useSecondary = Boolean(
+              pCfg?.useSecondaryApi
+              && pCfg.secondaryApi?.baseUrl?.trim()
+          );
+          const api = (
+              useSecondary
+                  ? pCfg!.secondaryApi!
+                  : currentApiConfig
+          ) as APIConfig;
           if (!api.baseUrl) {
               drainQueuedProactive();
               return;
@@ -2053,8 +2065,6 @@ recordApiCall({ requestId: (config as any)?.__sullyApiCallId, url: urlStr, body:
               }
 
               // 4. API call
-              const baseUrl = api.baseUrl.replace(/\/+$/, '');
-              const headers = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${api.apiKey || 'sk-none'}` };
               const reqBody: any = { model: api.model, messages: fullMessages, temperature: 0.85, stream: false };
               // 思考链开启时显式向后端请求 extended thinking — 与 useChatAI 同步,
               // 不同代理认不同入口,全都试一遍,代理不识别的会自动忽略
@@ -2071,10 +2081,24 @@ recordApiCall({ requestId: (config as any)?.__sullyApiCallId, url: urlStr, body:
                   delete reqBody.temperature;
                   delete reqBody.top_p;
               }
-              const data = await safeFetchJson(`${baseUrl}/chat/completions`, {
-                  method: 'POST', headers,
-                  body: JSON.stringify(reqBody)
-              }, 2, 0, { appName: '消息', charId, charName: char.name, purpose: '主动消息' });
+              // 默认主动消息与主聊天共用 chat 故障转移组；角色显式开启
+              // 主动消息副 API 时关闭故障转移，保持原有独立直连边界。
+              const proactivePlan = resolveApiExecutionPlan(
+                  'chat',
+                  api,
+                  !useSecondary,
+              );
+              const { value: data } = await executeOpenAiChatPlan({
+                  plan: proactivePlan,
+                  body: reqBody,
+                  meta: {
+                      appName: '消息',
+                      charId,
+                      charName: char.name,
+                      purpose: '主动消息',
+                  },
+                  directMaxRetries: 2,
+              });
 
               // 5. Process & save response
               let aiContent = data.choices?.[0]?.message?.content || '';

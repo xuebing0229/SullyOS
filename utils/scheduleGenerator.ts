@@ -1,8 +1,9 @@
 
-import { CharacterProfile, UserProfile, DailySchedule, ScheduleSlot, Message, Emoji } from '../types';
+import { CharacterProfile, UserProfile, DailySchedule, ScheduleSlot, Message, Emoji, type APIConfig } from '../types';
 import { ContextBuilder } from './context';
 import { DB } from './db';
-import { safeResponseJson, extractContent, extractJson } from './safeApi';
+import { extractContent, extractJson } from './safeApi';
+import { executeOpenAiChatPlan, resolveApiExecutionPlan } from './apiFailover';
 import { injectMemoryPalace } from './memoryPalace/pipeline';
 import { getDailyScheduleForChar } from './dailySchedule';
 import { getScheduleDateKey, getScheduleWallClock } from './scheduleTime';
@@ -13,11 +14,32 @@ import { getFlowNarrativeKey, isScheduleFeatureOn } from './scheduleFeature';
 
 export { getFlowNarrativeKey, isScheduleFeatureOn } from './scheduleFeature';
 
-interface ApiConfig {
-    baseUrl: string;
-    apiKey: string;
-    model: string;
+type ScheduleRequestPurpose =
+    | '生成当日日程'
+    | '进化意识流';
+
+async function executeScheduleChatCompletion(
+    char: Pick<CharacterProfile, 'id' | 'name'>,
+    apiConfig: APIConfig,
+    purpose: ScheduleRequestPurpose,
+    body: Record<string, any>,
+): Promise<any> {
+    // 日程没有独立 API 或 scope，始终复用主聊天 chat 执行计划。
+    const plan = resolveApiExecutionPlan('chat', apiConfig, true);
+    const result = await executeOpenAiChatPlan({
+        plan,
+        body,
+        meta: {
+            appName: '日程系统',
+            charId: char.id,
+            charName: char.name,
+            purpose,
+        },
+        directMaxRetries: 2,
+    });
+    return result.value;
 }
+
 
 /**
  * 构建生活系（lifestyle）角色的日程生成 prompt。
@@ -229,7 +251,7 @@ ${chatHistoryBlock ? `**重要：上面给了你最近和「${user.name}」的�
 export async function generateDailyScheduleForChar(
     char: CharacterProfile,
     userProfile: UserProfile,
-    apiConfig: ApiConfig,
+    apiConfig: APIConfig,
     forceRegenerate: boolean = false
 ): Promise<DailySchedule | null> {
     // 总开关关闭时直接短路，避免副 API / 兜底调用
@@ -290,26 +312,18 @@ export async function generateDailyScheduleForChar(
         : buildLifestylePrompt(baseContext, char, userProfile, today, dayOfWeek, chatHistoryBlock);
 
     try {
-        const response = await fetch(`${apiConfig.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiConfig.apiKey}` },
-            body: JSON.stringify({
+        const data = await executeScheduleChatCompletion(
+            char,
+            apiConfig,
+            '生成当日日程',
+            {
                 model: apiConfig.model,
                 messages: [{ role: 'user', content: prompt }],
                 temperature: 0.85,
-                max_tokens: 8000
-            }),
-            // API 调用记录标签（全局 fetch 拦截器读取）；不传会兜底成「用户当时打开的 App」，
-            // 后台任务被标成 Message/群聊 之类，用户看记录一头雾水。
-            __sullyMeta: { appName: '日程系统', charId: char.id, charName: char.name, purpose: '生成当日日程' },
-        } as RequestInit);
-
-        if (!response.ok) {
-            console.error('[Schedule] API error:', response.status);
-            return null;
-        }
-
-        const data = await safeResponseJson(response);
+                max_tokens: 8000,
+                stream: false,
+            },
+        );
         // 与主链路对齐：extractContent 会剥掉思维链模型(<think>...)并回落 reasoning_content，
         // extractJson 负责去围栏 / 从 prose 里抽 {...} / 修截断 + 尾逗号等多重兜底。
         // 之前这里手搓 JSON.parse，碰到推理模型的 <think> 前缀会在 "line 1 column 1" 直接炸。
@@ -373,7 +387,7 @@ export async function evolveFlowNarrative(
     schedule: DailySchedule,
     recentMessages: Message[],
     currentNarrative: string,
-    apiConfig: ApiConfig,
+    apiConfig: APIConfig,
 ): Promise<string | null> {
     // 总开关关闭时直接短路
     if (!isScheduleFeatureOn(char)) return null;
@@ -431,24 +445,18 @@ ${chatSummary}
 直接输出独白文本，不要JSON，不要任何包裹。`;
 
     try {
-        const response = await fetch(`${apiConfig.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiConfig.apiKey}` },
-            body: JSON.stringify({
+        const data = await executeScheduleChatCompletion(
+            char,
+            apiConfig,
+            '进化意识流',
+            {
                 model: apiConfig.model,
                 messages: [{ role: 'user', content: prompt }],
                 temperature: 0.85,
-                max_tokens: 500
-            }),
-            __sullyMeta: { appName: '日程系统', charId: char.id, charName: char.name, purpose: '进化意识流' },
-        } as RequestInit);
-
-        if (!response.ok) {
-            console.error('[Schedule/Evolve] API error:', response.status);
-            return null;
-        }
-
-        const data = await safeResponseJson(response);
+                max_tokens: 500,
+                stream: false,
+            },
+        );
         // extractContent 已剥思维链 + 回落 reasoning_content + trim；这里只再去掉外层引号包裹
         let content = extractContent(data).replace(/^["']|["']$/g, '').trim();
 
