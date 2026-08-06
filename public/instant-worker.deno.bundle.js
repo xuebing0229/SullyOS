@@ -2350,6 +2350,7 @@ var stripLegacyTrans = (t) => t.replace(/%%TRANS%%[\s\S]*/gi, "");
 var collapseWhitespace = (t) => t.replace(/\n{3,}/g, "\n\n").trim();
 var stripThinkBlocks = (t) => t.replace(/<(think|thinking|thought)>[\s\S]*?<\/\1>/gi, "").replace(/<(?:think|thinking|thought)>[\s\S]*$/gi, "");
 var stripInnerState = (t) => t.replace(/\[\[INNER_STATE:\s*[\s\S]*?\]\]/g, "");
+var stripGameHallAutoplayCommands = (t) => t.replace(/\[\[GAME_HALL_AUTOPLAY_(?:START|PAUSE|RESUME|STOP)[\s\S]*?\]\]/gi, "");
 var replaceMarkdownLinks = (t) => t.replace(/\[([^\]]+)\]\([^)]+\)/g, "[\u94FE\u63A5\uFF1A$1]");
 var replaceSendEmoji = (t) => t.replace(/\[\[SEND_EMOJI:\s*(.+?)\]\]/g, "[\u8868\u60C5\uFF1A$1]");
 var replaceEmojiReverseTag = (t) => t.replace(/\[(?:你|User|用户|System|[\w一-龥]+)\s*发送了表情包[:：]\s*(.*?)\]/g, "[\u8868\u60C5\uFF1A$1]");
@@ -2472,6 +2473,7 @@ function sanitizeForNotification(text) {
   result = stripSystemLogLeak(result);
   result = stripSourceTags(result);
   result = stripInnerState(result);
+  result = stripGameHallAutoplayCommands(result);
   result = stripBusinessTagsForNotification(result);
   result = stripQuotes(result);
   result = replaceMarkdownLinks(result);
@@ -2523,6 +2525,7 @@ ${ATOM_MARKER}B${idx}${ATOM_MARKER}
   }).join("");
   cleaned = extractTranslationOriginal(cleaned);
   cleaned = stripInnerState(cleaned);
+  cleaned = stripGameHallAutoplayCommands(cleaned);
   cleaned = stripBusinessTagsForNotification(cleaned);
   cleaned = stripTimestamps(cleaned);
   cleaned = stripChineseDate(cleaned);
@@ -2720,6 +2723,34 @@ function extractTransferCommands(content) {
 }
 
 // worker/instant-push/src/classifier.ts
+var GAME_HALL_AUTOPLAY_RE = /\[\[GAME_HALL_AUTOPLAY_(START|PAUSE|RESUME|STOP)(?:\s+([\s\S]*?))?\]\]/gi;
+function extractGameHallAutoplayDirectives(text) {
+  const directives = [];
+  const cleaned = text.replace(
+    GAME_HALL_AUTOPLAY_RE,
+    (_full, actionRaw, payloadRaw) => {
+      const action = actionRaw.toLowerCase();
+      let payload;
+      if (action === "start" && payloadRaw?.trim()) {
+        try {
+          const parsed = JSON.parse(payloadRaw);
+          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) payload = parsed;
+        } catch {
+          payload = { instruction: payloadRaw.trim() };
+        }
+      }
+      const startPayload = payload ? {
+        instruction: typeof payload.instruction === "string" ? payload.instruction : void 0,
+        gameHint: typeof payload.gameHint === "string" ? payload.gameHint : void 0,
+        goal: typeof payload.goal === "string" ? payload.goal : void 0,
+        returnToMainChat: typeof payload.returnToMainChat === "boolean" ? payload.returnToMainChat : void 0
+      } : void 0;
+      directives.push({ type: "game_hall_autoplay", action, payload: startPayload });
+      return "";
+    }
+  ).replace(/\n{3,}/g, "\n\n").trim();
+  return { text: cleaned, directives };
+}
 var DATA_TAGS = [
   // [[RECALL: 2024-05]] / [[RECALL: 2024年5]]
   {
@@ -2895,6 +2926,8 @@ function parseDiaryShort(m, type) {
   return { type, title, content };
 }
 function classifyLLMOutput(text) {
+  const autoplay = extractGameHallAutoplayDirectives(text);
+  text = autoplay.text;
   const toolCalls = [];
   for (const spec of DATA_TAGS) {
     const matches = Array.from(text.matchAll(spec.re));
@@ -2913,9 +2946,9 @@ function classifyLLMOutput(text) {
     for (const spec of DATA_TAGS) prefix = prefix.replace(spec.re, "");
     prefix = prefix.trim();
     const sanitizedPrefix = sanitizeForNotification(prefix);
-    return { kind: "tool-request", prefix, sanitizedPrefix, toolCalls };
+    return { kind: "tool-request", prefix, sanitizedPrefix, toolCalls, directives: autoplay.directives };
   }
-  const directives = [];
+  const directives = [...autoplay.directives];
   const { text: textAfterTransfers, events: transferEvents } = extractTransferCommands(text);
   for (const ev of transferEvents) {
     if (ev.kind === "send") {
@@ -3457,7 +3490,8 @@ function buildPushDecision(input, deps) {
         toolCalls: result.toolCalls,
         metadata: {
           ...callerMetadata,
-          iteration
+          iteration,
+          ...result.directives.length ? { directives: result.directives } : {}
         }
       })
     };

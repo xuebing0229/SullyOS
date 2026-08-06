@@ -350,4 +350,29 @@ describe('buildPushDecision skip-push (空内容)', () => {
     expect(ps).toHaveLength(1);
     expect((ps[0] as { metadata: { directives: unknown[] } }).metadata.directives).toEqual([{ type: 'poke' }]);
   });
+
+  it('纯游戏厅自主标记走 directive-only push，不显示通知', () => {
+    const r = buildPushDecision(baseInput({ llmOutputText: '[[GAME_HALL_AUTOPLAY_STOP]]' }));
+    expect(r.decision).toBe('finish');
+    const ps = pushes(r);
+    expect(ps).toHaveLength(1);
+    expect(ps[0].message).toBe('');
+    expect(ps[0].notification).toBeUndefined();
+    expect(ps[0].metadata?.directives).toEqual([
+      { type: 'game_hall_autoplay', action: 'stop', payload: undefined },
+    ]);
+  });
+
+  it('游戏厅标记与 SEARCH 同轮时挂到 tool-request push metadata', () => {
+    const r = buildPushDecision(baseInput({
+      llmOutputText: '查攻略[[SEARCH: 攻略]][[GAME_HALL_AUTOPLAY_PAUSE]]',
+    }));
+    expect(r.decision).toBe('tool-request');
+    const ps = pushes(r);
+    const toolPush = ps.at(-1)!;
+    expect(toolPush.messageKind).toBe('tool_request');
+    expect(toolPush.metadata?.directives).toEqual([
+      { type: 'game_hall_autoplay', action: 'pause', payload: undefined },
+    ]);
+  });
 });

@@ -1596,6 +1596,7 @@ async function savePendingToolCall(payload) {
       charId,
       toolCalls,
       llmOutputText: String(payload?.message || ""),
+      directives: Array.isArray(payload?.metadata?.directives) ? payload.metadata.directives : void 0,
       iteration,
       createdAt: Date.now()
     });

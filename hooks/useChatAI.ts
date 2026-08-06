@@ -908,6 +908,7 @@ export const useChatAI = ({
                 mcdMiniSnap: mcdMiniOpen ? mcdMiniSnap : undefined,
                 luckinMiniSnap: luckinMiniOpen ? luckinMiniSnap : undefined,
                 luckinChat: luckinChatRef?.current?.active ? luckinChatRef.current : undefined,
+                allowGameHallAutoplayControl: true,
             }));
             const systemPrompt = payload.systemPrompt;
             const cleanedApiMessages = payload.cleanedApiMessages;

@@ -273,4 +273,26 @@ describe('classifyLLMOutput', () => {
       expect(types).toContain('feishu_write_diary');
     }
   });
+
+  it('游戏厅自主启动标记从正文剥离并结构化保存 payload', () => {
+    const r = classifyLLMOutput('我去玩啦。\n[[GAME_HALL_AUTOPLAY_START {"instruction":"继续那局","returnToMainChat":true}]]');
+    expect(r.kind).toBe('finish');
+    if (r.kind === 'finish') {
+      expect(r.cleanedText).toBe('我去玩啦。');
+      expect(r.directives).toEqual([{
+        type: 'game_hall_autoplay',
+        action: 'start',
+        payload: { instruction: '继续那局', gameHint: undefined, goal: undefined, returnToMainChat: true },
+      }]);
+    }
+  });
+
+  it('游戏厅控制标记与 SEARCH 同轮时挂在 tool-request directives', () => {
+    const r = classifyLLMOutput('先查一下。[[SEARCH: 攻略]][[GAME_HALL_AUTOPLAY_PAUSE]]');
+    expect(r.kind).toBe('tool-request');
+    if (r.kind === 'tool-request') {
+      expect(r.prefix).toBe('先查一下。');
+      expect(r.directives).toEqual([{ type: 'game_hall_autoplay', action: 'pause', payload: undefined }]);
+    }
+  });
 });

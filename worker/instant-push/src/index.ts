@@ -755,6 +755,7 @@ export function buildPushDecision(
         metadata: {
           ...callerMetadata,
           iteration,
+          ...(result.directives.length ? { directives: result.directives } : {}),
         },
       }),
     };

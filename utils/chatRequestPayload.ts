@@ -1,3 +1,4 @@
+import { buildGameHallAutoplayControlPrompt } from './gameHallAutoplayIntent';
 /**
  * 聊天请求载荷统一构造器
  *
@@ -64,6 +65,8 @@ export interface BuildChatPayloadInput {
      * 让角色能回忆起自己跟对面这些人的关系，而不是只按聊天历史召回。
      */
     recallQueryHint?: string;
+    /** 仅真正的 1v1 主聊天允许角色发出游戏厅自主游玩控制指令。 */
+    allowGameHallAutoplayControl?: boolean;
 
     // 实时世界 / 角色情绪
     realtimeConfig?: RealtimeConfig;
@@ -386,6 +389,10 @@ export async function buildChatRequestPayload(input: BuildChatPayloadInput): Pro
     // 思考链/点单块拼在钢印之后、模型开口前最后读到的是格式说明书的问题。
     // 游戏厅跨功能连续性现在通过真正写入 messages 主表的 game_hall_card 完成。
     // 不再注入旧 gameHallBridgeBlock，避免临时摘要与主聊天卡重复或残留旧状态。
+    if (input.allowGameHallAutoplayControl === true) {
+        systemPrompt += buildGameHallAutoplayControlPrompt(char);
+    }
+
     volatileTail += parts.recencyTail;
 
     // 动态状态只服务当前请求，不写入消息 metadata，也不随历史永久回放。

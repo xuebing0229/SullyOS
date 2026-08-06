@@ -28,6 +28,11 @@
 import { CharacterProfile, UserProfile, Message, Emoji, RealtimeConfig } from '../types';
 import { DB } from './db';
 import { ChatParser } from './chatParser';
+import {
+    enqueueGameHallAutoplayCommands,
+    stripAndParseGameHallAutoplayCommands,
+    type GameHallAutoplayCommand,
+} from './gameHallAutoplayIntent';
 import { resolveCharTimeZone } from './timezone';
 import { NotionManager, FeishuManager, XhsNote } from './realtimeContext';
 import { enqueuePendingDiary, removePendingDiary } from './pendingDiary';
@@ -172,7 +177,8 @@ export type PostProcessDirective =
     // Notion / 飞书 写日记 — worker classifier 提取 title/content/mood, 我们拼回原 tag 给
     // line 465 (Notion) / 649 (飞书) 既有 handler 跑. title 可空, 客户端兜底.
     | { type: 'notion_write_diary'; title: string; content: string; mood?: string }
-    | { type: 'feishu_write_diary'; title: string; content: string; mood?: string };
+    | { type: 'feishu_write_diary'; title: string; content: string; mood?: string }
+    | { type: 'game_hall_autoplay'; action: 'start' | 'pause' | 'resume' | 'stop'; payload?: { instruction?: string; gameHint?: string; goal?: string; returnToMainChat?: boolean } };
 
 /**
  * 把结构化 directive 反向拼回原 tag 字符串. 拼回的目的是让下游 chatParser.parseAndExecuteActions
@@ -232,6 +238,13 @@ function reconstructDirectiveTags(directives: PostProcessDirective[] | undefined
             case 'xhs_share':
                 parts.push(`[[XHS_SHARE:${d.idx}]]`);
                 break;
+            case 'game_hall_autoplay': {
+                const suffix = d.action === 'start' && d.payload
+                    ? ` ${JSON.stringify(d.payload)}`
+                    : '';
+                parts.push(`[[GAME_HALL_AUTOPLAY_${d.action.toUpperCase()}${suffix}]]`);
+                break;
+            }
             case 'notion_write_diary': {
                 // 拼回长形态 [[DIARY_START: title|mood]]\n content \n[[DIARY_END]],
                 // 因为客户端 line 465 既支持长又支持短, 长形态信息更全 (能区分 mood).
@@ -473,6 +486,10 @@ export async function applyAssistantPostProcessing(
     // ─── Step 1: 初次粗洗 ───
     let aiContent = replayedTagPrefix ? `${replayedTagPrefix}${rawAiContent}` : rawAiContent;
     aiContent = normalizeAiContent(aiContent);
+    const pendingGameHallCommands: GameHallAutoplayCommand[] = [];
+    const firstAutoplayParse = stripAndParseGameHallAutoplayCommands(aiContent, char.id);
+    aiContent = firstAutoplayParse.displayText;
+    pendingGameHallCommands.push(...firstAutoplayParse.commands);
     // 在任何 lead-in/二轮渲染之前先剥掉仿卡片文本，防止它被 chunkText 拆成灰色普通气泡。
     const mimickedXhsShares = extractMimickedXhsShares(aiContent);
     aiContent = mimickedXhsShares.cleanedContent;
@@ -1838,6 +1855,19 @@ export async function applyAssistantPostProcessing(
     }
     aiContent = aiContent.replace(/\[\[XHS_POST:.*?\]\]/gs, '').trim();
 
+    const lateAutoplayParse = stripAndParseGameHallAutoplayCommands(aiContent, char.id);
+    aiContent = lateAutoplayParse.displayText;
+    const seenAutoplayCommands = new Set(
+        pendingGameHallCommands.map(command => `${command.type}:${JSON.stringify(command.payload || {})}`),
+    );
+    for (const command of lateAutoplayParse.commands) {
+        const key = `${command.type}:${JSON.stringify(command.payload || {})}`;
+        if (!seenAutoplayCommands.has(key)) {
+            seenAutoplayCommands.add(key);
+            pendingGameHallCommands.push(command);
+        }
+    }
+
     // ─── Step 3: ChatParser.parseAndExecuteActions ───
     aiContent = await ChatParser.parseAndExecuteActions(aiContent, char.id, char.name, addToast, musicHooks, resolveCharTimeZone(char));
 
@@ -1896,4 +1926,7 @@ export async function applyAssistantPostProcessing(
             setMessages(await DB.getRecentMessagesByCharId(char.id, 200));
         }
     }
+
+    // 只有可见回复成功落库后才提交隐藏控制命令。
+    enqueueGameHallAutoplayCommands(pendingGameHallCommands);
 }
