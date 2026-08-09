@@ -1,4 +1,6 @@
 import { getBuiltinImageMcpServers } from './builtinImageMcp';
+import { isWorkerReachableUrl } from './amsgToolPack';
+import type { McpFireServer } from './mcpFireCore';
 /**
  * 通用 MCP 客户端 (Model Context Protocol, Streamable HTTP)
  *
@@ -142,6 +144,28 @@ export const getEnabledMcpServers = (charId?: string): McpServerConfig[] =>
 
 /** 有任何一个启用且已发现工具、对该角色可见的服务器 → 聊天进入 MCP 工具模式 */
 export const isMcpChatAvailable = (charId?: string): boolean => getEnabledMcpServers(charId).length > 0;
+
+/** 当前聊天若依赖本机/私网 MCP，则这一轮不能交给云端执行。 */
+export const hasWorkerUnreachableMcpServer = (charId?: string): boolean =>
+    getEnabledMcpServers(charId).some((server) => !isWorkerReachableUrl(server.url));
+
+/** 上传给用户自有 amsg worker 的、可从公网访问的 MCP 配置。 */
+export const collectMcpFireServers = (): McpFireServer[] =>
+    loadMcpServers()
+        .filter((server) => server.enabled && server.url && (server.tools?.length || 0) > 0 && isWorkerReachableUrl(server.url))
+        .map((server) => ({
+            id: server.id,
+            name: server.name,
+            url: server.url,
+            ...(server.token ? { token: server.token } : {}),
+            ...(server.customHeaders?.length ? { customHeaders: server.customHeaders } : {}),
+            ...(server.charIds?.length ? { charIds: server.charIds } : {}),
+            tools: (server.tools || []).map((tool) => ({
+                name: tool.name,
+                description: tool.description,
+                inputSchema: tool.inputSchema,
+            })),
+        }));
 
 // ── 备份用：随「设置 → 导出/导入备份」一起带走（存 localStorage） ──
 export function exportMcpLocal(): Record<string, string> | undefined {

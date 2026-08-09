@@ -19,6 +19,16 @@ export function cleanApiMessages(
     });
 }
 
+/** 把单条多模态内容拍平成纯文本，保留文字、移除图片本体。 */
+export function flattenContentPartsToText(parts: any[]): string {
+    const text = parts
+        .filter((part: any) => part?.type === 'text')
+        .map((part: any) => part.text || '')
+        .join('\n')
+        .trim();
+    return text || '[图片]';
+}
+
 /**
  * 把多模态图片消息压平成纯文本：保留 text 部分，丢弃 image_url/base64。
  */
@@ -27,11 +37,6 @@ export function flattenImageContentParts(
 ): Array<{ role: string; content: any }> {
     return apiMessages.map((msg) => {
         if (!Array.isArray(msg.content)) return msg;
-        const text = msg.content
-            .filter((part: any) => part?.type === 'text')
-            .map((part: any) => part.text || '')
-            .join('\n')
-            .trim();
-        return { ...msg, content: text || '[图片]' };
+        return { ...msg, content: flattenContentPartsToText(msg.content) };
     });
 }

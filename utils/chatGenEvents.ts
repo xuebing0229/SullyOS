@@ -26,6 +26,8 @@ export const CHAT_GEN_EVENTS = {
     emotionStart: 'chat-gen-emotion-start',
     /** 情绪评估结束（instant 路径由 worker 推回，结束信号是既有的 'instant-emotion-done'） */
     emotionEnd: 'chat-gen-emotion-end',
+    /** 云端情绪评估完成；沿用既有线上事件名。 */
+    emotionDone: 'instant-emotion-done',
     /**
      * 情绪评估失败（本地 fetch 报错 / 云端 worker 空结果 / 输出解析全灭）。
      * 过去失败只写 console.warn，用户侧表现是「情绪不更新但没任何报错」，完全没法自查
@@ -44,6 +46,13 @@ export interface ChatGenDetail {
 export function announceChatGen(event: string, detail: ChatGenDetail): void {
     try {
         window.dispatchEvent(new CustomEvent(event, { detail }));
+    } catch { /* SSR / 测试环境无 window */ }
+}
+
+/** 通知聊天页和全局横幅关闭云端情绪更新状态。 */
+export function announceEmotionDone(charId: string): void {
+    try {
+        window.dispatchEvent(new CustomEvent(CHAT_GEN_EVENTS.emotionDone, { detail: { charId } }));
     } catch { /* SSR / 测试环境无 window */ }
 }
 

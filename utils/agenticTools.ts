@@ -14,7 +14,7 @@
  * tool-request, 把 `detailText` / `resultsText` 等 JSON.stringify 后 POST /continue。
  */
 
-import { CharacterProfile, UserProfile, Message, RealtimeConfig } from '../types';
+import type { UserProfile } from '../types';
 import { RealtimeContextManager, NotionManager, FeishuManager, XhsNote } from './realtimeContext';
 import {
     XhsMcpClient,
@@ -45,7 +45,43 @@ export interface XhsConfig {
     userXsecToken?: string;
 }
 
-export function resolveXhsConfig(char: CharacterProfile, realtimeConfig?: RealtimeConfig): XhsConfig {
+/** 云端工具循环实际需要的实时配置字段。 */
+export interface AgenticToolRealtimeConfig {
+    newsEnabled: boolean;
+    newsApiKey?: string;
+    notionEnabled: boolean;
+    notionApiKey?: string;
+    notionDatabaseId?: string;
+    notionNotesDatabaseId?: string;
+    feishuEnabled: boolean;
+    feishuAppId?: string;
+    feishuAppSecret?: string;
+    feishuBaseId?: string;
+    feishuTableId?: string;
+    xhsMcpConfig?: {
+        enabled?: boolean;
+        serverUrl?: string;
+        loggedInUserId?: string;
+        loggedInNickname?: string;
+        userXsecToken?: string;
+    };
+}
+
+export interface AgenticToolMemory {
+    date: string;
+    summary: string;
+    mood?: string;
+}
+
+/** 浏览器完整角色和云端精简角色都能满足的工具字段。 */
+export interface AgenticToolChar {
+    name: string;
+    xhsEnabled?: boolean;
+    activeMemoryMonths?: string[];
+    memories?: AgenticToolMemory[];
+}
+
+export function resolveXhsConfig(char: { xhsEnabled?: boolean }, realtimeConfig?: AgenticToolRealtimeConfig): XhsConfig {
     const mcpConfig = realtimeConfig?.xhsMcpConfig;
     const mcpAvailable = !!(mcpConfig?.enabled && mcpConfig?.serverUrl);
     const mcpUrl = mcpConfig?.serverUrl || '';
@@ -59,9 +95,9 @@ export function resolveXhsConfig(char: CharacterProfile, realtimeConfig?: Realti
 }
 
 export interface AgenticToolCtx {
-    char: CharacterProfile;
+    char: AgenticToolChar;
     userProfile: UserProfile;
-    realtimeConfig?: RealtimeConfig;
+    realtimeConfig?: AgenticToolRealtimeConfig;
     /** XHS 跨 tool 共享缓存; XHS_SEARCH/BROWSE 写, XHS_DETAIL/COMMENT/REPLY 读 */
     xhsCaches?: XhsCaches;
     /** 上次浏览/搜索得到的笔记列表 (XHS_DETAIL retry 时复用) */
@@ -75,6 +111,18 @@ export interface AgenticToolCtx {
 export type RecallResult =
     | { ok: true; alreadyActive: boolean; yearMonth: string; logsText: string | null }
     | { ok: false; reason: 'no_logs'; yearMonth: string };
+
+export function listRecallableMonths(memories: AgenticToolMemory[] | undefined): string[] {
+    if (!memories?.length) return [];
+    const months = new Set<string>();
+    for (const mem of memories) {
+        const iso = /(\d{4})-(\d{1,2})/.exec(mem.date);
+        if (iso) months.add(`${iso[1]}-${iso[2].padStart(2, '0')}`);
+        const cn = /(\d{4})年\s*(\d{1,2})\s*月/.exec(mem.date);
+        if (cn) months.add(`${cn[1]}-${cn[2].padStart(2, '0')}`);
+    }
+    return [...months].sort();
+}
 
 export async function runRecall(
     args: { year: string; month: string },

@@ -53,13 +53,9 @@ const slotStartToDate = (slot: ScheduleSlot, baseDate: Date): Date => {
  * 基于 (today + slot.startTime + charId) 种子从 char 歌单里稳定抽一首。
  * 同一 slot 期间永远是同一首歌，不会跳。
  */
-const pickSongForSlot = (
-    char: CharacterProfile,
-    slot: ScheduleSlot,
-    today: string,
-): CharPlaylistSong | null => {
+export const buildSongPool = (char: CharacterProfile): CharPlaylistSong[] => {
     const p = char.musicProfile;
-    if (!p) return null;
+    if (!p) return [];
 
     const pool: CharPlaylistSong[] = [];
     const seen = new Set<number>();
@@ -72,9 +68,12 @@ const pickSongForSlot = (
         }
         if (pool.length >= MAX_SAMPLED_SONGS) break;
     }
-    if (pool.length === 0) return null;
+    return pool;
+};
 
-    const seedStr = `${today}-${slot.startTime}-${char.id}`;
+export const pickSongFromPool = <T,>(pool: T[], slotStartTime: string, today: string, charId: string): T | null => {
+    if (pool.length === 0) return null;
+    const seedStr = `${today}-${slotStartTime}-${charId}`;
     let h = 0;
     for (const ch of seedStr) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
     return pool[h % pool.length];
@@ -100,7 +99,7 @@ export function computeCurrentListening(
     if (!slot || !slotIsListening(slot)) return null;
 
     const today = getLocalDateKey(wallNow);
-    const song = pickSongForSlot(char, slot, today);
+    const song = pickSongFromPool(buildSongPool(char), slot.startTime, today, char.id);
     if (!song) return null;
 
     return {

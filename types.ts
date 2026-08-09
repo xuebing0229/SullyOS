@@ -292,6 +292,9 @@ export type InstantOversizeTransport = 'multipart' | 'd1';
 export type ActiveMsg2DbDriver = 'pg' | 'neon';
 export type ActiveMsg2Mode = 'fixed' | 'auto' | 'prompted';
 export type ActiveMsg2Recurrence = 'none' | 'daily' | 'weekly';
+export type ActiveMsg2ExpirePolicy = 'expire' | 'force';
+export type ActiveMsg2TaskSource = 'user' | 'character';
+export type ActiveMsg2TaskStatus = 'scheduled' | 'cancelled';
 
 export interface ActiveMsg2ApiConfig {
   baseUrl: string;
@@ -301,8 +304,17 @@ export interface ActiveMsg2ApiConfig {
 
 export interface ActiveMsg2GlobalConfig {
   userId: string;
-  driver: ActiveMsg2DbDriver;
-  databaseUrl: string;
+  /** Single-user Cloudflare Worker endpoint. */
+  workerUrl: string;
+  /** Optional shared secret sent as X-Client-Token. */
+  serverToken?: string;
+  /** Retained locally so a reinstall can reuse the same encryption key. */
+  masterKey?: string;
+  /** Routes foreground chat rounds through the Worker when enabled. */
+  instantChatEnabled?: boolean;
+  /** Legacy server configuration retained for backup migration only. */
+  driver?: ActiveMsg2DbDriver;
+  databaseUrl?: string;
   initSecret?: string;
   tenantId?: string;
   tenantToken?: string;
@@ -313,11 +325,33 @@ export interface ActiveMsg2GlobalConfig {
   updatedAt?: number;
 }
 
-export interface ActiveMsg2CharacterConfig {
-  enabled: boolean;
+export interface ActiveMsg2TaskRecord {
+  taskUuid: string;
+  clientTaskId: string;
   mode: ActiveMsg2Mode;
   firstSendTime: string;
+  nextSendAt?: string;
   recurrenceType: ActiveMsg2Recurrence;
+  userMessage?: string;
+  promptHint?: string;
+  expirePolicy: ActiveMsg2ExpirePolicy;
+  anchorLastUserMsgAt?: number;
+  source: ActiveMsg2TaskSource;
+  status: ActiveMsg2TaskStatus;
+  createdAt: number;
+  lastError?: string;
+}
+
+export interface ActiveMsg2CharacterConfig {
+  enabled: boolean;
+  /** undefined follows the global instant-chat switch. */
+  instantChatEnabled?: boolean;
+  tasks?: ActiveMsg2TaskRecord[];
+  maxUnansweredSends?: number;
+  /** Legacy single-task fields retained for migration. */
+  mode?: ActiveMsg2Mode;
+  firstSendTime?: string;
+  recurrenceType?: ActiveMsg2Recurrence;
   userMessage?: string;
   promptHint?: string;
   maxTokens?: number;
@@ -340,9 +374,25 @@ export interface ActiveMsg2InboxMessage {
   messageType?: string;
   messageSubtype?: string;
   taskId?: string | null;
+  taskUuid?: string | null;
+  recurrenceType?: string | null;
+  occurrenceMs?: number | null;
   metadata?: Record<string, any>;
   sentAt?: number;
   receivedAt: number;
+  processAttempts?: number;
+}
+
+export interface Amsg2ExpiredNoticeRecord {
+  id: string;
+  charId: string;
+  occurrenceMs: number;
+  mode: ActiveMsg2Mode;
+  promptHint?: string;
+  recurrenceType: ActiveMsg2Recurrence;
+  kind?: 'expired' | 'user-cancelled';
+  notifiedAt?: number;
+  createdAt: number;
 }
 
 // Phase 2 Round 1 — Instant Push agentic loop session state, written client-side

@@ -28,6 +28,12 @@ export type ToolCall = {
   function: { name: string; arguments: string };
 };
 
+export interface MusicActionSong {
+  id?: number;
+  name: string;
+  artists: string;
+}
+
 export type Directive =
   | { type: 'poke' }
   | { type: 'transfer'; amount: number }
@@ -37,7 +43,7 @@ export type Directive =
   | { type: 'transfer_return' }
   | { type: 'add_event'; title: string; date: string }
   | { type: 'schedule_message'; time: string; text: string }
-  | { type: 'music_action'; verb: string; args: string[] }
+  | { type: 'music_action'; verb: string; args: string[]; song?: MusicActionSong }
   | { type: 'xhs_like'; noteId: string }
   | { type: 'xhs_fav'; noteId: string }
   | { type: 'xhs_comment'; noteId: string; text: string }

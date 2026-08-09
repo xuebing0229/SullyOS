@@ -58,6 +58,8 @@ export interface DevDebugFlags {
      * 只影响导出那一层，不改变实际抓取 / 存储的数据。
      */
     exposeLogDetail: boolean;
+    /** 主动消息 2.0 任务观察窗是否打开。 */
+    amsg2Panel: boolean;
 }
 
 export interface DevDebugLogEntry {
@@ -93,6 +95,7 @@ export const DEFAULT_DEV_DEBUG_FLAGS: DevDebugFlags = {
     captureEnabled: false,
     captureLogs: [],
     exposeLogDetail: false,
+    amsg2Panel: false,
 };
 
 const MAX_LOG_ENTRIES = 100;
@@ -146,6 +149,7 @@ function normalizeFlags(value: unknown): DevDebugFlags {
         captureEnabled: source.captureEnabled === true || legacyHasCapture,
         captureLogs,
         exposeLogDetail: source.exposeLogDetail === true,
+        amsg2Panel: source.amsg2Panel === true,
     };
 }
 
