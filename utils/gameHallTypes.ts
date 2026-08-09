@@ -187,7 +187,7 @@ export interface GameHallPendingAction {
   args: Record<string, unknown>;
   accountRef?: string;
   reason: string;
-  status: 'pending' | 'confirmed' | 'cancelled' | 'executed' | 'failed';
+  status: 'pending' | 'confirmed' | 'cancelled' | 'executed' | 'failed' | 'superseded';
   createdAt: number;
   updatedAt: number;
   error?: string;

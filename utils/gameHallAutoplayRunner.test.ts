@@ -123,6 +123,71 @@ describe('GameHall autonomous runner', () => {
     expect(fakes.messages.some(message => message.toolResult?.success === false)).toBe(true);
   });
 
+  it('feeds a correctable failure back once, executes the replacement, and continues', async () => {
+    await start();
+    fakes.plan
+      .mockResolvedValueOnce({ reply: 'try', pending: pending('bad') })
+      .mockResolvedValueOnce({ reply: 'corrected', pending: pending('fixed') })
+      .mockResolvedValueOnce({ reply: 'done' });
+    fakes.execute
+      .mockResolvedValueOnce({
+        request: { name: 'play', modelArgs: { move: 'bad' } },
+        result: { success: false, error: 'unknown arcade action "play"' },
+      })
+      .mockResolvedValueOnce({
+        request: { name: 'play', modelArgs: { move: 'fixed' } },
+        result: { success: true, data: { gameId: 'g' } },
+      });
+
+    await runGameHallAutoplay(deps() as any);
+
+    expect(fakes.plan).toHaveBeenCalledTimes(3);
+    expect(fakes.execute).toHaveBeenCalledTimes(2);
+    expect(fakes.plan.mock.calls[1][0]).toMatchObject({
+      repairAttempts: 0,
+      toolCorrection: {
+        failedAction: { id: 'bad', status: 'failed' },
+        failedResult: { success: false, error: 'unknown arcade action "play"' },
+      },
+    });
+    expect(fakes.actions.find(action => action.id === 'bad')).toMatchObject({ status: 'superseded' });
+    expect(fakes.actions.find(action => action.id === 'fixed')).toMatchObject({ status: 'executed' });
+    expect(fakes.messages.some(message => message.toolResult?.success === false)).toBe(true);
+    expect(fakes.session.autoplay).toMatchObject({ turnCount: 1, status: 'completed' });
+  });
+
+  it('stops after the single corrected action also fails', async () => {
+    await start();
+    fakes.plan
+      .mockResolvedValueOnce({ reply: 'try', pending: pending('bad') })
+      .mockResolvedValueOnce({ reply: 'corrected', pending: pending('still-bad') });
+    fakes.execute
+      .mockResolvedValueOnce({ request: {}, result: { success: false, error: 'unknown arcade action "play"' } })
+      .mockResolvedValueOnce({ request: {}, result: { success: false, error: 'invalid argument: gameId' } });
+
+    await runGameHallAutoplay(deps() as any);
+
+    expect(fakes.plan).toHaveBeenCalledTimes(2);
+    expect(fakes.execute).toHaveBeenCalledTimes(2);
+    expect(fakes.session.autoplay).toMatchObject({ turnCount: 0, status: 'failed', stopReason: 'mcp-error' });
+    expect(fakes.actions.find(action => action.id === 'still-bad')).toMatchObject({ status: 'failed' });
+  });
+
+  it('does not spend a correction call on auth, network, throttling, or server failures', async () => {
+    for (const error of ['HTTP 401 Unauthorized', 'network timeout', 'HTTP 429 rate limited', 'HTTP 503 unavailable']) {
+      await start();
+      fakes.plan.mockResolvedValue({ reply: 'try', pending: pending(`bad-${error}`) });
+      fakes.execute.mockResolvedValue({ request: {}, result: { success: false, error } });
+
+      await runGameHallAutoplay(deps() as any);
+
+      expect(fakes.plan).toHaveBeenCalledTimes(1);
+      expect(fakes.execute).toHaveBeenCalledTimes(1);
+      fakes.plan.mockClear();
+      fakes.execute.mockClear();
+    }
+  });
+
   it('marks transport exceptions failed and preserves original messages', async () => {
     await start(); fakes.messages.push({ id: 'original', sessionId: 'session-1', charId: 'char-1', role: 'user', content: 'keep', createdAt: 1 });
     fakes.plan.mockResolvedValue({ reply: 'try', pending: pending('boom') }); fakes.execute.mockRejectedValue(new Error('network down'));

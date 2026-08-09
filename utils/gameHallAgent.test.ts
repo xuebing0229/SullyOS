@@ -61,4 +61,45 @@ describe('game hall batched planning requests', () => {
     ]);
     expect(result.pending).toBeUndefined();
   });
+
+  it('injects the exact failed call and schema-derived examples into a correction request', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      choices: [{ message: { content: '{"replies":["改一下"],"action":{"toolIndex":0,"toolName":"play","args":{"action":"join"},"reason":"修正动作"}}' } }],
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await planGameHallTurn({
+      apiConfig: { baseUrl: 'https://api.example.test/v1', apiKey: 'key', model: 'model', stream: false },
+      char: { id: 'char-1', name: '角色' } as any,
+      userProfile: { name: '用户' } as any,
+      groups: [],
+      mode: 'auto-turn',
+      userText: '继续玩',
+      availableTools: [playTool],
+      sessionId: 'session-1',
+      history: [],
+      repairAttempts: 0,
+      toolCorrection: {
+        failedAction: {
+          id: 'bad', sessionId: 'session-1', charId: 'char-1', toolIndex: 0,
+          toolName: 'play', args: { action: 'arcade' }, reason: '攻击',
+          status: 'failed', createdAt: 1, updatedAt: 2,
+        },
+        failedRequest: {
+          toolName: 'play', toolIndex: 0,
+          modelArgs: { action: 'arcade' }, finalArgs: { action: 'arcade' },
+          serverUrl: 'https://mcp.example',
+        },
+        failedResult: { success: false, error: 'unknown arcade action "arcade"' },
+      },
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const requestBody = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+    const prompt = JSON.stringify(requestBody.messages);
+    expect(prompt).toContain('游戏厅工具纠错：仅此一次');
+    expect(prompt).toContain('unknown arcade action');
+    expect(prompt).toContain('arcade');
+    expect(prompt).toContain('join');
+  });
 });
