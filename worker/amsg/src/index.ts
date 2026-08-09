@@ -144,7 +144,13 @@ import {
   type InstantChatExecutionCtx,
 } from './instantChat';
 import type { ActiveMsg2TaskRecord } from '../../../types';
-import { createHybridPushTransport, isFcmConfigured, type NativeFcmEnv } from './nativeFcm';
+import {
+  ackNativePollPayloads,
+  createHybridPushTransport,
+  isFcmConfigured,
+  pullNativePollPayloads,
+  type NativeFcmEnv,
+} from './nativeFcm';
 
 interface Env extends NativeFcmEnv {
   AMSG_MASTER_KEY: string;
@@ -2390,6 +2396,10 @@ export const inspectWorkerEnv = (env: Env): WorkerEnvReport => {
     code: 'FCM_INCOMPLETE',
     message: 'FCM 配置只填了一部分；需要同时设置 FCM_PROJECT_ID、FCM_SERVICE_ACCOUNT_EMAIL、FCM_SERVICE_ACCOUNT_PRIVATE_KEY。',
   });
+  if (!fcmParts.some(Boolean)) warnings.push({
+    code: 'FCM_MISSING',
+    message: '尚未配置 Firebase FCM 服务账号：浏览器/PWA 可用 Web Push，但原生 Android App 无法接收系统推送。',
+  });
   if (!env.AMSG_SERVER_TOKEN?.trim()) {
     warnings.push({
       code: 'SERVER_TOKEN_MISSING',
@@ -2413,7 +2423,7 @@ const CORS_HEADERS: Record<string, string> = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
   'Access-Control-Allow-Headers':
-    'Content-Type, X-User-Id, X-Payload-Encrypted, X-Encryption-Version, X-Response-Encrypted, X-Client-Token',
+    'Content-Type, X-User-Id, X-Payload-Encrypted, X-Encryption-Version, X-Response-Encrypted, X-Client-Token, X-Device-Token',
   'Access-Control-Max-Age': '86400',
 };
 
@@ -2624,6 +2634,35 @@ export default {
         success: false,
         error: { code: 'WORKER_CONFIG_MISSING', message: report.message, missing: report.missing },
       });
+    }
+
+    // Android WebView 没有 Push API。原生壳用随机设备令牌轮询这个 D1 信箱，完全不依赖
+    // Google/Firebase；令牌本身就是不可猜的取件凭证，不复用用户口令。
+    if (pathname.endsWith('/native-poll')) {
+      if (method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS_HEADERS });
+      const token = request.headers.get('X-Device-Token')?.trim() || '';
+      if (!/^[A-Za-z0-9_-]{32,128}$/.test(token)) {
+        return jsonWithCors(401, { success: false, error: { code: 'INVALID_DEVICE_TOKEN', message: '设备令牌无效' } });
+      }
+      if (method === 'GET') {
+        return jsonWithCors(200, { success: true, data: { messages: await pullNativePollPayloads(env, token) } });
+      }
+      return jsonWithCors(405, { success: false, error: { code: 'METHOD_NOT_ALLOWED', message: '/native-poll 只接受 GET' } });
+    }
+
+    if (pathname.endsWith('/native-poll/ack')) {
+      if (method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS_HEADERS });
+      const token = request.headers.get('X-Device-Token')?.trim() || '';
+      if (!/^[A-Za-z0-9_-]{32,128}$/.test(token)) {
+        return jsonWithCors(401, { success: false, error: { code: 'INVALID_DEVICE_TOKEN', message: '设备令牌无效' } });
+      }
+      if (method !== 'POST') {
+        return jsonWithCors(405, { success: false, error: { code: 'METHOD_NOT_ALLOWED', message: '/native-poll/ack 只接受 POST' } });
+      }
+      const body = await request.json().catch(() => ({})) as { ids?: unknown };
+      const ids = Array.isArray(body.ids) ? body.ids.map(Number) : [];
+      await ackNativePollPayloads(env, token, ids);
+      return jsonWithCors(200, { success: true });
     }
 
     // 即时对话：一个请求把「传云端状态 + 建任务」串完，回 202 之后立刻起一跳。

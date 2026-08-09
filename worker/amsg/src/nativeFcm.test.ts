@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
-import { buildFcmMessage, createHybridPushTransport, fcmTokenFromEndpoint } from './nativeFcm';
+import {
+  buildFcmMessage,
+  createHybridPushTransport,
+  fcmTokenFromEndpoint,
+  pollTokenFromEndpoint,
+} from './nativeFcm';
 
 describe('AMSG2 native FCM transport', () => {
   it('普通 Web Push endpoint 原样委托旧发送器', async () => {
@@ -14,6 +19,35 @@ describe('AMSG2 native FCM transport', () => {
     expect(fcmTokenFromEndpoint('fcm:abc:123')).toBe('abc:123');
     expect(fcmTokenFromEndpoint('https://push.example/sub')).toBeNull();
     expect(fcmTokenFromEndpoint('fcm:   ')).toBeNull();
+  });
+
+  it('poll: endpoint 只接受足够长的随机设备令牌', () => {
+    const token = 'a'.repeat(64);
+    expect(pollTokenFromEndpoint(`poll:${token}`)).toBe(token);
+    expect(pollTokenFromEndpoint('poll:too-short')).toBeNull();
+    expect(pollTokenFromEndpoint('https://example.com')).toBeNull();
+  });
+
+  it('轮询 endpoint 写进 D1 信箱，不调用 Web Push', async () => {
+    const batches: unknown[][] = [];
+    const makeStatement = (sql: string) => {
+      const statement: any = { sql, values: [] };
+      statement.bind = (...values: unknown[]) => { statement.values = values; return statement; };
+      statement.run = vi.fn().mockResolvedValue({});
+      statement.all = vi.fn().mockResolvedValue({ results: [] });
+      return statement;
+    };
+    const env: any = {
+      DB: {
+        prepare: vi.fn(makeStatement),
+        batch: vi.fn(async (statements: unknown[]) => { batches.push(statements); return []; }),
+      },
+    };
+    const web = { sendNotification: vi.fn() };
+    const transport = createHybridPushTransport(env, web);
+    await transport.sendNotification({ endpoint: `poll:${'b'.repeat(64)}` }, '{"message":"hi"}');
+    expect(web.sendNotification).not.toHaveBeenCalled();
+    expect(batches.flat().some((statement: any) => String(statement.sql).includes('INSERT INTO native_push_mailbox'))).toBe(true);
   });
 
   it('正文只放 notification 一份，data 保留 AMSG2 路由字段', () => {

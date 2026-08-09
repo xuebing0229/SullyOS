@@ -30,7 +30,7 @@ type KvRecord<T = unknown> = {
 
 // Keep the shared web/PWA build unchanged. The private Capacitor build may
 // provide its own Worker URL so the native shell works without manual setup.
-const capacitorDefaultWorkerUrl = import.meta.env.VITE_AMSG_NATIVE_PUSH === 'true'
+const capacitorDefaultWorkerUrl = import.meta.env.VITE_AMSG_NATIVE_PUSH
   ? String(import.meta.env.VITE_AMSG_DEFAULT_WORKER_URL || '').trim()
   : '';
 

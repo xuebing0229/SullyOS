@@ -279,6 +279,68 @@ describe('buildAmsgDiagnosticRows — 红绿判定', () => {
     expect(summarizeAmsgDiagnostics(rows)).toBe('bad');
   });
 
+  it('原生 App 看 FCM，不会因为 Web Push 的 VAPID 正常就误报全绿', () => {
+    const rows = buildAmsgDiagnosticRows({
+      probe: {
+        reachable: true,
+        report: healthyReport({
+          config: {
+            ok: true,
+            missing: [],
+            message: '',
+            warnings: [{ code: 'FCM_MISSING', message: '尚未配置 Firebase FCM 服务账号。' }],
+          },
+        }),
+      },
+      localPushSubscribed: true,
+      pushChannel: 'native',
+    });
+    expect(rowOf(rows, 'pushCredential')).toMatchObject({ level: 'bad' });
+    expect(rowOf(rows, 'pushCredential').detail).toContain('Firebase');
+  });
+
+  it('网页只看 VAPID，不把原生 FCM 缺失算成网页故障', () => {
+    const rows = buildAmsgDiagnosticRows({
+      probe: {
+        reachable: true,
+        report: healthyReport({
+          config: {
+            ok: true,
+            missing: [],
+            message: '',
+            warnings: [{ code: 'FCM_MISSING', message: '尚未配置 Firebase FCM 服务账号。' }],
+          },
+        }),
+      },
+      localPushSubscribed: true,
+      pushChannel: 'web',
+    });
+    expect(rowOf(rows, 'pushCredential')).toMatchObject({ level: 'ok' });
+  });
+
+  it('Android 轮询通道不需要 VAPID 或 Firebase', () => {
+    const rows = buildAmsgDiagnosticRows({
+      probe: {
+        reachable: true,
+        report: healthyReport({
+          config: {
+            ok: true,
+            missing: [],
+            message: '',
+            warnings: [
+              { code: 'VAPID_MISSING', message: 'VAPID 缺失' },
+              { code: 'FCM_MISSING', message: 'FCM 缺失' },
+            ],
+          },
+        }),
+      },
+      localPushSubscribed: true,
+      pushChannel: 'native-poll',
+    });
+    expect(rowOf(rows, 'pushCredential')).toMatchObject({ level: 'ok' });
+    expect(rowOf(rows, 'pushCredential').detail).toContain('不需要 Firebase');
+  });
+
   it('浏览器订阅了但云端没登记 → 报红并指向「开启通知与推送」', () => {
     const rows = buildAmsgDiagnosticRows({
       probe: {

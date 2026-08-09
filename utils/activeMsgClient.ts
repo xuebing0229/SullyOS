@@ -85,18 +85,29 @@ import {
   SUBSCRIBE_SETTLE_MS,
   type SubscribeFailureKind,
 } from './pushSubscribeShared';
+import {
+  ensureNativeAmsgPushToken,
+  getNativeAmsgPushStatus,
+  isNativeAmsgPushRuntime,
+  NATIVE_PUSH_TOKEN_STORAGE_KEY,
+  readNativeAmsgPushToken,
+} from './nativePushTransport';
+import {
+  ensureNativeAmsgPollToken,
+  getNativeAmsgPollStatus,
+  isNativeAmsgPollRuntime,
+  readNativeAmsgPollToken,
+  startNativeAmsgPoll,
+} from './nativeAmsgPoll';
 
-export const NATIVE_PUSH_TOKEN_STORAGE_KEY = 'amsg2_fcm_token_v1';
-const nativePushBuildEnabled = () => import.meta.env.VITE_AMSG_NATIVE_PUSH === 'true';
-const readNativePushToken = () => nativePushBuildEnabled() && typeof localStorage !== 'undefined'
-  ? localStorage.getItem(NATIVE_PUSH_TOKEN_STORAGE_KEY)?.trim() || ''
-  : '';
+export { NATIVE_PUSH_TOKEN_STORAGE_KEY } from './nativePushTransport';
 
 export interface ActiveMsg2PushStatus {
   supported: boolean;
   permission: NotificationPermission | 'unsupported';
   hasSubscription: boolean;
   vapidConfigured: boolean;
+  channel?: 'web' | 'native' | 'native-poll';
   detail?: string;
 }
 
@@ -1201,7 +1212,7 @@ export type RemoteTaskStatus =
 
 export const ActiveMsgClient = {
   async registerNativePushToken(token: string): Promise<void> {
-    if (!nativePushBuildEnabled()) throw new Error('当前构建未开启 Capacitor 原生推送');
+    if (!isNativeAmsgPushRuntime()) throw new Error('当前构建未开启 Capacitor 原生推送');
     const value = token.trim();
     if (!value) throw new Error('FCM registration token 为空');
     const config = await ensureWorkerReady();
@@ -1236,6 +1247,30 @@ export const ActiveMsgClient = {
   async getPushStatus(): Promise<ActiveMsg2PushStatus> {
     const config = await ensureGlobalReady();
     const workerConfigured = Boolean(config.workerUrl.trim());
+    if (isNativeAmsgPollRuntime()) {
+      const native = await getNativeAmsgPollStatus();
+      return {
+        supported: native.supported,
+        permission: native.permission === 'prompt' ? 'default' : native.permission,
+        hasSubscription: native.running && Boolean(readNativeAmsgPollToken()),
+        vapidConfigured: workerConfigured,
+        channel: 'native-poll',
+        detail: !workerConfigured
+          ? '请先填写 Worker 地址。'
+          : native.running ? 'Android 后台收件服务正在运行。' : '点“开启通知与推送”启动后台收件服务。',
+      };
+    }
+    if (isNativeAmsgPushRuntime()) {
+      const native = await getNativeAmsgPushStatus();
+      return {
+        supported: native.supported,
+        permission: native.permission,
+        hasSubscription: native.hasToken,
+        vapidConfigured: workerConfigured,
+        channel: 'native',
+        detail: !workerConfigured ? '请先填写 Worker 地址。' : native.detail,
+      };
+    }
     // 能力检测与 instant push / proactive push 共用 describePushCapabilityGap：
     // 它会说清缺的是三件套里的哪一件，「不支持」这三个字用户拿着没法action。
     const capabilityGap = describePushCapabilityGap();
@@ -1245,6 +1280,7 @@ export const ActiveMsgClient = {
         permission: 'unsupported',
         hasSubscription: false,
         vapidConfigured: workerConfigured,
+        channel: 'web',
         detail: `${capabilityGap}。`,
       };
     }
@@ -1258,6 +1294,7 @@ export const ActiveMsgClient = {
       permission: Notification.permission,
       hasSubscription: Boolean(subscription),
       vapidConfigured: workerConfigured,
+      channel: 'web',
       detail: !workerConfigured ? '请先填写 Worker 地址。' : undefined,
     };
   },
@@ -1308,6 +1345,19 @@ export const ActiveMsgClient = {
    * 一般也不会有人同时开着两台设备玩，真开了的话，「另一台不响了」就是正常现象。
    */
   async registerPushSubscription(): Promise<void> {
+    if (isNativeAmsgPollRuntime()) {
+      const config = await ensureWorkerReady();
+      const token = ensureNativeAmsgPollToken();
+      const client = await initializeClient(config);
+      await client.putPushSubscription({ endpoint: `poll:${token}` });
+      await startNativeAmsgPoll(config.workerUrl);
+      return;
+    }
+    if (isNativeAmsgPushRuntime()) {
+      const token = readNativeAmsgPushToken() || await ensureNativeAmsgPushToken();
+      await this.registerNativePushToken(token);
+      return;
+    }
     const config = await ensureWorkerReady();
     const client = await initializeClient(config);
     const subscription = await this.ensurePushSubscription();
@@ -1369,6 +1419,10 @@ export const ActiveMsgClient = {
    * 按钮要治的病，不能自己再犯一遍。
    */
   async resetPushSubscription(): Promise<void> {
+    if (isNativeAmsgPollRuntime()) {
+      await this.registerPushSubscription();
+      return;
+    }
     const config = await requirePushReady();
     const client = await initializeClient(config);
 
@@ -1397,6 +1451,10 @@ export const ActiveMsgClient = {
    * 的 D1 里、跟 SW 无关，不用像 proactive-push 那样重新推排程回去。
    */
   async deepResetPushSubscription(): Promise<void> {
+    if (isNativeAmsgPollRuntime()) {
+      await this.registerPushSubscription();
+      return;
+    }
     const config = await requirePushReady();
     const client = await initializeClient(config);
 
@@ -1443,6 +1501,16 @@ export const ActiveMsgClient = {
    * 返回值只为单测断言：'registered' 补了 / 'skipped' 条件不满足 / 'failed' 补失败了。
    */
   async reconcilePushSubscription(): Promise<'registered' | 'skipped' | 'failed'> {
+    if (isNativeAmsgPollRuntime()) {
+      if (!readNativeAmsgPollToken()) return 'skipped';
+      try {
+        await this.registerPushSubscription();
+        return 'registered';
+      } catch (error) {
+        console.warn('[ActiveMsg] 连接后补登记 Android 后台收件失败', error);
+        return 'failed';
+      }
+    }
     try {
       if (describePushCapabilityGap()) return 'skipped';
       if (Notification.permission !== 'granted') return 'skipped';
@@ -1495,7 +1563,7 @@ export const ActiveMsgClient = {
     await initializeClient(config);
     await ActiveMsgStore.saveGlobalConfig({ ...config, initializedAt: Date.now() });
     await this.reconcilePushSubscription();
-    const nativeToken = readNativePushToken();
+    const nativeToken = readNativeAmsgPushToken();
     if (nativeToken) await this.registerNativePushToken(nativeToken);
     // warnings 是「连上了，但有一块功能是哑的」——比如 VAPID 没配齐，任务能建、到点
     // 却一条都推不出去。连接本身算成功，交给调用方提示，别拦住流程。
@@ -1693,7 +1761,7 @@ export const ActiveMsgClient = {
     const globalConfig = await ensureWorkerReady();
     const client = await initializeClient(globalConfig);
     // 任务体不带订阅，worker 到点读用户级那一份——所以建任务前先把它登记上去。
-    const nativeToken = readNativePushToken();
+    const nativeToken = readNativeAmsgPushToken();
     if (nativeToken) await this.registerNativePushToken(nativeToken);
     else await this.registerPushSubscription();
 

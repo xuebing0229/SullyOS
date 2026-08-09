@@ -731,6 +731,7 @@ const ActiveMsgGlobalSettingsModal: React.FC<ActiveMsgGlobalSettingsModalProps> 
     ? buildAmsgDiagnosticRows({
       probe: diagnosticsProbe,
       localPushSubscribed: Boolean(pushStatus?.hasSubscription),
+      pushChannel: pushStatus?.channel,
     })
     : [];
   const diagnosticLevel = diagnosticRows.length ? summarizeAmsgDiagnostics(diagnosticRows) : 'unknown';
@@ -1404,6 +1405,19 @@ const ActiveMsgGlobalSettingsModal: React.FC<ActiveMsgGlobalSettingsModalProps> 
           ) : null}
         </div>
 
+        {pushStatus?.channel === 'native-poll' ? (
+          <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 space-y-3">
+            <div className="flex items-center justify-between gap-3">
+              <span className="font-bold text-slate-700">Android 后台收件</span>
+              <span className="text-xs font-bold text-emerald-600">无需 Google</span>
+            </div>
+            <p className="text-xs leading-relaxed text-slate-500">
+              消息保存在你自己的 Cloudflare D1，手机每隔约 45 秒检查一次。开启后通知栏会常驻一条
+              “主动消息 2.0 运行中”，这是 Android 允许应用在后台收件所必需的。
+            </p>
+          </div>
+        ) : null}
+
         <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 space-y-3">
           <div className="flex items-center justify-between gap-3">
             <span className="font-bold text-slate-700">通知权限</span>
@@ -1416,7 +1430,7 @@ const ActiveMsgGlobalSettingsModal: React.FC<ActiveMsgGlobalSettingsModalProps> 
           </p>
           <p className="text-xs leading-relaxed text-slate-500">
             推送跟着「排程时所在的设备」走：每条任务到点后，推给保存这条排程时用的那台设备。
-            换了设备（或者换了浏览器）之后，在新设备上把排程重新保存一次，之后的推送就发到这台。
+            换了设备之后，在新设备上把排程重新保存一次，之后的推送就发到这台。
           </p>
           {pushStatus?.detail ? (
             <p className="text-xs leading-relaxed text-amber-600">{pushStatus.detail}</p>
