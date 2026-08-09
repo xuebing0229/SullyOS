@@ -120,9 +120,40 @@ jobs:
 
       - name: Prepare release files
         shell: bash
+        env:
+          REQUESTED_RELEASE_NOTES: ${{ inputs.release_notes }}
         run: |
-          cp android/app/build/outputs/apk/release/app-release.apk "SullyOS-v$VERSION.apk"
-          sha256sum "SullyOS-v$VERSION.apk" > "SullyOS-v$VERSION.apk.sha256"
+          APK_NAME="SullyOS-v$VERSION.apk"
+          cp android/app/build/outputs/apk/release/app-release.apk "$APK_NAME"
+          sha256sum "$APK_NAME" > "$APK_NAME.sha256"
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            RELEASE_NOTES="$REQUESTED_RELEASE_NOTES"
+          else
+            RELEASE_NOTES="自动构建自 master 提交 ${GITHUB_SHA:0:7}。"
+          fi
+          printf '%s\n' "$RELEASE_NOTES" > SullyOS-release-notes.txt
+          export APK_NAME RELEASE_NOTES
+          export APK_SIZE="$(stat -c%s "$APK_NAME")"
+          export APK_SHA256="$(sha256sum "$APK_NAME" | awk '{print $1}')"
+          node --input-type=module -e '
+            import { writeFileSync } from "node:fs";
+            const version = process.env.VERSION;
+            const tag = `v${version}`;
+            const apkUrl = `https://github.com/xuebing0229/SullyOS/releases/download/${tag}/${process.env.APK_NAME}`;
+            writeFileSync("SullyOS-latest.json", `${JSON.stringify({
+              schemaVersion: 1,
+              version,
+              tag,
+              name: `SullyOS ${tag}`,
+              notes: process.env.RELEASE_NOTES || "",
+              apkUrl,
+              apkName: process.env.APK_NAME,
+              apkSize: Number(process.env.APK_SIZE || 0),
+              sha256: process.env.APK_SHA256,
+              publishedAt: new Date().toISOString(),
+              pageUrl: `https://github.com/xuebing0229/SullyOS/releases/tag/${tag}`,
+            }, null, 2)}\n`);
+          '
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
@@ -131,21 +162,16 @@ jobs:
           path: |
             SullyOS-v${{ steps.release_version.outputs.version }}.apk
             SullyOS-v${{ steps.release_version.outputs.version }}.apk.sha256
+            SullyOS-latest.json
           if-no-files-found: error
 
       - name: Create GitHub Release
         shell: bash
-        env:
-          REQUESTED_RELEASE_NOTES: ${{ inputs.release_notes }}
         run: |
-          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
-            RELEASE_NOTES="$REQUESTED_RELEASE_NOTES"
-          else
-            RELEASE_NOTES="自动构建自 master 提交 ${GITHUB_SHA:0:7}。"
-          fi
           gh release create "v$VERSION" \
             "SullyOS-v$VERSION.apk" \
             "SullyOS-v$VERSION.apk.sha256" \
+            SullyOS-latest.json \
             --target "$GITHUB_SHA" \
             --title "SullyOS v$VERSION" \
-            --notes "$RELEASE_NOTES"
+            --notes-file SullyOS-release-notes.txt

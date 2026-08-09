@@ -2,6 +2,9 @@ import { Capacitor, CapacitorHttp, registerPlugin } from '@capacitor/core';
 import { APP_RELEASE_VERSION } from './buildInfo';
 
 const RELEASE_API = 'https://api.github.com/repos/xuebing0229/SullyOS/releases/latest';
+const RELEASE_MANIFEST = 'https://github.com/xuebing0229/SullyOS/releases/latest/download/SullyOS-latest.json';
+const RELEASE_DOWNLOAD_PREFIX = 'https://github.com/xuebing0229/SullyOS/releases/download/';
+const REQUEST_HEADERS = { 'User-Agent': `SullyOS-Android/${APP_RELEASE_VERSION}` };
 const CHECKED_AT_KEY = 'sullyos_app_update_checked_at';
 const RELEASE_CACHE_KEY = 'sullyos_app_update_release';
 const SNOOZE_KEY = 'sullyos_app_update_snooze';
@@ -16,6 +19,7 @@ export interface AppRelease {
     apkUrl: string;
     apkName: string;
     apkSize: number;
+    sha256?: string;
     publishedAt: string;
     pageUrl: string;
 }
@@ -46,11 +50,14 @@ export const compareVersions = (left: string, right: string): number => {
 
 export const isAndroidApp = (): boolean => Capacitor.isNativePlatform() && Capacitor.getPlatform() === 'android';
 
-const normalizeRelease = (raw: any): AppRelease | null => {
+const isTrustedApkUrl = (value: unknown): value is string =>
+    typeof value === 'string' && value.startsWith(RELEASE_DOWNLOAD_PREFIX) && value.toLowerCase().endsWith('.apk');
+
+export const normalizeApiRelease = (raw: any): AppRelease | null => {
     if (!raw || raw.draft || raw.prerelease) return null;
     const assets = Array.isArray(raw.assets) ? raw.assets : [];
     const apk = assets.find((asset: any) => typeof asset?.name === 'string' && asset.name.toLowerCase().endsWith('.apk'));
-    if (!apk?.browser_download_url) return null;
+    if (!isTrustedApkUrl(apk?.browser_download_url)) return null;
     const tag = String(raw.tag_name || '').trim();
     const version = tag.replace(/^v/i, '');
     if (!numericParts(version).length) return null;
@@ -65,6 +72,53 @@ const normalizeRelease = (raw: any): AppRelease | null => {
         publishedAt: String(raw.published_at || ''),
         pageUrl: String(raw.html_url || ''),
     };
+};
+
+export const normalizeReleaseManifest = (raw: any): AppRelease | null => {
+    if (!raw || Number(raw.schemaVersion) !== 1 || !isTrustedApkUrl(raw.apkUrl)) return null;
+    const version = String(raw.version || '').trim().replace(/^v/i, '');
+    if (!numericParts(version).length) return null;
+    const tag = String(raw.tag || `v${version}`).trim();
+    if (tag !== `v${version}` || !raw.apkUrl.startsWith(`${RELEASE_DOWNLOAD_PREFIX}${tag}/`)) return null;
+    return {
+        version,
+        tag,
+        name: String(raw.name || `SullyOS ${version}`),
+        notes: String(raw.notes || '').trim(),
+        apkUrl: raw.apkUrl,
+        apkName: String(raw.apkName || `SullyOS-v${version}.apk`),
+        apkSize: Number(raw.apkSize || 0),
+        sha256: typeof raw.sha256 === 'string' ? raw.sha256 : undefined,
+        publishedAt: String(raw.publishedAt || ''),
+        pageUrl: String(raw.pageUrl || `https://github.com/xuebing0229/SullyOS/releases/tag/${tag}`),
+    };
+};
+
+const fetchManifestRelease = async (): Promise<AppRelease | null> => {
+    const response = await CapacitorHttp.get({
+        url: RELEASE_MANIFEST,
+        responseType: 'json',
+        headers: { ...REQUEST_HEADERS, Accept: 'application/json' },
+    });
+    if (response.status < 200 || response.status >= 300) return null;
+    return normalizeReleaseManifest(response.data);
+};
+
+const fetchApiRelease = async (): Promise<AppRelease | null> => {
+    const response = await CapacitorHttp.get({
+        url: RELEASE_API,
+        headers: {
+            ...REQUEST_HEADERS,
+            Accept: 'application/vnd.github+json',
+            'X-GitHub-Api-Version': '2022-11-28',
+        },
+    });
+    if (response.status === 404) return null;
+    if (response.status < 200 || response.status >= 300) {
+        const detail = typeof response.data?.message === 'string' ? `：${response.data.message}` : '';
+        throw new Error(`GitHub Release 检查失败（HTTP ${response.status}）${detail}`);
+    }
+    return normalizeApiRelease(response.data);
 };
 
 const readCachedRelease = (): AppRelease | null => {
@@ -100,16 +154,10 @@ export const checkForAppUpdate = async (options: { force?: boolean; respectSnooz
     } catch { /* ignore */ }
 
     if (!release) {
-        const response = await CapacitorHttp.get({
-            url: RELEASE_API,
-            headers: {
-                Accept: 'application/vnd.github+json',
-                'X-GitHub-Api-Version': '2022-11-28',
-            },
-        });
-        if (response.status === 404) return null;
-        if (response.status < 200 || response.status >= 300) throw new Error(`GitHub Release 检查失败（HTTP ${response.status}）`);
-        release = normalizeRelease(response.data);
+        try {
+            release = await fetchManifestRelease();
+        } catch { /* 静态清单不可达时回退 GitHub API */ }
+        if (!release) release = await fetchApiRelease();
         try {
             localStorage.setItem(CHECKED_AT_KEY, String(Date.now()));
             if (release) localStorage.setItem(RELEASE_CACHE_KEY, JSON.stringify(release));
