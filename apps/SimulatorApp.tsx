@@ -419,6 +419,13 @@ ${project?.breaker ? `\n附加规则：\n${project.breaker}` : ''}
           <button onClick={() => setView('list')}><ArrowLeft size={22}/></button>
           <div style={{flex:1}}><strong>{project.name}</strong><div style={{fontSize:11,opacity:.6}}>{char?.name} · {modeLabel[project.mode]}</div></div>
           <button onClick={makeMemoryCandidates} disabled={busy}><Sparkle size={21}/></button>
+          <button
+            onClick={endSession}
+            disabled={session.status==='ended'}
+            style={{padding:'7px 10px',borderRadius:999,background:'rgba(51,65,85,.84)',whiteSpace:'nowrap'}}
+          >
+            {session.status==='ended'?'已结束':'结束本局'}
+          </button>
         </header>
 
         {showFrame && (
@@ -434,17 +441,19 @@ ${project?.breaker ? `\n附加规则：\n${project.breaker}` : ''}
 
         {showChat && (
           <div style={{flex:'1 1 0',minHeight:0,display:'flex',flexDirection:'column',background:'#0f172a'}}>
-            <div style={{flex:1,overflow:'auto',padding:14,display:'grid',gap:10}}>
+            <div style={{flex:1,minHeight:0,overflowY:'auto',padding:14,display:'flex',flexDirection:'column',alignItems:'stretch',justifyContent:'flex-start',gap:10}}>
               {session.turns.map(t => (
                 <div key={t.id} style={{
-                  justifySelf:t.role==='user'?'end':'start',
-                  maxWidth:'86%',padding:'9px 12px',borderRadius:14,
-                  background:t.role==='user'?'#6d28d9':'#1e293b',whiteSpace:'pre-wrap'
+                  alignSelf:t.role==='user'?'flex-end':'flex-start',
+                  width:'fit-content',maxWidth:'86%',height:'auto',flexShrink:0,
+                  padding:'9px 12px',borderRadius:14,
+                  background:t.role==='user'?'#6d28d9':'#1e293b',
+                  whiteSpace:'pre-wrap',overflowWrap:'anywhere'
                 }}>
                   {t.action ? `[${t.action}] ${JSON.stringify(t.payload ?? '')}` : t.content}
                 </div>
               ))}
-              {busy && <div style={{opacity:.6}}>正在推进…</div>}
+              {busy && <div style={{alignSelf:'flex-start',flexShrink:0,opacity:.6}}>正在推进…</div>}
             </div>
             <div style={{display:'flex',gap:8,padding:`10px 12px calc(10px + var(--safe-bottom))`}}>
               <textarea value={input} onChange={e=>setInput(e.target.value)} rows={1}
@@ -453,13 +462,6 @@ ${project?.breaker ? `\n附加规则：\n${project.breaker}` : ''}
             </div>
           </div>
         )}
-
-        <div style={{position:'absolute',right:12,bottom:'calc(76px + var(--safe-bottom))'}}>
-          <button onClick={endSession} disabled={session.status==='ended'}
-            style={{padding:'8px 12px',borderRadius:999,background:'rgba(15,23,42,.84)'}}>
-            {session.status==='ended'?'已结束':'结束本局'}
-          </button>
-        </div>
 
         {showMemory && char && (
           <AppMemoryCandidatePanel
