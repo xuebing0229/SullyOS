@@ -2,22 +2,55 @@ name: Build Android APK
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - master
-    paths-ignore:
-      - README.md
+    inputs:
+      version:
+        description: "版本号（例如 2.3.0，不要带 v）"
+        required: true
+        type: string
+      release_notes:
+        description: "更新说明"
+        required: false
+        default: "SullyOS 更新"
+        type: string
 
 permissions:
-  contents: read
+  contents: write
+
+concurrency:
+  group: android-release
+  cancel-in-progress: false
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ inputs.version }}
+      VITE_APP_VERSION: ${{ inputs.version }}
+      ANDROID_VERSION_NAME: ${{ inputs.version }}
+      ANDROID_VERSION_CODE: ${{ github.run_number }}
+      ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+      ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+      ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+      ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+      ANDROID_KEYSTORE_FILE: ${{ runner.temp }}/sullyos-release.jks
+      GH_TOKEN: ${{ github.token }}
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Validate release input and secrets
+        shell: bash
+        run: |
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "版本号必须是 x.y.z"; exit 1; }
+          test -n "$ANDROID_KEYSTORE_BASE64" || { echo "缺少 ANDROID_KEYSTORE_BASE64"; exit 1; }
+          test -n "$ANDROID_KEYSTORE_PASSWORD" || { echo "缺少 ANDROID_KEYSTORE_PASSWORD"; exit 1; }
+          test -n "$ANDROID_KEY_ALIAS" || { echo "缺少 ANDROID_KEY_ALIAS"; exit 1; }
+          test -n "$ANDROID_KEY_PASSWORD" || { echo "缺少 ANDROID_KEY_PASSWORD"; exit 1; }
+          if gh release view "v$VERSION" >/dev/null 2>&1; then
+            echo "v$VERSION 已存在"
+            exit 1
+          fi
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -25,20 +58,27 @@ jobs:
           node-version: "20"
 
       - name: Install pnpm
-        run: npm install --global pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
 
       - name: Install dependencies
-        run: pnpm install --no-frozen-lockfile
+        run: pnpm install --frozen-lockfile
 
       - name: Build web app
         run: pnpm run build
-        
 
-      - name: Create Android project
-        run: pnpm exec cap add android
+      - name: Create and sync Android project
+        run: |
+          pnpm exec cap add android
+          pnpm exec cap sync android
 
-      - name: Sync Capacitor Android
-        run: pnpm exec cap sync android
+      - name: Restore signing key
+        shell: bash
+        run: printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$ANDROID_KEYSTORE_FILE"
+
+      - name: Configure signed release
+        run: node scripts/configure-android-release.mjs
 
       - name: Set up Java
         uses: actions/setup-java@v4
@@ -47,16 +87,35 @@ jobs:
           java-version: "21"
           cache: gradle
 
-      - name: Grant Gradle permission
-        run: chmod +x android/gradlew
-
-      - name: Build debug APK
+      - name: Build signed release APK
         working-directory: android
-        run: ./gradlew assembleDebug
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease
 
-      - name: Upload APK
+      - name: Prepare release files
+        shell: bash
+        run: |
+          cp android/app/build/outputs/apk/release/app-release.apk "SullyOS-v$VERSION.apk"
+          sha256sum "SullyOS-v$VERSION.apk" > "SullyOS-v$VERSION.apk.sha256"
+
+      - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: SullyOS-debug-apk
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          name: SullyOS-v${{ inputs.version }}
+          path: |
+            SullyOS-v${{ inputs.version }}.apk
+            SullyOS-v${{ inputs.version }}.apk.sha256
           if-no-files-found: error
+
+      - name: Create GitHub Release
+        shell: bash
+        env:
+          RELEASE_NOTES: ${{ inputs.release_notes }}
+        run: |
+          gh release create "v$VERSION" \
+            "SullyOS-v$VERSION.apk" \
+            "SullyOS-v$VERSION.apk.sha256" \
+            --target "$GITHUB_SHA" \
+            --title "SullyOS v$VERSION" \
+            --notes "$RELEASE_NOTES"
