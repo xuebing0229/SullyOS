@@ -32,7 +32,7 @@ jobs:
       ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
       ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
       ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-      ANDROID_KEYSTORE_FILE: ${{ runner.temp }}/sullyos-release.jks
+      ANDROID_KEYSTORE_FILE: /tmp/sullyos-release.jks
       GH_TOKEN: ${{ github.token }}
 
     steps:
