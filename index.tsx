@@ -11,8 +11,11 @@ import { installWakeListener } from './utils/proactivePushConfig';
 import { Capacitor } from '@capacitor/core';
 
 // 普通网页不加载原生推送插件；只有显式开启的 Capacitor 构建才初始化。
-if (import.meta.env.VITE_AMSG_NATIVE_PUSH === 'true' && Capacitor.isNativePlatform()) {
+if ((import.meta.env.VITE_AMSG_NATIVE_PUSH === 'true' || import.meta.env.VITE_AMSG_NATIVE_PUSH === 'fcm') && Capacitor.isNativePlatform()) {
   void import('./utils/nativeAmsgPush').then(({ initNativeAmsgPush }) => initNativeAmsgPush());
+}
+if (import.meta.env.VITE_AMSG_NATIVE_PUSH === 'poll' && Capacitor.isNativePlatform()) {
+  void import('./utils/nativeAmsgPoll').then(({ initNativeAmsgPoll }) => initNativeAmsgPoll());
 }
 
 // Register the keep-alive Service Worker early so it's ready before any AI calls

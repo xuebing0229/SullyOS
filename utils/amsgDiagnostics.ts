@@ -199,8 +199,9 @@ export type AmsgDiagnosticsProbe =
 
 export interface AmsgDiagnosticsInput {
   probe: AmsgDiagnosticsProbe;
-  /** 这台设备的浏览器有没有推送订阅（本地事实，worker 那侧看不到）。 */
+  /** 这台设备有没有推送订阅（本地事实，worker 那侧看不到）。 */
   localPushSubscribed?: boolean;
+  pushChannel?: 'web' | 'native' | 'native-poll';
 }
 
 const DB_MISSING_HINT = 'Worker 没有绑定 D1 数据库。多半是部署第一步填完 Database ID 之后没点那个「Add」就直接 Deploy 了。回 Cloudflare 的 Settings → Bindings 加一条 D1 database，变量名填大写的 DB。';
@@ -215,7 +216,7 @@ const SCHEMA_STALE_HINT = '换过 Worker 版本后，已经存在的表不会自
  * 前面的行是坏的时候，后面那些查不出结论的一律报 unknown，不假装绿。
  */
 export const buildAmsgDiagnosticRows = (input: AmsgDiagnosticsInput): AmsgDiagnosticRow[] => {
-  const { probe, localPushSubscribed } = input;
+  const { probe, localPushSubscribed, pushChannel = 'web' } = input;
 
   if (!probe.reachable) {
     const unknownRest = (key: string, label: string): AmsgDiagnosticRow => ({
@@ -291,12 +292,18 @@ export const buildAmsgDiagnosticRows = (input: AmsgDiagnosticsInput): AmsgDiagno
   }
 
   const vapidWarning = config.warnings.find((item) => item.code === 'VAPID_MISSING');
+  const fcmWarning = config.warnings.find((item) => item.code === 'FCM_MISSING' || item.code === 'FCM_INCOMPLETE');
+  const credentialWarning = pushChannel === 'native-poll' ? undefined : pushChannel === 'native' ? fcmWarning : vapidWarning;
   rows.push({
     key: 'pushCredential',
     label: '推送凭据',
-    level: vapidWarning ? 'bad' : 'ok',
+    level: credentialWarning ? 'bad' : 'ok',
     // 这是最难自己查出来的一种坏法：任务建得成、界面全绿，到点一条都推不出去。
-    detail: vapidWarning ? vapidWarning.message : 'VAPID 已配齐。',
+    detail: credentialWarning
+      ? credentialWarning.message
+      : pushChannel === 'native-poll'
+        ? 'Android 使用你自己的 D1 消息信箱，不需要 Firebase 或额外推送密钥。'
+        : pushChannel === 'native' ? 'Firebase FCM 已配齐。' : 'VAPID 已配齐。',
   });
 
   const remoteRegistered = storage.pushSubscriptionRegistered === true;
@@ -307,8 +314,8 @@ export const buildAmsgDiagnosticRows = (input: AmsgDiagnosticsInput): AmsgDiagno
     detail: !localPushSubscribed
       ? '这台设备还没订阅推送，点下面的「开启通知与推送」。'
       : remoteRegistered
-        ? '浏览器已订阅，Worker 上也登记了收件设备。换设备或换浏览器之后要在新的那台上再点一次「开启通知与推送」。'
-        : '浏览器订阅好了，但 Worker 上没有登记收件设备——到点的消息发不出去。点下面的「开启通知与推送」补登记一次。',
+        ? '设备已订阅，Worker 上也登记了收件设备。换设备后要在新的那台上再点一次「开启通知与推送」。'
+        : '设备订阅好了，但 Worker 上没有登记收件设备——到点的消息发不出去。点下面的「开启通知与推送」补登记一次。',
   });
 
   const overdue = storage.overdueTasks || 0;

@@ -18074,6 +18074,47 @@ var fcmTokenFromEndpoint = (endpoint) => {
   if (typeof endpoint !== "string" || !endpoint.startsWith("fcm:")) return null;
   return endpoint.slice(4).trim() || null;
 };
+var pollTokenFromEndpoint = (endpoint) => {
+  if (typeof endpoint !== "string" || !endpoint.startsWith("poll:")) return null;
+  const token = endpoint.slice(5).trim();
+  return /^[A-Za-z0-9_-]{32,128}$/.test(token) ? token : null;
+};
+var ensureMailbox = async (env) => {
+  if (!env.DB) throw new Error("D1 DB \u672A\u7ED1\u5B9A");
+  await env.DB.batch([
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS native_push_mailbox (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      device_token TEXT NOT NULL,
+      payload TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    )`),
+    env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_native_push_mailbox_device ON native_push_mailbox(device_token, id)")
+  ]);
+};
+var enqueueNativePollPayload = async (env, token, payload) => {
+  await ensureMailbox(env);
+  const now = Date.now();
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM native_push_mailbox WHERE created_at < ?").bind(now - 7 * 864e5),
+    env.DB.prepare("INSERT INTO native_push_mailbox (device_token, payload, created_at) VALUES (?, ?, ?)").bind(token, payload, now)
+  ]);
+};
+var pullNativePollPayloads = async (env, token, limit = 20) => {
+  await ensureMailbox(env);
+  const result = await env.DB.prepare(
+    "SELECT id, payload, created_at AS createdAt FROM native_push_mailbox WHERE device_token = ? ORDER BY id ASC LIMIT ?"
+  ).bind(token, Math.max(1, Math.min(50, Math.floor(limit)))).all();
+  return result.results ?? [];
+};
+var ackNativePollPayloads = async (env, token, ids) => {
+  await ensureMailbox(env);
+  const safeIds = ids.filter((id) => Number.isSafeInteger(id) && id > 0).slice(0, 50);
+  if (!safeIds.length) return;
+  const placeholders = safeIds.map(() => "?").join(",");
+  await env.DB.prepare(
+    `DELETE FROM native_push_mailbox WHERE device_token = ? AND id IN (${placeholders})`
+  ).bind(token, ...safeIds).run();
+};
 var buildFcmMessage = (token, rawPayload) => {
   const payload = JSON.parse(rawPayload);
   const actualBody = String(payload.message ?? payload.body ?? "");
@@ -18126,6 +18167,8 @@ var sendFcmNotification = async (env, token, payload) => {
 };
 var createHybridPushTransport = (env, webPush) => ({
   async sendNotification(subscription, payload) {
+    const pollToken = pollTokenFromEndpoint(subscription?.endpoint);
+    if (pollToken) return enqueueNativePollPayload(env, pollToken, payload);
     const token = fcmTokenFromEndpoint(subscription?.endpoint);
     if (token) return sendFcmNotification(env, token, payload);
     return webPush.sendNotification(subscription, payload);
@@ -19251,6 +19294,10 @@ var inspectWorkerEnv = (env) => {
     code: "FCM_INCOMPLETE",
     message: "FCM \u914D\u7F6E\u53EA\u586B\u4E86\u4E00\u90E8\u5206\uFF1B\u9700\u8981\u540C\u65F6\u8BBE\u7F6E FCM_PROJECT_ID\u3001FCM_SERVICE_ACCOUNT_EMAIL\u3001FCM_SERVICE_ACCOUNT_PRIVATE_KEY\u3002"
   });
+  if (!fcmParts.some(Boolean)) warnings.push({
+    code: "FCM_MISSING",
+    message: "\u5C1A\u672A\u914D\u7F6E Firebase FCM \u670D\u52A1\u8D26\u53F7\uFF1A\u6D4F\u89C8\u5668/PWA \u53EF\u7528 Web Push\uFF0C\u4F46\u539F\u751F Android App \u65E0\u6CD5\u63A5\u6536\u7CFB\u7EDF\u63A8\u9001\u3002"
+  });
   if (!env.AMSG_SERVER_TOKEN?.trim()) {
     warnings.push({
       code: "SERVER_TOKEN_MISSING",
@@ -19267,7 +19314,7 @@ var inspectWorkerEnv = (env) => {
 var CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, X-User-Id, X-Payload-Encrypted, X-Encryption-Version, X-Response-Encrypted, X-Client-Token",
+  "Access-Control-Allow-Headers": "Content-Type, X-User-Id, X-Payload-Encrypted, X-Encryption-Version, X-Response-Encrypted, X-Client-Token, X-Device-Token",
   "Access-Control-Max-Age": "86400"
 };
 var jsonWithCors = (status, body) => new Response(JSON.stringify(body), {
@@ -19381,6 +19428,31 @@ var src_default = {
         success: false,
         error: { code: "WORKER_CONFIG_MISSING", message: report.message, missing: report.missing }
       });
+    }
+    if (pathname.endsWith("/native-poll")) {
+      if (method === "OPTIONS") return new Response(null, { status: 204, headers: CORS_HEADERS });
+      const token = request.headers.get("X-Device-Token")?.trim() || "";
+      if (!/^[A-Za-z0-9_-]{32,128}$/.test(token)) {
+        return jsonWithCors(401, { success: false, error: { code: "INVALID_DEVICE_TOKEN", message: "\u8BBE\u5907\u4EE4\u724C\u65E0\u6548" } });
+      }
+      if (method === "GET") {
+        return jsonWithCors(200, { success: true, data: { messages: await pullNativePollPayloads(env, token) } });
+      }
+      return jsonWithCors(405, { success: false, error: { code: "METHOD_NOT_ALLOWED", message: "/native-poll \u53EA\u63A5\u53D7 GET" } });
+    }
+    if (pathname.endsWith("/native-poll/ack")) {
+      if (method === "OPTIONS") return new Response(null, { status: 204, headers: CORS_HEADERS });
+      const token = request.headers.get("X-Device-Token")?.trim() || "";
+      if (!/^[A-Za-z0-9_-]{32,128}$/.test(token)) {
+        return jsonWithCors(401, { success: false, error: { code: "INVALID_DEVICE_TOKEN", message: "\u8BBE\u5907\u4EE4\u724C\u65E0\u6548" } });
+      }
+      if (method !== "POST") {
+        return jsonWithCors(405, { success: false, error: { code: "METHOD_NOT_ALLOWED", message: "/native-poll/ack \u53EA\u63A5\u53D7 POST" } });
+      }
+      const body = await request.json().catch(() => ({}));
+      const ids = Array.isArray(body.ids) ? body.ids.map(Number) : [];
+      await ackNativePollPayloads(env, token, ids);
+      return jsonWithCors(200, { success: true });
     }
     if (pathname.endsWith("/instant-chat")) {
       if (method === "OPTIONS") return new Response(null, { status: 204, headers: CORS_HEADERS });
