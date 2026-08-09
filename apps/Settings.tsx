@@ -21,6 +21,7 @@ import { loadMcpServers, saveMcpServers, createMcpServer, testMcpConnection, res
 import { loadPushConfig, savePushConfig, registerScheduleOnWorker, startHeartbeat, stopHeartbeat, isPushConfigAvailable, ensureSubscribed, sendTestPush, getPushDiagnostics, resetSubscription, deepResetSubscription, type PushDiagnostics } from '../utils/proactivePushConfig';
 import { ProactiveChat } from '../utils/proactiveChat';
 import { InstantPushSettingsModal } from '../components/settings/InstantPushSettingsModal';
+import ActiveMsgGlobalSettingsModal from '../components/settings/ActiveMsgGlobalSettingsModal';
 import { PushVapidSettingsModal } from '../components/settings/PushVapidSettingsModal';
 import VersionInfo from '../components/settings/VersionInfo';
 import { LoyalUserRecruitmentController } from '../components/LoyalUserRecruitmentEvent';
@@ -35,6 +36,7 @@ import ImageGenerationSettings from '../components/settings/ImageGenerationSetti
 import OrphanImageCleanupCard from '../components/settings/OrphanImageCleanupCard';
 import { DB } from '../utils/db';
 import { getBackupReminderState, setBackupReminderIntervalDays, daysSinceLastBackup, BACKUP_REMINDER_MIN_DAYS, BACKUP_REMINDER_MAX_DAYS } from '../utils/backupReminder';
+import { ActiveMsgClient } from '../utils/activeMsgClient';
 
 // hot_news（orz.ai）可选热榜平台。key 必须与 API 的 ?platform= 完全一致。
 const HOTNEWS_PLATFORM_OPTIONS: { key: string; label: string }[] = [
@@ -512,6 +514,7 @@ const Settings: React.FC = () => {
   // "深度重置". 不持久化, 刷新页面归零 (用户原话: "刷新页面正常消失").
   const [ppZombieStreak, setPpZombieStreak] = useState(0);
   const [showInstantModal, setShowInstantModal] = useState(false);
+  const [showActiveMsg2GlobalModal, setShowActiveMsg2GlobalModal] = useState(false);
   const [showVapidModal, setShowVapidModal] = useState(false);
   const [vapidReadyTick, setVapidReadyTick] = useState(0); // 关闭 VAPID 弹窗后刷新顶层徽标
 
@@ -777,6 +780,7 @@ const Settings: React.FC = () => {
 
   const handleSaveApi = () => {
     const nextConfig = buildCurrentApiPresetConfig();
+    const savedChatConfig = { ...nextConfig };
     if (selectedApiPreset) {
       const presetName = selectedPresetName.trim();
       if (!presetName) {
@@ -789,6 +793,8 @@ const Settings: React.FC = () => {
       updateApiConfig(nextConfig);
       setStatusMsg('配置已保存');
     }
+    void ActiveMsgClient.refreshApiCredentialsForPendingTasks({ ...apiConfig, ...savedChatConfig })
+      .catch(error => console.warn('[amsg2] 刷新云端任务 API 凭据失败', error));
     setTimeout(() => setStatusMsg(''), 2000);
   };
 
@@ -2430,6 +2436,30 @@ const Settings: React.FC = () => {
         </SettingsSection>
         )}
 
+        {/* ───────── 主动消息 2.0 ───────── */}
+        <SettingsSection
+            title="主动消息 2.0"
+            icon={
+                <div className="p-2 bg-violet-100/60 rounded-xl text-violet-600">
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-4 h-4">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M14.857 17.082a23.848 23.848 0 0 0 5.454-1.31A8.967 8.967 0 0 1 18 9.75V9A6 6 0 0 0 6 9v.75a8.967 8.967 0 0 1-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31M12 3v3m4.5-1.5-2.1 2.1" />
+                    </svg>
+                </div>
+            }
+            actions={
+                <button
+                    onClick={() => setShowActiveMsg2GlobalModal(true)}
+                    className="text-[10px] bg-violet-100 text-violet-600 px-3 py-1.5 rounded-full font-bold shadow-sm active:scale-95 transition-transform"
+                >
+                    部署 / 配置
+                </button>
+            }
+        >
+            <p className="text-xs text-slate-500 leading-relaxed">
+                把定时生成和推送放到你自己的 Cloudflare Worker。关掉网页或锁屏后，角色仍能按计划主动找你；支持一键部署、状态诊断和云端数据清理。
+            </p>
+        </SettingsSection>
+
         {/* ───────── Instant Push ───────── */}
         <SettingsSection
             title="Instant Push"
@@ -3351,6 +3381,13 @@ const Settings: React.FC = () => {
         open={showInstantModal}
         onClose={() => setShowInstantModal(false)}
         onOpenVapid={() => { setShowInstantModal(false); setShowVapidModal(true); }}
+      />
+      <ActiveMsgGlobalSettingsModal
+        isOpen={showActiveMsg2GlobalModal}
+        onClose={() => setShowActiveMsg2GlobalModal(false)}
+        addToast={addToast}
+        realtimeConfig={realtimeConfig}
+        onOpenVapid={() => { setShowActiveMsg2GlobalModal(false); setShowVapidModal(true); }}
       />
       <PushVapidSettingsModal
         open={showVapidModal}

@@ -103,6 +103,8 @@ export interface BuildChatPayloadInput {
     worldbookQueryMessages?: Message[];
     /** 是否允许通用 MCP 聊天工具；默认 true。 */
     allowMcpChat?: boolean;
+    /** 本轮由主动消息 2.0 worker 生成；时间、真实世界与 MCP 说明由 worker 在执行时补。 */
+    timelyByWorker?: boolean;
 }
 
 export interface BuildChatPayloadResult {
@@ -273,7 +275,10 @@ export async function buildChatRequestPayload(input: BuildChatPayloadInput): Pro
         !!isListeningTogether,
         musicCfg,
         recentTrackSwitch,
-        { worldbookMessages: input.worldbookQueryMessages ?? recentMsgsHint },
+        {
+            worldbookMessages: input.worldbookQueryMessages ?? recentMsgsHint,
+            timelyByWorker: input.timelyByWorker,
+        },
     );
     let systemPrompt = parts.stable;
     let volatileTail = parts.volatileState;
@@ -377,7 +382,7 @@ export async function buildChatRequestPayload(input: BuildChatPayloadInput): Pro
     // ── 9d. 通用 MCP 工具模式 (用户自配的远程 MCP 服务器, 见 docs/mcp-client.md) ──
     // 工具清单来自持久化的发现结果，变化很慢 → 稳定段。
     const mcpChatActive = input.allowMcpChat !== false && isMcpChatAvailable(char.id);
-    if (mcpChatActive) {
+    if (mcpChatActive && !input.timelyByWorker) {
         const block = buildMcpSystemBlock(userProfile?.name || '用户', char.id);
         if (block) {
             systemPrompt += block;
@@ -408,7 +413,7 @@ export async function buildChatRequestPayload(input: BuildChatPayloadInput): Pro
             content: `[Reminder: 每句话必须用 <翻译><原文>...</原文><译文>...</译文></翻译> 标签包裹。一句一个标签。绝对不能省略。]`,
         });
     }
-    if (mcpChatActive) {
+    if (mcpChatActive && !input.timelyByWorker) {
         fullMessages.push({ role: 'system', content: MCP_TAIL_REMINDER });
     }
 

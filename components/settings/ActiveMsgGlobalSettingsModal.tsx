@@ -164,7 +164,8 @@ const ActiveMsgGlobalSettingsModal: React.FC<ActiveMsgGlobalSettingsModalProps> 
   // 权限，真正需要长期留着的那一份已经作为 secret 写进用户自己的 worker 了（自更新用）。
   const [cfToken, setCfToken] = useState('');
   // 内测口令闸（公测时删掉这三个 state 和界面上那张卡）。
-  const [oneClickUnlocked, setOneClickUnlocked] = useState(readOneClickUnlocked);
+  // 用户自有分支直接开放一键部署，不保留上游内测口令门槛。
+  const [oneClickUnlocked, setOneClickUnlocked] = useState(true);
   const [accessCodeInput, setAccessCodeInput] = useState('');
   const [accessCodeError, setAccessCodeError] = useState('');
   const [provisioning, setProvisioning] = useState(false);

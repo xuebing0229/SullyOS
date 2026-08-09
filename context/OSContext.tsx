@@ -78,6 +78,10 @@ import {
 } from '../utils/gameHallAutoplayBackup';
 import { migrateApiCostV1, markApiCostMigrationComplete } from '../utils/apiCostMigration';
 import { resolveBackedUpActiveApiPresetId } from '../utils/apiPresetBackup';
+import { markAmsgStateDirty, resumePendingAmsgStateSync } from '../utils/amsgStateSync';
+import { ActiveMsgClient } from '../utils/activeMsgClient';
+import { ActiveMsgStore } from '../utils/activeMsgStore';
+import { charMayHaveCloudState, purgeCharCloudState } from '../utils/amsg2CharCleanup';
 
 interface ProactiveQueueEntry {
   charId: string;
@@ -264,6 +268,8 @@ const defaultMemoryPalaceConfig: MemoryPalaceGlobalConfig = {
   rerank: { enabled: false, baseUrl: '', apiKey: '', model: 'BAAI/bge-reranker-v2-m3', topN: 5 },
 };
 
+export type DeleteCharacterResult = { status: 'deleted' } | { status: 'cloud-cleanup-failed' };
+
 interface OSContextType {
   activeApp: AppID;
   openApp: (appId: AppID) => void;
@@ -281,7 +287,7 @@ interface OSContextType {
   activeCharacterId: string;
   addCharacter: () => Promise<CharacterProfile>;
   updateCharacter: (id: string, updates: Partial<CharacterProfile> | ((prev: CharacterProfile) => Partial<CharacterProfile>)) => void;
-  deleteCharacter: (id: string) => void;
+  deleteCharacter: (id: string, options?: { force?: boolean }) => Promise<DeleteCharacterResult>;
   setActiveCharacterId: (id: string) => void;
 
   // 角色分组（神经链接"文件夹"，与群聊 groups 无关）
@@ -883,6 +889,12 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
   const [lastMsgTimestamp, setLastMsgTimestamp] = useState<number>(0);
   const [unreadMessages, setUnreadMessages] = useState<Record<string, number>>({});
   const [proactiveComposingChars, setProactiveComposingChars] = useState<Record<string, true>>({});
+
+  // 上次关闭应用前尚未传完的云端聊天快照，在本地数据恢复后自动补传。
+  useEffect(() => {
+      if (!isDataLoaded) return;
+      resumePendingAmsgStateSync({ characters, userProfile, groups, realtimeConfig });
+  }, [isDataLoaded]); // eslint-disable-line react-hooks/exhaustive-deps
   
   // LOGS
   const [systemLogs, setSystemLogs] = useState<SystemLog[]>([]);
@@ -2737,9 +2749,61 @@ recordApiCall({ requestId: (config as any)?.__sullyApiCallId, url: urlStr, body:
     await DB.saveCharacter(newChar);
     return newChar;
   };
-  const updateCharacter = async (id: string, updates: Partial<CharacterProfile> | ((prev: CharacterProfile) => Partial<CharacterProfile>)) => { setCharacters(prev => { const updated = prev.map(c => c.id === id ? normalizeCharacterImpression({ ...c, ...(typeof updates === 'function' ? updates(c) : updates) }) : c); const target = updated.find(c => c.id === id); if (target) DB.saveCharacter(target); return updated; }); };
-  const deleteCharacter = async (id: string) => {
+  const updateCharacter = async (id: string, updates: Partial<CharacterProfile> | ((prev: CharacterProfile) => Partial<CharacterProfile>)) => {
+    setCharacters(prev => {
+      const updated = prev.map(c => c.id === id
+        ? normalizeCharacterImpression({ ...c, ...(typeof updates === 'function' ? updates(c) : updates) })
+        : c);
+      const target = updated.find(c => c.id === id);
+      if (target) {
+        DB.saveCharacter(target).then(() => {
+          markAmsgStateDirty({ char: target, userProfile, groups, realtimeConfig });
+        }).catch(error => console.warn('[amsg2] 角色保存后云端同步排队失败', error));
+      }
+      return updated;
+    });
+  };
+  const deleteCharacter = async (id: string, options?: { force?: boolean }): Promise<DeleteCharacterResult> => {
     const deletedCharacter = characters.find(character => character.id === id);
+    const localTaskUuids = (deletedCharacter?.activeMsg2Config?.tasks ?? []).map(task => task.taskUuid);
+
+    if (!options?.force && charMayHaveCloudState(deletedCharacter)) {
+      let workerConfigured = false;
+      try {
+        workerConfigured = Boolean((await ActiveMsgStore.getGlobalConfig()).workerUrl?.trim());
+      } catch { /* 没配置 worker 时保持原来的本地删除路径 */ }
+
+      if (workerConfigured) {
+        let hadTasks = localTaskUuids.length > 0;
+        let cleanupFailed = false;
+        try {
+          const { targets, failed } = await ActiveMsgClient.cancelAllTasksForChar(id, localTaskUuids);
+          hadTasks = hadTasks || targets.length > 0;
+          cleanupFailed = failed.size > 0;
+        } catch (error) {
+          console.warn('[deleteCharacter] 远端主动消息任务清理失败', error);
+          cleanupFailed = true;
+        }
+        if (hadTasks && !cleanupFailed) {
+          const cloudCleanup = await purgeCharCloudState(deletedCharacter);
+          cleanupFailed = cloudCleanup.status === 'failed';
+        }
+        if (hadTasks && cleanupFailed) return { status: 'cloud-cleanup-failed' };
+        if (!hadTasks) void purgeCharCloudState(deletedCharacter);
+      }
+    } else if (options?.force && charMayHaveCloudState(deletedCharacter)) {
+      void (async () => {
+        try {
+          if (localTaskUuids.length > 0) {
+            await ActiveMsgClient.cancelAllTasksForChar(id, localTaskUuids);
+          }
+          await purgeCharCloudState(deletedCharacter);
+        } catch (error) {
+          console.warn('[deleteCharacter] 强制删除后的云端清理失败', error);
+        }
+      })();
+    }
+
     setCharacters(prev => { const remaining = prev.filter(c => c.id !== id); if (remaining.length > 0 && activeCharacterId === id) { setActiveCharacterId(remaining[0].id); } return remaining; });
     await DB.deleteCharacter(id);
     if (deletedCharacter?.novelAiReference) void deleteRemoteNovelAiReference(deletedCharacter.novelAiReference).catch(() => {});
@@ -2754,6 +2818,7 @@ recordApiCall({ requestId: (config as any)?.__sullyApiCallId, url: urlStr, body:
     } catch (err) {
         console.warn('[deleteCharacter] 表情包残留清理失败（不影响角色删除）', err);
     }
+    return { status: 'deleted' };
   };
 
   // 角色分组方法（神经链接"文件夹"）

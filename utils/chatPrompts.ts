@@ -75,6 +75,8 @@ function summarizeGroupMsgContent(m: Message): string {
 export interface BuildSystemPromptOptions {
     /** 仅供世界书关键词匹配，不影响其他实时状态判断。 */
     worldbookMessages?: Message[];
+    /** 即时对话交给 worker 生成；worker 会在真正执行时补当前时间与真实世界。 */
+    timelyByWorker?: boolean;
 }
 
 export const ChatPrompts = {
@@ -210,6 +212,7 @@ export const ChatPrompts = {
         recentTrackSwitch?: { songName: string; artists: string } | null,
         options: BuildSystemPromptOptions = {},
     ): Promise<{ stable: string; volatileState: string; recencyTail: string }> => {
+        const timelyByWorker = options.timelyByWorker === true;
         // ── 分段计时（定位瓶颈用）──
         const perfT0 = performance.now();
         const timings: Record<string, number> = {};
@@ -237,7 +240,10 @@ export const ChatPrompts = {
         // 开头一行框定，让模型明白这条出现在历史之后的 system 消息是"此刻的状态"，
         // 人设与规则仍以最上方的系统设定为准。
         let volatileState = `\n[System: 实时状态 (Live Context)]\n（以下是此刻的实时状态——当前时间、你正在做的事、你的情绪底色、周边动态。你的人设与聊天规则见最上方的系统设定，此处不再重复。）\n\n`;
-        volatileState += ContextBuilder.buildVolatileCoreState(char, { includeDetailedMemories: true });
+        volatileState += ContextBuilder.buildVolatileCoreState(char, {
+            includeDetailedMemories: true,
+            timeOptions: { skipTimeAwareness: timelyByWorker },
+        });
 
         // ── 并发发起所有独立的异步取数（网络 + IndexedDB），下面按原顺序拼接 ──
         // 原来是 7 段串行 await，总耗时 = 各段之和；现在取 max。
@@ -249,6 +255,7 @@ export const ChatPrompts = {
 
         // 1. 实时世界信息（天气/新闻/时间）
         const realtimePromise: Promise<string> = (async () => {
+            if (timelyByWorker) return '';
             try {
                 if (config.weatherEnabled || config.newsEnabled) {
                     const realtimeContext = await RealtimeContextManager.buildFullContext(config, charTz);

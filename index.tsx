@@ -8,6 +8,12 @@ import { ProactiveChat } from './utils/proactiveChat';
 import { VRScheduler } from './utils/vrWorld/scheduler';
 import { installIOSStandaloneWorkaround } from './utils/iosStandalone';
 import { installWakeListener } from './utils/proactivePushConfig';
+import { Capacitor } from '@capacitor/core';
+
+// 普通网页不加载原生推送插件；只有显式开启的 Capacitor 构建才初始化。
+if (import.meta.env.VITE_AMSG_NATIVE_PUSH === 'true' && Capacitor.isNativePlatform()) {
+  void import('./utils/nativeAmsgPush').then(({ initNativeAmsgPush }) => initNativeAmsgPush());
+}
 
 // Register the keep-alive Service Worker early so it's ready before any AI calls
 KeepAlive.init().then(() => {

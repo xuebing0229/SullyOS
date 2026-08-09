@@ -62,6 +62,7 @@ import MemoryRepairPortal from '../components/chat/MemoryRepairPortal';
 import ChatModals from '../components/chat/ChatModals';
 import Modal from '../components/os/Modal';
 import ProactiveSettingsModal from '../components/chat/ProactiveSettingsModal';
+import ActiveMsg2SettingsModal from '../components/chat/ActiveMsg2SettingsModal';
 import ThinkingChainSettingsModal from '../components/chat/ThinkingChainSettingsModal';
 import { useChatAI } from '../hooks/useChatAI';
 import { cleanTextForTts, parseVoiceOutput } from '../utils/minimaxTts';
@@ -71,6 +72,13 @@ import { resolveMiniMaxApiKey } from '../utils/minimaxApiKey';
 import { resolveFishAudioApiKey, stripFishMarkupForDisplay, cleanTextForTtsFish } from '../utils/fishAudioTts';
 import { resolveTtsProvider } from '../utils/ttsProvider';
 import { isInstantConfigReady, loadInstantConfig } from '../utils/instantPushClient';
+import {
+    AMSG_INSTANT_CHAT_PENDING_EVENT,
+    AMSG_INSTANT_CHAT_PENDING_LS_KEY,
+    getInstantChatPending,
+} from '../utils/amsgInstantChat';
+import { markAmsgStateDirty } from '../utils/amsgStateSync';
+import { trackEvent } from '../utils/analytics';
 import { resolveActiveSound, playWhiteboxSound, unlockWhiteboxAudio, parseWhiteboxSound, upsertWhiteboxSound, stripWhiteboxSoundDirective, WhiteboxSound } from '../utils/whiteboxSound';
 import WhiteboxSoundEditor from '../components/chat/WhiteboxSoundEditor';
 import { normalizeTranslationLangLabel } from '../utils/translationLang';
@@ -86,6 +94,7 @@ import {
 } from '../utils/chatContextRange';
 
 const VOICE_LANG_LABELS: Record<string, string> = { en: 'English', ja: '日本語', ko: '한국어', fr: 'Français', es: 'Español' };
+const INSTANT_VOICE_SCAN_WINDOW_MS = 30_000;
 type InstantToolUiStatus = {
     charId: string;
     phase: 'running' | 'continuing' | 'done' | 'failed';
@@ -110,6 +119,7 @@ const Chat: React.FC = () => {
     // Instant Push 路径："准备中"三个点 = 消息正在拼接+发送; 消失 = SSE POST 已排进
     // 浏览器网络栈. 页面关闭时会主动 abort SSE, 让 worker 尽量走 Web Push fallback。
     const [instantSendingActive, setInstantSendingActive] = useState(false);
+    const [instantChatPending, setInstantChatPending] = useState(false);
     const [instantToolStatus, setInstantToolStatus] = useState<InstantToolUiStatus | null>(null);
     const [totalMsgCount, setTotalMsgCount] = useState(0);
     const [visibleCount, setVisibleCount] = useState(30);
@@ -191,6 +201,8 @@ const Chat: React.FC = () => {
     const [isSummarizing, setIsSummarizing] = useState(false);
     const [archiveProgress, setArchiveProgress] = useState('');
     const [showProactiveModal, setShowProactiveModal] = useState(false);
+    const [showProactiveChoice, setShowProactiveChoice] = useState(false);
+    const [showActiveMsg2Modal, setShowActiveMsg2Modal] = useState(false);
     const [showThinkingChainModal, setShowThinkingChainModal] = useState(false);
 
     // Archive Prompts State
@@ -395,6 +407,9 @@ const Chat: React.FC = () => {
     const [playingMsgId, setPlayingMsgId] = useState<number | null>(null);
     const chatAudioRef = useRef<HTMLAudioElement | null>(null);
     const prevIsTypingRef = useRef(false);
+    const prevInstantPendingRef = useRef(false);
+    const instantVoiceScanUntilRef = useRef(0);
+    const instantVoiceScanCharRef = useRef<string | undefined>(undefined);
     // Track blob: URLs we created so we can revoke them on character switch / unmount.
     const voiceBlobUrlsRef = useRef<Set<string>>(new Set());
     // We warn the user at most once (per character) that MiniMax voice isn't configured —
@@ -654,8 +669,19 @@ const Chat: React.FC = () => {
     useEffect(() => {
         const wasTyping = prevIsTypingRef.current;
         prevIsTypingRef.current = isTyping;
-        // Only trigger when AI just finished typing (wasTyping → !isTyping)
-        if (!wasTyping || isTyping) return;
+        const wasPending = prevInstantPendingRef.current;
+        prevInstantPendingRef.current = instantChatPending;
+        if (instantVoiceScanCharRef.current !== char?.id) {
+            instantVoiceScanCharRef.current = char?.id;
+            instantVoiceScanUntilRef.current = 0;
+            return;
+        }
+        if (wasPending && !instantChatPending) {
+            instantVoiceScanUntilRef.current = Date.now() + INSTANT_VOICE_SCAN_WINDOW_MS;
+        }
+        const typingJustEnded = wasTyping && !isTyping;
+        const inInstantWindow = Date.now() < instantVoiceScanUntilRef.current;
+        if (!typingJustEnded && !inInstantWindow) return;
         if (!char.chatVoiceEnabled) return;
         if (!characterHasVoice(char, apiConfig)) return;
         // Scan recent assistant messages for unprocessed <语音> tags
@@ -667,7 +693,7 @@ const Chat: React.FC = () => {
             if (voiceDataMap[msg.id] || voiceLoading.has(msg.id)) continue;
             handleManualTts(msg, true);
         }
-    }, [isTyping]); // eslint-disable-line react-hooks/exhaustive-deps
+    }, [isTyping, instantChatPending, messages]); // eslint-disable-line react-hooks/exhaustive-deps
 
     const canReroll = !isTyping && messages.length > 0 && messages[messages.length - 1].role === 'assistant';
 
@@ -902,6 +928,26 @@ const Chat: React.FC = () => {
             if (clearTimer) clearTimeout(clearTimer);
         };
     }, []);
+
+    // 云端即时对话的待回复记录落在 localStorage，重开 App 后仍显示“正在输入”。
+    // pending 只负责状态展示，不锁输入框：同一角色继续发送时云端会接管旧轮次。
+    useEffect(() => {
+        const sync = () => setInstantChatPending(!!(activeCharacterId && getInstantChatPending(activeCharacterId)));
+        const onPendingChanged = (event: Event) => {
+            const charId = (event as CustomEvent<{ charId?: string }>).detail?.charId;
+            if (!charId || charId === activeCharacterId) sync();
+        };
+        const onStorage = (event: StorageEvent) => {
+            if (event.key === AMSG_INSTANT_CHAT_PENDING_LS_KEY) sync();
+        };
+        sync();
+        window.addEventListener(AMSG_INSTANT_CHAT_PENDING_EVENT, onPendingChanged);
+        window.addEventListener('storage', onStorage);
+        return () => {
+            window.removeEventListener(AMSG_INSTANT_CHAT_PENDING_EVENT, onPendingChanged);
+            window.removeEventListener('storage', onStorage);
+        };
+    }, [activeCharacterId]);
 
     // Auto-generate daily schedule (fire-and-forget on chat load)
     // 总开关关闭时完全跳过：不查询 DB、不调用副 API、不跑兜底
@@ -1333,6 +1379,7 @@ const Chat: React.FC = () => {
         discardVoiceForMessages(toDeleteIds);
         const newHistory = messages.slice(0, index + 1);
         setMessages(newHistory);
+        markAmsgStateDirty({ char, userProfile, groups, realtimeConfig });
         addToast('回溯对话中...', 'info');
 
         // 重 roll：不注入上一轮残留的情绪 buff 与意识流（innerState），两边独立重新生成。
@@ -1374,7 +1421,7 @@ const Chat: React.FC = () => {
             case 'category-options': setSelectedCategory(payload); setModalType('category-options'); break;
             case 'delete-category-req': setSelectedCategory(payload); setModalType('delete-category'); break;
             case 'meetup': if (char) { setShowPanel('none'); openDateWithChar(char.id); } break;
-            case 'proactive': setShowProactiveModal(true); break;
+            case 'proactive': setShowPanel('none'); setShowProactiveChoice(true); break;
             case 'emotion': setModalType('schedule'); break; // 情绪已并入日程，打开同一 modal
             case 'schedule': setModalType('schedule'); break;
             case 'mcd-not-configured':
@@ -2141,6 +2188,7 @@ const Chat: React.FC = () => {
                 setTotalMsgCount(remaining.length);
                 setVisibleCount(LOAD_BATCH_SIZE);
                 visibleCountRef.current = LOAD_BATCH_SIZE;
+                markAmsgStateDirty({ char, userProfile, groups, realtimeConfig });
                 addToast(`已安全清理 ${processedMsgs.length} 条已处理记录，保留 ${remaining.length} 条未处理记录`, 'success');
                 setModalType('none');
                 return;
@@ -2164,6 +2212,7 @@ const Chat: React.FC = () => {
             setTotalMsgCount(toKeep.length);
             setVisibleCount(LOAD_BATCH_SIZE);
             visibleCountRef.current = LOAD_BATCH_SIZE;
+            markAmsgStateDirty({ char, userProfile, groups, realtimeConfig });
             addToast(`已清理 ${toDelete.length} 条历史，保留最近10条`, 'success');
         } else {
             const allIds = (await DB.getMessagesByCharId(char.id, true)).map(m => m.id);
@@ -2173,8 +2222,10 @@ const Chat: React.FC = () => {
             setTotalMsgCount(0);
             setVisibleCount(LOAD_BATCH_SIZE);
             visibleCountRef.current = LOAD_BATCH_SIZE;
+            markAmsgStateDirty({ char, userProfile, groups, realtimeConfig });
             addToast('已清空', 'success');
         }
+        trackEvent('清空聊天记录');
         setModalType('none');
     };
 
@@ -2508,6 +2559,7 @@ const Chat: React.FC = () => {
         discardVoiceForMessages([deletedId]);
         setMessages(prev => prev.filter(m => m.id !== deletedId));
         setTotalMsgCount(prev => Math.max(0, prev - 1));
+        markAmsgStateDirty({ char, userProfile, groups, realtimeConfig });
         setModalType('none');
         setSelectedMessage(null);
         addToast('消息已删除', 'success');
@@ -2523,6 +2575,7 @@ const Chat: React.FC = () => {
         // 内容变了旧语音就作废，否则语音条仍会播放编辑前的音频。
         if (contentChanged) discardVoiceForMessages([selectedMessage.id]);
         setMessages(prev => prev.map(m => m.id === selectedMessage.id ? { ...m, content: editContent } : m));
+        markAmsgStateDirty({ char, userProfile, groups, realtimeConfig });
         setModalType('none');
         setSelectedMessage(null);
         addToast('消息已修改', 'success');
@@ -2708,6 +2761,9 @@ const Chat: React.FC = () => {
             })
         );
         setTotalMsgCount(prev => Math.max(0, prev - msgIdsToDelete.size));
+        if (msgIdsToDelete.size > 0 || thinkingIdsToClear.size > 0) {
+            markAmsgStateDirty({ char, userProfile, groups, realtimeConfig });
+        }
 
         const parts: string[] = [];
         if (msgIdsToDelete.size > 0) parts.push(`已删除 ${msgIdsToDelete.size} 条消息`);
@@ -3259,7 +3315,7 @@ const Chat: React.FC = () => {
                 isTyping={isTyping}
                 isSummarizing={isSummarizing}
                 isEmotionEvaluating={emotionStatus === 'evaluating'}
-                isInstantSending={instantSendingActive}
+                isInstantSending={instantSendingActive || instantChatPending}
                 isMemoryPalaceProcessing={!!memoryPalaceStatus}
                 memoryPalaceStatusText={memoryPalaceStatus}
                 lastTokenUsage={lastTokenUsage}
@@ -3603,11 +3659,11 @@ const Chat: React.FC = () => {
                         ))}
                     </>
                 )}
-                {(isTyping || recallStatus || searchStatus || diaryStatus || isProactiveComposing) && !selectionMode && (
+                {(isTyping || instantChatPending || recallStatus || searchStatus || diaryStatus || isProactiveComposing) && !selectionMode && (
                     <div className="flex items-end gap-3 px-3 mb-6 animate-fade-in">
                         <img src={char.avatar} className={chatPendingAvatarClass} />
                         <div className="bg-white px-4 py-3 rounded-2xl shadow-sm">
-                            {isProactiveComposing && !isTyping && !recallStatus && !searchStatus && !diaryStatus ? (
+                            {isProactiveComposing && !isTyping && !instantChatPending && !recallStatus && !searchStatus && !diaryStatus ? (
                                 <div className="flex items-center gap-2 text-xs text-teal-600 font-medium">
                                     <svg className="animate-spin h-3 w-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
                                     {char.name} 在给你写消息…
@@ -3724,6 +3780,49 @@ const Chat: React.FC = () => {
 
 
             {/* Proactive Settings Modal */}
+            <Modal
+                isOpen={showProactiveChoice}
+                title="主动消息"
+                onClose={() => setShowProactiveChoice(false)}
+            >
+                <div className="space-y-3">
+                    <button
+                        type="button"
+                        onClick={() => { setShowProactiveChoice(false); setShowActiveMsg2Modal(true); }}
+                        className="w-full p-4 text-left rounded-2xl bg-violet-50 border border-violet-100 active:scale-[0.99] transition-transform"
+                    >
+                        <div className="font-bold text-violet-700">云端主动消息 2.0</div>
+                        <div className="mt-1 text-xs leading-relaxed text-violet-600/80">网页关掉或手机锁屏后仍能按计划生成并推送，运行在你自己的 Cloudflare。</div>
+                    </button>
+                    <button
+                        type="button"
+                        onClick={() => { setShowProactiveChoice(false); setShowProactiveModal(true); }}
+                        className="w-full p-4 text-left rounded-2xl bg-slate-50 border border-slate-100 active:scale-[0.99] transition-transform"
+                    >
+                        <div className="font-bold text-slate-700">本地主动消息（原功能）</div>
+                        <div className="mt-1 text-xs leading-relaxed text-slate-500">保留原来的本机定时方式，适合一直开着网页时使用。</div>
+                    </button>
+                </div>
+            </Modal>
+
+            {char && (
+                <ActiveMsg2SettingsModal
+                    isOpen={showActiveMsg2Modal}
+                    onClose={() => setShowActiveMsg2Modal(false)}
+                    char={char}
+                    apiConfig={apiConfig}
+                    userProfile={userProfile}
+                    groups={groups}
+                    realtimeConfig={realtimeConfig}
+                    onSave={(updater) => {
+                        updateCharacter(char.id, (prev) => ({
+                            activeMsg2Config: updater(prev.activeMsg2Config),
+                        }));
+                    }}
+                    addToast={addToast}
+                />
+            )}
+
             {char && (
                 <ProactiveSettingsModal
                     isOpen={showProactiveModal}

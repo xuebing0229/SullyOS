@@ -15,6 +15,7 @@ import {
   normalizeWorkerUrl,
 } from '../../utils/instantPushClient';
 import { isPushVapidReady } from '../../utils/pushVapid';
+import { isInstantChatReady } from '../../utils/amsgInstantChat';
 import {
   markWorkerBuildSeen,
 } from '../WorkerUpdateReminderEvent';
@@ -46,6 +47,7 @@ export const InstantPushSettingsModal: React.FC<InstantPushSettingsModalProps> =
   const [d1CheckedWorkerUrl, setD1CheckedWorkerUrl] = useState('');
 
   const [vapidReady, setVapidReady] = useState(false);
+  const [instantChatOn, setInstantChatOn] = useState(false);
 
   const [testStatus, setTestStatus] = useState('');
   const [testBusy, setTestBusy] = useState(false);
@@ -89,10 +91,12 @@ export const InstantPushSettingsModal: React.FC<InstantPushSettingsModalProps> =
     setDenoCopyStatus('');
     setVersionCheck('idle');
     setVersionCheckDetail('');
+    void isInstantChatReady().then(setInstantChatOn).catch(() => setInstantChatOn(false));
   }, [open]);
 
   const normalizedWorkerUrl = normalizeWorkerUrl(workerUrl);
   const canUseD1 = !!d1Available && !!normalizedWorkerUrl && d1CheckedWorkerUrl === normalizedWorkerUrl;
+  const enableBlockedByInstantChat = instantChatOn && !enabled;
 
   const resetD1State = () => {
     setD1Available(false);
@@ -280,11 +284,21 @@ export const InstantPushSettingsModal: React.FC<InstantPushSettingsModalProps> =
     }
   };
 
-  const handleSave = () => {
+  const handleSave = async () => {
     const cfg = currentCfg();
+    const raceBlocked = !loadInstantConfig().enabled && cfg.enabled && await isInstantChatReady();
+    if (raceBlocked) {
+      cfg.enabled = false;
+      setEnabled(false);
+      setInstantChatOn(true);
+    }
     saveInstantConfig(cfg);
     // 保存为启用状态视为「已按当前 worker 版本配好」，避免随后被无意义地提醒更新。
     if (cfg.enabled) markWorkerBuildSeen();
+    if (raceBlocked) {
+      addToast('主动消息 2.0 的「即时对话」已经开着，Instant Push 不能同时启用。', 'error');
+      return;
+    }
     addToast('Instant Push 配置已保存', 'success');
     onClose();
   };
@@ -394,15 +408,21 @@ export const InstantPushSettingsModal: React.FC<InstantPushSettingsModalProps> =
             </div>
           </div>
 
-          <label className="flex items-center gap-2 cursor-pointer">
+          <label className={`flex items-center gap-2 ${enableBlockedByInstantChat ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}>
             <input
               type="checkbox"
               checked={enabled}
+              disabled={enableBlockedByInstantChat}
               onChange={(e) => setEnabled(e.target.checked)}
               className="accent-indigo-500"
             />
             <span className="text-[12px] text-slate-600 font-medium">启用 Instant Push</span>
           </label>
+          {enableBlockedByInstantChat && (
+            <p className="text-[11px] text-amber-600 leading-relaxed">
+              主动消息 2.0 的「即时对话」已经接管聊天上云；要换回 Instant Push，请先在 2.0 设置里关闭即时对话。
+            </p>
+          )}
 
           <label className="flex items-start gap-2 cursor-pointer">
             <input
