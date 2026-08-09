@@ -133,6 +133,7 @@ setAppPayloadWarmer((id: AppID) => { const c = APP_BY_ID[id]; if (c) warmLazy(c)
 
 import { Like520Controller, shouldShowLike520Popup } from './Like520Event';
 import { UpdateNotificationController, shouldShowUpdateNotification } from './UpdateNotificationEvent';
+import { NativeAppUpdateController } from './NativeAppUpdate';
 import { WorkerUpdateReminderController, shouldShowWorkerUpdateReminder, rearmWorkerUpdateReminder } from './WorkerUpdateReminderEvent';
 import { loadInstantConfig, probeInstantWorkerVersion } from '../utils/instantPushClient';
 import { BackupReminderController } from './BackupReminderEvent';
@@ -987,6 +988,10 @@ const PhoneShell: React.FC = () => {
            onGoBackup={goBackupFromReminder}
          />
        )}
+
+       <NativeAppUpdateController
+         blocked={showDisclaimer || showImportRecoveryPrompt || showUpdateNotification || showLike520Popup || showWorkerUpdateReminder || showBackupReminder}
+       />
     </div>
   );
 };

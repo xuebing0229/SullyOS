@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { querySwVersion } from '../../utils/swVersion';
 import { APP_VERSION, BUILD_LABEL } from '../../utils/buildInfo';
+import { NativeAppUpdateSettingsCard } from '../NativeAppUpdate';
 import {
     isDevDebugAvailable,
     readDevDebugEntryEnabled,
@@ -81,6 +82,7 @@ const VersionInfo: React.FC = () => {
 
     return (
         <div className="flex flex-col items-center gap-1.5 pt-2 pb-8 select-none">
+            <NativeAppUpdateSettingsCard />
             {isProductionBuild && (
                 <div className="mt-1 mb-2 flex w-full max-w-[280px] items-center justify-between rounded-xl border border-slate-200/70 bg-white/60 px-3 py-2">
                     <div className="min-w-0 text-left">
