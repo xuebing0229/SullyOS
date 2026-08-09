@@ -44,6 +44,7 @@ import {
   announceChatGen,
   CHAT_GEN_EVENTS,
 } from './chatGenEvents';
+import { isCorrectableGameHallToolFailure } from './gameHallToolCorrection';
 
 interface MemoryConfigLike {
   embedding?: {
@@ -484,7 +485,7 @@ async function runUnlocked(
       return;
     }
 
-    const action: GameHallPendingAction = {
+    let action: GameHallPendingAction = {
       ...plan.pending,
       status: 'confirmed',
       updatedAt: Date.now(),
@@ -503,14 +504,19 @@ async function runUnlocked(
     );
 
     try {
-      const execution = await executePendingGameHallAction(
-        deps.connection,
-        action,
-        session.schemaValidationMode || 'off',
-      );
-      const result = execution.result;
+      let correctionAttempted = false;
+      let execution;
+      let result;
 
-      if (!result.success) {
+      for (;;) {
+        execution = await executePendingGameHallAction(
+          deps.connection,
+          action,
+          session.schemaValidationMode || 'off',
+        );
+        result = execution.result;
+        if (result.success) break;
+
         const failedAction: GameHallPendingAction = {
           ...action,
           status: 'failed',
@@ -530,14 +536,132 @@ async function runUnlocked(
           },
         );
 
-        await finalizeRun(
-          deps,
+        if (
+          correctionAttempted
+          || !isCorrectableGameHallToolFailure(result)
+        ) {
+          await finalizeRun(
+            deps,
+            session,
+            'failed',
+            'mcp-error',
+            failedAction.error,
+          );
+          return;
+        }
+
+        correctionAttempted = true;
+        emitState(
           session,
-          'failed',
-          'mcp-error',
-          failedAction.error,
+          deps.char.name,
+          `${deps.char.name}正在根据真实工具说明修正行动…`,
+          deps.onProgress,
         );
-        return;
+
+        let correctionPlan;
+        try {
+          const [correctionHistory, correctionAccounts] = await Promise.all([
+            getGameHallMessages(session.id),
+            listCharacterExternalAccounts(session.charId),
+          ]);
+          const requestAi = deps.resolveApi();
+          correctionPlan = await planGameHallTurn({
+            apiConfig: requestAi.apiConfig,
+            apiIdentity: requestAi.apiIdentity,
+            char: deps.char,
+            userProfile: deps.userProfile,
+            groups: deps.groups,
+            realtimeConfig: deps.realtimeConfig,
+            mode: 'auto-turn',
+            userText: syntheticTurnText(session),
+            state: session.autoplay?.latestState,
+            availableTools: deps.connection.tools || [],
+            sessionId: session.id,
+            history: correctionHistory,
+            accounts: correctionAccounts,
+            preferredAccountRef: session.activeAccountRef,
+            contextMessageLimit: session.contextMessageLimit,
+            schemaValidationMode: session.schemaValidationMode || 'off',
+            // 工具失败纠错固定只调用模型一次，不叠加用户设置的规划修正次数。
+            repairAttempts: 0,
+            autonomousRun: {
+              runId: session.autoplay!.runId,
+              instruction: session.autoplay!.instruction,
+              turnCount: session.autoplay!.turnCount,
+            },
+            toolCorrection: {
+              failedAction,
+              failedRequest: execution.request,
+              failedResult: result,
+            },
+          });
+        } catch (error: any) {
+          await append(
+            session,
+            'system',
+            `自主游玩工具纠错规划失败：${error?.message || String(error)}`,
+          );
+          await finalizeRun(
+            deps,
+            session,
+            'failed',
+            'api-error',
+            error?.message || String(error),
+          );
+          return;
+        }
+
+        const latestAfterCorrection = await getGameHallSession(session.id) || session;
+        if (latestAfterCorrection.autoplay?.status === 'paused') {
+          emitState(latestAfterCorrection, deps.char.name, `${deps.char.name}已暂停自主游玩`, deps.onProgress);
+          return;
+        }
+        if (latestAfterCorrection.autoplay?.status === 'stopping') {
+          await finalizeRun(deps, latestAfterCorrection, 'cancelled', 'user-stopped');
+          return;
+        }
+        session = latestAfterCorrection;
+
+        if (correctionPlan.validationWarnings?.length) {
+          await append(
+            session,
+            'system',
+            `自主游玩工具纠错提示：${correctionPlan.validationWarnings.join('；')}`,
+          );
+        }
+        if (!correctionPlan.pending) {
+          await finalizeRun(
+            deps,
+            session,
+            'failed',
+            'mcp-error',
+            failedAction.error,
+          );
+          return;
+        }
+
+        // 原失败请求和完整返回仍保留在历史；行动卡由新行动取代，不再占“待确认”。
+        await savePendingGameHallAction({
+          ...failedAction,
+          status: 'superseded',
+          updatedAt: Date.now(),
+        });
+        action = {
+          ...correctionPlan.pending,
+          status: 'confirmed',
+          updatedAt: Date.now(),
+        };
+        await savePendingGameHallAction(action);
+        session = await saveSessionState(session, {
+          lastPlannedAt: Date.now(),
+          lastActionId: action.id,
+        });
+        emitState(
+          session,
+          deps.char.name,
+          `${deps.char.name}正在执行修正后的 ${action.toolName}…`,
+          deps.onProgress,
+        );
       }
 
       const executed: GameHallPendingAction = {
