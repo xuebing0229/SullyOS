@@ -4,12 +4,11 @@ SullyOS 的 Android 安装包采用固定签名，并通过 GitHub Release 提�
 
 ## 发布一个新版本
 
-1. 合并准备发布的代码到 `master`。
-2. 打开 GitHub 仓库的 **Actions → Build Android APK → Run workflow**。
-3. 输入三段式版本号，例如 `2.3.1`，并填写更新说明。
-4. 工作流会构建签名 APK、创建 `v2.3.1` Release，并上传 APK 与 SHA-256 校验文件。
+1. 将应用代码合并到 `master`。
+2. 工作流会读取最新正式 Release，并自动递增补丁版本（例如 `2.3.1` → `2.3.2`）。
+3. 工作流构建签名 APK、创建新 Release，并上传 APK 与 SHA-256 校验文件。
 
-普通提交、Pull Request 和合并不会自动构建 APK。Pull Request 仍会运行网页构建检查。
+只修改 `README.md`、`docs/**` 或 `.github/**` 不会构建 APK。需要指定版本号和更新说明时，仍可在 **Actions → Build Android APK → Run workflow** 手动发布。Pull Request 继续只运行网页构建检查。
 
 ## 用户侧更新流程
 

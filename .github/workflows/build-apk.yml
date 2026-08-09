@@ -12,6 +12,13 @@ on:
         required: false
         default: "SullyOS 更新"
         type: string
+  push:
+    branches:
+      - master
+    paths-ignore:
+      - README.md
+      - "docs/**"
+      - ".github/**"
 
 permissions:
   contents: write
@@ -24,9 +31,6 @@ jobs:
   build:
     runs-on: ubuntu-latest
     env:
-      VERSION: ${{ inputs.version }}
-      VITE_APP_VERSION: ${{ inputs.version }}
-      ANDROID_VERSION_NAME: ${{ inputs.version }}
       ANDROID_VERSION_CODE: ${{ github.run_number }}
       ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
       ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
@@ -39,10 +43,31 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Validate release input and secrets
+      - name: Resolve release version
+        id: release_version
+        shell: bash
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            VERSION="$REQUESTED_VERSION"
+          else
+            LATEST_TAG="$(gh release view --json tagName --jq '.tagName' 2>/dev/null || echo 'v0.0.0')"
+            LATEST_VERSION="${LATEST_TAG#v}"
+            [[ "$LATEST_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "最新 Release 版本号不是 x.y.z：$LATEST_TAG"; exit 1; }
+            IFS='.' read -r MAJOR MINOR PATCH <<< "$LATEST_VERSION"
+            VERSION="$MAJOR.$MINOR.$((PATCH + 1))"
+          fi
+
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "版本号必须是 x.y.z"; exit 1; }
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "VITE_APP_VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "ANDROID_VERSION_NAME=$VERSION" >> "$GITHUB_ENV"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Validate release and secrets
         shell: bash
         run: |
-          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "版本号必须是 x.y.z"; exit 1; }
           test -n "$ANDROID_KEYSTORE_BASE64" || { echo "缺少 ANDROID_KEYSTORE_BASE64"; exit 1; }
           test -n "$ANDROID_KEYSTORE_PASSWORD" || { echo "缺少 ANDROID_KEYSTORE_PASSWORD"; exit 1; }
           test -n "$ANDROID_KEY_ALIAS" || { echo "缺少 ANDROID_KEY_ALIAS"; exit 1; }
@@ -102,17 +127,22 @@ jobs:
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: SullyOS-v${{ inputs.version }}
+          name: SullyOS-v${{ steps.release_version.outputs.version }}
           path: |
-            SullyOS-v${{ inputs.version }}.apk
-            SullyOS-v${{ inputs.version }}.apk.sha256
+            SullyOS-v${{ steps.release_version.outputs.version }}.apk
+            SullyOS-v${{ steps.release_version.outputs.version }}.apk.sha256
           if-no-files-found: error
 
       - name: Create GitHub Release
         shell: bash
         env:
-          RELEASE_NOTES: ${{ inputs.release_notes }}
+          REQUESTED_RELEASE_NOTES: ${{ inputs.release_notes }}
         run: |
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            RELEASE_NOTES="$REQUESTED_RELEASE_NOTES"
+          else
+            RELEASE_NOTES="自动构建自 master 提交 ${GITHUB_SHA:0:7}。"
+          fi
           gh release create "v$VERSION" \
             "SullyOS-v$VERSION.apk" \
             "SullyOS-v$VERSION.apk.sha256" \
