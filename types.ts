@@ -22,6 +22,7 @@ export enum AppID {
   FAQ = 'faq',
   Game = 'game',
   GameHall = 'game_hall',
+  Live = 'live',
   Worldbook = 'worldbook', 
   Novel = 'novel', 
   Bank = 'bank', // New App
@@ -3530,6 +3531,10 @@ export interface FullBackupData {
     gameHallPreferenceEvidence?: Record<string, unknown>[];
     /** 游戏厅独立 AI 线路与自主运行参数；临时命令队列永不备份。 */
     gameHallAutoplayLocal?: import('./utils/gameHallAutoplayBackup').GameHallAutoplayBackup;
+    liveSettings?: import('./utils/liveTypes').LiveSettings[];
+    liveRooms?: import('./utils/liveTypes').LiveRoom[];
+    liveEvents?: import('./utils/liveTypes').LiveEvent[];
+    liveSessions?: import('./utils/liveTypes').LiveSession[];
     worldbooks?: Worldbook[]; 
     roomCustomAssets?: { id?: string; name: string; image: string; defaultScale: number; description?: string; visibility?: 'public' | 'character'; assignedCharIds?: string[] }[]; 
     

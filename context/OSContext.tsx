@@ -68,6 +68,7 @@ import { assertSupportedSullyBackup } from '../utils/backupImportPolicy';
 import { exportBackgroundImageJobsForBackup, importBackgroundImageJobsFromBackup, startBackgroundImageJobMonitor } from '../utils/backgroundImageJobs';
 import { exportCedarToyConnectionForBackup, importCedarToyConnectionFromBackup } from '../utils/cedarToyMcpAdapter';
 import { GAME_HALL_BACKUP_FIELD_BY_STORE, GAME_HALL_BACKUP_STORES } from '../utils/gameHallBackup';
+import { LIVE_BACKUP_FIELD_BY_STORE, LIVE_BACKUP_STORES } from '../utils/liveBackup';
 import {
   backupContainsGameHallAutoplayData,
   countAutoplaySessionsNeedingRestorePause,
@@ -3343,6 +3344,7 @@ recordApiCall({ requestId: (config as any)?.__sullyApiCallId, url: urlStr, body:
               'user_profile', 'diaries', 'tasks', 'anniversaries', 'room_todos',
               'room_notes', 'groups', 'journal_stickers', 'social_posts', 'courses', 'games',
               ...GAME_HALL_BACKUP_STORES.map(item => item.storeName),
+              ...LIVE_BACKUP_STORES.map(item => item.storeName),
               'simulator_projects', 'simulator_sessions', 'reading_projects', 'reading_records', 'reading_writings', 'reading_style_presets', 'app_memory_candidates',
               'worldbooks', 'novels', 'songs',
               'bank_transactions', 'bank_data',
@@ -3614,6 +3616,7 @@ recordApiCall({ requestId: (config as any)?.__sullyApiCallId, url: urlStr, body:
               'bank_transactions', 'scheduled_messages', 'memory_batches', 'hotnews_snapshots',
               'character_groups',
               ...GAME_HALL_BACKUP_STORES.map(item => item.storeName),
+              ...LIVE_BACKUP_STORES.map(item => item.storeName),
               'life_records', 'med_plans', 'life_record_settings'
           ]);
 
@@ -3696,6 +3699,7 @@ recordApiCall({ requestId: (config as any)?.__sullyApiCallId, url: urlStr, body:
               med_plans: 'medPlans',
               life_record_settings: 'lifeRecordSettings',
               ...Object.fromEntries(GAME_HALL_BACKUP_STORES.map(item => [item.storeName, item.field])),
+              ...Object.fromEntries(LIVE_BACKUP_STORES.map(item => [item.storeName, item.field])),
           };
           const prewrittenStores: BackupManifest['stores'] = {};
           const textOnlyShardLimits = {
@@ -3834,8 +3838,11 @@ recordApiCall({ requestId: (config as any)?.__sullyApiCallId, url: urlStr, body:
               const gameHallBackupField = Object.prototype.hasOwnProperty.call(GAME_HALL_BACKUP_FIELD_BY_STORE, storeName)
                   ? GAME_HALL_BACKUP_FIELD_BY_STORE[storeName as keyof typeof GAME_HALL_BACKUP_FIELD_BY_STORE]
                   : undefined;
-              if (gameHallBackupField) {
-                  (backupData as any)[gameHallBackupField] = processedData;
+              const liveBackupField = Object.prototype.hasOwnProperty.call(LIVE_BACKUP_FIELD_BY_STORE, storeName)
+                  ? LIVE_BACKUP_FIELD_BY_STORE[storeName as keyof typeof LIVE_BACKUP_FIELD_BY_STORE]
+                  : undefined;
+              if (gameHallBackupField || liveBackupField) {
+                  (backupData as any)[gameHallBackupField || liveBackupField!] = processedData;
               } else {
               switch(storeName) {
                   case 'characters': if(mode !== 'media_only') backupData.characters = processedData; break;

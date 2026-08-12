@@ -24,6 +24,7 @@ import { exportDesktopSkinLocal, importDesktopSkinLocal } from './desktopSkinBac
 import { applyGalleryReview } from './galleryReview';
 import { GAME_HALL_BACKUP_STORES, GAME_HALL_PROTOCOL_CACHE_STORE } from './gameHallBackup';
 import { prepareGameHallSessionsForRestore } from './gameHallAutoplayBackup';
+import { LIVE_BACKUP_STORES, prepareLiveRowsForRestore } from './liveBackup';
 
 const DB_NAME = 'AetherOS_Data';
 // v67：两条并行线各自用掉了 v65/v66（A线: blob_assets + 生活记录；B线: room_plates 门牌 + digest_reports 消化日志），
@@ -34,7 +35,7 @@ const DB_NAME = 'AetherOS_Data';
 // v73：角色外部账号档案。完整保存游戏厅注册/登录返回，模型只引用 accountRef。
 // v74：API 未计价请求永久待处理 Store；确保已升级到 v73 的用户仍会触发建表。
 // v76：万象匣、素页同栖与用户确认式 App 记忆候选。
-const DB_VERSION = 76;
+const DB_VERSION = 77;
 
 const STORE_CHARACTERS = 'characters';
 const STORE_CHAR_GROUPS = 'character_groups'; // 角色分组定义（角色通过 groupId 指向；与群聊 groups 无关）
@@ -107,6 +108,10 @@ const STORE_READING_RECORDS = 'reading_records';
 const STORE_READING_WRITINGS = 'reading_writings';
 const STORE_READING_STYLE_PRESETS = 'reading_style_presets';
 const STORE_APP_MEMORY_CANDIDATES = 'app_memory_candidates';
+const STORE_LIVE_SETTINGS = 'live_settings';
+const STORE_LIVE_ROOMS = 'live_rooms';
+const STORE_LIVE_EVENTS = 'live_events';
+const STORE_LIVE_SESSIONS = 'live_sessions';
  // 生活记录设置单例（id='main'：周期长度等）
 
 // API 调用记录：保留近 5 天，超期丢弃；再加一个硬上限防止异常情况撑爆
@@ -476,6 +481,22 @@ export const openDB = (): Promise<IDBDatabase> => {
           store.createIndex('sourceApp', 'sourceApp', { unique: false });
           store.createIndex('sourceRecordId', 'sourceRecordId', { unique: false });
           store.createIndex('status', 'status', { unique: false });
+      }
+      createStore(STORE_LIVE_SETTINGS, { keyPath: 'id' });
+      if (!db.objectStoreNames.contains(STORE_LIVE_ROOMS)) {
+          const store = db.createObjectStore(STORE_LIVE_ROOMS, { keyPath: 'id' });
+          store.createIndex('kind', 'kind', { unique: false });
+          store.createIndex('updatedAt', 'updatedAt', { unique: false });
+      }
+      if (!db.objectStoreNames.contains(STORE_LIVE_EVENTS)) {
+          const store = db.createObjectStore(STORE_LIVE_EVENTS, { keyPath: 'id' });
+          store.createIndex('roomId', 'roomId', { unique: false });
+          store.createIndex('time', 'time', { unique: false });
+      }
+      if (!db.objectStoreNames.contains(STORE_LIVE_SESSIONS)) {
+          const store = db.createObjectStore(STORE_LIVE_SESSIONS, { keyPath: 'id' });
+          store.createIndex('roomId', 'roomId', { unique: false });
+          store.createIndex('updatedAt', 'updatedAt', { unique: false });
       }
 
       // ─── Memory Palace (记忆宫殿) stores ───
@@ -3369,6 +3390,7 @@ export const DB = {
           STORE_API_CALL_LOG, STORE_API_COST_DAILY, STORE_API_COST_UNRESOLVED,
           STORE_WORLDS, STORE_WORLD_EPISODES,
           STORE_SIMULATOR_PROJECTS, STORE_SIMULATOR_SESSIONS, STORE_READING_PROJECTS, STORE_READING_RECORDS, STORE_READING_WRITINGS, STORE_READING_STYLE_PRESETS, STORE_APP_MEMORY_CANDIDATES,
+          ...LIVE_BACKUP_STORES.map(item => item.storeName),
           'memory_nodes', 'memory_vectors', 'memory_links', 'topic_boxes', 'anticipations', 'event_boxes',
           'room_plates', 'digest_reports',
               ...GAME_HALL_BACKUP_STORES.map(item => item.storeName), GAME_HALL_PROTOCOL_CACHE_STORE,
@@ -3428,6 +3450,7 @@ export const DB = {
           data.games !== undefined,
           data.simulatorProjects !== undefined, data.simulatorSessions !== undefined, data.readingProjects !== undefined, data.readingRecords !== undefined, data.readingWritings !== undefined, data.readingStylePresets !== undefined, data.appMemoryCandidates !== undefined,
           ...GAME_HALL_BACKUP_STORES.map(({ field }) => (data as any)[field] !== undefined),
+          ...LIVE_BACKUP_STORES.map(({ field }) => (data as any)[field] !== undefined),
           data.apiCallLog !== undefined,
           data.worldbooks !== undefined,
           data.novels !== undefined,
@@ -3707,6 +3730,15 @@ export const DB = {
           ) {
               items = prepareGameHallSessionsForRestore(items).sessions;
           }
+          await runSection(descriptor.label, items !== undefined, async () => {
+              await clearAndAdd(descriptor.storeName, items || [], descriptor.label, false);
+              (data as any)[descriptor.field] = undefined;
+          }, items?.length || 0);
+      }
+
+      for (const descriptor of LIVE_BACKUP_STORES) {
+          const rawItems = (data as any)[descriptor.field] as any[] | undefined;
+          const items = rawItems === undefined ? undefined : prepareLiveRowsForRestore(descriptor.storeName, rawItems);
           await runSection(descriptor.label, items !== undefined, async () => {
               await clearAndAdd(descriptor.storeName, items || [], descriptor.label, false);
               (data as any)[descriptor.field] = undefined;
