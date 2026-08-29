@@ -31,6 +31,29 @@ export type StoredGptImageRemoteConfig = Omit<GptImageRemoteConfig, 'revision' |
 export type StoredNovelAiRemoteConfig = Omit<NovelAiRemoteConfig, 'revision' | 'apiKeyConfigured' | 'apiKeyHint'>;
 export type StoredImageRemoteConfig = StoredGptImageRemoteConfig | StoredNovelAiRemoteConfig;
 
+export interface ImageGenerationPriceAddon {
+    enabled: boolean;
+    pricePerRequestYuan: string;
+}
+
+export interface ImageGenerationPricing {
+    enabled: boolean;
+    basePricePerRequestYuan: string;
+    addons: {
+        characterReference: ImageGenerationPriceAddon;
+        vibeReference: ImageGenerationPriceAddon;
+    };
+}
+
+export const EMPTY_IMAGE_GENERATION_PRICING: ImageGenerationPricing = {
+    enabled: false,
+    basePricePerRequestYuan: '',
+    addons: {
+        characterReference: { enabled: false, pricePerRequestYuan: '' },
+        vibeReference: { enabled: false, pricePerRequestYuan: '' },
+    },
+};
+
 export interface ImageGenerationPreset {
     id: string;
     name: string;
@@ -38,6 +61,7 @@ export interface ImageGenerationPreset {
     binding: ImagePresetBinding;
     remoteConfig: StoredImageRemoteConfig;
     apiKey: string;
+    pricing: ImageGenerationPricing;
     createdAt: number;
     updatedAt: number;
 }
@@ -57,6 +81,35 @@ export interface ImageGenerationBackupLocal {
 
 const EMPTY_STATE: ImageGenerationPresetState = { version: 1, presets: [], activePresetIds: {} };
 const clone = <T,>(value: T): T => JSON.parse(JSON.stringify(value));
+
+export const normalizeImageGenerationPricing = (value: unknown): ImageGenerationPricing => {
+    const raw = value && typeof value === 'object' ? value as any : {};
+    const addons = raw.addons && typeof raw.addons === 'object' ? raw.addons : {};
+    const normalizeAddon = (addon: any): ImageGenerationPriceAddon => ({
+        enabled: addon?.enabled === true,
+        pricePerRequestYuan: typeof addon?.pricePerRequestYuan === 'string' ? addon.pricePerRequestYuan : '',
+    });
+    return {
+        enabled: raw.enabled === true,
+        basePricePerRequestYuan: typeof raw.basePricePerRequestYuan === 'string' ? raw.basePricePerRequestYuan : '',
+        addons: {
+            characterReference: normalizeAddon(addons.characterReference),
+            vibeReference: normalizeAddon(addons.vibeReference),
+        },
+    };
+};
+
+const isValidYuanPrice = (value: string): boolean => /^\d+(?:\.\d{0,6})?$/.test(value.trim());
+const validateImageGenerationPricing = (pricing: ImageGenerationPricing): void => {
+    if (!pricing.enabled) return;
+    if (!isValidYuanPrice(pricing.basePricePerRequestYuan)) throw new Error('请填写有效的生图基础单次价格');
+    if (pricing.addons.characterReference.enabled && !isValidYuanPrice(pricing.addons.characterReference.pricePerRequestYuan)) {
+        throw new Error('请填写有效的角色参考图附加价');
+    }
+    if (pricing.addons.vibeReference.enabled && !isValidYuanPrice(pricing.addons.vibeReference.pricePerRequestYuan)) {
+        throw new Error('请填写有效的 Vibe 参考附加价');
+    }
+};
 
 const normalizeName = (name: string): string => {
     const value = name.trim();
@@ -98,6 +151,7 @@ const sanitizePreset = (value: unknown): ImageGenerationPreset | null => {
         },
         remoteConfig: clone(raw.remoteConfig),
         apiKey: String(raw.apiKey || ''),
+        pricing: normalizeImageGenerationPricing(raw.pricing),
         createdAt: Number.isFinite(raw.createdAt) ? raw.createdAt : now,
         updatedAt: Number.isFinite(raw.updatedAt) ? raw.updatedAt : now,
     };
@@ -151,10 +205,13 @@ export function createImageGenerationPreset(input: {
     binding: BuiltinImageBinding;
     remoteConfig: ImageRemoteConfig;
     apiKey: string;
+    pricing?: ImageGenerationPricing;
 }): ImageGenerationPreset {
     const apiKey = input.apiKey.trim();
     if (!apiKey) throw new Error('请先输入 API Key，再保存生图预设');
     const now = Date.now();
+    const pricing = normalizeImageGenerationPricing(input.pricing);
+    validateImageGenerationPricing(pricing);
     const preset: ImageGenerationPreset = {
         id: `imgpreset_${now}_${Math.random().toString(36).slice(2, 8)}`,
         name: normalizeName(input.name),
@@ -162,6 +219,7 @@ export function createImageGenerationPreset(input: {
         binding: normalizeBinding(input.binding),
         remoteConfig: stripImageRemoteRuntimeFields(input.remoteConfig),
         apiKey,
+        pricing,
         createdAt: now,
         updatedAt: now,
     };
@@ -176,6 +234,7 @@ export function updateImageGenerationPreset(id: string, input: {
     binding: BuiltinImageBinding;
     remoteConfig: ImageRemoteConfig;
     apiKey: string;
+    pricing?: ImageGenerationPricing;
 }): ImageGenerationPreset {
     const state = loadImageGenerationPresetState();
     const index = state.presets.findIndex(item => item.id === id);
@@ -183,11 +242,14 @@ export function updateImageGenerationPreset(id: string, input: {
     const previous = state.presets[index];
     const nextKey = input.apiKey.trim() || previous.apiKey;
     if (!nextKey) throw new Error('当前没有可保存的 API Key');
+    const pricing = normalizeImageGenerationPricing(input.pricing ?? previous.pricing);
+    validateImageGenerationPricing(pricing);
     const updated: ImageGenerationPreset = {
         ...previous,
         binding: normalizeBinding(input.binding),
         remoteConfig: stripImageRemoteRuntimeFields(input.remoteConfig),
         apiKey: nextKey,
+        pricing,
         updatedAt: Date.now(),
     };
     state.presets[index] = updated;

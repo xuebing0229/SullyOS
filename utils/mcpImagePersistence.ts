@@ -3,6 +3,12 @@ import { DB } from './db';
 import { blobRefFromId, createImageBlobId } from './blobRef';
 import { extractMcpImageCandidates, getMcpImageCandidateKey, type McpImageCandidate } from './mcpToolBridge';
 import type { McpServerConfig, McpToolResult } from './mcpClient';
+import {
+    captureImageGenerationBilling,
+    detectImageGenerationFeatureUsage,
+    recordSuccessfulImageGeneration,
+    type ImageGenerationBillingCapture,
+} from './imageGenerationBilling';
 
 export const MAX_MCP_IMAGE_BYTES = 25 * 1024 * 1024;
 export interface PersistMcpImageInput {
@@ -12,6 +18,7 @@ export interface PersistMcpImageInput {
     allowTemporaryUrlFallback?: boolean;
     /** meeting-cg keeps the image out of the ordinary chat message store. */
     ownerType?: 'chat' | 'meeting-cg';
+    imageBillingCapture?: ImageGenerationBillingCapture;
 }
 export interface PersistedMcpImageAsset {
     blobRef: string;
@@ -123,6 +130,33 @@ export async function persistMcpGeneratedImages(input: PersistMcpImageInput): Pr
             const message=error instanceof Error?error.message:String(error); output.errors.push(message);
             if(input.ownerType !== 'meeting-cg' && candidate.kind==='url' && input.allowTemporaryUrlFallback !== false) { try { await saveTemporaryUrlMessage(candidate,input,error); output.temporary++; continue; } catch(e) { output.errors.push(e instanceof Error?e.message:String(e)); } }
             output.failed++;
+        }
+    }
+    if (output.persisted > 0 || output.temporary > 0) {
+        const engineId = input.server?.id === 'builtin_image_novelai' || input.toolName === 'novelai_generate_image'
+            ? 'novelai'
+            : input.server?.id === 'builtin_image_gpt-image' || input.toolName === 'generate_image'
+                ? 'gpt-image'
+                : null;
+        if (engineId) {
+            const structured = input.result.structuredContent && typeof input.result.structuredContent === 'object'
+                ? input.result.structuredContent as Record<string, any>
+                : {};
+            const requestId = String(structured.requestId || structured.correlationId || `local-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+            const model = String(structured.model || input.toolArgs?.model || engineId);
+            try {
+                await recordSuccessfulImageGeneration({
+                    capture: input.imageBillingCapture || captureImageGenerationBilling(engineId),
+                    requestId,
+                    model,
+                    featureUsage: detectImageGenerationFeatureUsage(input.toolArgs),
+                    charId: input.char.id,
+                    charName: input.char.name,
+                });
+            } catch (error) {
+                // 费用统计是 best-effort，落账失败不能把已经成功保存的图片反判为失败。
+                console.warn('[image billing] failed to record successful generation', error);
+            }
         }
     }
     return output;

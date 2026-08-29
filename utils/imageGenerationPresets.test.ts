@@ -63,9 +63,43 @@ describe('image generation presets', () => {
         const state = loadImageGenerationPresetState();
         expect(state.presets[0].apiKey).toBe('novel-upstream-key');
         expect(state.presets[0].binding.token).toBe('novel-mcp-token');
+        expect(state.presets[0].pricing.enabled).toBe(false);
         expect(state.activePresetIds.novelai).toBe(state.presets[0].id);
         expect(loadBuiltinImageSettings().preferredEngine).toBe('novelai');
         expect(localStorage.getItem('aetheros.mcp.servers')).toContain('proxy-secret');
+    });
+    it('backs up per-request image pricing and add-on pricing with the preset', () => {
+        const settings = loadBuiltinImageSettings();
+        createImageGenerationPreset({
+            name: '计价线路', engineId: 'novelai', binding: settings.engines.novelai, apiKey: 'secret',
+            remoteConfig: {
+                version: 1, revision: 1, profile: 'custom', baseUrl: 'https://example.test/v1', generatePath: '/generate', modelsPath: '/models',
+                authHeader: 'Authorization', authPrefix: 'Bearer', modelFull: 'full-id', modelCurated: 'curated-id', responseMode: 'json', imageDelivery: 'auto', promptLanguagePolicy: 'allow', apiKeyConfigured: true, apiKeyHint: '***',
+            },
+            pricing: {
+                enabled: true, basePricePerRequestYuan: '0.25',
+                addons: {
+                    characterReference: { enabled: true, pricePerRequestYuan: '0.10' },
+                    vibeReference: { enabled: true, pricePerRequestYuan: '0.05' },
+                },
+            },
+        });
+        const exported = exportImageGenerationLocalForMode('text_only')!;
+        expect(exported.presetState.presets[0].pricing).toMatchObject({
+            enabled: true, basePricePerRequestYuan: '0.25',
+            addons: { characterReference: { pricePerRequestYuan: '0.10' }, vibeReference: { pricePerRequestYuan: '0.05' } },
+        });
+    });
+    it('rejects an enabled pricing preset with a missing price', () => {
+        const settings = loadBuiltinImageSettings();
+        expect(() => createImageGenerationPreset({
+            name: '坏价格', engineId: 'novelai', binding: settings.engines.novelai, apiKey: 'secret',
+            remoteConfig: {
+                version: 1, revision: 1, profile: 'custom', baseUrl: 'https://example.test', generatePath: '/generate',
+                authHeader: 'Authorization', authPrefix: 'Bearer', modelFull: 'full', modelCurated: 'curated', responseMode: 'json', imageDelivery: 'auto', promptLanguagePolicy: 'allow', apiKeyConfigured: true, apiKeyHint: '***',
+            },
+            pricing: { enabled: true, basePricePerRequestYuan: '', addons: { characterReference: { enabled: false, pricePerRequestYuan: '' }, vibeReference: { enabled: false, pricePerRequestYuan: '' } } },
+        })).toThrow('基础单次价格');
     });
     it('includes secrets in full/text backups and excludes them from media-only backups', () => {
         const settings = loadBuiltinImageSettings();

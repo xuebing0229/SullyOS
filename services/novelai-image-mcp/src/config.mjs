@@ -72,6 +72,7 @@ export const bootstrapRuntimeConfig = Object.freeze({
   baseUrl: stripTrailingSlash(profile.baseUrl || optional("UPSTREAM_BASE_URL")),
   apiKey: optional("UPSTREAM_API_KEY"),
   generatePath: profile.generatePath,
+  modelsPath: profile.modelsPath,
   authHeader: profile.authHeader,
   authPrefix: profile.authPrefix,
   modelFull: profile.modelFull,

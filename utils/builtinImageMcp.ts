@@ -54,6 +54,7 @@ export interface NovelAiRemoteConfig {
     profile: 'official' | 'standard' | 'custom';
     baseUrl: string;
     generatePath: string;
+    modelsPath?: string;
     authHeader: string;
     authPrefix: string;
     modelFull: string;
@@ -296,6 +297,19 @@ export async function fetchBuiltinImageRemoteConfig(
     binding: BuiltinImageBinding,
 ): Promise<ImageRemoteConfig> {
     return controlRequest(binding, '/config');
+}
+
+export async function fetchBuiltinImageModels(
+    binding: BuiltinImageBinding,
+    draft?: UpdateRemoteConfigPayload,
+): Promise<string[]> {
+    const response = await controlRequest(binding, '/models', {
+        method: 'POST',
+        body: JSON.stringify(draft || {}),
+    });
+    return Array.isArray(response?.models)
+        ? response.models.filter((item: unknown): item is string => typeof item === 'string' && Boolean(item.trim()))
+        : [];
 }
 
 export interface UpdateRemoteConfigPayload {

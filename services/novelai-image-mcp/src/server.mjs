@@ -8,7 +8,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 
 import { bootstrapRuntimeConfig, staticConfig } from "./config.mjs";
 import { createNovelRuntimeConfigStore, toUpstreamConfig } from "./runtime-config.mjs";
-import { buildUpstreamRequest, generateUpstreamImage } from "./upstream.mjs";
+import { buildUpstreamHeaders, buildUpstreamRequest, generateUpstreamImage } from "./upstream.mjs";
 import {
   backgroundJobOptionsFromEnv,
   createBackgroundJobService
@@ -137,7 +137,7 @@ async function executeNovelAiGeneration(rawArgs, { runtimeOverride, forcePersist
     ...(saved ? { fileName: saved.fileName } : {})
   });
   return {
-    structuredContent: { imageUrl, seed: generated.seed, model: request.modelId, size: `${request.dimensions.width}x${request.dimensions.height}`, referenceUsed: Boolean(preciseReference), ...(saved ? { expiresAt: saved.expiresAt } : {}) },
+    structuredContent: { imageUrl, requestId: generated.requestId, seed: generated.seed, model: request.modelId, size: `${request.dimensions.width}x${request.dimensions.height}`, referenceUsed: Boolean(preciseReference), ...(saved ? { expiresAt: saved.expiresAt } : {}) },
     content: [{ type: "text", text: ["Image generated successfully.", `Image URL: ${imageUrl}`, `Seed: ${generated.seed}`, `Model: ${request.modelId}`, `Size: ${request.dimensions.width}x${request.dimensions.height}`, ...(saved ? [`Expires at: ${saved.expiresAt}`] : []), "Show the image to the user and continue speaking in character."].join("\n") }]
   };
 }
@@ -242,6 +242,26 @@ app.put("/config", requireBearer, async (req, res, next) => {
     if (error?.code === "REVISION_CONFLICT") return res.status(409).json({ error: "revision_conflict", message: error.message, currentRevision: error.currentRevision });
     next(error);
   }
+});
+app.post("/models", requireBearer, async (req, res, next) => {
+  try {
+    const runtime = await runtimeStore.preview(req.body || {});
+    const { config } = await effectiveUpstreamConfig(runtime);
+    const url = `${config.upstreamBaseUrl}${config.upstreamModelsPath}`;
+    const response = await fetch(url, {
+      method: "GET",
+      headers: buildUpstreamHeaders(config, `models-${Date.now()}`),
+      signal: AbortSignal.timeout(Math.min(config.upstreamTimeoutMs, 30_000))
+    });
+    const text = await response.text();
+    if (!response.ok) throw new Error(`Model discovery failed: HTTP ${response.status}${text ? ` - ${text.slice(0, 200)}` : ""}`);
+    let payload;
+    try { payload = text ? JSON.parse(text) : null; } catch { throw new Error("Model discovery returned invalid JSON"); }
+    const candidates = Array.isArray(payload) ? payload : Array.isArray(payload?.data) ? payload.data : Array.isArray(payload?.models) ? payload.models : [];
+    const models = [...new Set(candidates.map(item => typeof item === "string" ? item : item?.id ?? item?.name).filter(item => typeof item === "string" && item.trim()).map(item => item.trim()))].sort();
+    res.setHeader("Cache-Control", "no-store");
+    return res.json({ models });
+  } catch (error) { next(error); }
 });
 app.post("/config/test", requireBearer, async (req, res, next) => {
   try {

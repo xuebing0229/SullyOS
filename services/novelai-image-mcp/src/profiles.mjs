@@ -2,6 +2,7 @@ export const UPSTREAM_PROFILES = Object.freeze({
   official: Object.freeze({
     baseUrl: "https://image.novelai.net",
     generatePath: "/ai/generate-image",
+    modelsPath: "/models",
     authHeader: "Authorization",
     authPrefix: "Bearer",
     modelFull: "nai-diffusion-4-5-full",
@@ -13,6 +14,7 @@ export const UPSTREAM_PROFILES = Object.freeze({
   standard: Object.freeze({
     baseUrl: "",
     generatePath: "/ai/generate-image",
+    modelsPath: "/models",
     authHeader: "Authorization",
     authPrefix: "Bearer",
     modelFull: "nai-diffusion-4-5-full",
@@ -24,6 +26,7 @@ export const UPSTREAM_PROFILES = Object.freeze({
   custom: Object.freeze({
     baseUrl: "",
     generatePath: "/ai/generate-image",
+    modelsPath: "/models",
     authHeader: "Authorization",
     authPrefix: "Bearer",
     modelFull: "nai-diffusion-4-5-full",
@@ -53,6 +56,7 @@ export function resolveProfileSettings(env = process.env) {
     profileName,
     baseUrl: pick("UPSTREAM_BASE_URL", defaults.baseUrl),
     generatePath: pick("UPSTREAM_GENERATE_PATH", defaults.generatePath),
+    modelsPath: pick("UPSTREAM_MODELS_PATH", defaults.modelsPath),
     authHeader: pick("UPSTREAM_AUTH_HEADER", defaults.authHeader),
     authPrefix: env.UPSTREAM_AUTH_PREFIX === undefined ? defaults.authPrefix : env.UPSTREAM_AUTH_PREFIX.trim(),
     modelFull: pick("UPSTREAM_MODEL_FULL", defaults.modelFull),

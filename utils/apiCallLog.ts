@@ -131,6 +131,17 @@ export interface ApiCallLogEntry extends ApiCallMeta {
     unpricedReason?: ApiCallUnpricedReason;
     costResolution?: 'automatic' | 'manual' | 'ignored' | 'pricing_backfill';
     costResolvedAt?: number;
+    /** 生图按次计价的独立快照；不参与聊天 token 用量计算。 */
+    imageBilling?: {
+        requestId: string;
+        basePriceMicros: string;
+        addons: Array<{
+            key: 'character_reference' | 'vibe_reference';
+            label: string;
+            priceMicros: string;
+        }>;
+        totalPriceMicros: string;
+    };
 }
 
 /** 输入构成里的一块：system prompt 的一个 ### 段落，或聚合后的聊天历史。 */

@@ -242,6 +242,12 @@ const ApiCallLogModal: React.FC<ApiCallLogModalProps> = ({ isOpen, onClose }) =>
                                             关键差异（后缀 -c、渠道标签）藏进省略号里，用户看着两行一样却标黄一头雾水 */}
                                         <Field label="模型" value={e.model} mono wrap />
                                     </div>
+                                    {e.imageBilling && <div className="col-span-2 rounded-xl bg-violet-50/70 px-3 py-2 text-[10px] text-slate-600">
+                                        <div className="flex justify-between gap-2"><span>生图基础价</span><span className="font-mono">{formatYuan(e.imageBilling.basePriceMicros)}</span></div>
+                                        {e.imageBilling.addons.map(item => <div key={item.key} className="mt-1 flex justify-between gap-2"><span>＋ {item.label}</span><span className="font-mono">{formatYuan(item.priceMicros)}</span></div>)}
+                                        <div className="mt-1 flex justify-between gap-2 border-t border-violet-100 pt-1 font-bold"><span>本次合计</span><span className="font-mono">{formatYuan(e.imageBilling.totalPriceMicros)}</span></div>
+                                        <div className="mt-1 break-all text-slate-400">请求 ID：{e.imageBilling.requestId}</div>
+                                    </div>}
                                     {/* 后端自报身份（response.model）：字符串不同就展示；琥珀判定见
                                         isSameCoreModel——渠道标签/前缀（[渠道]、(按次)、gcli-、models/）算同名
                                         （灰色），尾巴长出变体（X-c / X-lite）才是真被换了后端（琥珀）。 */}

@@ -18,6 +18,7 @@ import {
 } from './mcpImagePersistence';
 import { parseImageToolClientOptions, type AfterGenerateAction } from './imageToolPostAction';
 import { sanitizeMcpOutcomeText } from './mcpSingleShotFlow';
+import { captureImageGenerationBilling, type ImageGenerationBillingCapture } from './imageGenerationBilling';
 
 export const BACKGROUND_IMAGE_JOB_EVENT =
     'sullyos:background-image-job-event';
@@ -65,6 +66,7 @@ export interface LocalBackgroundImageJob {
     submitAttempts: number;
     resultAppliedAt?: number;
     lastError?: string;
+    imageBillingCapture?: ImageGenerationBillingCapture;
 }
 
 interface LocalState {
@@ -280,6 +282,9 @@ const sanitizeLoadedJob = (
             typeof raw.lastError === 'string'
                 ? raw.lastError
                 : undefined,
+        imageBillingCapture: raw.imageBillingCapture && typeof raw.imageBillingCapture === 'object'
+            ? clone(raw.imageBillingCapture)
+            : undefined,
     };
 };
 
@@ -771,6 +776,7 @@ const applySucceededJob = async (
                 backgroundImageClientRequestId:
                     localJob.clientRequestId,
             },
+            imageBillingCapture: localJob.imageBillingCapture,
         });
 
     if (
@@ -1139,6 +1145,7 @@ export async function callMcpToolWithBackgroundImage(
         createdAt,
         updatedAt: createdAt,
         submitAttempts: 1,
+        imageBillingCapture: captureImageGenerationBilling(engineId),
     };
 
     upsertJob(localJob);

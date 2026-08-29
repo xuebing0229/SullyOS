@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
     fetchBuiltinImageRemoteConfig,
+    fetchBuiltinImageModels,
     loadBuiltinImageSettings,
     updateBuiltinImageBinding,
     setPreferredBuiltinImageEngine,
@@ -19,7 +20,9 @@ import {
     applyImageGenerationPreset, createImageGenerationPreset, deleteImageGenerationPreset,
     getActiveImageGenerationPreset, getImageGenerationPresets, renameImageGenerationPreset,
     updateImageGenerationPreset, type ImageGenerationPreset,
+    EMPTY_IMAGE_GENERATION_PRICING, normalizeImageGenerationPricing, type ImageGenerationPricing,
 } from '../../utils/imageGenerationPresets';
+import { yuanStringToMicros } from '../../utils/apiPricing';
 
 interface Props {
     addToast: (message: string, type?: 'success' | 'error' | 'info') => void;
@@ -174,8 +177,15 @@ const GptForm: React.FC<{ config: GptImageRemoteConfig; onChange: (next: GptImag
     );
 };
 
-const NovelForm: React.FC<{ config: NovelAiRemoteConfig; onChange: (next: NovelAiRemoteConfig) => void }> = ({ config, onChange }) => {
+const NovelForm: React.FC<{
+    config: NovelAiRemoteConfig;
+    onChange: (next: NovelAiRemoteConfig) => void;
+    models: string[];
+    busy: boolean;
+    onLoadModels: () => void;
+}> = ({ config, onChange, models, busy, onLoadModels }) => {
     const patch = (value: Partial<NovelAiRemoteConfig>) => onChange({ ...config, ...value });
+    const modelListId = 'novelai-discovered-models';
     return (
         <div className="space-y-3">
             <Select label="接口类型" value={config.profile} onChange={event => patch({ profile: event.target.value as NovelAiRemoteConfig['profile'] })}>
@@ -192,13 +202,41 @@ const NovelForm: React.FC<{ config: NovelAiRemoteConfig; onChange: (next: NovelA
                         <Input label="鉴权 Header" value={config.authHeader} onChange={event => patch({ authHeader: event.target.value })} />
                         <Input label="鉴权前缀" value={config.authPrefix} onChange={event => patch({ authPrefix: event.target.value })} />
                     </div>
-                    <Input label="Full 模型" value={config.modelFull} onChange={event => patch({ modelFull: event.target.value })} />
-                    <Input label="Curated 模型" value={config.modelCurated} onChange={event => patch({ modelCurated: event.target.value })} />
                     <Select label="响应格式" value={config.responseMode} onChange={event => patch({ responseMode: event.target.value as NovelAiRemoteConfig['responseMode'] })}>
                         <option value="auto">自动</option><option value="json">JSON</option><option value="image">原始图片</option><option value="zip">ZIP</option>
                     </Select>
                 </div>
             )}
+            <div className="space-y-3 rounded-xl border border-violet-100 bg-violet-50/40 p-3">
+                <div className="flex items-end gap-2">
+                    <div className="min-w-0 flex-1"><Input label="模型列表路径" value={config.modelsPath || '/models'} onChange={event => patch({ modelsPath: event.target.value })} /></div>
+                    <button type="button" disabled={busy} onClick={onLoadModels} className="mb-0.5 shrink-0 rounded-xl bg-violet-500 px-3 py-2.5 text-[10px] font-bold text-white disabled:opacity-40">拉取模型</button>
+                </div>
+                <datalist id={modelListId}>{models.map(model => <option key={model} value={model} />)}</datalist>
+                <Input label="FULL 模型" list={modelListId} value={config.modelFull} onChange={event => patch({ modelFull: event.target.value })} hint="可从列表选择，也可直接输入模型 ID。" />
+                <Input label="CURATED 模型" list={modelListId} value={config.modelCurated} onChange={event => patch({ modelCurated: event.target.value })} hint="只改变 CURATED 槽位的实际模型，不改变何时使用该槽位。" />
+            </div>
+        </div>
+    );
+};
+
+const ImagePricingEditor: React.FC<{ value: ImageGenerationPricing; onChange: (next: ImageGenerationPricing) => void }> = ({ value, onChange }) => {
+    const patchAddon = (key: keyof ImageGenerationPricing['addons'], patch: Partial<ImageGenerationPricing['addons']['characterReference']>) => onChange({
+        ...value,
+        addons: { ...value.addons, [key]: { ...value.addons[key], ...patch } },
+    });
+    const priceHint = (raw: string) => raw && yuanStringToMicros(raw) === null ? '请输入不小于 0、最多 6 位小数的人民币金额' : undefined;
+    return (
+        <div className="space-y-3 rounded-xl border border-emerald-100 bg-emerald-50/40 p-3">
+            <div className="flex items-center justify-between"><div><p className="text-xs font-bold text-slate-700">生图按次计价</p><p className="text-[10px] text-slate-400">仅成功得到至少一张可用图片后计费</p></div><Toggle checked={value.enabled} onChange={enabled => onChange({ ...value, enabled })} /></div>
+            {value.enabled && <>
+                <Input label="基础单次价格（人民币）" inputMode="decimal" value={value.basePricePerRequestYuan} onChange={event => onChange({ ...value, basePricePerRequestYuan: event.target.value })} hint={priceHint(value.basePricePerRequestYuan)} />
+                {([
+                    ['characterReference', '角色参考图附加价'],
+                    ['vibeReference', 'Vibe 参考附加价'],
+                ] as const).map(([key, label]) => <div key={key} className="grid grid-cols-[auto_1fr] items-end gap-2"><div className="pb-2"><Toggle checked={value.addons[key].enabled} onChange={enabled => patchAddon(key, { enabled })} /></div><Input label={`${label}（每次）`} inputMode="decimal" disabled={!value.addons[key].enabled} value={value.addons[key].pricePerRequestYuan} onChange={event => patchAddon(key, { pricePerRequestYuan: event.target.value })} hint={priceHint(value.addons[key].pricePerRequestYuan)} /></div>)}
+                <p className="text-[10px] leading-relaxed text-slate-400">同一次请求无论带几张参考图，每种附加功能最多加价一次。</p>
+            </>}
         </div>
     );
 };
@@ -237,6 +275,8 @@ const EngineCard: React.FC<{
     const presets = useMemo(() => getImageGenerationPresets(id), [id, presetRevision]);
     const activePreset = useMemo(() => getActiveImageGenerationPreset(id), [id, presetRevision]);
     const [apiKey, setApiKey] = useState(() => getActiveImageGenerationPreset(id)?.apiKey || '');
+    const [pricing, setPricing] = useState<ImageGenerationPricing>(() => normalizeImageGenerationPricing(getActiveImageGenerationPreset(id)?.pricing || EMPTY_IMAGE_GENERATION_PRICING));
+    const [models, setModels] = useState<string[]>([]);
     const [status, setStatus] = useState('');
 
     const updateBinding = (
@@ -258,7 +298,7 @@ const EngineCard: React.FC<{
     };
 
     useEffect(() => {
-        const refresh = () => { setPresetRevision(value => value + 1); const active = getActiveImageGenerationPreset(id); if (active) setApiKey(active.apiKey); };
+        const refresh = () => { setPresetRevision(value => value + 1); const active = getActiveImageGenerationPreset(id); if (active) { setApiKey(active.apiKey); setPricing(normalizeImageGenerationPricing(active.pricing)); } };
         window.addEventListener('sullyos:image-generation-presets-changed', refresh);
         return () => window.removeEventListener('sullyos:image-generation-presets-changed', refresh);
     }, [id]);
@@ -300,11 +340,23 @@ const EngineCard: React.FC<{
     };
 
     const ensureRemote = (): ImageRemoteConfig => { if (!remote) throw new Error('请先读取服务器配置'); return remote; };
-    const createPreset = () => { try { const name = window.prompt(`给这个${title}配置起个名字`, `${title}预设`); if (name === null) return; createImageGenerationPreset({ name, engineId: id, binding, remoteConfig: ensureRemote(), apiKey }); setPresetRevision(v => v + 1); addToast('生图预设已保存', 'success'); } catch (e: any) { addToast(e?.message || '保存预设失败', 'error'); } };
-    const updatePreset = () => { try { if (!activePreset) throw new Error('当前没有选中的预设'); updateImageGenerationPreset(activePreset.id, { binding, remoteConfig: ensureRemote(), apiKey }); setPresetRevision(v => v + 1); addToast('生图预设已更新', 'success'); } catch (e: any) { addToast(e?.message || '更新预设失败', 'error'); } };
+    const createPreset = () => { try { const name = window.prompt(`给这个${title}配置起个名字`, `${title}预设`); if (name === null) return; createImageGenerationPreset({ name, engineId: id, binding, remoteConfig: ensureRemote(), apiKey, pricing }); setPresetRevision(v => v + 1); addToast('生图预设已保存', 'success'); } catch (e: any) { addToast(e?.message || '保存预设失败', 'error'); } };
+    const updatePreset = () => { try { if (!activePreset) throw new Error('当前没有选中的预设'); updateImageGenerationPreset(activePreset.id, { binding, remoteConfig: ensureRemote(), apiKey, pricing }); setPresetRevision(v => v + 1); addToast('生图预设已更新', 'success'); } catch (e: any) { addToast(e?.message || '更新预设失败', 'error'); } };
     const renamePreset = () => { if (!activePreset) return; const name = window.prompt('重命名生图预设', activePreset.name); if (name === null) return; try { renameImageGenerationPreset(activePreset.id, name); setPresetRevision(v => v + 1); } catch (e: any) { addToast(e?.message || '重命名失败', 'error'); } };
     const removePreset = () => { if (!activePreset) return; deleteImageGenerationPreset(activePreset.id); setPresetRevision(v => v + 1); addToast('生图预设已删除', 'info'); };
-    const applyPreset = async (preset: ImageGenerationPreset) => { setBusy(true); setStatus(`正在应用预设「${preset.name}」…`); try { const result = await applyImageGenerationPreset(preset); setSettings(result.settings); setRemote(result.remote); setApiKey(preset.apiKey); setPresetRevision(v => v + 1); setStatus(`✅ 已应用预设「${preset.name}」`); addToast(`已应用${title}预设`, 'success'); } catch (e: any) { setStatus(`❌ ${e?.message || String(e)}`); } finally { setBusy(false); } };
+    const applyPreset = async (preset: ImageGenerationPreset) => { setBusy(true); setStatus(`正在应用预设「${preset.name}」…`); try { const result = await applyImageGenerationPreset(preset); setSettings(result.settings); setRemote(result.remote); setApiKey(preset.apiKey); setPricing(normalizeImageGenerationPricing(preset.pricing)); setModels([]); setPresetRevision(v => v + 1); setStatus(`✅ 已应用预设「${preset.name}」`); addToast(`已应用${title}预设`, 'success'); } catch (e: any) { setStatus(`❌ ${e?.message || String(e)}`); } finally { setBusy(false); } };
+
+    const loadModels = async () => {
+        if (!remote || !isNovelConfig(remote)) return;
+        setBusy(true); setStatus('正在从当前线路拉取模型列表…');
+        try {
+            const { apiKeyConfigured: _configured, apiKeyHint: _hint, version: _version, revision: _revision, ...patch } = remote as any;
+            const discovered = await fetchBuiltinImageModels(binding, { patch, ...(apiKey.trim() ? { apiKey: apiKey.trim() } : {}) });
+            setModels(discovered);
+            setStatus(discovered.length ? `✅ 已发现 ${discovered.length} 个模型` : '当前线路返回了空模型列表，仍可手动输入模型 ID');
+        } catch (error: any) { setStatus(`❌ ${error?.message || String(error)}`); }
+        finally { setBusy(false); }
+    };
 
     const setEnabled = async (enabled: boolean) => {
         if (!enabled) { updateBinding({ enabled: false }); return; }
@@ -353,7 +405,7 @@ const EngineCard: React.FC<{
                     ) : (
                         <>
                             {id === 'gpt-image' && isGptConfig(remote) && <GptForm config={remote} onChange={setRemote} />}
-                            {id === 'novelai' && isNovelConfig(remote) && <NovelForm config={remote} onChange={setRemote} />}
+                            {id === 'novelai' && isNovelConfig(remote) && <NovelForm config={remote} onChange={setRemote} models={models} busy={busy} onLoadModels={() => void loadModels()} />}
                             <Input
                                 label="API 密钥"
                                 sensitive
@@ -363,6 +415,7 @@ const EngineCard: React.FC<{
                                 placeholder={remote.apiKeyConfigured ? `已配置：${remote.apiKeyHint || '••••'}（留空不更换）` : '尚未配置'}
                                 hint="密钥可保存到生图预设，并随完整/纯文字备份恢复。"
                             />
+                            <ImagePricingEditor value={pricing} onChange={setPricing} />
                             <div className="grid grid-cols-2 gap-2">
                                 <button disabled={busy} onClick={() => void testControl(false)} className="rounded-xl border border-violet-200 bg-violet-50 py-2.5 text-xs font-bold text-violet-600 disabled:opacity-40">验证配置</button>
                                 <button disabled={busy} onClick={() => void saveRemote()} className="rounded-xl bg-violet-500 py-2.5 text-xs font-bold text-white disabled:opacity-40">保存</button>

@@ -121,7 +121,7 @@ async function executeGptImageGeneration(rawArgs, { runtimeOverride, forcePersis
     ...(saved ? { fileName: saved.fileName } : {})
   });
   return {
-    structuredContent: { imageUrl, model: runtime.model, size: args.size, ...(saved ? { expiresAt: saved.expiresAt } : {}) },
+    structuredContent: { imageUrl, requestId: generated.correlationId, model: runtime.model, size: args.size, ...(saved ? { expiresAt: saved.expiresAt } : {}) },
     content: [{ type: "text", text: ["Image generated successfully.", `Image URL: ${imageUrl}`, `Model: ${runtime.model}`, `Size: ${args.size}`, ...(saved ? [`Expires at: ${saved.expiresAt}`] : []), "Show the image to the user and continue speaking in character."].join("\n") }]
   };
 }
