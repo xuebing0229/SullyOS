@@ -15,6 +15,7 @@ import {
 } from "./background-jobs.mjs";
 import { createReferenceStore } from "./reference-store.mjs";
 import { isNovelAiV45Model, preciseReferenceUnsupportedMessage } from "./precise-reference.mjs";
+import { normalizeNovelAiToolArguments } from "./tool-arguments.mjs";
 import {
   cleanupExpiredImages,
   initializeImageStorage,
@@ -105,7 +106,7 @@ async function effectiveUpstreamConfig(runtimeOverride, { forcePersist = false }
   return { runtime, config };
 }
 async function executeNovelAiGeneration(rawArgs, { runtimeOverride, forcePersist = false } = {}) {
-  const args = novelAiArgumentsSchema.parse(rawArgs);
+  const args = novelAiArgumentsSchema.parse(normalizeNovelAiToolArguments(rawArgs));
   const { runtime, config } = await effectiveUpstreamConfig(runtimeOverride, { forcePersist });
   let preciseReference = null;
   if (args.reference_id) {
