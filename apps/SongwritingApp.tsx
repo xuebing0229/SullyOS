@@ -20,7 +20,7 @@ import { injectMemoryPalace } from '../utils/memoryPalace/pipeline';
 import { ContextBuilder } from '../utils/context';
 import { safeResponseJson, extractJson } from '../utils/safeApi';
 import { DB } from '../utils/db';
-import { putImageBlob, useBlobRefUrl } from '../utils/blobRef';
+import { putImageBlob, useBlobRefUrl, resolveRefToDataUrl } from '../utils/blobRef';
 import {
     synthesizeSong,
     buildAceStepTags,
@@ -42,6 +42,7 @@ import {
 import { C as MusicC, Sparkle, CrossStar, GlassProgress, MetaChip } from './music/MusicUI';
 import Modal from '../components/os/Modal';
 import ConfirmDialog from '../components/os/ConfirmDialog';
+import TokenImg from '../components/os/TokenImg';
 import {
     Check, PencilSimple,
     Sparkle as SparkleP, Butterfly, Feather, Lightning, MicrophoneStage,
@@ -51,6 +52,7 @@ import {
 } from '@phosphor-icons/react';
 import { useMusic, type Song as MusicSong } from '../context/MusicContext';
 import { CharacterGroupFilterBar, filterCharactersByGroup, GROUP_FILTER_ALL } from '../components/character/CharacterGroupFilter';
+import { trackEvent } from '../utils/analytics';
 
 // --- Helper Components ---
 
@@ -95,6 +97,24 @@ type LyricSlot = {
     chars: string;
     sectionOccurrence: number;
     lineInSection: number;
+};
+
+// SECTION_LABELS 声明成了 Record<string, …>，从它身上取出来的 key 只剩 string，
+// 这里把段落 key 收窄回 SongLine['section']。实际用到的 key 就是这七个，
+// 兜底沿用段落选择器的初始值 'verse'。
+const toSectionKind = (value: string): SongLine['section'] => {
+    switch (value) {
+        case 'intro':
+        case 'verse':
+        case 'pre-chorus':
+        case 'chorus':
+        case 'bridge':
+        case 'outro':
+        case 'free':
+            return value;
+        default:
+            return 'verse';
+    }
 };
 
 type PaperTheme = {
@@ -187,7 +207,7 @@ const SongwritingApp: React.FC = () => {
 
     // Write View State
     const [inputText, setInputText] = useState('');
-    const [currentSection, setCurrentSection] = useState<string>('verse');
+    const [currentSection, setCurrentSection] = useState<SongLine['section']>('verse');
     const [isTyping, setIsTyping] = useState(false);
     const [lastTokenUsage, setLastTokenUsage] = useState<number | null>(null);
     const [showStructureGuide, setShowStructureGuide] = useState(false);
@@ -381,6 +401,11 @@ const SongwritingApp: React.FC = () => {
         setWorkMode('notebook');
         setLineDrafts({});
         setView('write');
+        trackEvent('进入乐谱写作模式', {
+            genre: newSong.genre,
+            mood: newSong.mood,
+            template: newSong.lyricTemplate || 'free',
+        });
         resetTempState();
     };
 
@@ -449,7 +474,7 @@ const SongwritingApp: React.FC = () => {
                 content: m.content
             }));
 
-            await injectMemoryPalace(collaborator, undefined, `${updatedSong.title || ''} ${updatedSong.theme || ''} ${userMessage}`.trim() || undefined);
+            await injectMemoryPalace(collaborator, undefined, `${updatedSong.title || ''} ${userMessage}`.trim() || undefined);
             const systemPrompt = SongPrompts.buildMentorSystemPrompt(collaborator, userProfile, updatedSong, msgContext);
             let userPrompt = SongPrompts.buildUserMessage(updatedSong, userMessage, currentSection);
             if (requestedType) {
@@ -634,10 +659,12 @@ const SongwritingApp: React.FC = () => {
 
     const handleAskForHelp = async () => {
         setInputText('');
+        trackEvent('请搭档给灵感');
         await handleSendToAI('我不知道怎么写，能给我一些灵感和示范吗？', false, 'inspiration');
     };
 
     const handleDiscuss = async () => {
+        trackEvent('找搭档讨论接下来怎么写');
         const text = inputText.trim();
         if (!text) return;
         setInputText('');
@@ -677,6 +704,7 @@ const SongwritingApp: React.FC = () => {
         setActiveSong(updated);
         updateSong(updated.id, { lines: newLines });
         setPendingLines(prev => prev.filter(l => l.id !== lineId));
+        trackEvent('采纳搭档写的一句歌词');
     };
 
     const handleDismissPending = (lineId: string) => {
@@ -794,7 +822,7 @@ const SongwritingApp: React.FC = () => {
                 if (!content) return;
                 const existing = lineAtSlot({ ...activeSong, lines: snapshotLines }, index);
                 const targetSlot = buildLyricSlots(activeSong)[index]
-                    || { index, section: currentSection as SongLine['section'], chars: '不限', sectionOccurrence: 0, lineInSection: index };
+                    || { index, section: currentSection, chars: '不限', sectionOccurrence: 0, lineInSection: index };
                 if (existing) {
                     snapshotLines = snapshotLines.map(line => line.id === existing.id
                         ? { ...line, content, section: targetSlot.section, slotIndex: index }
@@ -887,12 +915,13 @@ const SongwritingApp: React.FC = () => {
         setIsCompleting(true);
         setShowPreviewModal(true);
         setCompletionReview('正在等搭档写评语...');
+        trackEvent('完成乐谱并让搭档点评');
 
         try {
             await injectMemoryPalace(
                 collaborator,
                 undefined,
-                `${activeSong.title} ${activeSong.theme || ''} ${activeSong.lines.map(line => line.content).join(' ')}`.trim(),
+                `${activeSong.title} ${activeSong.lines.map(line => line.content).join(' ')}`.trim(),
                 userProfile.name,
             );
             const systemPrompt = SongPrompts.buildCompletionSystemPrompt(collaborator, userProfile);
@@ -992,6 +1021,7 @@ const SongwritingApp: React.FC = () => {
 
         setShowShareModal(false);
         addToast('乐谱已分享到聊天', 'success');
+        trackEvent('分享乐谱到聊天');
     };
 
     // --- Pause (just go back) ---
@@ -1310,6 +1340,7 @@ const SongwritingApp: React.FC = () => {
         setPromptDraft(current);
         setPromptGuidance('');
         setShowCustomPrompt(true);
+        trackEvent('打开 AI 出歌引导弹窗');
     };
 
     /**
@@ -1332,6 +1363,7 @@ const SongwritingApp: React.FC = () => {
         await updateSong(activeSong.id, { aceStepCustomTags: tags });
         setShowCustomPrompt(false);
         runSynth(provider, tags);
+        trackEvent('确认出歌并开始生成');
     };
 
     const handleAiWritePrompt = async () => {
@@ -1341,6 +1373,7 @@ const SongwritingApp: React.FC = () => {
             return;
         }
         setIsAiWritingPrompt(true);
+        trackEvent('让 AI 帮写出歌提示词');
         try {
             // MiniMax 是中文模型 → 输出中文 natural-language prompt
             // ACE-Step 国外模型 → 输出英文 comma-separated tags
@@ -1384,13 +1417,21 @@ const SongwritingApp: React.FC = () => {
     /** Compose user + char avatars side-by-side on canvas → data URL. */
     const buildDualCover = useCallback(async (charUrl: string, userUrl: string): Promise<string | null> => {
         try {
-            const loadImg = (src: string) => new Promise<HTMLImageElement>((resolve, reject) => {
-                const img = new Image();
-                img.crossOrigin = 'anonymous';
-                img.onload = () => resolve(img);
-                img.onerror = reject;
-                img.src = src;
-            });
+            // 头像可能是 blobref 令牌，令牌本身不是能加载的地址：直接喂给 Image 会加载
+            // 失败，而失败被下面的 catch 收走，合影封面悄悄变成一张只有渐变的空白图。
+            // 所以先解析成 data URL 再加载（非令牌原样返回，可以无条件调）。
+            // 图已丢时解析结果是空串，此处抛出让调用方按「这张画不出来」处理。
+            const loadImg = async (src: string) => {
+                const url = await resolveRefToDataUrl(src);
+                if (!url) throw new Error('avatar blob missing');
+                return await new Promise<HTMLImageElement>((resolve, reject) => {
+                    const img = new Image();
+                    img.crossOrigin = 'anonymous';
+                    img.onload = () => resolve(img);
+                    img.onerror = reject;
+                    img.src = url;
+                });
+            };
             const canvas = document.createElement('canvas');
             const SIZE = 400;
             canvas.width = SIZE; canvas.height = SIZE;
@@ -1541,6 +1582,7 @@ const SongwritingApp: React.FC = () => {
             localLyrics: lyricsText,
         };
         addLocalSong(localSong);
+        trackEvent('把成品歌加进音乐 App 专辑');
         setShowCoverConfirm(false);
         addToast(`已加入「一起写的歌」专辑 ❤︎`, 'success');
         playSong(localSong, { alsoSetQueue: true });
@@ -1599,7 +1641,7 @@ const SongwritingApp: React.FC = () => {
                             <p className="text-lg font-bold mt-0.5" style={{ color: MusicC.primary, fontFamily: 'Georgia, "Noto Serif SC", serif' }}>歌词手帖</p>
                         </div>
                         <button
-                            onClick={() => setView('create')}
+                            onClick={() => { trackEvent('开始新建乐谱'); setView('create'); }}
                             className="p-2.5 rounded-full active:scale-95 transition-all"
                             style={{
                                 background: `linear-gradient(135deg, ${MusicC.sakura}, ${MusicC.lavender})`,
@@ -1625,7 +1667,7 @@ const SongwritingApp: React.FC = () => {
                                 点击右上角的 +，开始第一本歌词手帖
                             </p>
                             <div className="w-20 h-[2px] bg-stone-300/60 mt-8" />
-                            <button onClick={() => setView('create')} className="mt-8 px-6 py-2.5 border border-stone-300 rounded text-sm text-stone-600 hover:bg-stone-100 active:scale-[0.98] transition-all">
+                            <button onClick={() => { trackEvent('开始新建乐谱'); setView('create'); }} className="mt-8 px-6 py-2.5 border border-stone-300 rounded text-sm text-stone-600 hover:bg-stone-100 active:scale-[0.98] transition-all">
                                 开始写歌
                             </button>
                         </div>
@@ -1717,7 +1759,7 @@ const SongwritingApp: React.FC = () => {
                                                         <span className="text-[10px] text-stone-400">{moodInfo?.icon} {moodInfo?.label}</span>
                                                     </div>
                                                     <div className="flex items-center gap-2 mt-1">
-                                                        {char && <img src={char.avatar} className="w-4 h-4 rounded-full object-cover" />}
+                                                        {char && <TokenImg value={char.avatar} className="w-4 h-4 rounded-full object-cover" />}
                                                         <span className="text-[10px] text-stone-400">与 {char?.name} 创作</span>
                                                     </div>
                                                 </div>
@@ -1747,7 +1789,7 @@ const SongwritingApp: React.FC = () => {
                             value={shareGroupId} onChange={setShareGroupId} className="mb-2" />
                         {filterCharactersByGroup(characters, characterGroups, shareGroupId).map(c => (
                             <button key={c.id} onClick={() => handleShareToChat(c.id)} className="w-full flex items-center gap-3 p-3 rounded-lg hover:bg-stone-50 border border-stone-100 transition-colors">
-                                <img src={c.avatar} className="w-10 h-10 rounded-full object-cover" />
+                                <TokenImg value={c.avatar} className="w-10 h-10 rounded-full object-cover" />
                                 <span className="font-medium text-sm text-stone-700">{c.name}</span>
                             </button>
                         ))}
@@ -2202,7 +2244,7 @@ const SongwritingApp: React.FC = () => {
                                     }}
                                 >
                                     <div className="relative shrink-0">
-                                        <img src={c.avatar} className="w-12 h-12 rounded-2xl object-cover" />
+                                        <TokenImg value={c.avatar} className="w-12 h-12 rounded-2xl object-cover" />
                                         {active && <Sparkle size={9} color={MusicC.sakura} delay={0} className="absolute -top-1 -right-1" />}
                                     </div>
                                     <div className="text-left flex-1 min-w-0">
@@ -2286,11 +2328,11 @@ const SongwritingApp: React.FC = () => {
                         </div>
                         <div className="rounded-2xl p-4 shizuku-glass" style={{ border: `1px solid ${MusicC.faint}40` }}>
                             <div className="grid grid-cols-3 gap-3">
-                                {[
+                                {([
                                     { label: '起点色', color: customCoverFrom, position: 'from' },
                                     { label: '中间色', color: customCoverVia, position: 'via' },
                                     { label: '终点色', color: customCoverTo,  position: 'to'   }
-                                ].map(item => (
+                                ] as const).map(item => (
                                     <label key={item.label} className="space-y-1.5">
                                         <span className="block text-[10px]" style={{ color: MusicC.muted }}>{item.label}</span>
                                         <div className="rounded-lg overflow-hidden" style={{ height: 28, background: item.color, border: `1px solid ${MusicC.faint}40`, boxShadow: `inset 0 1px 0 rgba(255,255,255,0.2)` }}>
@@ -2378,7 +2420,7 @@ const SongwritingApp: React.FC = () => {
                         </div>
                         {collaborator && (
                             <div className="flex items-center gap-2 mt-3 opacity-50">
-                                <img src={collaborator.avatar} className="w-5 h-5 rounded-full object-cover" />
+                                <TokenImg value={collaborator.avatar} className="w-5 h-5 rounded-full object-cover" />
                                 <span className="text-[11px]">与 {collaborator.name} 创作</span>
                             </div>
                         )}
@@ -2673,7 +2715,7 @@ const SongwritingApp: React.FC = () => {
                             value={shareGroupId} onChange={setShareGroupId} className="mb-2" />
                         {filterCharactersByGroup(characters, characterGroups, shareGroupId).map(c => (
                             <button key={c.id} onClick={() => handleShareToChat(c.id)} className="w-full flex items-center gap-3 p-3 rounded-lg hover:bg-stone-50 border border-stone-100 transition-colors">
-                                <img src={c.avatar} className="w-10 h-10 rounded-full object-cover" />
+                                <TokenImg value={c.avatar} className="w-10 h-10 rounded-full object-cover" />
                                 <span className="font-medium text-sm text-stone-700">{c.name}</span>
                             </button>
                         ))}
@@ -2693,10 +2735,10 @@ const SongwritingApp: React.FC = () => {
                                 }}
                             >
                                 {coverMode === 'char' && collaborator?.avatar && (
-                                    <img src={collaborator.avatar} alt="" className="w-full h-full object-cover" />
+                                    <TokenImg value={collaborator.avatar} alt="" className="w-full h-full object-cover" />
                                 )}
                                 {coverMode === 'user' && userProfile?.avatar && (
-                                    <img src={userProfile.avatar} alt="" className="w-full h-full object-cover" />
+                                    <TokenImg value={userProfile.avatar} alt="" className="w-full h-full object-cover" />
                                 )}
                                 {coverMode === 'dual' && (
                                     isBuildingDual ? (
@@ -2762,6 +2804,7 @@ const SongwritingApp: React.FC = () => {
                                                 coverUploadRef.current?.click();
                                             } else {
                                                 setCoverMode(opt.id);
+                                                trackEvent('选择加入音乐 App 的封面样式', { coverMode: opt.id });
                                             }
                                         }}
                                         className="rounded-xl p-2 border transition-all active:scale-95 flex flex-col items-center gap-1"
@@ -2781,7 +2824,7 @@ const SongwritingApp: React.FC = () => {
                                                 border: `1.5px solid ${active ? 'rgba(255,255,255,0.6)' : `${MusicC.faint}50`}`,
                                             }}>
                                             {opt.src ? (
-                                                <img src={opt.src} alt="" className="w-full h-full object-cover" />
+                                                <TokenImg value={opt.src} alt="" className="w-full h-full object-cover" />
                                             ) : (
                                                 <div className="w-full h-full flex items-center justify-center"
                                                     style={{ background: `linear-gradient(135deg, ${MusicC.sakura}, ${MusicC.lavender})` }}>
@@ -2942,7 +2985,7 @@ const SongwritingApp: React.FC = () => {
                                             return (
                                                 <button
                                                     key={opt.id}
-                                                    onClick={() => setProvider(opt.id)}
+                                                    onClick={() => { setProvider(opt.id); trackEvent('切换出歌生成器', { provider: opt.id }); }}
                                                     disabled={!opt.available}
                                                     className="relative text-left p-2 rounded-xl border transition-all active:scale-95 disabled:cursor-not-allowed"
                                                     style={isActive ? {
@@ -2999,7 +3042,7 @@ const SongwritingApp: React.FC = () => {
                                     return (
                                         <button
                                             key={preset.id}
-                                            onClick={() => applyVoicePreset(preset.id)}
+                                            onClick={() => { applyVoicePreset(preset.id); trackEvent('选择声线预设', { preset: preset.id }); }}
                                             className="text-[11px] py-2.5 rounded-xl border transition-all active:scale-95 flex flex-col items-center justify-center gap-1 relative overflow-hidden"
                                             style={isActive ? {
                                                 background: `linear-gradient(135deg, ${MusicC.primary}, ${MusicC.accent})`,
@@ -3155,7 +3198,7 @@ const SongwritingApp: React.FC = () => {
                 })),
                 {
                     index: nextFreeIndex,
-                    section: currentSection as SongLine['section'],
+                    section: currentSection,
                     chars: '不限',
                     sectionOccurrence: 0,
                     lineInSection: nextFreeIndex,
@@ -3239,7 +3282,7 @@ const SongwritingApp: React.FC = () => {
                     <div className="px-4 pb-3 flex items-center gap-3">
                         {collaborator && (
                             <div className="flex items-center gap-2 min-w-0 flex-1">
-                                <img src={collaborator.avatar} className="w-7 h-7 rounded-full object-cover" alt="" />
+                                <TokenImg value={collaborator.avatar} className="w-7 h-7 rounded-full object-cover" alt="" />
                                 <div className="min-w-0">
                                     <div className="text-[10px] truncate" style={{ color: paper.muted }}>{collaborator.name} 正在看这本歌词</div>
                                     <div className="text-[9px] truncate opacity-70">{activeSong.subtitle || '每次只改你点到的那一句'}</div>
@@ -3382,7 +3425,7 @@ const SongwritingApp: React.FC = () => {
                                 {Object.entries(SECTION_LABELS).map(([key, info]) => (
                                     <button
                                         key={key}
-                                        onClick={() => setCurrentSection(key)}
+                                        onClick={() => setCurrentSection(toSectionKind(key))}
                                         className="shrink-0 px-2.5 py-1 rounded-full text-[9px] transition-all"
                                         style={currentSection === key
                                             ? { color: '#fff', background: paper.accent }
@@ -3493,7 +3536,7 @@ const SongwritingApp: React.FC = () => {
                         <div className="flex-1 overflow-y-auto no-scrollbar px-4 py-5 pb-28" ref={scrollRef}>
                             {feedbackGroups.length === 0 && (
                                 <div className="h-full flex flex-col items-center justify-center text-center px-10 pb-16">
-                                    {collaborator && <img src={collaborator.avatar} className="w-14 h-14 rounded-full object-cover mb-5 opacity-90" alt="" />}
+                                    {collaborator && <TokenImg value={collaborator.avatar} className="w-14 h-14 rounded-full object-cover mb-5 opacity-90" alt="" />}
                                     <p className="text-[14px]" style={{ fontFamily: 'Georgia, "Noto Serif SC", serif' }}>这里专心讨论，不会碰你的歌词</p>
                                     <p className="text-[10px] mt-2 leading-5" style={{ color: paper.muted }}>可以问结构、请点评、讨论押韵，写词请回到「写歌词」。</p>
                                 </div>
@@ -3507,7 +3550,7 @@ const SongwritingApp: React.FC = () => {
                                     const expanded = !!expandedFeedbackIds[group.id];
                                     return (
                                         <div key={group.id} className={`flex gap-2.5 ${isUserMessage ? 'justify-end' : 'justify-start'}`}>
-                                            {!isUserMessage && collaborator && <img src={collaborator.avatar} className="w-7 h-7 rounded-full object-cover shrink-0 mt-1" alt="" />}
+                                            {!isUserMessage && collaborator && <TokenImg value={collaborator.avatar} className="w-7 h-7 rounded-full object-cover shrink-0 mt-1" alt="" />}
                                             <div className={`max-w-[82%] ${isUserMessage ? 'items-end' : 'items-start'} flex flex-col`}>
                                                 <div
                                                     className={`px-4 py-3 text-[13px] leading-6 ${isUserMessage ? 'rounded-[18px_18px_5px_18px]' : 'rounded-[18px_18px_18px_5px]'}`}
@@ -3538,7 +3581,7 @@ const SongwritingApp: React.FC = () => {
                                 })}
                                 {isTyping && (
                                     <div className="flex items-center gap-2.5">
-                                        {collaborator && <img src={collaborator.avatar} className="w-7 h-7 rounded-full object-cover" alt="" />}
+                                        {collaborator && <TokenImg value={collaborator.avatar} className="w-7 h-7 rounded-full object-cover" alt="" />}
                                         <div className="px-4 py-3 rounded-[18px_18px_18px_5px] flex gap-1.5" style={{ background: paper.sheet, border: `1px solid ${paper.rule}` }}>
                                             {[0, 1, 2].map(index => <span key={index} className="w-1.5 h-1.5 rounded-full animate-bounce" style={{ background: paper.muted, animationDelay: `${index * 90}ms` }} />)}
                                         </div>

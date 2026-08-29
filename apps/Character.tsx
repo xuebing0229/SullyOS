@@ -5,6 +5,8 @@ import { AppID, CharacterProfile, CharacterExportData, UserImpression, MemoryFra
 import { SlidersHorizontal, SpeakerHigh, Books, BookOpen } from '@phosphor-icons/react';
 import Modal from '../components/os/Modal';
 import { processImage } from '../utils/file';
+import { migrateDataUrlToRef } from '../utils/blobRef';
+import { shareOrDownloadBlob } from '../utils/shareExport';
 import { Capacitor } from '@capacitor/core';
 import { Filesystem, Directory, Encoding } from '@capacitor/filesystem';
 import { Share } from '@capacitor/share';
@@ -420,7 +422,7 @@ const Character: React.FC = () => {
           try {
               setIsCompressing(true);
               const processedBase64 = await processImage(file);
-              handleChange('avatar', processedBase64);
+              handleChange('avatar', await migrateDataUrlToRef(processedBase64));
               // 清空 URL draft, 否则用户之后再触发 URL input 的 onBlur 会用脏旧 URL
               // 把刚上传的 data URL 头像盖掉. 不走 effect 监听 avatar 的方案 —— 那会
               // 在用户正在打 URL 时吃掉 draft.
@@ -600,7 +602,15 @@ const Character: React.FC = () => {
 
   const handleExportPreview = () => { if (!formData) return; const mems = formData.memories as any[]; if (!mems || mems.length === 0) { addToast('暂无记忆数据可导出', 'info'); return; } const sortedMemories = [...mems].sort((a, b) => a.date.localeCompare(b.date)); let text = `【角色档案】\nName: ${formData.name}\nExported: ${new Date().toLocaleString()}\n\n`; if (formData.refinedMemories) { text += `=== 核心记忆 ===\n`; Object.entries(formData.refinedMemories).sort().forEach(([k, v]) => { text += `[${k}]: ${v}\n`; }); text += `\n=== 详细日志 ===\n`; } let currentYear = '', currentMonth = ''; sortedMemories.forEach(mem => { const match = mem.date.match(/(\d{4})[-/年](\d{1,2})/); if (match) { const y = match[1], m = match[2]; if (y !== currentYear) { text += `\n[ ${y}年 ]\n`; currentYear = y; currentMonth = ''; } if (m !== currentMonth) { text += `\n-- ${parseInt(m)}月 --\n\n`; currentMonth = m; } } text += `${mem.date} ${mem.mood ? `(#${mem.mood})` : ''}\n${mem.summary}\n\n--------------------------\n\n`; }); setExportText(text); setShowExportModal(true); navigator.clipboard.writeText(text).then(() => addToast('内容已自动复制到剪贴板', 'info')).catch(() => {}); };
   const handleNativeShare = async () => { if(!exportText) return; if (Capacitor.isNativePlatform()) { try { const fileName = `${formData?.name || 'character'}_memories.txt`; await Filesystem.writeFile({ path: fileName, data: exportText, directory: Directory.Cache, encoding: Encoding.UTF8 }); const uri = await Filesystem.getUri({ directory: Directory.Cache, path: fileName }); await Share.share({ title: '记忆档案', files: [uri.uri] }); } catch(e: any) { console.error("Native share failed", e); addToast('分享组件调起失败，请直接复制文本', 'error'); } } };
-  const handleWebFileDownload = () => { const fileName = `${formData?.name || 'character'}_memories.txt`; const blob = new Blob([exportText], { type: 'text/plain' }); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = fileName; document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url); addToast('已触发浏览器下载', 'success'); };
+  const handleWebFileDownload = async () => {
+      const fileName = `${formData?.name || 'character'}_memories.txt`;
+      const outcome = await shareOrDownloadBlob({
+          blob: new Blob([exportText], { type: 'text/plain' }),
+          fileName,
+          shareTitle: '记忆档案',
+      });
+      if (outcome !== 'cancelled') addToast(outcome === 'shared' ? '已调起分享' : '已触发浏览器下载', 'success');
+  };
   
   const handleImportMemories = async () => { 
       if (!importText.trim() || !apiConfig.apiKey) { addToast('请检查输入内容或 API 设置', 'error'); return; } 
@@ -980,64 +990,17 @@ ${isInitialGeneration ? `
       const json = JSON.stringify(exportData, null, 2);
       const fileName = `${formData.name || 'Character'}_Card.json`;
       
-      if (Capacitor.isNativePlatform()) {
-          try {
-              await Filesystem.writeFile({
-                  path: fileName,
-                  data: json,
-                  directory: Directory.Cache,
-                  encoding: Encoding.UTF8,
-              });
-              const uriResult = await Filesystem.getUri({
-                  directory: Directory.Cache,
-                  path: fileName,
-              });
-              await Share.share({
-                  title: '导出角色卡',
-                  files: [uriResult.uri],
-              });
-              addToast('已调起分享', 'success');
-              return;
-          } catch (e: any) {
-              console.error("Native Export Error", e);
-              addToast('原生分享失败，尝试浏览器分享/下载', 'info');
-          }
-      }
-
       try {
-          // Align with Settings export fallback logic for wrapped webviews:
-          // try Web Share first, then fallback to download.
-          const file = new File([json], fileName, { type: 'application/json' });
-          const canShareFile = typeof navigator !== 'undefined'
-              && typeof navigator.share === 'function'
-              && (typeof navigator.canShare !== 'function' || navigator.canShare({ files: [file] }));
-
-          if (canShareFile) {
-              await navigator.share({
-                  title: '导出角色卡',
-                  files: [file],
-              });
-              addToast('已调起分享', 'success');
-              return;
-          }
+          const outcome = await shareOrDownloadBlob({
+              blob: new Blob([json], { type: 'application/json' }),
+              fileName,
+              shareTitle: '导出角色卡',
+          });
+          if (outcome !== 'cancelled') addToast(outcome === 'shared' ? '已调起分享' : '角色卡已生成并下载', 'success');
       } catch (e: any) {
-          // User cancellation and unsupported cases should continue to download fallback.
-          if (e?.name !== 'AbortError') {
-              console.error('Web Share Export Error', e);
-          }
+          console.error('角色卡导出失败', e);
+          addToast('角色卡导出失败', 'error');
       }
-
-          const blob = new Blob([json], { type: 'application/json' });
-          const url = URL.createObjectURL(blob);
-          const a = document.createElement('a');
-          a.href = url;
-          a.download = fileName;
-          document.body.appendChild(a);
-          a.click();
-          document.body.removeChild(a);
-          URL.revokeObjectURL(url);
-          
-          addToast('角色卡已生成并下载', 'success');
   };
 
   const handleImportCard = (e: React.ChangeEvent<HTMLInputElement>) => {

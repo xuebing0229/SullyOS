@@ -3,8 +3,9 @@
  *
  * 职责：
  * 1. 把所有启用 MCP 服务器的已发现工具聚合成 OpenAI function-calling 格式
- * 2. 处理跨服务器工具重名 / OpenAI 工具名字符限制（暴露名 ↔ 真实工具映射）
- * 3. 生成注入 systemPrompt 的说明块
+ * 2. 生成注入 systemPrompt 的说明块与尾部提醒
+ * 3. 中转不认 function calling 时的兼容兜底（降级请求体、前置气泡粗洗）
+ * 重名映射和正文假调用解析住在 mcpFireCore（浏览器与 amsg worker 共用）。
  * 工具循环本体在 hooks/useChatAI.ts（对标 luckinChat 循环）。
  */
 
@@ -27,22 +28,24 @@ export interface ResolvedMcpTool {
     executionPolicy: McpExecutionPolicy;
 }
 
-// OpenAI 工具名只允许 [A-Za-z0-9_-]，最长 64；MCP 工具名可能带点号等
+/** 多步工具任务沿用上游循环预算；single-shot 生图仍由 executionPolicy 提前收束。 */
+export const MCP_CHAT_MAX_TOOL_LOOPS = 12;
+export const MCP_CHAT_MAX_STALLED_ROUNDS = 2;
+
 const sanitizeToolName = (name: string): string =>
     (name || 'tool').replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 64) || 'tool';
-
-const serverSlug = (server: McpServerConfig): string =>
-    sanitizeToolName(server.name).slice(0, 20) || 'srv';
+const serverSlug = (server: McpServerConfig): string => sanitizeToolName(server.name).slice(0, 20) || 'srv';
 
 /**
  * 聚合启用服务器的工具，返回 OpenAI 工具数组 + 暴露名→真实工具 的映射。
- * 暴露名默认用工具原名（sanitize 后）；跨服务器重名时后者加 <服务器名>_ 前缀。
+ * 暴露名（含重名前缀、非法字符替换）统一由 mcpFireCore.buildMcpNameMap 算，
+ * 保证前台聊天和 amsg worker 后台 fire 看到的是同一套工具名。
  * charId：只聚合对该角色可见的服务器（通用 + 绑定了该角色的）。
  */
 export const buildMcpOpenAITools = (charId?: string): { tools: OpenAIMcpTool[]; resolve: Map<string, ResolvedMcpTool> } => {
+    const servers = getEnabledMcpServers(charId);
     const tools: OpenAIMcpTool[] = [];
     const resolve = new Map<string, ResolvedMcpTool>();
-    const servers = getEnabledMcpServers(charId);
     for (const server of servers) {
         for (const t of server.tools || []) {
             let exposed = sanitizeToolName(t.name);
@@ -241,16 +244,17 @@ ${lines.join('\n')}
 ${imageRules}
 **使用纪律**:
 - 需要时直接调工具（系统会自动执行并把结果给你），不需要时正常聊天，**别硬找理由调工具**。
+- 用户明确要求完成游戏、论坛或其他多步任务时，先做必要检查，随后立刻调用能推进目标的动作工具；不要反复读取同一份说明或状态。执行动作后可以再次检查新状态，并继续到目标完成或工具明确失败。
 - 工具必须通过系统的 function calling 接口发起，**绝对不要把工具名和参数写进聊天正文**（比如输出 \`工具名(参数)\` 这种文字），用户会看到乱码一样的东西。
 - 工具结果只挑与对话相关的部分用角色语气转述，别整段复读 JSON。
 - 工具失败就如实说，并根据报错调整参数重试或换个方式，别编造结果。
-- 涉及真实世界副作用的操作（发布内容、下单、删除等），先跟 ${userName} 确认一句再动手。
+- 涉及真实世界副作用的操作（发布内容、下单、删除等），若 ${userName} 本轮已经明确要求执行，即视为已经确认；没有明确要求时才先确认一句再动手。
 ---
 `;
 };
 
 /** 尾部小提醒（注入 messages 末尾，防长对话把纪律冲掉） */
-export const MCP_TAIL_REMINDER = `[MCP 工具 ON · 永远用角色语气回复别空回; 工具只能走 function calling 接口、严禁写成正文文字; 工具结果别复读 JSON; 有副作用的操作先确认再执行]`;
+export const MCP_TAIL_REMINDER = `[MCP 工具 ON · 永远用角色语气回复别空回; 工具只能走 function calling 接口、严禁写成正文文字; 工具结果别复读 JSON; 用户本轮已明确要求的操作视为已确认，否则副作用操作先确认]`;
 
 // ========== 掉格式容错: 正文里的"假工具调用" ==========
 //

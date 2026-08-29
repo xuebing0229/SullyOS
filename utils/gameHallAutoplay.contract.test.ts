@@ -50,9 +50,9 @@ describe('game hall autoplay integration contract', () => {
     expect(settings).toContain('maxTurns: null');
   });
 
-  it('does not add a store or upgrade IndexedDB', () => {
+  it('does not add an autoplay store; the merged schema uses version 78', () => {
     const db = read('utils/db.ts');
-    expect(db).toContain('const DB_VERSION = 77');
+    expect(db).toContain('const DB_VERSION = 78');
     expect(db).not.toContain('gameHallAutoplaySessions');
     expect(db).not.toContain('gameHallAutoplayState');
   });

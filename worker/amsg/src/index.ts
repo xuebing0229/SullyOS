@@ -24,6 +24,7 @@
  * 共用一个浏览器 push 订阅，worker 用别的密钥对签推送会 403。
  */
 
+import { DurableObject } from 'cloudflare:workers';
 import {
   createSingleUserCloudflareWorker,
   createWebCryptoWebPush,
@@ -32,16 +33,25 @@ import {
   measurePushPayload,
 } from '@rei-standard/amsg-server/cloudflare';
 import { stripReasoningTags } from '@rei-standard/amsg-shared';
+import { AMSG_BUNDLE_VERSION } from '../../../utils/amsgBundleVersion';
+// 「上一次推送被判订阅失效」的形状，跟前端体检共用一个类型定义（那份是零依赖纯叶子；
+// 往里加任何浏览器依赖都会连累这个 bundle）。这里只产出事实，红绿灯和文案归前端。
+import type { AmsgPushGoneFailure } from '../../../utils/amsgDiagnostics';
 import type { UserProfile } from '../../../types';
+import { AMSG_JOB_NAMESPACE, AMSG_JOB_TTL_DAYS } from '../../../utils/amsgTaskKinds';
+import {
+  FIRE_KIND_HANDLERS,
+  getKindFireStash,
+  putKindFireStash,
+  readTaskKind,
+} from './fireKinds';
 import {
   AMSG_CHAT_FAIL_KEY,
-  AMSG_CHAT_OUTBOX_KEY,
   AMSG_FIRE_PACK_KEY,
   AMSG_LAST_SKIP_KEY,
   AMSG_SELF_LOG_KEY,
   AMSG2_INSTANT_STUB_TEMPLATE,
   type AmsgChatFailRecord,
-  type AmsgChatOutbox,
   type AmsgLastSkip,
   type AmsgSelfLog,
   type AmsgTzRef,
@@ -51,7 +61,6 @@ import {
   appendSelfLogTask,
   countUnansweredSends,
   describeFirePackVersion,
-  parseChatOutbox,
   parseFirePack,
   parseSelfLog,
   reconcileSelfLogWithPack,
@@ -121,36 +130,34 @@ import { XhsMcpClient } from '../../../utils/xhsMcpClient';
 // type-only：编译期擦除，classifier 的实现不会因为这行被拉进 bundle。
 import type { ToolCall } from '../../instant-push/src/classifier';
 import {
+  classifyNativeToolCalls,
   createFireSessionState,
-  MAX_TOOL_ITERATIONS,
+  resolveToolIterationBudget,
   processLLMRound,
   type FireSessionState,
 } from './agentic';
 import {
   amsgEmotionUpdateKey,
+  EMOTION_EVAL_RIDE_ALONG_MS,
+  resolveEmotionEvalApi,
   runAmsgEmotionEval,
   stripEmotionEvalSpec,
   takeEmotionEvalSpec,
   type AmsgEmotionEvalOutcome,
 } from './emotionEval';
 import {
+  applyInstantNotificationPolicy,
   buildInstantTimelyBlock,
-  finalizeInstantPush,
   handleInstantChat,
+  instantNotificationTag,
   INSTANT_TOTAL_TIMEOUT_MS,
   isInstantChatTask,
-  toOutboxEntries,
-  writeChatOutbox,
-  type InstantChatExecutionCtx,
+  NOTIFICATION_SILENT_WHEN_VISIBLE,
+  type InstantTickNamespace,
 } from './instantChat';
+import { buildScheduleChangeResult } from '../../../utils/amsgScheduleResult';
 import type { ActiveMsg2TaskRecord } from '../../../types';
-import {
-  ackNativePollPayloads,
-  createHybridPushTransport,
-  isFcmConfigured,
-  pullNativePollPayloads,
-  type NativeFcmEnv,
-} from './nativeFcm';
+import { createHybridPushTransport, isFcmConfigured, type NativeFcmEnv } from './nativeFcm';
 
 interface Env extends NativeFcmEnv {
   AMSG_MASTER_KEY: string;
@@ -165,6 +172,11 @@ interface Env extends NativeFcmEnv {
   CF_API_TOKEN?: string;
   CF_ACCOUNT_ID?: string;
   CF_SCRIPT_NAME?: string;
+  /**
+   * 即时对话的起跳器（Durable Object）。类型上可选是因为老版本 Worker 上真的没有它，
+   * 那种情况由 /instant-chat 明确报「需要更新 Worker」，见 instantChat.kickInstantTick。
+   */
+  INSTANT_TICK?: InstantTickNamespace;
 }
 
 // ─── 满血 fire-time hooks（amsg-server 2.6.0-next.4+：含 ctx.scratch / 存储层大值分块） ───
@@ -199,8 +211,22 @@ interface FireCtx {
     recurrenceType?: string;
     nextSendAt?: string | null;
     metadata?: Record<string, unknown>;
+    /**
+     * 凭据引用（`{ <用途>: <cred_id> }`）。聊天那一路由上游自己解析后直接喂给 LLM，
+     * 宿主碰不到也不必碰；这里只用得上别的用途——现在只有 `emotion`（情绪评估的副 API）。
+     * 引用本身不是机密（只是个名字），所以上游没把它挡在 hook 之外。
+     */
+    credRefs?: Record<string, unknown> | null;
   };
   userId: string;
+  /**
+   * 按名字取一行凭据（amsg-server 2.6.0-next.17+）。查不到回 null，老部署上整个方法不存在。
+   * **红线**：取到就地用完即弃，绝不挂到 ctx / task / metadata / push 上——凭据一旦
+   * 沾上会流向推送的任何对象，就等于送出门了。
+   */
+  resolveLlmCredential?: (
+    credId: string,
+  ) => Promise<{ apiUrl: string; apiKey: string; primaryModel: string } | null>;
   readState: (namespace: string) => Promise<Array<{ key: string; value: string }>>;
   /** 与每轮 sessionCtx 上那个是同一套写口（防穿帮闸跳过时用它留一句原因）。 */
   writeState?: WriteState;
@@ -273,7 +299,14 @@ interface SessionCtx {
   scheduleTask?: ScheduleTask;
   cancelTask?: CancelTask;
   renewTask?: RenewTask;
-  /** 本次 fire 的第几轮 LLM（0-based）。最后一轮不再放行工具请求，见 MAX_TOOL_ITERATIONS。 */
+  /**
+   * 往客户端送一条**不是聊天内容**的结果（amsg-server 2.6.0-next.21+）。
+   * 一条结果落进 message_outbox（到达的保证：客户端下次 `GET /outbox?since=` 一定
+   * 拿得到），并按通知策略决定要不要顺带发一条 Web Push（及时性）。
+   * `resultKind` 是唯一必填字段，其余形状由宿主定。老部署上整个方法不存在。
+   */
+  emitResult?: (payload: Record<string, unknown>) => Promise<{ messageId: string; pushed: boolean }>;
+  /** 本次 fire 的第几轮 LLM（0-based）。最后一轮不再放行工具请求，预算在 scratch.fire。 */
   iteration?: number;
   /** 任务行 id；没有任务行的 in-server instant 路径为 null。 */
   taskId: number | string | null;
@@ -306,6 +339,15 @@ interface FireStash {
   selfLogDirty: boolean;
   /** 通用 MCP：暴露名 → 服务器/工具。tool_config 里没配（或对该角色不可见）时为 null。 */
   mcpResolve: Map<string, McpResolvedToolCore> | null;
+  /** 本次 fire 真正回给上游的自适应轮次预算；最后一轮判断与提示都读这一份。 */
+  maxToolIterations: number;
+  /**
+   * 本次 fire 声明给模型的非 MCP native 工具名（schedule / cancel / renew 按各自开关
+   * 在场与否）。onLLMOutput 认领 native tool_call 时拿它当清单（MCP 那份在 mcpResolve）。
+   * 从拼好的 fireTools 现算——以后加新工具不用再来入口登记。onBeforeFire 拼完 fireTools
+   * 后填充，在那之前是空集。
+   */
+  fireToolNames: Set<string>;
   /** 每服务器一份连接会话，单次 fire 内跨轮复用，fire 结束随 scratch 丢弃。 */
   mcpSessions: Map<string, McpSessionState>;
   /** 本次 fire 已经花在 MCP 调用上的毫秒数，见 MCP_TOTAL_BUDGET_MS。 */
@@ -352,8 +394,6 @@ interface FireStash {
   plannedSelfSendUuids: string[];
   /** 本次触发用到的角色 id / 任务归属键，排程时要写进新任务的 metadata。 */
   charId: string;
-  /** 防穿帮闸锚点：这份 fire_pack 记的「用户最后一次开口」。 */
-  anchorMs: number;
   /**
    * 角色的时间参照系（fire_pack 的 tzId）。worker 里一切「给角色看的时间」
    * ——当前时间槽、self_log 时间戳、排程清单、send_at 解析与打回文案——都从这一份出。
@@ -379,11 +419,6 @@ interface FireStash {
   sceneSong: { id?: number; name: string; artists: string } | null;
   /** 这条任务是不是即时对话（用户刚发完消息在等回复）；决定要不要写 outbox。 */
   instant: boolean;
-  /**
-   * 角色当前的收件兜底 outbox（onBeforeFire 顺手读进来，发完在它上面追加写回）。
-   * 不是即时对话时一直是 null——那条路的产物有任务列表可查，不需要兜底。
-   */
-  chatOutbox: AmsgChatOutbox | null;
   /**
    * 这一轮的情绪评估（副 API）。onBeforeFire 起跑、onLLMOutput 收尾时 await，
    * 结论挂上最后一条 push。没配评估 / 不是即时对话时是 null。
@@ -694,10 +729,24 @@ const recordSkip = async (
  * 只靠收尾那份的话这些路径一条痕都留不下）。每次覆盖写，最终留下最后一跳的原因。
  * best-effort：写不进去只是失败原因退化成笼统一句，绝不连累调用方。
  */
+/**
+ * fire 抛出来那个错误对象上的稳定 code（没有 → null）。
+ *
+ * 刻意**只认 `code`**，不去读 `statusCode`：Node 生态的 HTTP 库习惯把上游状态码挂成
+ * `statusCode`，而这个 catch 罩着整条投递链——宿主 hook 里转手抛出的一个 404 会被读成
+ * 「推送订阅已失效」，客户端于是引导用户白重建一次订阅。上游踩过同一个坑，修法就是
+ * 只在真正发 push 那一步认那个数（存在包内私有的 WeakMap 上，这里读不到）。
+ * 推送状态码要用的话，读上游写在任务行 last_error 上的那份。
+ */
+const readErrorCode = (error: unknown): string | null => {
+  const code = (error as { code?: unknown } | null | undefined)?.code;
+  return typeof code === 'string' && code ? code : null;
+};
+
 const writeChatFail = async (
   writeState: WriteState,
   charId: string,
-  record: { uuid: string; reason: string; retryCount: number },
+  record: { uuid: string; reason: string; retryCount: number; errorCode?: string | null },
 ): Promise<void> => {
   const full: AmsgChatFailRecord = {
     v: 1,
@@ -705,6 +754,7 @@ const writeChatFail = async (
     reason: record.reason.slice(0, 500),
     retryCount: record.retryCount,
     at: Date.now(),
+    ...(record.errorCode ? { errorCode: record.errorCode } : {}),
   };
   try {
     await writeState(amsgStateNamespace(charId), [
@@ -747,9 +797,11 @@ const instantErrorNotificationBody = (reason: string): string => {
  * handleDeliveryFailure 同源）、skip-push（行被当成功消费）、stale 跳过。还会重试的
  * 失败绝不发——「报错完回复又到了」这种误报比晚知道更伤（SSE↔push 双通道的老教训）。
  *
- * 通知打 `show: 'when-hidden'`：前台由页面监听 active-msg-error 当场收尾（落系统消息、
- * 熄灯），不弹横幅；后台弹「回复没能生成」。发不出去只 warn——客户端 60s 点名读
- * chat_fail 的兜底路径原样保留，这条 push 只是把感知从分钟级提到秒级。
+ * 通知打 `show: 'always'` + 按角色折叠 + 静音：这条是自己直发的 push，不经库的收件箱，
+ * 收了不弹就是跟浏览器违约一次（配额、吊销订阅，见 applyInstantNotificationPolicy），
+ * 所以推就一定弹。前台该收的尾照收——页面监听 active-msg-error 落系统消息、熄灯，
+ * 跟弹不弹横幅互不影响。发不出去只 warn——客户端 60s 点名读 chat_fail 的兜底路径原样
+ * 保留，这条 push 只是把感知从分钟级提到秒级。
  *
  * 订阅行是加密存的（encryptForStorage 的 iv:authTag:data 格式）；个别老部署可能存的是
  * 明文 JSON，解密失败时按明文再试一次，都不行才放弃。
@@ -758,6 +810,8 @@ const sendInstantErrorPush = async (args: {
   charId: string;
   taskUuid: string;
   reason: string;
+  /** 底层错误的稳定 code（见 AmsgChatFailRecord.errorCode）；客户端按它给处置建议。 */
+  errorCode?: string | null;
   /** 任务行上的 user_id；拿不到时取订阅表唯一那行（单用户部署）。 */
   userId?: string | null;
   contactName?: string | null;
@@ -791,11 +845,19 @@ const sendInstantErrorPush = async (args: {
         amsgInstantError: true,
         taskUuid: args.taskUuid,
         reason: args.reason.slice(0, 500),
+        ...(args.errorCode ? { errorCode: args.errorCode } : {}),
       },
       notification: {
         title: args.contactName ? `${args.contactName} 的回复没能生成` : '回复没能生成',
         body: instantErrorNotificationBody(args.reason),
-        show: 'when-hidden',
+        show: 'always',
+        silent: NOTIFICATION_SILENT_WHEN_VISIBLE,
+        // 跟这个角色的回复共用一个 tag：通知栏里只留最新状态，重发成功后那条回复
+        // 会把这条「没能生成」盖掉。失败本身在聊天流里有系统消息留痕，不靠横幅记账。
+        tag: instantNotificationTag(args.charId),
+        // 这一轮到此为止了，横幅是唯一会去叫人的东西。同 tag 默认静默替换，不带
+        // renotify 的话它会悄悄顶掉刚才那条回复通知，用户在后台就什么都不知道。
+        renotify: true,
       },
     };
     await deps.webpush.sendNotification(subscription, JSON.stringify(payload));
@@ -827,10 +889,15 @@ export const amsgFireSettled = async (
   if (stash.instant && info.status === 'failed' && stash.taskUuid) {
     const failReason = info.error instanceof Error ? info.error.message : String(info.error ?? '未知错误');
     const retryCount = typeof info.task?.retry_count === 'number' ? info.task.retry_count : 0;
+    // 上游 amsg-server 2.6.0-next.21 起给这一族错误挂了稳定的 code（LLM 上游拒了请求是
+    // LLM_CALL_FAILED，hook 契约违约是 AGENTIC_*，正文超限是 *_TOO_LARGE）。原样带下去，
+    // 客户端据此说「该查 API Key」还是「该重发」，不必去猜那句人话的措辞。
+    const errorCode = readErrorCode(info.error);
     await writeChatFail(info.writeState, stash.charId, {
       uuid: stash.taskUuid,
       reason: failReason,
       retryCount,
+      errorCode,
     });
     // 终态判定与上游同源，两种都算：retry_count >= 3 的这跳失败后行转 failed
     // （handleDeliveryFailure 的梯子打光）；permanent 标记的错误（fireStateError 那族）
@@ -845,6 +912,7 @@ export const amsgFireSettled = async (
         charId: stash.charId,
         taskUuid: stash.taskUuid,
         reason: failReason,
+        errorCode,
         userId: typeof (info.task as Record<string, unknown> | null | undefined)?.user_id === 'string'
           ? (info.task as Record<string, unknown>).user_id as string
           : null,
@@ -958,6 +1026,20 @@ export const amsgStaleSkip = async (
   },
 ): Promise<void> => {
   const meta = (info.metadata ?? {}) as Record<string, unknown>;
+
+  // 后台任务（门牌整理这类）先接走。last_skip 那份留痕说的是「这条**主动消息**到点
+  // 为什么没响」，主动消息面板照它给用户解释；后台任务过期跟主动消息毫无关系，写进去
+  // 面板就会说谎——服务停摆几小时之后，用户会看到一条「上次主动消息没响、已被丢弃」，
+  // 而那个角色根本没排过主动消息。onBeforeFire 里那条 kind-skip 分支躲开的就是这个，
+  // 但它排在这个 hook 后面、看不到 kind，只能在这儿再挡一道。
+  const taskKind = readTaskKind(meta);
+  if (taskKind) {
+    console.log('[amsg:stale-skip] 后台任务过期跳过，不写 last_skip', {
+      taskId: task?.id ?? null, kind: taskKind, action: info.action,
+    });
+    return;
+  }
+
   const charId = typeof meta.charId === 'string' && meta.charId ? meta.charId : null;
   if (!charId) {
     console.warn('[amsg:stale-skip] 任务 metadata 缺 charId，这次过期跳过没法留痕', { taskId: task?.id ?? null });
@@ -1052,23 +1134,6 @@ const condenseToolTrace = (
   }
   return [...counts].map(([name, count]) => ({ name, count }));
 };
-
-/**
- * 正文写完之后，最多再给情绪评估这么久搭上这班车。
- *
- * 评估在 onBeforeFire 就跟主生成并行起跑了，正常情况下走到收尾时早就回来了，这个窗口
- * 一秒都用不上；它管的是副 API 限流 / 挂起的那种时候。评估自己的超时是 120 秒
- * （EMOTION_EVAL_TIMEOUT_MS），死等的话用户会对着「正在输入…」多看两分钟——同一句话走
- * 本地路径十秒就上屏了；工具循环吃掉大半预算时，这两分钟还会把整轮 600 秒的预算顶穿，
- * fire 失败重跑，用户拿到的是一句失败说明而不是那条已经写好的回复。
- *
- * 取舍：回复优先，情绪让路。没赶上的评估不作废：push 上挂引用键 + pending 标记
- * （客户端那盏「情绪更新中」继续亮着），收尾 hook（amsgFireSettled，上游会 await 它）
- * 接着等评估出结果，写进旁路存储（amsgEmotionUpdateKey），客户端对着引用键轮询补落
- * ——对齐本地路径「评估慢是晚到，不是丢弃」的语义。评估自带 EMOTION_EVAL_TIMEOUT_MS，
- * 这段续等是有界的。
- */
-export const EMOTION_EVAL_RIDE_ALONG_MS = 10_000;
 
 /** 旁路也用不上（任务行没有 clientTaskId）时给用户看的一句话（跟着 amsgEmotionDone 回去）。 */
 const EMOTION_EVAL_LATE_REASON = '情绪评估没赶上这条回复（副 API 太慢），这一轮先不更新';
@@ -1169,8 +1234,6 @@ export const runFireScheduleTool = async (
         amsgMode: parsed.mode,
         amsgClientTaskId: clientTaskId,
         amsgExpirePolicy: parsed.expirePolicy,
-        // 防穿帮闸锚点：这条排下去之后，用户再开口就算「对话往前走了」。
-        amsgAnchorMs: stash.anchorMs,
         amsgTaskInstruction: buildTaskInstruction(parsed.mode, parsed.promptHint),
         // 自排标记：到点兜底闸只拦带它的任务（用户面板排的不受连发上限管）。
         amsgSelfScheduled: true,
@@ -1204,7 +1267,6 @@ export const runFireScheduleTool = async (
       || parsed.recurrence,
     ...(parsed.promptHint ? { promptHint: parsed.promptHint } : {}),
     expirePolicy: parsed.expirePolicy,
-    anchorLastUserMsgAt: stash.anchorMs,
     source: 'character',
     status: 'scheduled',
     createdAt: nowMs,
@@ -1377,12 +1439,12 @@ export const runFireRenewTool = async (
 const FINAL_ROUND_NOTICE = '（提醒：这是最后一轮了，不要再调用任何工具，直接把想说的话写完。）';
 
 /** 本轮的工具结果是不是喂给最后一轮的（ctx.iteration 缺失的老部署不提示）。 */
-const feedsFinalRound = (iteration: number | undefined): boolean =>
-  typeof iteration === 'number' && iteration >= MAX_TOOL_ITERATIONS - 2;
+const feedsFinalRound = (iteration: number | undefined, maxToolIterations: number): boolean =>
+  typeof iteration === 'number' && iteration >= maxToolIterations - 2;
 
 /**
- * 单个 MCP 调用的超时。总 fire 预算 240s / 最多 5 轮，一个慢服务器不能吃光
- * 整条链（浏览器侧是 60s，那边没有轮次预算压力）。
+ * 单个 MCP 调用的超时。总 fire 预算 240s；MCP 虽可自适应推进到 12 轮，一个慢服务器
+ * 仍不能吃光整条链（浏览器侧是 60s，那边没有同一份 fire 总预算压力）。
  *
  * 单次上限之外还有下面那条共享总预算：native FC 一轮可以吐好几个调用，
  * executeToolCalls 是串行 await 的，只卡单次的话 25s × N 照样能顶穿 240s。
@@ -1422,7 +1484,7 @@ export const runMcpFireTool = async (
       message: 'MCP 调用时间预算已用完，这轮别再调外部工具了，用手上已有的信息收尾。',
     };
   }
-  // 每台服务器一份会话，单次 fire 内跨轮复用：一次 fire 最多五轮，每轮重握手就是白烧往返。
+  // 每台服务器一份会话，单次 fire 内跨轮复用：多步 MCP 最多十二轮，每轮重握手就是白烧往返。
   let session = stash.mcpSessions.get(hit.server.id);
   if (!session) {
     session = createMcpSessionState();
@@ -1506,8 +1568,6 @@ export const amsgHooks = {
       }
     };
 
-    const charRows = await ctx.readState(amsgStateNamespace(charId));
-
     const taskMeta = (ctx.task.metadata ?? {}) as Record<string, unknown>;
     const policy = typeof taskMeta.amsgExpirePolicy === 'string'
       ? taskMeta.amsgExpirePolicy : undefined;
@@ -1517,6 +1577,42 @@ export const amsgHooks = {
     // 在最早的地方摘掉，后面谁也漏不出去。取完还要用——即时对话那一支下面拿它起跑评估。
     // 这里不分支：定时任务上本来就不该有这个键，真有也一样删掉。见 takeEmotionEvalSpec。
     const emotionEvalSpec = takeEmotionEvalSpec(ctx.task.metadata);
+
+    // 非聊天任务在这里就被接走（见 fireKinds.ts）。分派排在下面四道门之前是有意的：
+    // 那四道门问的都是「主动消息到点还该不该发」，对「后台整理一份数据」全都不适用；
+    // 而且它们要的 fire_pack / tool_pack 是聊天专用的云端状态，后台任务根本没传过，
+    // 排在后面的话第一道硬失败门就会把它判死。凭据擦除（上面那句）刻意留在前面：
+    // 不管什么种类的任务，metadata 上万一沾了副 API 凭据都得先摘掉。
+    const taskKind = readTaskKind(taskMeta);
+    if (taskKind) {
+      const handler = FIRE_KIND_HANDLERS[taskKind];
+      if (!handler) {
+        throw fail(`不认识的任务种类 amsgKind=${taskKind}（worker 代码比前端旧，去设置页重新部署一次）`);
+      }
+      let plan;
+      try {
+        plan = await handler.beforeFire({ ctx, charId, taskMeta });
+      } catch (error) {
+        throw fail(error instanceof Error ? error.message : String(error), { kind: taskKind });
+      }
+      if ('skip' in plan) {
+        // 不写 last_skip：那份留痕说的是「这条**主动消息**到点为什么没响」，主动消息
+        // 面板照它给用户解释。后台任务的跳过跟主动消息毫无关系，写进去面板就会说谎。
+        console.log('[amsg:kind-skip]', { taskId: ctx.task.id, kind: taskKind, reason: plan.reason });
+        return { skip: true } as const;
+      }
+      // 挂上跨 hook 的上下文，onLLMOutput 靠它认出「这一轮不是聊天」。
+      putKindFireStash(ctx.scratch, taskKind, plan.state);
+      return {
+        messages: plan.messages,
+        ...(plan.totalTimeoutMs ? { totalTimeoutMs: plan.totalTimeoutMs } : {}),
+      };
+    }
+
+    // 角色状态读在这儿而不是更早：fire_pack + tool_pack 是「一个角色 32KB 起步」、胖角色
+    // 还会被透明分块的大对象，读回来每条都要解密。上面那批后台任务根本没传过它，早读一行
+    // 就是每条任务白付一次 D1 往返加解密。
+    const charRows = await ctx.readState(amsgStateNamespace(charId));
 
     // 即时对话：用户刚把话说完、正盯着「正在输入…」等回复。下面三道门问的都是
     // 「主动消息到点还该不该发」——用户正在聊天所以让路、对话已经往前走所以作废、
@@ -1602,17 +1698,31 @@ export const amsgHooks = {
     const presenceLastUserMessageAt = presence?.charId === charId ? presence.lastUserMessageAt : null;
     const expireInput = {
       policy,
-      recurrenceType: ctx.task.recurrenceType,
-      anchorMs: typeof taskMeta.amsgAnchorMs === 'number' ? taskMeta.amsgAnchorMs : null,
       lastUserMessageAt: laterOf(pack.lastUserMessageAt ?? null, presenceLastUserMessageAt),
       nowMs: ctx.now.getTime(),
       occurrenceMs,
     };
+    // 判定输入原样留一行，**放行也留**。客户端送达兜底闸会拿同一套规则、更新的数据
+    // 再判一次，两边结论不一样时（worker 放行 → 生成 → 推送，客户端吞掉）用户看到的
+    // 就是「通知弹出来了、点进去没有」，而这中间没有任何一处说得出发生过什么。只有把
+    // 两边的输入都留下来，事后才分得清是哪一边、因为哪个字段。
+    // 「最后一次开口」拆成两个来源分别记：合并后的那一个值看不出 fire_pack 是不是
+    // 陈旧的，而「fire_pack 落后于真实对话」正是两边判定分叉的头号原因。
+    // 字段全是时间戳与枚举，不含正文、不含角色名。
+    const expireTrace = {
+      taskId: ctx.task.id,
+      // 判定本身已经不看任务类型了（一次性和循环同一条规则），但排查时得认得出是哪种。
+      recurrenceType: ctx.task.recurrenceType,
+      ...expireInput,
+      packLastUserMessageAt: pack.lastUserMessageAt ?? null,
+      presenceLastUserMessageAt,
+    };
     if (!instant && shouldExpireFire(expireInput)) {
-      console.log('[amsg:expire-skip]', { taskId: ctx.task.id, ...expireInput });
+      console.log('[amsg:expire-skip]', { ...expireTrace, reason: 'conversation-moved-on' });
       await recordSkip(ctx, charId, 'conversation-moved-on', occurrenceMs);
       return { skip: true } as const;
     }
+    if (!instant) console.log('[amsg:expire-pass]', expireTrace);
 
     // 任务指令缺失（开发期旧格式任务）：不能用默认 auto 指令凑一个渲染——那会把
     // prompted 任务的方向偷换掉，发出去的内容和用户当初排的不是一回事。
@@ -1640,7 +1750,7 @@ export const amsgHooks = {
 
     // 通用 MCP：提示词块 / tools 数组与凭据同源同拍（都来自这一行 tool_config），
     // 不存在「教了角色用、凭据却没到」的窗口。charIds 过滤与前台同语义。
-    // mcpUseNativeTools=false = 用户的中转拒 tools（前台兼容模式同款开关），
+    // mcpUseNativeTools=false = 用户的中转拒 tools（前台「原生 tools」开关已关闭），
     // 请求不带 tools 参数、提示词块教正文协议，识别走 processLLMRound 第二层。
     const mcpServers = filterMcpServersForChar(toolConfig.mcpServers, charId);
     // 暴露名后面要拼 MCP_FIRE_NAME_PREFIX，长度预算得先把前缀那几个字符扣掉。
@@ -1648,6 +1758,9 @@ export const amsgHooks = {
       ? buildMcpNameMap(mcpServers, { maxNameLen: MCP_FIRE_NAME_BUDGET })
       : null;
     const mcpNative = toolConfig.mcpUseNativeTools !== false;
+    // 只有通用 MCP 使用长预算；普通搜索/记忆/排程仍是原来的 5 轮。长预算也不是固定
+    // 跑满：模型正常收尾立即结束，连续重复调用则由 duplicate 闸提前收束。
+    const maxToolIterations = resolveToolIterationBudget(!!mcpResolve);
 
     // 角色上次到点自己说了什么：对齐到本次的 fire_pack 与用户发言状态。
     // 连发记录（entries）只在用户开口时清零，fire_pack 换代只作废 tasks 段
@@ -1708,6 +1821,8 @@ export const amsgHooks = {
       selfLog,
       selfLogDirty: false,
       mcpResolve,
+      maxToolIterations,
+      fireToolNames: new Set(),
       mcpSessions: new Map(),
       mcpSpentMs: 0,
       // 「还能不能再排」按客户端已知的 + 角色自己排过还没被认领的一起算，
@@ -1723,7 +1838,6 @@ export const amsgHooks = {
       plannedSelfSends: plannedSelfSendTasks.length,
       plannedSelfSendUuids: plannedSelfSendTasks.map((t) => t.taskUuid),
       charId,
-      anchorMs: pack.lastUserMessageAt ?? 0,
       tz,
       taskUuid: typeof ctx.task.uuid === 'string' ? ctx.task.uuid : null,
       taskRowId: ctx.task.id != null ? String(ctx.task.id) : null,
@@ -1733,10 +1847,6 @@ export const amsgHooks = {
       // （resolveFireSceneSong 与 renderFireSceneBlock 共用判定），冻的必然是正文里那首。
       sceneSong: resolveFireSceneSong(pack.scene, ctx.now.getTime(), tz),
       instant,
-      // 顺手读进来：发完要在它上面追加写回，这里不读的话 onLLMOutput 得为它单独查一次库。
-      chatOutbox: instant
-        ? parseChatOutbox(charRows.find((r) => r.key === AMSG_CHAT_OUTBOX_KEY)?.value)
-        : null,
       // 下面即时对话那一支起跑（要等请求消息拼完才知道给评估喂什么）。
       emotionEvalPromise: null,
       emotionLatePending: false,
@@ -1802,11 +1912,15 @@ export const amsgHooks = {
         ? [buildFireCancelTool(), buildFireRenewTool({ nowMs: ctx.now.getTime(), tz })]
         : []),
     ];
+    // 非 MCP 的声明名单独留一份给 onLLMOutput 认领 native 调用用（见 FireStash.fireToolNames）。
+    stash.fireToolNames = new Set(fireTools
+      .map((t) => t?.function?.name)
+      .filter((n): n is string => typeof n === 'string' && !n.startsWith(MCP_FIRE_NAME_PREFIX)));
     // 轮次上限显式给一份：worker 要靠同一个数判「这是最后一轮了」（见 onLLMOutput），
     // 而上游只有内部默认值、没导出常量，各写各的迟早对不上。
     // tools 由 amsg-server 带 agentic-fire-tools feature 的版本起透传给每轮 LLM 请求。
     const common = {
-      maxToolIterations: MAX_TOOL_ITERATIONS,
+      maxToolIterations,
       ...(fireTools.length ? { tools: fireTools } : {}),
     };
 
@@ -1853,10 +1967,25 @@ export const amsgHooks = {
         const storedEvalRaw = clientTaskId
           ? charRows.find((r) => r.key === amsgEmotionUpdateKey(clientTaskId))?.value
           : undefined;
+        // 副 API 凭据两种来路：存量任务里内联的那份，或任务只带引用、这里现读凭据表
+        // （换 Key 之后不用回头改任务，见 resolveEmotionEvalApi）。取不到就这一轮不评估，
+        // 主回复照发——评估从来不连累正文。
+        // 取凭据是异步的，包在一个 promise 里保持「与主生成并行起跑」这件事不变。
         stash.emotionEvalPromise = storedEvalRaw
           ? Promise.resolve({ raw: storedEvalRaw, error: null })
-          : runAmsgEmotionEval(
-            emotionEvalSpec, instantMessages, toolPack.charName || ctx.task.contactName || '角色');
+          : (async () => {
+            const evalApi = await resolveEmotionEvalApi(
+              emotionEvalSpec, ctx.task.credRefs, ctx.resolveLlmCredential,
+            );
+            if (!evalApi) {
+              console.warn('[amsg:emotion] 这一轮取不到副 API 凭据，跳过评估');
+              return { raw: null, error: '云端没有可用的情绪评估 API 凭据' };
+            }
+            return runAmsgEmotionEval(
+              emotionEvalSpec, evalApi, instantMessages,
+              toolPack.charName || ctx.task.contactName || '角色',
+            );
+          })();
       }
 
       return {
@@ -1873,6 +2002,9 @@ export const amsgHooks = {
       selfLog,
       taskListBlock,
       realtimeWorldBlock,
+      // 「此刻在做什么」里的钟点跟今日节日同一个开关：关掉时间感知的角色不该从日程块
+      // 读到「23:00」——那正是这个开关要挡的东西。日程内容本身照给。
+      includeClock: toolPack.timeAwarenessEnabled,
     }) + mcpBlock + scheduleBlock;
     return {
       messages: [{ role: 'user' as const, content: prompt }],
@@ -1881,6 +2013,18 @@ export const amsgHooks = {
   },
 
   async onLLMOutput(ctx: SessionCtx) {
+    // 非聊天任务在这里就被接走，排在下面所有聊天语义（stash、分段、self_log、推送）
+    // 之前——它们一条都不适用，而 stash 那道断言更是会直接把这一轮判死。
+    const kindFire = getKindFireStash(ctx.scratch);
+    if (kindFire) {
+      const handler = FIRE_KIND_HANDLERS[kindFire.kind];
+      if (!handler) {
+        // 到点那一步查过表才会挂上 stash，走到这里表里不该没有。
+        throw new Error(`AMSG2_KIND_HANDLER_MISSING: onLLMOutput 找不到 ${kindFire.kind} 的 handler`);
+      }
+      return handler.llmOutput({ ctx, state: kindFire.state });
+    }
+
     const content = stripReasoningTags(ctx.llmOutputText || '').trim();
 
     // 任务身份直接从 ctx 上读（sessionId 是给日志和去重用的不透明串，不拿它切）。
@@ -1929,31 +2073,23 @@ export const amsgHooks = {
       .join('\n\n');
     session.finalReasoning = roundReasoning || null;
 
-    // native tool_calls：只认 tools 数组里声明过的 MCP 名字。模型幻觉出的
-    // 未声明调用（比如给 tag 工具编一个 native 调用）丢弃并留日志——直接透传
-    // 会让 executeToolCalls 撞上没有 stash 映射的名字。日志带上当时声明了哪些，
+    // native tool_calls：只认声明过的工具（fireToolNames 的管理工具 + mcpResolve 的
+    // MCP 名），但认法放宽——模型常把声明名的「姓」搞丢或换家：声明的 mcp__foo 回报成
+    // foo / default_api:foo，cancel_active_message 也在此列。严格命中优先，对不上再
+    // 去掉命名空间取裸名、唯一命中才认领（见 classifyNativeToolCalls，认领时名字改写
+    // 回声明名）。真幻觉的（哪份清单都对不上）照旧丢弃并留日志——直接透传会让
+    // executeToolCalls 撞上没有 stash 映射的名字。日志带上当时声明了哪些，
     // 「模型编的」和「名字映射建歪了」一眼能分开。
     const rawToolCalls = (ctx.llmResponse as { choices?: Array<{ message?: { tool_calls?: unknown } }> })
       ?.choices?.[0]?.message?.tool_calls;
-    const allNativeCalls = (Array.isArray(rawToolCalls) ? rawToolCalls : []) as ToolCall[];
-    const nativeScheduleCalls = allNativeCalls.filter(
-      (tc) => tc?.function?.name === AMSG_FIRE_SCHEDULE_TOOL,
-    );
-    const nativeMcpCalls = allNativeCalls.filter((tc): tc is ToolCall => {
-      const n = (tc as ToolCall | undefined)?.function?.name;
-      if (n === AMSG_FIRE_SCHEDULE_TOOL) return false;   // 排程工具走上面那条，不算 MCP
-      const hit = typeof n === 'string'
-        && n.startsWith(MCP_FIRE_NAME_PREFIX)
-        && !!stash.mcpResolve?.has(n.slice(MCP_FIRE_NAME_PREFIX.length));
-      if (!hit) {
-        console.warn('[amsg:agentic] 丢弃未声明的 native tool_call', {
-          sessionId: ctx.sessionId,
-          name: n ?? null,
-          declared: [...(stash.mcpResolve?.keys() ?? [])],
-        });
-      }
-      return hit;
-    });
+    const nativeCalls = classifyNativeToolCalls(rawToolCalls, stash.fireToolNames, stash.mcpResolve);
+    for (const droppedName of nativeCalls.dropped) {
+      console.warn('[amsg:agentic] 丢弃未声明的 native tool_call', {
+        sessionId: ctx.sessionId,
+        name: droppedName,
+        declared: [...stash.fireToolNames, ...(stash.mcpResolve?.keys() ?? [])],
+      });
+    }
 
     let decision = processLLMRound(session, content, {
       // 名字取 tool_pack 里的那份：它跟着每轮聊天重新上云，改名当天就是新的。
@@ -1979,11 +2115,14 @@ export const amsgHooks = {
       // 没有这一份的话客户端只能拿「用户此刻在听的那首」凑（补收时多半是空的）。
       sceneSong: stash.sceneSong,
     },
-    stash.mcpResolve ? { resolve: stash.mcpResolve, nativeToolCalls: nativeMcpCalls } : null,
+    stash.mcpResolve ? { resolve: stash.mcpResolve, nativeToolCalls: nativeCalls.mcp } : null,
     // 传 null = 这次不认排程（老部署没这口子），正文里写了也不当调用。
-    typeof ctx.scheduleTask === 'function' ? { nativeToolCalls: nativeScheduleCalls } : null,
-    // 最后一轮不再放行工具请求，改成用手上的内容收尾（见 agentic.ts 的 MAX_TOOL_ITERATIONS）。
-    ctx.iteration);
+    // manage 池里可能还有 cancel / renew——它们被认领的前提是声明过（canManageTasks），
+    // 而 canManageTasks ⊆ canSelfSchedule ⊆「scheduleTask 是函数」，这道闸不会误拦。
+    typeof ctx.scheduleTask === 'function' ? { nativeToolCalls: nativeCalls.manage } : null,
+    // 最后一轮不再放行工具请求，改成用手上的内容收尾（预算由 MCP 与否自适应）。
+    ctx.iteration,
+    stash.maxToolIterations);
 
     if (decision.decision === 'tool-request') {
       console.log('[amsg:agentic]', {
@@ -2001,6 +2140,42 @@ export const amsgHooks = {
     }
 
     if (decision.decision === 'skip-push') {
+      // 这一轮没有正文，所以整条不发；但角色顺手改的日程要送到客户端去，不然它下一次
+      // 读到的还是那条旧安排（见 agentic.ts 里 skip-push 那处注释）。走 emitResult：
+      // 落服务端收件箱，客户端下次拉 outbox 一定拿得到，不用为它硬发一条空推送。
+      //
+      // 老部署上 emitResult 整个方法不存在（amsg-server 2.6.0-next.21 才有），那种情况
+      // 只留一行日志——没有这条通道时，丢掉仍然比发一条空白横幅强。
+      if (decision.scheduleChanges?.length) {
+        if (typeof ctx.emitResult === 'function') {
+          try {
+            await ctx.emitResult({
+              ...buildScheduleChangeResult({
+                charId: stash.charId,
+                // 说出口的时刻用真实的此刻：模型刚照着本次 fire 的那个钟写完这批改动，
+                // 客户端也该照着同一个钟判「隔天了没有」。名义时刻 occurrenceMs 在这里
+                // 不能用——cron 延迟或者重试梯子把 23:50 的任务拖到 00:05 才跑时，两者
+                // 会分处两个日历日，整批改动会被客户端的隔天闸白白丢掉。取值跟同一段里的
+                // skippedAt、以及 self_log 的 entry.at 一致（fire ctx 上那个 now 只在
+                // onBeforeFire 里拿得到，每轮的 sessionCtx 没有这个字段）。
+                spokenAt: Date.now(),
+                directives: decision.scheduleChanges,
+              }),
+              // 角色一个字都没说，这一轮本来就不该惊动用户。show:false 的 payload 上游
+              // 只落收件箱、不发推送——既不会弹出一条空白横幅，也不占推送配额（订阅是
+              // 按 userVisibleOnly 建的，收了不弹浏览器要记账）。
+              notification: { show: false },
+            });
+          } catch (error) {
+            console.warn('[amsg:schedule-change] 日程改动没能送出去（这一轮的改动丢了）', error);
+          }
+        } else {
+          console.warn('[amsg:schedule-change] 这台 Worker 还没有 emitResult，日程改动没处送', {
+            sessionId: ctx.sessionId,
+            changes: decision.scheduleChanges.length,
+          });
+        }
+      }
       // ⑤ 没发出去也留痕：模型返回空/纯拒答、或者只做了副作用没说话时，上游把任务
       // 当成功消费，用户看到的就是「说好的消息凭空消失」。写一条 last_skip，面板能
       // 照实解释是哪种。best-effort，写不进去不影响 skip 本身。
@@ -2148,22 +2323,13 @@ export const amsgHooks = {
         payloads = budgeted;
       }
 
-      // 即时对话的收件兜底：**不论 push 发得出去发不出去**都在这里留一份。
-      // push 静默丢失（换网、系统压制、SW 没醒）正是要兜的那件事，等发送结果再写就晚了。
-      // 信封先按库的同一套规则补齐，库那边「没有才补」，所以 outbox 和真发出去的逐字一致。
+      // 即时对话的通知策略：一定弹，按角色折叠成一条，前台安静、后台响铃，一轮只响
+      // 一声（见 applyInstantNotificationPolicy）。第一段要重新提醒、后面几段安静
+      // 更新，所以策略要知道自己是这一轮的第几段。收件兜底不在这里做——库自己会在
+      // 每条推送发出去之前记进服务端账本，客户端按账本补收。
       if (stash.instant) {
-        const nowMs = Date.now();
-        const ids = {
-          taskRowId: stash.taskRowId,
-          taskUuid: stash.taskUuid,
-          occurrenceMs: stash.occurrenceMs,
-          nowMs,
-          randomId: crypto.randomUUID(),
-        };
-        payloads = payloads.map((payload, i) =>
-          finalizeInstantPush(payload, i, payloads.length, ids));
-        stash.chatOutbox = await writeChatOutbox(
-          ctx.writeState, stash.charId, stash.chatOutbox, toOutboxEntries(payloads, nowMs));
+        payloads = payloads.map((payload, index) =>
+          applyInstantNotificationPolicy(payload, stash.charId, index === 0));
       }
 
       return { ...decision, pushPayloads: payloads };
@@ -2208,7 +2374,11 @@ export const amsgHooks = {
         // 同名同参第二次直接打回，一次请求都不发。软提示（下面那段回喂）挡不住时靠它兜底：
         // 转满上限会抛 AGENTIC_LOOP_EXCEEDED，任务不出清、下一分钟整条从头重跑，代价远大于
         // 少查一次。只拦完全一样的调用——换月份、换关键词照常放行，多轮能力不受影响。
-        if (stash.session.toolCalls.some((r) => r.fingerprint === fingerprint)) {
+        // 只拦「连续原地重复」。游戏型 MCP 的正常流程会是 get_state({}) → act(...)
+        // → get_state({})；旧逻辑扫描整段历史，把第二次状态查询也当重复，角色永远看不到
+        // 动作后的新状态。中间只要有别的有效调用，就允许同名同参再次执行。
+        const previousCall = stash.session.toolCalls[stash.session.toolCalls.length - 1];
+        if (previousCall?.fingerprint === fingerprint) {
           // 计数交给 processLLMRound：连着重复到阈值就直接收尾，不陪它转到轮次上限
           // （上限一到整条任务失败重跑，用户一个字都收不到）。
           stash.session.duplicateToolCalls += 1;
@@ -2237,6 +2407,9 @@ export const amsgHooks = {
               : name.startsWith(MCP_FIRE_NAME_PREFIX)
                 ? await runMcpFireTool(stash, name, args)
                 : await dispatchAgenticTool(name, args, stash.toolCtx);
+        // duplicateToolCalls 语义是「连续打转」；任何一个新调用跑过都说明任务仍在推进，
+        // 立刻清零。否则两次不相邻的合法重复也会累计到阈值，提前误杀游戏流程。
+        stash.session.duplicateToolCalls = 0;
         // ran 记的是「这次值不值得写进工具痕迹」：查东西的看有没有真去查，改排程的看有没有
         // 真改成（见 toolDidSomething）。回喂给模型的措辞另有一套口径（buildToolResultMessage
         // 里的 neverRan），两者不共用——痕迹是给用户看的，只说真发生过的事。
@@ -2257,7 +2430,7 @@ export const amsgHooks = {
     }
 
     // 只挂在最后一条 tool 消息末尾（离模型下一次输出最近），不逐条重复刷屏。
-    if (feedsFinalRound(ctx.iteration) && results.length > 0) {
+    if (feedsFinalRound(ctx.iteration, stash.maxToolIterations) && results.length > 0) {
       const last = results[results.length - 1];
       last.content = `${last.content}\n${FINAL_ROUND_NOTICE}`;
     }
@@ -2303,10 +2476,17 @@ export const buildWorkerConfig = (env: Env) => {
     webpush,
     // 前端和 Worker 不同源，带自定义头的请求会先发 CORS 预检，必须放行。
     // 单用户自用默认全开；想收紧就把 '*' 换成自己的 SullyOS 站点 origin。
-    cors: { origin: '*' },
+    // allowHeaders 显式给：上游默认那份不含 Content-Encoding，而 gzip 上行要用它
+    // （见 CORS_ALLOW_HEADERS 那段注释）。
+    cors: { origin: '*', allowHeaders: CORS_ALLOW_HEADERS },
+    // 一次性 job 输入的过期清理（amsg-server 2.6.0-next.21+）：cron 每跳顺手把这个
+    // 命名空间下超过天数没更新的条目清掉。角色状态那个命名空间（amsg:char:<id>，
+    // 装 fire_pack / tool_pack）不配 TTL——那些是要长期留着的，配了就等于定时把
+    // 角色的云端状态抹掉。判据是行本来就有的 updated_at 列，不加列、不动表结构。
+    clientStateTtl: { [AMSG_JOB_NAMESPACE]: AMSG_JOB_TTL_DAYS },
     // 满血 fire-time hooks（onBeforeFire 现场填槽 + onLLMOutput 分类 +
-    // executeToolCalls 服务端工具循环）；轮数/超时用库默认（5 轮 / 240s），
-    // 即时对话那条单独把超时抬到 INSTANT_TOTAL_TIMEOUT_MS（onBeforeFire 返回值里给）。
+    // executeToolCalls 服务端工具循环）；总超时用库默认 240s，轮数由 onBeforeFire 按
+    // 是否接入 MCP 返回 5 / 12；即时对话再把总超时抬到 INSTANT_TOTAL_TIMEOUT_MS。
     hooks: amsgHooks,
     // 租约不再显式配：amsg-server 2.6.0-next.15 起投递期间按心跳滚动续租（30s 一跳、
     // 90s TTL），fire 跑多久租约就滚多久——以前为了盖住即时对话 600s 的 fire 把
@@ -2322,8 +2502,18 @@ export const buildWorkerConfig = (env: Env) => {
     // 同一个角色的多条任务不并发跑：两条撞在一起时用户会收到两条互不知情的消息，
     // 而且 self_log 是读-改-写整份，后写的会盖掉先写的那条「我说过什么」。分组键取
     // 角色 id，上游按它同跳去重 + 跨跳看租约，被拦下的任务一个字段都不动，下一跳原样再来。
-    serializeBy: (task: { metadata?: Record<string, unknown> | null }) =>
-      (typeof task.metadata?.charId === 'string' ? task.metadata.charId : null),
+    //
+    // 后台任务（门牌整理这类）按种类另开一组：上面那两条串行的理由它一条都不沾——不说话、
+    // 也不写 self_log（它在 onBeforeFire 就被 kind 分派接走了）。跟聊天挤同一组的话，一次
+    // 门牌整理最长占住这个角色 120 秒，而它恰恰是在一轮对话刚结束时起跑的：用户下一句话
+    // 的即时对话任务排在它后面，人就干等着「正在输入…」。同种后台任务之间仍按角色串行
+    // ——同一角色两份整理并发落地，就是拿两份旧快照互相盖。
+    serializeBy: (task: { metadata?: Record<string, unknown> | null }) => {
+      const charId = typeof task.metadata?.charId === 'string' ? task.metadata.charId : null;
+      if (!charId) return null;
+      const kind = readTaskKind(task.metadata);
+      return kind ? `${charId}#${kind}` : charId;
+    },
   };
 };
 
@@ -2396,10 +2586,6 @@ export const inspectWorkerEnv = (env: Env): WorkerEnvReport => {
     code: 'FCM_INCOMPLETE',
     message: 'FCM 配置只填了一部分；需要同时设置 FCM_PROJECT_ID、FCM_SERVICE_ACCOUNT_EMAIL、FCM_SERVICE_ACCOUNT_PRIVATE_KEY。',
   });
-  if (!fcmParts.some(Boolean)) warnings.push({
-    code: 'FCM_MISSING',
-    message: '尚未配置 Firebase FCM 服务账号：浏览器/PWA 可用 Web Push，但原生 Android App 无法接收系统推送。',
-  });
   if (!env.AMSG_SERVER_TOKEN?.trim()) {
     warnings.push({
       code: 'SERVER_TOKEN_MISSING',
@@ -2417,13 +2603,24 @@ export const inspectWorkerEnv = (env: Env): WorkerEnvReport => {
   };
 };
 
-// 跟上游 corsHeadersFor 放行的那一份保持一致：预检放行的头少一个，正式请求就会被
-// 浏览器拦下，而拦下的表现同样是没有下文的 "Failed to fetch"。
+/**
+ * 预检放行的请求头。
+ *
+ * 这一份同时喂给包装层自己的响应（CORS_HEADERS）和上游 config 的 `cors.allowHeaders`
+ * ——两处**必须**是同一串：预检放行的头少一个，正式请求就会被浏览器拦下，而拦下的表现
+ * 同样是没有下文的 "Failed to fetch"，从外面根本看不出是 CORS 的事。
+ *
+ * `Content-Encoding` 是给 gzip 上行用的。它不在 CORS 安全列表里，所以带上它的请求
+ * 必过预检；上游默认那份白名单里没有它，不显式配的话，压过的请求一条都发不出去。
+ */
+const CORS_ALLOW_HEADERS =
+  'Content-Type, Content-Encoding, X-User-Id, X-Payload-Encrypted, X-Encryption-Version, '
+  + 'X-Response-Encrypted, X-Client-Token';
+
 const CORS_HEADERS: Record<string, string> = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-  'Access-Control-Allow-Headers':
-    'Content-Type, X-User-Id, X-Payload-Encrypted, X-Encryption-Version, X-Response-Encrypted, X-Client-Token, X-Device-Token',
+  'Access-Control-Allow-Headers': CORS_ALLOW_HEADERS,
   'Access-Control-Max-Age': '86400',
 };
 
@@ -2436,20 +2633,60 @@ const jsonWithCors = (status: number, body: unknown): Response =>
 // cron 触发时 CF 传进来的事件，只往上游转手，没必要为它引 workers-types。
 type CfScheduledEvent = { scheduledTime: number; cron: string };
 
-/** 上游 initSchema 建的表。少一张就说明「连接并验证」那步没跑成。 */
-const EXPECTED_TABLES = ['scheduled_messages', 'client_state', 'push_subscriptions'];
-
-/**
- * 上游后加的列（amsg-server 2.6.0 的三个迁移）。
- *
- * 这是最值得单独查一眼的一项：换了新 bundle 却没重新点「连接并验证」时，已经存在的
- * 表不会自己长出新列，而 cron 每分钟都会因为读不到这些列而挂——前端一切正常、任务
- * 列表也在，就是一条都不发。缺列时这里会直接点名，省得对着「都正常啊」发呆。
- */
-const EXPECTED_TASK_COLUMNS = ['lease_until', 'retry_after', 'serialize_group'];
-
 /** 到点多久还没被处理就算 cron 那侧出了问题。cron 每分钟一跳，留足重试余量。 */
 const TICK_STALL_MINUTES = 5;
+
+/**
+ * 把上游的 schema 自查结果拆成「缺表 / 缺列」两摞。
+ *
+ * 上游报的形如 `table:message_outbox`、`column:scheduled_messages.last_error`、
+ * `index:uidx_uuid`，而体检面板是按这两类分开说话的（缺表 → 点连接就能建好；
+ * 缺列 → 是升级后没重连的典型症状）。索引归进「表」那一摞：对用户来说都是
+ * 「点一次重新连接」，没必要多一个词。
+ *
+ * 为什么不自己列一份期望清单：手抄的那份会漏。这个判断本身要守的就是
+ * 「升级后老表没长出新列、cron 每分钟静默挂」，而漏掉的恰恰会是最新加的那一列——
+ * 于是体检对着一个正在挂的库回「表和列都齐了」，比不查更误导人。上游那份是从
+ * 建表语句现解析出来的，它加了什么列，这里就查什么列。
+ */
+/** 上游 schema 自查的结果；查不了时是 null（见 inspectSchema）。 */
+type SchemaProbe = Awaited<ReturnType<typeof upstream.getSchemaVersion>> | null;
+
+/**
+ * schema 自查查不动时的归类代号。**只有这四个字面量会进 /debug 回执**，异常原文一个
+ * 字都不带——那上面可能挂着 SQL 片段，而这个端点是不设防的。
+ *
+ * 分这几档是因为用户该做的事完全不同：`unsupported` 点一下「更新 Worker」就好，
+ * `denied` 是后端自己的毛病、点什么都没用，`timeout` 再体检一次多半就过了。
+ * 混成一句「查不了」的话，界面只能说一句谁都用不上的废话。
+ */
+export type AmsgSchemaProbeError = 'unsupported' | 'denied' | 'timeout' | 'other';
+
+/**
+ * 把 schema 自查抛出来的异常归到上面四档里。
+ *
+ * `denied` 排在最前面，因为它的特征串最硬（D1 的授权器只会报这一种）。2026-08-09
+ * 真机上撞到的就是它：新建的 D1 库里自带一张 Cloudflare 内部表 `_cf_KV`，上游遍历
+ * 全库逐表问列时问到它，被 D1 一口回绝，整个自查断在第一张表上。
+ */
+export const classifySchemaProbeError = (error: unknown): AmsgSchemaProbeError => {
+  const message = error instanceof Error ? error.message : String(error ?? '');
+  const name = error instanceof Error ? error.name : '';
+  if (/SQLITE_AUTH/i.test(message) || /not authorized/i.test(message)) return 'denied';
+  // 老 bundle 里压根没有 getSchemaVersion，或者适配器没实现 describeSchema。
+  if (/is not a function/i.test(message) || /不支持 schema 自查/.test(message)) return 'unsupported';
+  if (name === 'AbortError' || name === 'TimeoutError' || /timed? ?out/i.test(message)) return 'timeout';
+  return 'other';
+};
+
+export const splitSchemaMissing = (missing: string[]) => ({
+  missingTables: missing
+    .filter((item) => item.startsWith('table:') || item.startsWith('index:'))
+    .map((item) => item.slice(item.indexOf(':') + 1)),
+  missingColumns: missing
+    .filter((item) => item.startsWith('column:'))
+    .map((item) => item.slice('column:'.length)),
+});
 
 type D1Like = {
   prepare(sql: string): {
@@ -2459,34 +2696,101 @@ type D1Like = {
   };
 };
 
+/** 推送服务判定订阅已失效时回的状态码：410 = 已注销/过期，404 = 端点根本不存在。 */
+const PUSH_GONE_STATUSES = [410, 404];
+
+/**
+ * 推送到底推没推出去：最近一次被推送服务判成「这条订阅已经失效」是什么时候。
+ *
+ * 这是「登记状态全绿、到点一条都不来」的最后一块拼图。浏览器手里有订阅、库里也
+ * 登记着同一条 endpoint，两边都自洽，但那条 endpoint 在推送服务（FCM / Mozilla /
+ * Apple）那侧早就作废了，推过去只换回一个 410。这件事只有推送服务知道，前端和
+ * Worker 自己都查不出来。
+ *
+ * 事实由上游 amsg-server 产生：投递失败时它把推送服务回的状态码结构化写进任务的
+ * `last_error.pushStatus`。这里只是把它读出来——**不去解析 `reason` 那句人话**，
+ * 那是给用户看的自由文本，拿它当接口用的话，上游改个措辞这里就静默失效。
+ *
+ * 只回状态码和时刻，不回 `last_error` 原文：那是一段没有约束的错误摘要，而
+ * `/debug` 这个端点是不设防的。
+ *
+ * 查不成（老库还没有 last_error 列、查询被拒）返回 null = 「这一项没查出来」，
+ * 界面照实说查不了，不会因此给一个假绿灯。
+ */
+export const inspectPushDelivery = async (
+  db: D1Like,
+  registeredAtMs: number | null,
+): Promise<{ gone: AmsgPushGoneFailure | null; registeredAtMs: number | null } | null> => {
+  try {
+    // 只看有失败记录的行，按最近更新排。订阅一旦作废，每条到点的任务都会撞上同一个
+    // 410，最近那次必然排在最前面——取 20 条足够，不必把整个任务表读一遍。
+    const rows = await db
+      .prepare(
+        `SELECT last_error FROM scheduled_messages
+          WHERE last_error IS NOT NULL
+          ORDER BY updated_at DESC
+          LIMIT 20`,
+      )
+      .all<{ last_error: string | null }>();
+
+    let gone: AmsgPushGoneFailure | null = null;
+    for (const row of rows.results || []) {
+      let record: { at?: unknown; pushStatus?: unknown } | null = null;
+      try {
+        const parsed = JSON.parse(row.last_error || 'null');
+        record = parsed && typeof parsed === 'object' ? parsed : null;
+      } catch {
+        continue; // 存进去的不是 JSON（不该发生），跳过这一条就是了
+      }
+      const status = Number(record?.pushStatus);
+      if (!PUSH_GONE_STATUSES.includes(status)) continue;
+      const atMs = Date.parse(String(record?.at ?? ''));
+      if (!Number.isFinite(atMs)) continue;
+      if (!gone || atMs > gone.atMs) gone = { status, atMs };
+    }
+
+    return { gone, registeredAtMs };
+  } catch {
+    return null;
+  }
+};
+
 /**
  * 只读地看一眼库里的状况：表齐不齐、列全不全、有没有到点却没人处理的任务。
  *
- * 全程不写库，也不读任何一条任务的内容——只数数和比对 schema。数出来的东西
- * （待发条数、最老的一条过期了多久）不指向任何角色、时间点或正文。
+ * 全程不写库，也不读任何一条任务的内容——只数数、比对 schema，以及从失败记录里
+ * 认一个状态码。数出来的东西（待发条数、最老的一条过期了多久）不指向任何角色、
+ * 时间点或正文。
  */
-const inspectStorage = async (env: Env) => {
+const inspectStorage = async (
+  env: Env,
+  probe: { schema: SchemaProbe; error: AmsgSchemaProbeError | null },
+) => {
+  const { schema, error: schemaError } = probe;
   const db = env.DB as D1Like | undefined;
   if (typeof db?.prepare !== 'function') return { reachable: false as const };
 
   try {
-    const tables = await db.prepare("SELECT name, sql FROM sqlite_master WHERE type = 'table'").all<{
-      name: string; sql: string | null;
+    const tables = await db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all<{
+      name: string;
     }>();
-    const rows = tables.results || [];
-    const present = new Set(rows.map((row) => row.name));
-    // ALTER TABLE ADD COLUMN 会把新列写回 sqlite_master 的建表语句，所以照着它比对
-    // 就能看出迁移跑没跑，不用依赖 D1 对 PRAGMA 的支持程度。
-    const taskSql = rows.find((row) => row.name === 'scheduled_messages')?.sql || '';
+    const present = new Set((tables.results || []).map((row) => row.name));
 
-    const missingTables = EXPECTED_TABLES.filter((name) => !present.has(name));
-    const missingColumns = present.has('scheduled_messages')
-      ? EXPECTED_TASK_COLUMNS.filter((column) => !taskSql.includes(column))
-      : [];
+    // schema 齐不齐由上游说了算（它按自己的建表语句比对，见 splitSchemaMissing）。
+    //
+    // 查不了（schema 为 null）时报 **null，不是 true**：这一项的全部意义就是查出
+    // 「升级完 Worker 没重新连接」造成的表结构漂移——那种情况下 cron 每分钟静默失败、
+    // 主动消息整个停摆，而界面处处正常。查询本身挂了却回一句「表和列都齐了」，等于在
+    // 唯一能发现这件事的地方给了假绿灯，比没有这项检查更糟。让它照实说「查不了」，
+    // 界面那一行显示成灰色的未知，人至少知道还得自己确认一次。
+    const { missingTables, missingColumns } = splitSchemaMissing(schema?.missing ?? []);
 
-    if (missingTables.includes('scheduled_messages')) {
-      return { reachable: true as const, missingTables, missingColumns, schemaReady: false };
+    if (!present.has('scheduled_messages')) {
+      // 主表都不在，这个不用上游背书也是确定的：库是空的。
+      return { reachable: true as const, missingTables, missingColumns, schemaReady: false, schemaError };
     }
+    // 主表在、但比对不出来 → 不知道。
+    const schemaReady = schema ? missingTables.length === 0 && missingColumns.length === 0 : null;
 
     const nowIso = new Date().toISOString();
     const stats = await db
@@ -2499,18 +2803,25 @@ const inspectStorage = async (env: Env) => {
       .bind(nowIso, nowIso)
       .first<{ pending: number; overdue: number | null; oldest: string | null }>();
 
+    // 一行表，条数和登记时刻一次拿全。登记时刻是判断投递失败还算不算数的标尺：
+    // 重置订阅会覆盖这一行、刷新时刻，比它更早的失败都是上一条订阅的旧账。
     const pushRow = present.has('push_subscriptions')
-      ? await db.prepare('SELECT COUNT(*) AS n FROM push_subscriptions').first<{ n: number }>()
+      ? await db
+        .prepare('SELECT COUNT(*) AS n, MAX(updated_at) AS updatedAt FROM push_subscriptions')
+        .first<{ n: number; updatedAt: number | null }>()
       : null;
 
     return {
       reachable: true as const,
-      schemaReady: missingTables.length === 0 && missingColumns.length === 0,
+      schemaReady,
+      // null = 这次自查跑成了。有值时 schemaReady 必然是 null，界面照它选该说哪句话。
+      schemaError,
       missingTables,
       missingColumns,
       // 单用户 worker 只存一行。到点却发不出去最常见的原因就是这行是空的——
       // 换了一台 worker 之后云端订阅是空的，而浏览器那侧的订阅一个字都没变。
       pushSubscriptionRegistered: (pushRow?.n ?? 0) > 0,
+      pushDelivery: await inspectPushDelivery(db, pushRow?.updatedAt ?? null),
       pendingTasks: stats?.pending ?? 0,
       overdueTasks: stats?.overdue ?? 0,
       oldestOverdueMinutes: stats?.oldest
@@ -2539,7 +2850,96 @@ const judgeTick = (storage: Awaited<ReturnType<typeof inspectStorage>>) => {
   return 'stalled';
 };
 
-const upstream = createSingleUserCloudflareWorker(buildWorkerConfig);
+/** DO 存「这个实例负责哪条任务」用的 storage 键。 */
+const INSTANT_TICK_UUID_KEY = 'taskUuid';
+
+const upstream = createSingleUserCloudflareWorker(buildWorkerConfig, {
+  /**
+   * cron 那条路上没有调用方能看到错误响应——上游把异常 catch 掉之后，整轮就这么无声
+   * 结束了。表结构漂移（升级后老表没加列）撞上的正是这里：cron 每分钟静默失败、
+   * 主动消息整个停摆，而界面上一切正常，没人知道出了事。
+   *
+   * 这个 hook 是那条路唯一的出口，所以什么都不做也要把它记下来。
+   */
+  onError({ stage, cause, path }) {
+    const where = path ? `${stage} ${path}` : stage;
+    console.error(`[amsg:upstream-error] ${where} → ${cause.name}: ${cause.message}`);
+  },
+});
+
+/**
+ * 库的表结构跟当前这版代码对不对得上。
+ *
+ * 这是「升级完 Worker 却没重新连接」的唯一可查证据：表结构漂移（新版要的列老表没有）
+ * 之后，cron 每分钟静默失败、主动消息整个停摆，而配置自检、任务列表、界面全都正常，
+ * 隔着屏幕根本问不出来。missing 里会直接点名缺哪张表、哪一列。
+ *
+ * 查不了不算错（D1 没绑之类）——报 null，让面板照旧显示其余部分。
+ *
+ * 但**为什么查不了要一起带出去**：只往日志里写一行的话，用户看到的永远是一句
+ * 「查不了，不知道」，而这句话对他做什么毫无帮助，隔着屏幕也问不出来。归类见
+ * classifySchemaProbeError。
+ */
+const inspectSchema = async (env: Env): Promise<{ schema: SchemaProbe; error: AmsgSchemaProbeError | null }> => {
+  try {
+    return { schema: await upstream.getSchemaVersion(env), error: null };
+  } catch (error) {
+    const kind = classifySchemaProbeError(error);
+    console.warn(`[amsg:debug] schema 查不了（${kind}）`, error);
+    return { schema: null, error: kind };
+  }
+};
+
+/**
+ * 即时对话的起跳器：把「立刻跑这一条」搬进 Durable Object 的 alarm 里。
+ *
+ * 为什么非得是 DO：客户端发完就走（切后台、锁屏、杀进程都行），所以这一跳不能挂在
+ * 那个已经回了 202 的 HTTP 请求上——`ctx.waitUntil` 只给 30 秒，一轮带工具循环的生成
+ * 必被砍在半路。Cloudflare 上能「不依赖客户端连接 + 长墙钟」的入口只有三个：
+ * Cron Trigger、Queue consumer、DO alarm，都是 15 分钟。这里选 DO 是因为它不用预建
+ * 任何资源（namespace 随 Worker 上传自动创建），一键部署那条路一个额外 API 调用都不用加。
+ *
+ * **一条任务一个实例**（实例名 = 任务 uuid），所以几条聊天同时在跑互不排队。
+ * 每个实例只碰自己那一条（`upstream.runTask(uuid)`），不会去扫别人的任务。
+ *
+ * cron 仍然留着：它是所有定时任务的正常投递通道，同时也是这一跳万一没跑成时的兜底。
+ */
+export class InstantTickDO extends DurableObject<Env> {
+  /**
+   * 叫醒：记下要跑哪条、设一个立刻到期的 alarm，然后马上返回——调用方还等着回 202。
+   *
+   * 已经挂着 alarm 就只覆盖 uuid 不重设时间：同一个实例只服务同一条任务，重复叫醒
+   * （客户端重发）应该合并成一次，而不是排成两次生成。
+   */
+  async kick(uuid: string): Promise<void> {
+    await this.ctx.storage.put(INSTANT_TICK_UUID_KEY, uuid);
+    if ((await this.ctx.storage.getAlarm()) !== null) return;
+    await this.ctx.storage.setAlarm(Date.now());
+  }
+
+  /** 独立 invocation，15 分钟墙钟。跑挂了不重设 alarm——下一分钟的 cron 会接着捡。 */
+  async alarm(): Promise<void> {
+    const uuid = await this.ctx.storage.get<string>(INSTANT_TICK_UUID_KEY);
+    if (!uuid) {
+      console.error('[amsg:instant-tick] alarm 醒了却不知道要跑哪条，跳过（等 cron 兜底）');
+      return;
+    }
+    const report = inspectWorkerEnv(this.env);
+    if (!report.ok) {
+      console.error(`[amsg:instant-tick] 整轮跳过：${report.message}`);
+      return;
+    }
+    // 跑完就把 uuid 清掉：这个实例的活儿到此为止，留着只会让下一次 kick 分不清新旧。
+    // 放在 runTask 之前清是不行的——中途被回收就查不出这条到底跑没跑。
+    const result = await upstream.runTask(uuid, this.env);
+    await this.ctx.storage.delete(INSTANT_TICK_UUID_KEY);
+    if (!result.ran) {
+      // 一次性任务发完即删，所以 not_found 多半是「cron 抢先跑掉了」，属正常。
+      // 其余几种（未到期、退避窗口里、配置不全）留一行，排障时能看出是哪种。
+      console.warn(`[amsg:instant-tick] ${uuid} 没跑：${result.reason}`);
+    }
+  }
+}
 
 /**
  * 版本号只有上游的 capabilities 才给，转手问它一次；问不到不算错，报 null。
@@ -2569,11 +2969,11 @@ const readServerVersion = async (request: Request, env: Env) => {
  *   POST /self-update   自己去取最新代码覆盖自己（见 ./selfUpdate，要共享密钥 + CF_API_TOKEN）
  *   其它请求            配置不全时直接 503 + 说明缺什么，不进上游
  */
-// 两个 handler 的第三个参数 ctx 是 CF 给的：/instant-chat 用它的 waitUntil 在回完
-// 202 之后把这一轮立刻跑起来。上游的签名只收 (request/event, env)，所以往上游转发时
-// 照旧只传两个——多传运行时无害，但类型对不上。
+// 两个 handler 都只收 (request/event, env)：CF 还会给第三个参数 ctx，但这里用不上——
+// /instant-chat 回完 202 之后的那一跳跑在 InstantTickDO 的 alarm 里，不占这个请求的
+// 生命周期（waitUntil 只有 30 秒，见 InstantTickDO 的注释）。
 export default {
-  async fetch(request: Request, env: Env, ctx?: InstantChatExecutionCtx): Promise<Response> {
+  async fetch(request: Request, env: Env): Promise<Response> {
     const pathname = new URL(request.url).pathname.replace(/\/+$/, '') || '/';
     const method = request.method.toUpperCase();
 
@@ -2582,10 +2982,35 @@ export default {
       // 刻意不校验 X-Client-Token：worker 配了口令而前端没填正是要诊断的情形之一，
       // 校验了就查不出来。作为交换，这里只回「配没配」，不回任何值。
       //
-      // instantChat 是包装层自己的能力标志：即时对话的路由住在这份代码里，而设置页
-      // 能读到的版本号是**上游库**的，只改 SullyOS 这份 worker 时那个号不动。前端拿
-      // 这个标志做唯一的版本门槛（贴的是旧 bundle 就没有它，开关直接置灰）。
-      return jsonWithCors(200, { success: true, data: { ...inspectWorkerEnv(env), instantChat: true } });
+      // 三个能力标志，各答各的问题，前端全都要：
+      //
+      //   instantChat  这份代码里有没有 /instant-chat 这条路由。老 bundle 没有这个字段。
+      //   instantTick  起跳器（INSTANT_TICK 绑定）接上了没有——**即时对话真正能不能用**看它。
+      //   workerVersion 这份 bundle 自己的版本，跟前端编译进去的同一个常量比，不一样就该更新。
+      //
+      // 为什么「有路由」和「能用」得分开报：自更新是由**用户当前那台 Worker 上的旧代码**
+      // 执行的，而旧代码不认识 Durable Object，所以它传上去的新 bundle 是不带 INSTANT_TICK
+      // 绑定的——代码是新的、版本号也对上了，`/instant-chat` 却只能回 503。这中间态没有
+      // 单独的信号的话，前端会一边说「已经是最新版」一边发一条挂一条。再点一次更新（这次
+      // 跑的是新代码，会把绑定补上）就好，而让用户知道「还得再点一次」的正是这个字段。
+      //
+      // 同理，以后再加别的绑定也会撞上同一堵墙：自更新永远由旧代码执行。所以判断「能不能
+      // 用」一律看运行时真的有没有那个绑定，别看版本号。
+      return jsonWithCors(200, {
+        success: true,
+        data: {
+          ...inspectWorkerEnv(env),
+          instantChat: true,
+          instantTick: !!env.INSTANT_TICK,
+          // 这份代码认不认识「后台任务」（metadata.amsgKind → handler，见 fireKinds.ts）。
+          // 老 bundle 没有这个字段，前端据此不去建那种任务——老 worker 会把它当聊天任务
+          // 跑，然后卡在「本次任务指令缺失」终态失败：任务行不在用户的清单里，面板一片
+          // 正常，而门牌永远不更新。报的是**这份代码有没有**，不是版本号：自更新永远由
+          // 旧代码执行，版本号对上了不代表新逻辑真的在跑。
+          backgroundJobs: true,
+          workerVersion: AMSG_BUNDLE_VERSION,
+        },
+      });
     }
 
     if (pathname.endsWith('/debug')) {
@@ -2593,7 +3018,8 @@ export default {
       // 全只读、也不设防，所以能报什么是有边界的：只有配置齐不齐、schema 对不对、
       // 数出来的条数，以及本来就公开的 VAPID 公钥。密钥的值、用户标识、任务正文、
       // 推送 endpoint 一概不出现——不是没取到，是刻意不取。
-      const storage = await inspectStorage(env);
+      const probe = await inspectSchema(env);
+      const storage = await inspectStorage(env, probe);
       return jsonWithCors(200, {
         success: true,
         data: {
@@ -2602,6 +3028,7 @@ export default {
           server: await readServerVersion(request, env),
           storage,
           tick: judgeTick(storage),
+          schema: probe.schema,
           vapidPublicKey: env.VAPID_PUBLIC_KEY?.trim() || null,
         },
       });
@@ -2636,35 +3063,6 @@ export default {
       });
     }
 
-    // Android WebView 没有 Push API。原生壳用随机设备令牌轮询这个 D1 信箱，完全不依赖
-    // Google/Firebase；令牌本身就是不可猜的取件凭证，不复用用户口令。
-    if (pathname.endsWith('/native-poll')) {
-      if (method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS_HEADERS });
-      const token = request.headers.get('X-Device-Token')?.trim() || '';
-      if (!/^[A-Za-z0-9_-]{32,128}$/.test(token)) {
-        return jsonWithCors(401, { success: false, error: { code: 'INVALID_DEVICE_TOKEN', message: '设备令牌无效' } });
-      }
-      if (method === 'GET') {
-        return jsonWithCors(200, { success: true, data: { messages: await pullNativePollPayloads(env, token) } });
-      }
-      return jsonWithCors(405, { success: false, error: { code: 'METHOD_NOT_ALLOWED', message: '/native-poll 只接受 GET' } });
-    }
-
-    if (pathname.endsWith('/native-poll/ack')) {
-      if (method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS_HEADERS });
-      const token = request.headers.get('X-Device-Token')?.trim() || '';
-      if (!/^[A-Za-z0-9_-]{32,128}$/.test(token)) {
-        return jsonWithCors(401, { success: false, error: { code: 'INVALID_DEVICE_TOKEN', message: '设备令牌无效' } });
-      }
-      if (method !== 'POST') {
-        return jsonWithCors(405, { success: false, error: { code: 'METHOD_NOT_ALLOWED', message: '/native-poll/ack 只接受 POST' } });
-      }
-      const body = await request.json().catch(() => ({})) as { ids?: unknown };
-      const ids = Array.isArray(body.ids) ? body.ids.map(Number) : [];
-      await ackNativePollPayloads(env, token, ids);
-      return jsonWithCors(200, { success: true });
-    }
-
     // 即时对话：一个请求把「传云端状态 + 建任务」串完，回 202 之后立刻起一跳。
     // 排在配置门之后，所以走到这里 D1 和密钥必然都在。
     if (pathname.endsWith('/instant-chat')) {
@@ -2675,13 +3073,13 @@ export default {
           error: { code: 'METHOD_NOT_ALLOWED', message: '/instant-chat 只接受 POST' },
         });
       }
-      return handleInstantChat({ request, env, ctx, upstream, json: jsonWithCors });
+      return handleInstantChat({ request, env, upstream, json: jsonWithCors });
     }
 
     return upstream.fetch(request, env);
   },
 
-  async scheduled(event: CfScheduledEvent, env: Env, _ctx?: InstantChatExecutionCtx): Promise<void> {
+  async scheduled(event: CfScheduledEvent, env: Env): Promise<void> {
     // 定时任务这条路没人看得见，配置不全时上游只会抛一个堆栈。写明白点，
     // wrangler tail 里一眼能看出是配置问题还是任务本身挂了。
     const report = inspectWorkerEnv(env);
@@ -2689,6 +3087,8 @@ export default {
       console.error(`[amsg] 定时任务整轮跳过：${report.message}`);
       return;
     }
-    return upstream.scheduled(event, env);
+    // 整轮出错时上游把原因放在返回值里（同一份也会经 onError 记一行）。这里不再重复
+    // 打印，但要把它咽掉——CF 不看 scheduled 的返回值，往外抛只会变成一条没上下文的堆栈。
+    await upstream.scheduled(event, env);
   },
 };

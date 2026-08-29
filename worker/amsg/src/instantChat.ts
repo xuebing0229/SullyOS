@@ -5,7 +5,7 @@
  * 结果走 Web Push 回去。这份模块管三件事：
  *   1. `POST /instant-chat` 这条包装层路由（鉴权 → 内部转发 → 202 → 立刻起一跳）
  *   2. 即时对话那条 fire 用的「时效信息」块（当前时间 / 实时世界 / 排程说明拼一起）
- *   3. 收件兜底 outbox 的推送信封定稿（push 丢了客户端能按 messageId 补收）
+ *   3. 推送的通知策略（前台可见时不弹横幅）
  *
  * 为什么要在包装层做而不是让客户端直接调上游的两个端点：两步有严格的先后和
  * 「前面失败就不能落任务」的语义（云端状态没传上去，到点的 fire 读到的还是上一轮的
@@ -19,16 +19,13 @@
  */
 
 import {
-  AMSG_CHAT_OUTBOX_KEY,
   AMSG_FIRE_PACK_KEY,
   amsgStateNamespace,
-  appendChatOutbox,
   buildUserClockHint,
   formatFireTimeFull,
-  type AmsgChatOutbox,
-  type AmsgChatOutboxEntry,
   type AmsgTzRef,
 } from '../../../utils/amsgFirePack';
+import { TIME_FRAMING_CONVERSATIONAL } from '../../../utils/timeFramingNote';
 
 // ─── 时间参数 ───
 
@@ -37,12 +34,9 @@ import {
  *
  * 定时任务那条路仍用库默认的 240s：它到点没跑完还有下一分钟的 cron 接着来，
  * 而用户正盯着「正在输入…」等回复，多给点时间跑完工具循环比让他重发一遍强。
- * 上限压在 cron 的墙钟预算（15 分钟）之内。
+ * 上限压在执行它的那次 invocation 的墙钟预算（DO alarm 和 cron 都是 15 分钟）之内。
  */
 export const INSTANT_TOTAL_TIMEOUT_MS = 600_000;
-
-/** 合成 cron 事件的标记；wrangler tail 里一眼能看出这一跳是谁起的。 */
-export const INSTANT_TICK_CRON = 'instant-chat';
 
 // ─── 任务身份 ───
 
@@ -87,6 +81,11 @@ export const buildInstantTimelyBlock = (args: {
     ? [
         '【此刻的系统信息·仅你可见】',
         `现在是 ${formatFireTimeFull(args.nowMs, args.tz)}。`,
+        // 报时后面跟那句语境框定，跟前台聊天引的是同一份常量。这一轮是用户刚按下发送、
+        // 正等着回复，所以「对方还在跟你说话」是真的；少了它，深夜的那行钟就够让角色
+        // 每轮都往「快睡吧、明天见」上收——本地那条路修好了、云端没修的话，同一个角色
+        // 在两条路上的分寸会不一样。
+        TIME_FRAMING_CONVERSATIONAL,
         // buildUserClockHint 自带前导换行，没时差时返回空串。
         buildUserClockHint(args.nowMs, args.tz, { tzId: args.userTzId }, args.targetName),
       ].join('\n')
@@ -94,130 +93,153 @@ export const buildInstantTimelyBlock = (args: {
   return [head, ...blocks].join('\n');
 };
 
-// ─── 收件兜底 outbox ───
+// ─── 通知策略 ───
 
 /**
- * 前台可见时别弹系统通知（SW 的 shouldRenderNotification 认这个值）。
+ * 推了就一定弹（SW 的 shouldRenderNotification 认这个值）。
  *
- * 用户正盯着聊天窗口等这条回复，锁屏横幅在这时候弹出来纯属打扰——页面自己会把消息
- * 上屏。窗口不可见（切后台、锁屏、关了标签页）时照弹，不然「发完就自由了」这件事
- * 就没人来叫他。判定在 SW 那边按真实的窗口可见性做，worker 只负责表态。
- *
- * 只给即时对话用：主动消息是「到点找人说话」，前台可见时更该弹。
+ * 订阅是按 `userVisibleOnly: true` 建的，等于跟浏览器约好每条 push 都给用户一次可见
+ * 反馈；收了 push 却不弹是违约，Firefox 按配额把订阅退掉，iOS 过了新订阅那几天宽限期
+ * 一条就吊销，而且两边都是静默发生的——服务端只看得到后续推送返回 410。所以口径只有
+ * 两档：要推就一定弹，不想弹就压根别推（内容落服务端收件箱，等客户端上线补拉）。
+ * 即时对话是用户按下发送、正盯着「正在输入…」等的那一轮，必须推，于是选「一定弹」。
  */
-const NOTIFICATION_WHEN_HIDDEN = 'when-hidden';
+const NOTIFICATION_ALWAYS = 'always';
 
 /**
- * 把定稿的推送载荷补齐成「客户端真正会收到的那一份」。
+ * 静音只在用户看得见页面的那一刻生效（SW 的 resolveNotificationSilent 认这个值）。
  *
- * 库在发之前还会补 messageId / sessionId / timestamp / messageIndex / totalMessages
- * 和四个任务身份字段。其中前三个是「没有才补」，所以这里先按库的同一套规则算好写进去，
- * 库那边就会原样沿用——outbox 里留的那份和真发出去的那份于是逐字一致，客户端补收时
- * 按 messageId 对账不会错位。
+ * 用户正盯着聊天窗口时页面自己会把回复画上屏，横幅再响一声纯属打扰；切后台、锁屏、
+ * 关了标签页的那一刻则必须响，不然没人来叫他。判定得等到 SW 收到这条 push 才做——
+ * worker 在发推那一刻并不知道用户此刻在不在前台，写死 `silent: true` 的结果是切后台
+ * 也不响。
  *
- * 顺带把 notification.show 表态成 when-hidden（见上）。载荷本来就没有 notification 时
- * 不凭空造一个：SW 拿不到 title / body 只能弹一条空白横幅，而「没有 notification」这件事
- * 本身在 SW 那边有按 messageKind 的默认行为，替它做主只会把默认行为弄坏。
+ * 老 SW 不认这个字符串，会按 `Boolean('when-visible')` 算成恒静音，也就是退回这档
+ * 能力上线之前的行为，不会弹错也不会漏弹。
  */
-export const finalizeInstantPush = (
+export const NOTIFICATION_SILENT_WHEN_VISIBLE = 'when-visible';
+
+/**
+ * 通知栏折叠用的 tag：同一个角色永远只留最新那一条。
+ *
+ * 一次回复常常分成好几段推，逐条弹会把通知栏刷满；同 tag 的通知互相覆盖，看到的就只有
+ * 最新一条。即时对话的失败通知也用这个 tag（见 index.ts 的 sendInstantErrorPush）：
+ * 同一个角色的最新状态本来就只该留一条，成功的回复把之前那条「没能生成」盖掉正合适。
+ */
+export const instantNotificationTag = (charId: string) => `amsg-instant-${charId}`;
+
+/**
+ * 给即时对话的推送载荷表态通知策略：一定弹，按角色折叠，前台安静、后台叫人。
+ *
+ * 打扰不靠「不弹」来压，靠另外三个字段：
+ *   - `tag`      同一个角色只在通知栏留最新一条；
+ *   - `silent`   `when-visible`，用户看着页面时不响，切后台就照常响铃震动；
+ *   - `renotify` 只给这一轮的第一段。同 tag 的通知默认是静默替换，上一轮的横幅还
+ *                躺在通知栏没点掉时，新一轮的第一段就会被当成替换而不出声——那正是
+ *                用户会说「有时候响有时候不响」的那种情况。一轮响一声：第一段重新
+ *                提醒，后面几段安静地把内容更新掉。
+ *
+ * 只给即时对话用——主动消息是「到点找人说话」，那条路要响铃叫人，既不折叠也不静音。
+ *
+ * 载荷本来就没有 notification 时不凭空造一个：SW 拿不到 title / body 只能弹一条空白
+ * 横幅，而「没有 notification」这件事本身在 SW 那边有按 messageKind 的默认行为，
+ * 替它做主只会把默认行为弄坏。
+ *
+ * 信封的其余部分（messageId / sessionId / 时间戳 / 段号 / 任务身份）一律交给库去补——
+ * 客户端补收现在读的是服务端账本，账本里的那份就是库发出去的那份，没有第二处需要
+ * 逐字对齐的副本了。
+ */
+export const applyInstantNotificationPolicy = (
   payload: Record<string, unknown>,
-  index: number,
-  total: number,
-  ids: {
-    /** 任务行 id（字符串化）；没有时用随机串，跟库的兜底同语义。 */
-    taskRowId: string | null;
-    taskUuid: string | null;
-    occurrenceMs: number;
-    nowMs: number;
-    randomId: string;
-  },
+  charId?: string | null,
+  isFirstSegment = false,
 ): Record<string, unknown> => {
-  const suffix = `@${ids.occurrenceMs}`;
-  const messageIdBase = ids.taskRowId != null
-    ? `msg_task_${ids.taskRowId}${suffix}`
-    : `msg_${ids.randomId}`;
-  const sessionId = ids.taskRowId != null
-    ? `sess_task_${ids.taskRowId}${suffix}`
-    : `sess_${ids.randomId}`;
   const notification = payload.notification;
   const hasNotification = !!notification && typeof notification === 'object' && !Array.isArray(notification);
+  if (!hasNotification) return payload;
+  const meta = payload.metadata;
+  const metaCharId = meta && typeof meta === 'object' && !Array.isArray(meta)
+    ? (meta as Record<string, unknown>).charId
+    : undefined;
+  const target = charId || (typeof metaCharId === 'string' ? metaCharId : '');
   return {
     ...payload,
-    ...(hasNotification
-      ? { notification: { ...(notification as Record<string, unknown>), show: NOTIFICATION_WHEN_HIDDEN } }
-      : {}),
-    messageId: `${messageIdBase}_hook_${index}`,
-    sessionId,
-    timestamp: new Date(ids.nowMs).toISOString(),
-    messageIndex: index + 1,
-    totalMessages: total,
-    // 库的 stampTaskIdentity 会原样覆写这四个，写成一样的值只是让 outbox 那份也带上。
-    // 任务行 id 在 D1 里是整数，转不出数字就照实报 null，别塞一个 NaN 出去。
-    taskId: ids.taskRowId != null && Number.isFinite(Number(ids.taskRowId))
-      ? Number(ids.taskRowId)
-      : null,
-    taskUuid: ids.taskUuid,
-    recurrenceType: 'none',
-    occurrenceMs: ids.occurrenceMs,
+    notification: {
+      ...(notification as Record<string, unknown>),
+      show: NOTIFICATION_ALWAYS,
+      silent: NOTIFICATION_SILENT_WHEN_VISIBLE,
+      // 认不出是哪个角色时就不折叠：通知栏里多几条只是吵，两个角色共用一个 tag 会
+      // 互相顶掉，那是真的丢消息。renotify 跟着 tag 走——没有 tag 时带上它，
+      // showNotification 会直接抛 TypeError。
+      ...(target
+        ? { tag: instantNotificationTag(target), ...(isFirstSegment ? { renotify: true } : {}) }
+        : {}),
+    },
   };
-};
-
-/** 定稿后的载荷 → outbox 条目（messageId / sessionId 已经在载荷上了）。 */
-export const toOutboxEntries = (
-  payloads: Array<Record<string, unknown>>,
-  nowMs: number,
-): AmsgChatOutboxEntry[] =>
-  payloads.map((payload) => ({
-    messageId: String(payload.messageId ?? ''),
-    sessionId: String(payload.sessionId ?? ''),
-    at: nowMs,
-    payload,
-  }));
-
-/**
- * 把这一轮的产物写进角色的 outbox。**不论 push 发得出去发不出去都写**——
- * push 静默丢失正是它要兜的那件事。
- *
- * best-effort：写不进去不能连累这次发送，只是丢了兜底能力，吼一声。
- */
-export const writeChatOutbox = async (
-  writeState: ((
-    namespace: string,
-    entries: Array<{ key: string; value: string | null; updatedAt?: number }>,
-  ) => Promise<unknown>) | undefined,
-  charId: string,
-  current: AmsgChatOutbox | null,
-  entries: AmsgChatOutboxEntry[],
-): Promise<AmsgChatOutbox | null> => {
-  if (typeof writeState !== 'function' || entries.length === 0) return current;
-  const next = appendChatOutbox(current, entries);
-  try {
-    await writeState(amsgStateNamespace(charId), [
-      { key: AMSG_CHAT_OUTBOX_KEY, value: JSON.stringify(next) },
-    ]);
-    return next;
-  } catch (error) {
-    console.warn('[amsg:instant-chat] outbox 写入失败（这次照常发送，但推送丢了客户端补不回来）', error);
-    return current;
-  }
 };
 
 // ─── POST /instant-chat ───
 
-/** 上游 worker 的两个入口（注入进来只为单测能替身）。 */
+/**
+ * 上游 worker 里这条路用得到的入口（注入进来只为单测能替身）。
+ *
+ * 只有 fetch：这条路做的是「转发两个加密信封」，跑任务是 DO 那边的事
+ * （`upstream.runTask`，见 index.ts 的 InstantTickDO）。
+ */
 export interface InstantChatUpstream {
   fetch(request: Request, env: unknown): Promise<Response>;
-  scheduled(event: { scheduledTime: number; cron: string }, env: unknown): Promise<void>;
 }
 
-/** CF 给 fetch 的第三个参数，这里只用 waitUntil。 */
-export interface InstantChatExecutionCtx {
-  waitUntil(promise: Promise<unknown>): void;
+/**
+ * 起跳用的 Durable Object namespace binding（`INSTANT_TICK`）。
+ *
+ * 只声明这里真正会调的两个方法：包装层不需要完整的 DO 类型，单测也就能拿个字面量当替身。
+ */
+export interface InstantTickNamespace {
+  idFromName(name: string): unknown;
+  get(id: unknown): { kick(uuid: string): Promise<unknown> };
 }
 
 interface InstantChatEnv {
   AMSG_SERVER_TOKEN?: string;
+  /** 没有它就没法起跳；老版本 Worker 上是 undefined，见 kickInstantTick。 */
+  INSTANT_TICK?: InstantTickNamespace;
 }
+
+export type InstantTickKickResult =
+  | { ok: true }
+  | { ok: false; reason: 'missing-binding' }
+  | { ok: false; reason: 'kick-failed'; error: unknown };
+
+/**
+ * 叫醒 DO，让它把刚落库的这条立刻捡走。
+ *
+ * 这一跳过去挂在 `ctx.waitUntil` 上，而那个只有 30 秒——响应发出（或客户端断开）
+ * 之后就开始倒计时，一轮带工具循环的生成必被砍在半路，日志里只留一条
+ * 「waitUntil() tasks did not complete」。DO 的 alarm 是独立 invocation，
+ * 拿满 15 分钟墙钟，跟这个已经回了 202 的请求彻底脱钩，才对得上
+ * INSTANT_TOTAL_TIMEOUT_MS 一直以来的设计意图。
+ *
+ * **一条任务一个 DO 实例**（实例名就是任务 uuid）：每个实例只跑自己那一条
+ * （`upstream.runTask(uuid)`），所以几条聊天同时在跑也互不排队、更不会重复生成。
+ * 这依赖上游 2.6.0-next.16 起的 runTask——在那之前只有「扫一遍所有到期任务」，
+ * 多实例并发扫同一批会各生成一次，只能退回单实例串行。
+ *
+ * 两种失败分开报，因为要用户做的事完全不同：binding 压根不在 = Worker 是旧的，
+ * 得去更新；叫醒失败 = 临时故障，任务已经在库里，下一分钟的 cron 会捡。
+ */
+export const kickInstantTick = async (env: unknown, uuid: string): Promise<InstantTickKickResult> => {
+  const namespace = (env as InstantChatEnv | null | undefined)?.INSTANT_TICK;
+  if (!namespace || typeof namespace.get !== 'function' || typeof namespace.idFromName !== 'function') {
+    return { ok: false, reason: 'missing-binding' };
+  }
+  try {
+    await namespace.get(namespace.idFromName(uuid)).kick(uuid);
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, reason: 'kick-failed', error };
+  }
+};
 
 /** 上游的 UUID v4 判定（照抄它的正则，前端拿同一个 X-User-Id 跑两边）。 */
 const UUID_V4_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -240,69 +262,34 @@ export const constantTimeEqual = async (a: string, b: string): Promise<boolean> 
 // ─── 上游那句「服务器内部错误」背后到底出了什么事 ───
 
 /**
- * 上游 fetch 里抛出来的异常，它自己 catch 掉、只回一句写死的「服务器内部错误」，
- * 真实原因（`D1_ERROR: no such table: message_outbox`、`D1 DB storage operation
- * exceeded timeout` 之类）只写进它自己的 console.error。
+ * 从上游的错误响应体里取出真实原因，拼成一行给用户看的话。
  *
- * 结果是用户看到的报错跟他要做的事完全对不上：「云端状态没传上去：服务器内部错误」
- * 既不告诉他哪儿坏了，也不告诉他该点哪里。那行日志躺在 Cloudflare 面板里，得先知道
- * 有这么个地方才找得到。
+ * 上游 catch 到异常后回的是一句写死的「服务器内部错误」，光凭它用户既不知道哪儿坏了、
+ * 也不知道该点哪里。真因（`D1_ERROR: no such table: message_outbox`、
+ * `D1 DB storage operation exceeded timeout` 之类）由 amsg-server 2.6.0-next.16 起
+ * 放在 `error.cause` 里一并回来，取出来原样端到用户面前。
  *
- * 所以这里在 console.error 上永久搭一个旁听：认出上游那条前缀就记下来，随后失败时
- * 一起回给客户端。**只听不吞**——原来的 console.error 照常调用，wrangler tail 里
- * 那一行一个字都不少。
- */
-const UPSTREAM_FATAL_LOG_PREFIX = '[amsg single-user] fetch() unhandled error:';
-
-/** 最近一条上游致命日志；seq 单调递增，调用方用它判断「这一跳有没有新的」。 */
-let upstreamFatalLog: { seq: number; message: string } = { seq: 0, message: '' };
-let fatalLogTap: { patched: (...args: unknown[]) => void; original: typeof console.error } | null = null;
-
-/**
- * 装旁听。装上就不摘：摘挂都要改全局 console，同一个 isolate 里并发的请求会互相踩，
- * 而这个旁听本身没有副作用，一直挂着最省事。
- */
-export const installUpstreamFatalLogTap = (): void => {
-  if (fatalLogTap) return;
-  const original = console.error;
-  const patched = (...args: unknown[]) => {
-    if (typeof args[0] === 'string' && args[0].startsWith(UPSTREAM_FATAL_LOG_PREFIX)) {
-      const detail = args.slice(1)
-        .map((arg) => (arg instanceof Error ? arg.message : typeof arg === 'string' ? arg : String(arg)))
-        .join(' ')
-        .trim();
-      if (detail) upstreamFatalLog = { seq: upstreamFatalLog.seq + 1, message: detail };
-    }
-    original.apply(console, args as []);
-  };
-  fatalLogTap = { patched, original };
-  console.error = patched as typeof console.error;
-};
-
-/** 单测用：清空记录并摘掉旁听（外面还套了别人时就不动它，只当没装过）。 */
-export const __resetUpstreamFatalLogTap = (): void => {
-  upstreamFatalLog = { seq: 0, message: '' };
-  if (fatalLogTap && console.error === fatalLogTap.patched) console.error = fatalLogTap.original;
-  fatalLogTap = null;
-};
-
-/**
- * 转发一次内部请求，顺带把这一跳里上游写下的致命日志捞出来。
+ * 只在 5xx 上取：4xx 是「你请求不对」，上游的 message 本身就说清楚了，再缀一段
+ * 内部细节只会让人更迷惑。
  *
- * 用 seq 差值判断而不是清空重读：旁听是全局的，同一瞬间可能还有别的请求在跑。
- * 拿到的日志只在「这一跳确实回了 5xx」时才当作原因用（上游只有真抛异常才会既写
- * 这行日志又回 500），单用户 worker 上这两件事基本不可能分属两个请求。
+ * 拼进 `upstreamLog` 而不是新起一个字段：这条链路的消费方（activeMsgClient 组装
+ * 用户可见报错时）读的就是它。
  */
-const forwardWithFatalLog = async (
-  upstream: InstantChatUpstream,
-  request: Request,
-  env: unknown,
-): Promise<{ response: Response; fatalLog: string | null }> => {
-  installUpstreamFatalLogTap();
-  const seqBefore = upstreamFatalLog.seq;
-  const response = await upstream.fetch(request, env);
-  const fatalLog = upstreamFatalLog.seq !== seqBefore ? upstreamFatalLog.message : null;
-  return { response, fatalLog: response.status >= 500 ? fatalLog : null };
+const readUpstreamCause = (status: number, body: unknown): string | null => {
+  if (status < 500) return null;
+  const cause = (body as { error?: { cause?: { name?: unknown; message?: unknown; code?: unknown } } } | null)
+    ?.error?.cause;
+  if (!cause) return null;
+  const name = typeof cause.name === 'string' ? cause.name : '';
+  const message = typeof cause.message === 'string' ? cause.message : '';
+  const code = typeof cause.code === 'string' ? cause.code : '';
+  // 前缀只在能多说明一点事情的时候才加：
+  //   code 常常就是 message 的开头（`D1_ERROR: no such table …`），再缀一遍是噪音；
+  //   没有 code 时退回 name，但光秃秃的 'Error' 谁都知道，不如不写。
+  const head = code
+    ? (message.startsWith(code) ? '' : code)
+    : (name && name !== 'Error' ? name : '');
+  return [head, message].filter(Boolean).join(': ') || null;
 };
 
 // ─── 云端状态那一步的重试 ───
@@ -340,6 +327,34 @@ const STATE_FORWARD_BACKOFF_MS = [0, 400, 1200];
 
 const sleep = (ms: number) => new Promise((resolve) => { setTimeout(resolve, ms); });
 
+/** gzip 流的头两个字节（RFC 1952）。压没压过看这个，不看那个头。 */
+const GZIP_MAGIC = [0x1f, 0x8b];
+
+/**
+ * 把请求正文读成字符串，`Content-Encoding: gzip` 的在这一步还原。
+ *
+ * 跟上游 `readRequestBody` 认同一个头（客户端只有一个请求出口，两边端点得收同一种
+ * 东西），但这份是自己写的：上游那个函数住在 `@rei-standard/amsg-server` 包根，而包根
+ * 顶层 import 了 Node 的 `crypto`，这个 worker 是明确不开 `nodejs_compat` 的。
+ *
+ * 判据是**魔数不是头**。`Content-Encoding` 是标准头，链路上的边缘节点会替你把请求体
+ * 解开却把头留着（SullyOS 在 instant-push 那条路上实测过这件事，那边索性换了个自定义
+ * 头来躲开）——只看头的话，这种时候会拿明文去喂解压器，报出来是一句让人找不着北的
+ * 「请求体不是合法的 JSON」。看魔数则三种情形都对：没解过的解开、替我们解过的原样读、
+ * 压根没压的原样读。
+ */
+const readMaybeGzippedBody = async (request: Request): Promise<string> => {
+  if ((request.headers.get('content-encoding') ?? '').toLowerCase() !== 'gzip') {
+    return request.text();
+  }
+  const raw = new Uint8Array(await request.arrayBuffer());
+  if (raw.length < 2 || raw[0] !== GZIP_MAGIC[0] || raw[1] !== GZIP_MAGIC[1]) {
+    return new TextDecoder().decode(raw);
+  }
+  const stream = new Response(raw).body!.pipeThrough(new DecompressionStream('gzip'));
+  return new Response(stream).text();
+};
+
 /** 客户端预加密的信封形状（上游 parseEncryptedBody 认的就是这三个字段）。 */
 const isEncryptedEnvelope = (value: unknown): boolean => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
@@ -362,16 +377,13 @@ const isEncryptedEnvelope = (value: unknown): boolean => {
 export const handleInstantChat = async (args: {
   request: Request;
   env: InstantChatEnv;
-  ctx: InstantChatExecutionCtx | undefined;
   upstream: InstantChatUpstream;
   /** 带 CORS 头的 JSON 响应器（CORS 头只在 index.ts 存一份）。 */
   json: (status: number, body: unknown) => Response;
-  now?: () => number;
   /** 云端状态那步的重试梯子（单测传全零，别真等）。 */
   stateBackoffMs?: number[];
 }): Promise<Response> => {
-  const { request, env, ctx, upstream, json } = args;
-  const now = args.now ?? Date.now;
+  const { request, env, upstream, json } = args;
   const stateBackoffMs = args.stateBackoffMs ?? STATE_FORWARD_BACKOFF_MS;
 
   const fail = (status: number, code: string, message: string, extra?: Record<string, unknown>) =>
@@ -391,9 +403,12 @@ export const handleInstantChat = async (args: {
   if (!UUID_V4_RE.test(userId)) return fail(400, 'INVALID_USER_ID_FORMAT', 'X-User-Id 必须是 UUID v4 格式');
 
   // ── 外壳是明文 JSON，里头两个信封是客户端加密好的，包装层只搬不看。
+  //    body 超阈值时客户端会先 gzip 再发（这条路上的正文是整轮聊天，最大的一份），
+  //    所以读之前先过一道解压。
   let body: Record<string, unknown>;
   try {
-    const parsed = await request.json();
+    const text = await readMaybeGzippedBody(request);
+    const parsed = JSON.parse(text);
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('not an object');
     body = parsed as Record<string, unknown>;
   } catch {
@@ -432,21 +447,24 @@ export const handleInstantChat = async (args: {
   //    5xx 是 D1 冷启动那类瞬时错误的典型长相，按梯子重试几次（见 STATE_FORWARD_BACKOFF_MS）；
   //    4xx 是上游判出来的业务错（体积超限、时间戳不合法……），重试多少次都是同一个答案，立刻打回。
   let stateResponse!: Response;
-  let stateFatalLog: string | null = null;
+  let stateBody: unknown = null;
+  let stateCause: string | null = null;
   for (let attempt = 0; attempt < stateBackoffMs.length; attempt += 1) {
     if (attempt > 0) {
-      console.warn(`[amsg:instant-chat] 云端状态第 ${attempt} 次没写进去（${stateFatalLog ?? stateResponse.status}），重试`);
+      console.warn(`[amsg:instant-chat] 云端状态第 ${attempt} 次没写进去（${stateCause ?? stateResponse.status}），重试`);
       await sleep(stateBackoffMs[attempt]);
     }
-    ({ response: stateResponse, fatalLog: stateFatalLog } = await forwardWithFatalLog(
-      upstream,
+    stateResponse = await upstream.fetch(
       new Request(internalUrl('/client-state'), {
         method: 'PUT',
         headers: encryptedHeaders,
         body: JSON.stringify(body.statePayload),
       }),
       env,
-    ));
+    );
+    // 响应体只能读一次，这里读完存着：失败分支要拿它报原因，成功分支要拿它查 skippedEntries。
+    stateBody = await readBody(stateResponse);
+    stateCause = readUpstreamCause(stateResponse.status, stateBody);
     if (stateResponse.status < 500) break;
   }
   if (!stateResponse.ok) {
@@ -456,8 +474,8 @@ export const handleInstantChat = async (args: {
         code: 'INSTANT_CHAT_STATE_FAILED',
         message: '云端状态没传上去，这条没发出去',
         step: 'client-state',
-        upstream: await readBody(stateResponse),
-        ...(stateFatalLog ? { upstreamLog: stateFatalLog } : {}),
+        upstream: stateBody,
+        ...(stateCause ? { upstreamLog: stateCause } : {}),
       },
     });
   }
@@ -466,7 +484,6 @@ export const handleInstantChat = async (args: {
   // 这次的 updatedAt 反而比云端存量旧）时绝不能落任务——到点的 fire 读到的是上一轮的
   // chat 段，要么对旧消息答非所问、要么硬失败，用户却已经拿到 202 在等「正在输入」。
   // 「状态没落地就不落任务」正是这条两步串行存在的意义，这里把它守完整。
-  const stateBody = await readBody(stateResponse);
   const skippedEntries = (stateBody as {
     data?: { skippedEntries?: Array<{ namespace?: unknown; key?: unknown }> };
   } | null)?.data?.skippedEntries;
@@ -484,8 +501,7 @@ export const handleInstantChat = async (args: {
   // ② 任务落库 = 受理（顶替上一条也在这一步里：任务体的 supersedesUuid 由上游在
   //    同一事务里处理）。到这一步返回 202 之前，行已经在 D1 里了，
   //    下面那一跳只是让它快点跑起来，跑不成还有每分钟的 cron。
-  const { response: taskResponse, fatalLog: taskFatalLog } = await forwardWithFatalLog(
-    upstream,
+  const taskResponse = await upstream.fetch(
     new Request(internalUrl('/schedule-message'), {
       method: 'POST',
       headers: encryptedHeaders,
@@ -495,6 +511,7 @@ export const handleInstantChat = async (args: {
   );
   const taskBody = await readBody(taskResponse);
   if (!taskResponse.ok) {
+    const taskCause = readUpstreamCause(taskResponse.status, taskBody);
     return json(taskResponse.status, {
       success: false,
       error: {
@@ -502,7 +519,7 @@ export const handleInstantChat = async (args: {
         message: '任务没建起来，这条没发出去',
         step: 'schedule-message',
         upstream: taskBody,
-        ...(taskFatalLog ? { upstreamLog: taskFatalLog } : {}),
+        ...(taskCause ? { upstreamLog: taskCause } : {}),
       },
     });
   }
@@ -513,17 +530,28 @@ export const handleInstantChat = async (args: {
     });
   }
 
-  // ③ 立刻起一跳把它捡走（immediate 任务落库即到期）。isolate 被回收就退回
-  //    cron 兜底，正确性两头都在。
-  if (ctx && typeof ctx.waitUntil === 'function') {
-    ctx.waitUntil(
-      upstream.scheduled({ scheduledTime: now(), cron: INSTANT_TICK_CRON }, env).catch((error) => {
-        // 这一跳只是「快」，跑挂了下一分钟的 cron 照样会捡起来，不该影响已经回出去的 202。
-        console.warn('[amsg:instant-chat] 立即触发失败（等 cron 兜底）', error);
-      }),
-    );
-  } else {
-    console.warn('[amsg:instant-chat] 运行时没给 ctx，跳过立即触发，等 cron 兜底');
+  // ③ 叫醒 DO，让它立刻把这条捡走（immediate 任务落库即到期）。
+  //    生成跑在它的 alarm 里 —— 独立 invocation、15 分钟墙钟，见 kickInstantTick。
+  const kicked = await kickInstantTick(env, uuid);
+  if (!kicked.ok && kicked.reason === 'missing-binding') {
+    // 任务已经在库里了，所以这不是「没发出去」，而是「这台 Worker 跑不动它」：
+    // 每分钟的 cron 仍会把它捡走，但那条路上没有为即时对话放宽的超时，用户会等很久
+    // 甚至等不到。与其让他对着「正在输入」干等，不如现在就说清楚该去点哪里。
+    console.error('[amsg:instant-chat] 没有 INSTANT_TICK 绑定：这台 Worker 是旧版本，需要更新');
+    return json(503, {
+      success: false,
+      error: {
+        code: 'INSTANT_CHAT_WORKER_OUTDATED',
+        message: '即时对话需要更新 Worker：打开「系统设置 → 主动消息 2.0 → 配置」，点「更新 Worker」。',
+        step: 'instant-tick',
+        uuid,
+      },
+    });
+  }
+  if (!kicked.ok) {
+    // 叫醒失败但绑定在 = 临时故障。任务已落库，下一分钟的 cron 会捡起来，
+    // 不该把已经受理的这一轮报成失败。
+    console.warn('[amsg:instant-chat] 叫醒 DO 失败（等 cron 兜底）', kicked.error);
   }
 
   return json(202, { status: 'accepted', uuid });

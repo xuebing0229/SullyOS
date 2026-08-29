@@ -5,6 +5,7 @@ import {
     getBlobForRef,
     isBlobRef,
 } from './blobRef';
+import { fetchBlobForShare, shareOrDownloadBlob } from './shareExport';
 
 export const GALLERY_EXPORT_MAX_BYTES = 32 * 1024 * 1024;
 export const GALLERY_EXPORT_ANDROID_BASE64_MAX_BYTES = 12 * 1024 * 1024;
@@ -258,28 +259,6 @@ async function resolveGallerySource(value: string): Promise<ResolvedSource> {
     }
 }
 
-function triggerBrowserDownload(source: ResolvedSource, displayName: string): void {
-    const anchor = document.createElement('a');
-    anchor.download = displayName;
-    anchor.rel = 'noopener';
-
-    let objectUrl: string | null = null;
-    if (source.kind === 'blob') {
-        objectUrl = URL.createObjectURL(source.blob);
-        anchor.href = objectUrl;
-    } else {
-        anchor.href = source.sourceUrl;
-        anchor.target = '_blank';
-    }
-
-    document.body.appendChild(anchor);
-    anchor.click();
-    anchor.remove();
-    if (objectUrl) {
-        window.setTimeout(() => URL.revokeObjectURL(objectUrl!), 10_000);
-    }
-}
-
 export async function saveGalleryImageToDevice(
     image: GalleryImage,
     characterName: string,
@@ -296,7 +275,10 @@ export async function saveGalleryImageToDevice(
     const albumName = sanitizeGalleryPathSegment(characterName);
 
     if (!(Capacitor.isNativePlatform() && Capacitor.getPlatform() === 'android')) {
-        triggerBrowserDownload(source, displayName);
+        const blob = source.kind === 'blob'
+            ? source.blob
+            : await fetchBlobForShare(source.sourceUrl, source.hintedFormat?.mimeType || 'image/png');
+        await shareOrDownloadBlob({ blob, fileName: displayName, shareTitle: '保存相册图片' });
         return { native: false, displayName };
     }
 

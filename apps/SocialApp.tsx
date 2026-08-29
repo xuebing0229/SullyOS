@@ -4,12 +4,15 @@ import { useOS } from '../context/OSContext';
 import { DB } from '../utils/db';
 import { CharacterProfile, SocialPost, SocialComment, SubAccount, SocialAppProfile } from '../types';
 import { ContextBuilder } from '../utils/context';
-import { processImage } from '../utils/file';
+import { processImageToBlob } from '../utils/file';
+import { putImageBlob } from '../utils/blobRef';
 import Modal from '../components/os/Modal';
 import { safeResponseJson } from '../utils/safeApi';
 import { CharacterGroupFilterBar, filterCharactersByGroup, GROUP_FILTER_ALL } from '../components/character/CharacterGroupFilter';
 import { House, User, Package, Warning } from '@phosphor-icons/react';
 import { mergeSocialComments, prependUniqueSocialPosts, updateSocialPost } from '../utils/socialFeedMerge';
+import { trackEvent } from '../utils/analytics';
+import TokenImg from '../components/os/TokenImg';
 
 const TWEMOJI_BASE = 'https://cdnjs.cloudflare.com/ajax/libs/twemoji/14.0.2/72x72';
 const twemojiUrl = (codepoint: string) => `${TWEMOJI_BASE}/${codepoint}.png`;
@@ -339,6 +342,7 @@ const SocialApp: React.FC = () => {
             ...prev,
             [charId]: [...(prev[charId] || []), newAcct]
         }));
+        trackEvent('给角色添加一个马甲');
     };
 
     const updateSubAccount = (charId: string, acctId: string, field: keyof SubAccount, value: string) => {
@@ -359,10 +363,13 @@ const SocialApp: React.FC = () => {
         const file = e.target.files?.[0];
         if (file) {
             try {
-                const base64 = await processImage(file, { skipCompression: true });
-                setUserBgImage(base64);
+                // 背景图存二进制：assets 行里只留 blobref 令牌，渲染走 TokenImg。
+                // 旧令牌不主动删（同一张图可能被别处引用），交给孤儿 GC。
+                const blob = await processImageToBlob(file, { skipCompression: true });
+                const ref = await putImageBlob(blob);
+                setUserBgImage(ref);
                 // Save to DB Assets
-                await DB.saveAsset('spark_user_bg', base64);
+                await DB.saveAsset('spark_user_bg', ref);
                 addToast('背景图已更新', 'success');
             } catch (err) {
                 addToast('图片处理失败', 'error');
@@ -374,8 +381,12 @@ const SocialApp: React.FC = () => {
         const file = e.target.files?.[0];
         if (file) {
             try {
-                const base64 = await processImage(file);
-                setSocialProfile(prev => ({ ...prev, avatar: base64 }));
+                // 头像同样只存令牌；这里改的是 socialProfile 内存态，
+                // 落库在 saveUserProfileChanges（点「保存资料」时整个 JSON 写回）。
+                const blob = await processImageToBlob(file);
+                const ref = await putImageBlob(blob);
+                setSocialProfile(prev => ({ ...prev, avatar: ref }));
+                trackEvent('更换 Spark 头像');
             } catch (err: any) {
                 addToast(err.message, 'error');
             }
@@ -384,7 +395,7 @@ const SocialApp: React.FC = () => {
 
     const saveUserProfileChanges = async () => {
         localStorage.setItem('spark_user_id', userSparkId);
-        // Save Profile to DB Assets (contains base64 avatar)
+        // Save Profile to DB Assets（avatar 是 blobref 令牌，二进制在 IndexedDB）
         await DB.saveAsset('spark_social_profile', JSON.stringify(socialProfile));
         setIsEditingId(false);
         addToast('主页资料已保存 (仅在 Spark 生效)', 'success');
@@ -424,6 +435,7 @@ const SocialApp: React.FC = () => {
         const controller = new AbortController();
         refreshRequestRef.current = controller;
         setIsRefreshing(true);
+        trackEvent('刷新 Spark 推荐流');
         try {
             const shuffledChars = [...characters].sort(() => 0.5 - Math.random());
             const selectedChars = shuffledChars.slice(0, Math.min(3, characters.length));
@@ -782,6 +794,7 @@ ${identityMap}
             await DB.saveMessage({ charId: isGroup ? 'user' : targetId, groupId: isGroup ? targetId : undefined, role: 'user', type: 'social_card', content: '[分享帖子]', metadata: { post: selectedPost } });
             setShowShareModal(false);
             addToast('分享成功', 'success');
+            trackEvent('分享帖子到聊天');
         } catch (e) { addToast('分享失败', 'error'); }
     };
 
@@ -812,7 +825,7 @@ ${identityMap}
         addToast('发布成功', 'success');
     };
 
-    const handleDeletePost = (postId: string) => { removePostFromFeed(postId); addToast('帖子已删除', 'success'); };
+    const handleDeletePost = (postId: string) => { removePostFromFeed(postId); addToast('帖子已删除', 'success'); trackEvent('删除一条帖子'); };
     const handleLike = (e: any, post: SocialPost) => {
         e.stopPropagation();
         updatePostInFeed(post.id, current => ({
@@ -820,6 +833,7 @@ ${identityMap}
             isLiked: !current.isLiked,
             likes: current.isLiked ? current.likes - 1 : current.likes + 1,
         }));
+        trackEvent('点赞一条帖子', { action: post.isLiked ? 'unlike' : 'like' });
     };
     
     const handleSendComment = async () => { 
@@ -874,6 +888,7 @@ ${identityMap}
         DB.clearSocialPosts();
         setShowSettings(false);
         addToast('推荐流已清空', 'success');
+        trackEvent('清空 Spark 推荐流');
     };
 
     // --- Renderers ---
@@ -894,7 +909,7 @@ ${identityMap}
             <div className="p-3">
                 <div className="flex justify-between items-center">
                     <div className="flex items-center gap-2 min-w-0">
-                        <img src={post.authorAvatar} className="w-5 h-5 rounded-full object-cover shrink-0 ring-1 ring-white/50" />
+                        <TokenImg value={post.authorAvatar} className="w-5 h-5 rounded-full object-cover shrink-0 ring-1 ring-white/50" />
                         <span className="text-[11px] text-slate-700 truncate font-medium">{post.authorName}</span>
                     </div>
                     <div className="flex items-center gap-1 text-slate-400 group-hover:text-slate-600 transition-colors">
@@ -927,10 +942,10 @@ ${identityMap}
                     <div className="flex items-center justify-between px-4 bg-white/60 backdrop-blur-xl border-b border-white/20 shrink-0 relative z-20" style={{ paddingTop: 'max(12px, var(--safe-top))', paddingBottom: '12px' }}>
                         <button onClick={handleClosePost} className="p-2 -m-2 active:opacity-60"><Icons.Back /></button>
                         <div className="flex items-center gap-2">
-                            <img src={selectedPost.authorAvatar} className="w-8 h-8 rounded-full object-cover border border-white/50" />
+                            <TokenImg value={selectedPost.authorAvatar} className="w-8 h-8 rounded-full object-cover border border-white/50" />
                             <span className="text-sm font-bold text-slate-800">{selectedPost.authorName}</span>
                         </div>
-                        <button onClick={() => setShowShareModal(true)} className="p-2 -m-2 active:opacity-60"><Icons.Share onClick={() => setShowShareModal(true)} className="w-6 h-6 text-slate-800 cursor-pointer hover:text-[#ff2442]" /></button>
+                        <button onClick={() => { setShowShareModal(true); trackEvent('打开分享帖子面板'); }} className="p-2 -m-2 active:opacity-60"><Icons.Share onClick={() => setShowShareModal(true)} className="w-6 h-6 text-slate-800 cursor-pointer hover:text-[#ff2442]" /></button>
                     </div>
 
                     {/* Scrollable Area */}
@@ -963,7 +978,7 @@ ${identityMap}
                                 {selectedPost.comments.length === 0 && !loadingComments && <div className="text-center text-slate-300 text-xs py-10">快来抢沙发...</div>}
                                 {selectedPost.comments.map(c => (
                                     <div key={c.id} className="flex gap-3 animate-fade-in group">
-                                        <img src={c.authorAvatar} className="w-9 h-9 rounded-full object-cover shrink-0 border border-slate-100" />
+                                        <TokenImg value={c.authorAvatar} className="w-9 h-9 rounded-full object-cover shrink-0 border border-slate-100" />
                                         <div className="flex-1">
                                             <div className="flex justify-between items-start">
                                                 <span className={`text-xs font-bold ${c.isCharacter ? 'text-slate-800' : 'text-slate-500'}`}>{c.authorName}</span>
@@ -1001,7 +1016,7 @@ ${identityMap}
                                     <span className="text-[10px] font-medium">{selectedPost.likes}</span>
                                 </div>
                                 <div className="flex flex-col items-center gap-0.5">
-                                    <Icons.Star filled={selectedPost.isCollected} onClick={() => updatePostInFeed(selectedPost.id, current => ({ ...current, isCollected: !current.isCollected }))} className="w-6 h-6" />
+                                    <Icons.Star filled={selectedPost.isCollected} onClick={() => { updatePostInFeed(selectedPost.id, current => ({ ...current, isCollected: !current.isCollected })); trackEvent('收藏一条帖子', { action: selectedPost.isCollected ? 'uncollect' : 'collect' }); }} className="w-6 h-6" />
                                     <span className="text-[10px] font-medium">{selectedPost.isCollected ? '已收藏' : '收藏'}</span>
                                 </div>
                             </div>
@@ -1028,7 +1043,7 @@ ${identityMap}
                         {filterCharactersByGroup(characters, characterGroups, identityGroupId).map(c => (
                             <div key={c.id} className="space-y-3 pb-4 border-b border-slate-50">
                                 <div className="flex items-center gap-2">
-                                    <img src={c.avatar} className="w-6 h-6 rounded-full object-cover" />
+                                    <TokenImg value={c.avatar} className="w-6 h-6 rounded-full object-cover" />
                                     <span className="text-sm font-bold text-slate-700">{c.name}</span>
                                     <button onClick={() => addSubAccount(c.id)} className="ml-auto text-[10px] bg-[#ff2442] text-white px-2 py-1 rounded-full shadow-sm active:scale-95 transition-transform">+ 添加马甲</button>
                                 </div>
@@ -1084,7 +1099,7 @@ ${identityMap}
                 <div className="grid grid-cols-4 gap-4 p-2">
                     {filterCharactersByGroup(characters, characterGroups, shareGroupId).map(c => (
                         <button key={c.id} onClick={() => handleShare(c.id, false)} className="flex flex-col items-center gap-2 group">
-                            <img src={c.avatar} className="w-12 h-12 rounded-full object-cover border border-slate-100 group-active:scale-90 transition-transform" />
+                            <TokenImg value={c.avatar} className="w-12 h-12 rounded-full object-cover border border-slate-100 group-active:scale-90 transition-transform" />
                             <span className="text-[10px] text-slate-600 truncate w-full text-center">{c.name}</span>
                         </button>
                     ))}
@@ -1153,10 +1168,10 @@ ${identityMap}
                     <div className="h-11 flex items-center justify-between px-4">
                         <button onClick={closeApp} className="p-1"><Icons.Back onClick={closeApp} /></button>
                         <div className="flex gap-6 text-base font-bold text-slate-300">
-                            <button className={`${activeTab === 'home' ? 'text-slate-800 scale-110 border-b-2 border-[#ff2442] pb-1' : 'hover:text-slate-500'} transition-all`} onClick={() => setActiveTab('home')}>发现</button>
-                            <button className={`${activeTab === 'me' ? 'text-slate-800 scale-110 border-b-2 border-[#ff2442] pb-1' : 'hover:text-slate-500'} transition-all`} onClick={() => setActiveTab('me')}>我的</button>
+                            <button className={`${activeTab === 'home' ? 'text-slate-800 scale-110 border-b-2 border-[#ff2442] pb-1' : 'hover:text-slate-500'} transition-all`} onClick={() => { setActiveTab('home'); trackEvent('切换 Spark 主标签', { tab: 'home' }); }}>发现</button>
+                            <button className={`${activeTab === 'me' ? 'text-slate-800 scale-110 border-b-2 border-[#ff2442] pb-1' : 'hover:text-slate-500'} transition-all`} onClick={() => { setActiveTab('me'); trackEvent('切换 Spark 主标签', { tab: 'me' }); }}>我的</button>
                         </div>
-                        <button onClick={() => setShowSettings(true)} className="text-slate-800 font-bold text-sm">管理</button>
+                        <button onClick={() => { setShowSettings(true); trackEvent('打开身份管理面板'); }} className="text-slate-800 font-bold text-sm">管理</button>
                     </div>
                 </div>
 
@@ -1189,9 +1204,9 @@ ${identityMap}
                             <div className="relative group">
                                 <div className="h-40 w-full overflow-hidden bg-slate-200 relative cursor-pointer" onClick={() => userBgInputRef.current?.click()}>
                                     {userBgImage ? (
-                                        <img src={userBgImage} className="w-full h-full object-cover" />
+                                        <TokenImg value={userBgImage} className="w-full h-full object-cover" />
                                     ) : (
-                                        <img src={userProfile.avatar} className="w-full h-full object-cover blur-2xl opacity-60 scale-125" />
+                                        <TokenImg value={userProfile.avatar} className="w-full h-full object-cover blur-2xl opacity-60 scale-125" />
                                     )}
                                     <div className="absolute inset-0 bg-black/20 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
                                         <span className="text-white text-xs font-bold bg-black/30 px-3 py-1 rounded-full backdrop-blur-md">更换背景</span>
@@ -1202,7 +1217,7 @@ ${identityMap}
                                 <div className="px-6 relative -mt-12 flex justify-between items-end">
                                     {/* Social Avatar - Clickable to change */}
                                     <div className="w-24 h-24 rounded-full p-1 bg-white/90 backdrop-blur-md shadow-lg relative group cursor-pointer" onClick={() => socialAvatarInputRef.current?.click()}>
-                                        <img src={socialProfile.avatar} className="w-full h-full rounded-full object-cover" />
+                                        <TokenImg value={socialProfile.avatar} className="w-full h-full rounded-full object-cover" />
                                         <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity bg-black/20 rounded-full">
                                             <span className="text-white text-[10px] font-bold">更换</span>
                                         </div>
@@ -1263,8 +1278,8 @@ ${identityMap}
 
                             {/* Sticky Tabs */}
                             <div className="sticky top-0 bg-white/90 backdrop-blur-md z-10 border-b border-slate-100 flex">
-                                <button onClick={() => setProfileTab('notes')} className={`flex-1 py-3 text-sm font-bold transition-colors ${profileTab === 'notes' ? 'text-slate-900 border-b-2 border-[#ff2442]' : 'text-slate-400'}`}>笔记</button>
-                                <button onClick={() => setProfileTab('collects')} className={`flex-1 py-3 text-sm font-bold transition-colors ${profileTab === 'collects' ? 'text-slate-900 border-b-2 border-[#ff2442]' : 'text-slate-400'}`}>收藏</button>
+                                <button onClick={() => { setProfileTab('notes'); trackEvent('切换个人主页子标签', { tab: 'notes' }); }} className={`flex-1 py-3 text-sm font-bold transition-colors ${profileTab === 'notes' ? 'text-slate-900 border-b-2 border-[#ff2442]' : 'text-slate-400'}`}>笔记</button>
+                                <button onClick={() => { setProfileTab('collects'); trackEvent('切换个人主页子标签', { tab: 'collects' }); }} className={`flex-1 py-3 text-sm font-bold transition-colors ${profileTab === 'collects' ? 'text-slate-900 border-b-2 border-[#ff2442]' : 'text-slate-400'}`}>收藏</button>
                             </div>
 
                             <div className="p-2 min-h-[300px] bg-slate-50/50 pb-24">
@@ -1275,7 +1290,7 @@ ${identityMap}
                                             <div className="p-3">
                                                 <h4 className="text-xs font-bold text-slate-800 line-clamp-2 leading-tight">{post.title}</h4>
                                                 <div className="flex justify-between items-center mt-2">
-                                                    <div className="flex items-center gap-1"><img src={post.authorAvatar} className="w-3 h-3 rounded-full" /><span className="text-[9px] text-slate-400 truncate w-12">{post.authorName}</span></div>
+                                                    <div className="flex items-center gap-1"><TokenImg value={post.authorAvatar} className="w-3 h-3 rounded-full" /><span className="text-[9px] text-slate-400 truncate w-12">{post.authorName}</span></div>
                                                     <div className="flex items-center gap-0.5 text-slate-400"><Icons.Heart filled={post.isLiked} className="w-3 h-3" /><span className="text-[9px]">{post.likes}</span></div>
                                                 </div>
                                             </div>
@@ -1295,11 +1310,11 @@ ${identityMap}
 
                 {/* Bottom Navigation - Floating Glass Island (Only shown when not creating) */}
                 <div className="absolute bottom-6 left-1/2 -translate-x-1/2 w-[90%] h-16 bg-white/80 backdrop-blur-2xl rounded-full shadow-[0_8px_32px_rgba(0,0,0,0.12)] border border-white/50 flex items-center justify-around z-40">
-                    <button onClick={() => setActiveTab('home')} className={`text-sm font-medium flex flex-col items-center justify-center gap-0.5 transition-all w-12 h-12 rounded-full ${activeTab === 'home' ? 'text-slate-900 bg-white shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}>
+                    <button onClick={() => { setActiveTab('home'); trackEvent('切换 Spark 主标签', { tab: 'home' }); }} className={`text-sm font-medium flex flex-col items-center justify-center gap-0.5 transition-all w-12 h-12 rounded-full ${activeTab === 'home' ? 'text-slate-900 bg-white shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}>
                         <House size={24} weight={activeTab === 'home' ? 'fill' : 'regular'} />
                     </button>
-                    <button onClick={() => setIsCreateOpen(true)} className="w-12 h-12 bg-[#ff2442] text-white rounded-full flex items-center justify-center shadow-lg shadow-red-200 active:scale-95 transition-transform text-2xl font-light -mt-6 border-4 border-white/50">+</button>
-                    <button onClick={() => setActiveTab('me')} className={`text-sm font-medium flex flex-col items-center justify-center gap-0.5 transition-all w-12 h-12 rounded-full ${activeTab === 'me' ? 'text-slate-900 bg-white shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}>
+                    <button onClick={() => { setIsCreateOpen(true); trackEvent('打开发布笔记面板'); }} className="w-12 h-12 bg-[#ff2442] text-white rounded-full flex items-center justify-center shadow-lg shadow-red-200 active:scale-95 transition-transform text-2xl font-light -mt-6 border-4 border-white/50">+</button>
+                    <button onClick={() => { setActiveTab('me'); trackEvent('切换 Spark 主标签', { tab: 'me' }); }} className={`text-sm font-medium flex flex-col items-center justify-center gap-0.5 transition-all w-12 h-12 rounded-full ${activeTab === 'me' ? 'text-slate-900 bg-white shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}>
                         <User size={24} />
                     </button>
                 </div>

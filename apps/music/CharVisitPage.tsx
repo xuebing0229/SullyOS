@@ -21,8 +21,11 @@ import { DB } from '../../utils/db';
 import { C, Sparkle, MizuHeader, BokehBg, MiniPlayer } from './MusicUI';
 import { ArrowLeft, MusicNote, Heart, Plus, MagnifyingGlass, Trash, Check } from '@phosphor-icons/react';
 import { getDailyScheduleForChar } from '../../utils/dailySchedule';
+import TokenImg from '../../components/os/TokenImg';
+import { isBlobRef } from '../../utils/blobRef';
 import { useLocalDateKey } from '../../hooks/useLocalDateKey';
 import { resolveCharTimeZone } from '../../utils/timezone';
+import { trackEvent } from '../../utils/analytics';
 
 interface Props {
   charId: string;
@@ -160,6 +163,7 @@ const CharVisitPage: React.FC<Props> = ({ charId, onBack, onOpenPlayer }) => {
       const newProfile = await CharMusicPersona.initialize(char, userProfile, apiConfig);
       updateCharacter(char.id, { musicProfile: newProfile });
       addToast(`${char.name} 的音乐角落已开启`, 'success');
+      trackEvent('生成角色的音乐人格');
     } catch (e: any) {
       addToast(`初始化失败：${e.message || '未知错误'}`, 'error');
     } finally {
@@ -179,6 +183,7 @@ const CharVisitPage: React.FC<Props> = ({ charId, onBack, onOpenPlayer }) => {
       const newProfile = await CharMusicPersona.initialize(char, userProfile, apiConfig);
       updateCharacter(char.id, { musicProfile: newProfile });
       addToast(`${char.name} 的音乐人格已重新生成`, 'success');
+      trackEvent('重新生成角色的音乐人格');
     } catch (e: any) {
       addToast(`重新生成失败：${e.message || '未知错误'}`, 'error');
     } finally {
@@ -204,6 +209,7 @@ const CharVisitPage: React.FC<Props> = ({ charId, onBack, onOpenPlayer }) => {
       musicProfile: { ...profile, playlists: nextPlaylists, updatedAt: Date.now() },
     });
     addToast(`已移除 ${n} 首`, 'success');
+    trackEvent('删除角色歌单里选中的歌');
     exitSelectMode();
   };
 
@@ -294,6 +300,7 @@ const CharVisitPage: React.FC<Props> = ({ charId, onBack, onOpenPlayer }) => {
       };
       updateCharacter(char.id, { musicProfile: updatedProfile });
       addToast(`已为《${pl.title}》填入 ${picked.length} 首歌`, 'success');
+      trackEvent('让角色按品味挑歌填满歌单');
     } catch (e: any) {
       addToast(`填充失败：${e.message}`, 'error');
     } finally {
@@ -307,6 +314,7 @@ const CharVisitPage: React.FC<Props> = ({ charId, onBack, onOpenPlayer }) => {
     const startIdx = queue.findIndex(s => s.id === song.id);
     playSong(queue[startIdx], { replaceQueue: queue, startIdx });
     onOpenPlayer();
+    trackEvent('播放角色歌单里的一首歌');
   };
 
   if (!char) {
@@ -346,8 +354,9 @@ const CharVisitPage: React.FC<Props> = ({ charId, onBack, onOpenPlayer }) => {
           style={{ boxShadow: `0 10px 40px ${C.glow}15` }}>
           <div className="flex items-center gap-3">
             <div className="relative shrink-0">
-              {char.avatar && char.avatar.startsWith('data:') || char.avatar?.startsWith('http') ? (
-                <img src={char.avatar} alt="" className="w-16 h-16 rounded-2xl object-cover"
+              {/* 头像可能是 base64 / 图床直链 / blobref 令牌，三种都算图；其余当 emoji 或首字兜底。 */}
+              {char.avatar && (char.avatar.startsWith('data:') || char.avatar.startsWith('http') || isBlobRef(char.avatar)) ? (
+                <TokenImg value={char.avatar} alt="" className="w-16 h-16 rounded-2xl object-cover"
                   style={{ border: `2px solid ${C.glow}60`, boxShadow: `0 4px 20px ${C.glow}30` }} />
               ) : (
                 <div className="w-16 h-16 rounded-2xl flex items-center justify-center text-2xl"
@@ -416,7 +425,7 @@ const CharVisitPage: React.FC<Props> = ({ charId, onBack, onOpenPlayer }) => {
             </div>
             <div className="flex items-center gap-3">
               {profile.currentListening.albumPic ? (
-                <img src={profile.currentListening.albumPic} className="w-12 h-12 rounded-xl object-cover" alt="" />
+                <TokenImg value={profile.currentListening.albumPic} className="w-12 h-12 rounded-xl object-cover" alt="" />
               ) : (
                 <div className="w-12 h-12 rounded-xl flex items-center justify-center"
                   style={{ background: gradientFor('gradient-03'), color: 'white' }}>
@@ -477,7 +486,7 @@ const CharVisitPage: React.FC<Props> = ({ charId, onBack, onOpenPlayer }) => {
                       <div className="w-12 h-12 rounded-xl shrink-0 flex items-center justify-center overflow-hidden"
                         style={{ background: gradientFor(pl.coverStyle) }}>
                         {pl.songs[0]?.albumPic ? (
-                          <img src={pl.songs[0].albumPic} alt="" className="w-full h-full object-cover" />
+                          <TokenImg value={pl.songs[0].albumPic} alt="" className="w-full h-full object-cover" />
                         ) : (
                           <MusicNote size={20} weight="bold" color="white" />
                         )}
@@ -609,7 +618,7 @@ const CharVisitPage: React.FC<Props> = ({ charId, onBack, onOpenPlayer }) => {
               {profile!.recentPlays.slice(0, 10).map((r, i) => (
                 <div key={`${r.song.id}-${r.at}-${i}`} className="flex items-center gap-2 p-2 rounded-lg">
                   {r.song.albumPic ? (
-                    <img src={r.song.albumPic} alt="" className="w-9 h-9 rounded-md object-cover" />
+                    <TokenImg value={r.song.albumPic} alt="" className="w-9 h-9 rounded-md object-cover" />
                   ) : (
                     <div className="w-9 h-9 rounded-md flex items-center justify-center"
                       style={{ background: gradientFor('gradient-02') }}>

@@ -11,6 +11,9 @@ import {
 } from './MusicUI';
 import { MagnifyingGlass, Gear, User as UserIcon } from '@phosphor-icons/react';
 import NeteaseLoginPanel from './NeteaseLoginPanel';
+import TokenImg from '../../components/os/TokenImg';
+import { isBlobRef } from '../../utils/blobRef';
+import { trackEvent } from '../../utils/analytics';
 
 interface Playlist {
   id: number;
@@ -133,7 +136,10 @@ const LocalAlbumCard: React.FC<LocalAlbumCardProps> = ({ songs, expanded, setExp
               </button>
               <button
                 onClick={() => {
-                  if (typeof window !== 'undefined' && window.confirm(`从专辑移除《${s.name}》？`)) onRemove(s.id);
+                  if (typeof window !== 'undefined' && window.confirm(`从专辑移除《${s.name}》？`)) {
+                    onRemove(s.id);
+                    trackEvent('从本地专辑移除一首歌');
+                  }
                 }}
                 className="text-[10px] px-1.5 py-0.5 rounded shrink-0 transition-colors"
                 style={{ color: C.faint }}
@@ -285,6 +291,7 @@ const NeteaseProfilePage: React.FC<Props> = ({ onBack, onOpenPlayer, onOpenSearc
 
   // 签到
   const doSignIn = useCallback(async () => {
+    trackEvent('做一次网易云每日签到');
     try {
       await musicApi.dailySignin(cfgRef.current, 1);
       setSignedIn(true);
@@ -305,6 +312,7 @@ const NeteaseProfilePage: React.FC<Props> = ({ onBack, onOpenPlayer, onOpenSearc
     try { await musicApi.logout(curCfg); } catch {}
     setCfg({ ...curCfg, cookie: '' });
     toastRef.current('已退出', 'success');
+    trackEvent('退出网易云登录');
     await refreshProfile();
   }, [setCfg, refreshProfile]);
 
@@ -340,7 +348,10 @@ const NeteaseProfilePage: React.FC<Props> = ({ onBack, onOpenPlayer, onOpenSearc
             setExpanded={setLocalAlbumExpanded}
             currentId={current?.id ?? null}
             playing={playing}
-            onPlay={(s, idx) => playSong(s, { alsoSetQueue: true, replaceQueue: localAlbumSongs, startIdx: idx })}
+            onPlay={(s, idx) => {
+              playSong(s, { alsoSetQueue: true, replaceQueue: localAlbumSongs, startIdx: idx });
+              trackEvent('播放「我的」页列表里的一首歌', { source: 'local' });
+            }}
             onRemove={removeLocalSong}
           />
           {/* 登录入口卡 */}
@@ -489,6 +500,7 @@ const NeteaseProfilePage: React.FC<Props> = ({ onBack, onOpenPlayer, onOpenSearc
                   if (!songs.length) { addToast('还没有每日推荐', 'info'); return; }
                   playSong(songs[0], { replaceQueue: songs, startIdx: 0 });
                   onOpenPlayer();
+                  trackEvent('播放每日推荐');
                 } catch (e: any) { addToast(`获取失败：${e.message}`, 'error'); }
               }}
               className="flex-1 py-2 rounded-xl text-[11px] transition-all text-white"
@@ -511,6 +523,7 @@ const NeteaseProfilePage: React.FC<Props> = ({ onBack, onOpenPlayer, onOpenSearc
                   if (!songs.length) { addToast('FM 暂无歌曲', 'info'); return; }
                   playSong(songs[0], { replaceQueue: songs, startIdx: 0 });
                   onOpenPlayer();
+                  trackEvent('播放私人 FM');
                 } catch (e: any) { addToast(`FM 失败：${e.message}`, 'error'); }
               }}
               className="flex-1 py-2 rounded-xl text-[11px] transition-all shizuku-glass"
@@ -542,7 +555,8 @@ const NeteaseProfilePage: React.FC<Props> = ({ onBack, onOpenPlayer, onOpenSearc
               {characters.map(ch => {
                 const initialized = !!ch.musicProfile?.initializedAt;
                 const avatar = ch.avatar || '';
-                const isImage = avatar.startsWith('data:') || avatar.startsWith('http');
+                // 头像可能是 base64 / 图床直链 / blobref 令牌，三种都算图；其余当 emoji 或首字兜底。
+                const isImage = avatar.startsWith('data:') || avatar.startsWith('http') || isBlobRef(avatar);
                 return (
                   <button
                     key={ch.id}
@@ -552,8 +566,8 @@ const NeteaseProfilePage: React.FC<Props> = ({ onBack, onOpenPlayer, onOpenSearc
                   >
                     <div className="relative w-14 h-14 mx-auto">
                       {isImage ? (
-                        <img
-                          src={avatar}
+                        <TokenImg
+                          value={avatar}
                           alt=""
                           className="w-14 h-14 rounded-full object-cover transition-transform group-active:scale-95"
                           style={{
@@ -605,7 +619,7 @@ const NeteaseProfilePage: React.FC<Props> = ({ onBack, onOpenPlayer, onOpenSearc
           ] as const).map(t => (
             <button
               key={t.k}
-              onClick={() => setTab(t.k)}
+              onClick={() => { setTab(t.k); trackEvent('切换我的云音乐标签', { tab: t.k }); }}
               className="flex-1 py-1.5 rounded-full text-[11px] tracking-wider transition-all"
               style={{
                 background: tab === t.k ? `linear-gradient(135deg, ${C.primary}, ${C.accent})` : 'transparent',
@@ -634,7 +648,10 @@ const NeteaseProfilePage: React.FC<Props> = ({ onBack, onOpenPlayer, onOpenSearc
                 setExpanded={setLocalAlbumExpanded}
                 currentId={current?.id ?? null}
                 playing={playing}
-                onPlay={(s, idx) => playSong(s, { alsoSetQueue: true, replaceQueue: localAlbumSongs, startIdx: idx })}
+                onPlay={(s, idx) => {
+                  playSong(s, { alsoSetQueue: true, replaceQueue: localAlbumSongs, startIdx: idx });
+                  trackEvent('播放「我的」页列表里的一首歌', { source: 'local' });
+                }}
                 onRemove={removeLocalSong}
               />
             )}
@@ -668,9 +685,10 @@ const NeteaseProfilePage: React.FC<Props> = ({ onBack, onOpenPlayer, onOpenSearc
                         onClick={() => {
                           playSong(s, { replaceQueue: plTracks[pl.id], startIdx: plTracks[pl.id].findIndex(x => x.id === s.id) });
                           onOpenPlayer();
+                          trackEvent('播放「我的」页列表里的一首歌', { source: 'playlist' });
                         }}
                         className="w-full text-left flex items-center gap-2 py-1.5 px-1">
-                        <img src={s.albumPic} alt="" className="w-7 h-7 rounded-md object-cover" />
+                        <TokenImg value={s.albumPic} alt="" className="w-7 h-7 rounded-md object-cover" />
                         <div className="flex-1 min-w-0">
                           <div className="text-[11px] truncate" style={{ color: C.text }}>{s.name}</div>
                           <div className="text-[9px] truncate" style={{ color: C.muted }}>{s.artists}</div>
@@ -698,12 +716,13 @@ const NeteaseProfilePage: React.FC<Props> = ({ onBack, onOpenPlayer, onOpenSearc
                   const q = records.map(x => x.song);
                   playSong(r.song, { replaceQueue: q, startIdx: i });
                   onOpenPlayer();
+                  trackEvent('播放「我的」页列表里的一首歌', { source: 'record' });
                 }}
                 className="w-full flex items-center gap-3 p-2 rounded-2xl text-left transition-all"
                 style={{ background: 'rgba(255,255,255,0.06)' }}
               >
                 <div className="text-[10px] w-5 text-center shrink-0" style={{ color: C.faint }}>{i + 1}</div>
-                <img src={r.song.albumPic} alt="" className="w-10 h-10 rounded-lg object-cover" />
+                <TokenImg value={r.song.albumPic} alt="" className="w-10 h-10 rounded-lg object-cover" />
                 <div className="flex-1 min-w-0">
                   <div className="text-sm truncate" style={{ color: C.text }}>{r.song.name}</div>
                   <div className="text-[10px] truncate" style={{ color: C.muted }}>{r.song.artists}</div>
@@ -724,11 +743,15 @@ const NeteaseProfilePage: React.FC<Props> = ({ onBack, onOpenPlayer, onOpenSearc
             )}
             {cloud.map((s, i) => (
               <button key={s.id + '-' + i}
-                onClick={() => { playSong(s, { replaceQueue: cloud, startIdx: i }); onOpenPlayer(); }}
+                onClick={() => {
+                  playSong(s, { replaceQueue: cloud, startIdx: i });
+                  onOpenPlayer();
+                  trackEvent('播放「我的」页列表里的一首歌', { source: 'cloud' });
+                }}
                 className="w-full flex items-center gap-3 p-2 rounded-2xl text-left transition-all"
                 style={{ background: 'rgba(255,255,255,0.06)' }}
               >
-                <img src={s.albumPic || 'https://p1.music.126.net/y19E5SadGUmSR8SZxkrNtw==/109951163965029180.jpg'}
+                <TokenImg value={s.albumPic || 'https://p1.music.126.net/y19E5SadGUmSR8SZxkrNtw==/109951163965029180.jpg'}
                   alt="" className="w-10 h-10 rounded-lg object-cover" />
                 <div className="flex-1 min-w-0">
                   <div className="text-sm truncate" style={{ color: C.text }}>{s.name}</div>

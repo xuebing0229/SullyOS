@@ -9,6 +9,8 @@ import { NOVEL_THEMES, analyzeWriterPersonaSimple } from '../utils/novelUtils';
 import NovelWriter from '../components/novel/NovelWriter';
 import { CharacterGroupFilterBar, filterCharactersByGroup, GROUP_FILTER_ALL } from '../components/character/CharacterGroupFilter';
 import { Robot, MaskHappy, PenNib, Books, FolderOpen } from '@phosphor-icons/react';
+import { trackEvent } from '../utils/analytics';
+import TokenImg from '../components/os/TokenImg';
 
 const NovelApp: React.FC = () => {
     const { closeApp, novels, addNovel, updateNovel, deleteNovel, characters, updateCharacter, apiConfig, addToast, userProfile, worldbooks, characterGroups } = useOS();
@@ -67,6 +69,7 @@ const NovelApp: React.FC = () => {
         updateCharacter(libraryChar.id, { writerPersona: personaDraft.trim(), writerPersonaGeneratedAt: Date.now() });
         setIsEditingPersona(false);
         addToast('创作档案已保存', 'success');
+        trackEvent('保存角色创作档案');
     };
 
     // Dialog
@@ -122,6 +125,7 @@ const NovelApp: React.FC = () => {
         setActiveBook(newBook);
         setView('write');
         resetTempState();
+        trackEvent('新建一本书稿');
     };
 
     const handleEditBookSettings = () => {
@@ -135,6 +139,7 @@ const NovelApp: React.FC = () => {
         setSelectedCollaborators(new Set(activeBook.collaboratorIds));
         setTempProtagonists(activeBook.protagonists);
         setView('settings');
+        trackEvent('打开小说设定页');
     };
 
     const handleSaveSettings = async () => {
@@ -159,7 +164,7 @@ const NovelApp: React.FC = () => {
     const handleDeleteBook = async (id: string) => {
         setConfirmDialog({
             isOpen: true, title: '删除作品', message: '确定要删除这本小说吗？此操作无法撤销。', variant: 'danger',
-            onConfirm: () => { deleteNovel(id); if (activeBook?.id === id) setView('shelf'); addToast('已删除', 'success'); setConfirmDialog(null); }
+            onConfirm: () => { deleteNovel(id); if (activeBook?.id === id) setView('shelf'); addToast('已删除', 'success'); setConfirmDialog(null); trackEvent('删除一本书稿'); }
         });
     };
 
@@ -170,6 +175,7 @@ const NovelApp: React.FC = () => {
             try {
                 const base64 = await processImage(file, { maxWidth: 800, quality: 0.8 });
                 setTempCoverImage(base64);
+                trackEvent('上传书稿封面图');
             } catch (e) { addToast('图片处理失败', 'error'); }
         }
     };
@@ -190,6 +196,7 @@ const NovelApp: React.FC = () => {
         });
         setIsProtagonistModalOpen(false);
         setEditingProtagonist(null);
+        trackEvent('保存一个剧中人');
     };
 
     const handleImportProtagonist = (p: {name: string, role?: string, description: string}) => {
@@ -197,6 +204,7 @@ const NovelApp: React.FC = () => {
         setTempProtagonists(prev => [...prev, newP]);
         setIsProtoImportOpen(false);
         addToast(`已导入角色: ${p.name}`, 'success');
+        trackEvent('导入一个剧中人', { source: importTab });
     };
 
     const importWorldbook = (wb: any) => {
@@ -204,6 +212,7 @@ const NovelApp: React.FC = () => {
         setTempWorld(prev => (prev + textToAppend).trim());
         setIsWorldbookModalOpen(false);
         addToast(`已导入设定: ${wb.title}`, 'success');
+        trackEvent('导入一条世界书设定');
     };
 
     const ProtagonistCard = ({ p, onDelete, onClick }: { p: NovelProtagonist, onDelete?: () => void, onClick?: () => void }) => (
@@ -220,7 +229,7 @@ const NovelApp: React.FC = () => {
     if (view === 'library') {
         return (
             <div className="h-full w-full bg-slate-50 flex flex-col font-sans">
-                <div className="bg-white/80 backdrop-blur-md border-b border-slate-200 shrink-0 sticky top-0 z-20" style={{ paddingTop: 'var(--safe-top)' }}>
+                <div className="bg-white/80 backdrop-blur-md border-b border-slate-200 shrink-0 sticky top-0 z-20" style={{ paddingTop: 'var(--chrome-top)' }}>
                     <div className="flex items-center px-6 py-3">
                     <div className="flex justify-between items-center w-full">
                         <button onClick={() => setView('shelf')} className="p-2 -ml-2 rounded-full hover:bg-slate-100 active:scale-90 transition-transform">
@@ -240,7 +249,7 @@ const NovelApp: React.FC = () => {
                         <div className="grid grid-cols-2 gap-4">
                             {filterCharactersByGroup(characters, characterGroups, libraryGroupId).map(c => (
                                 <div key={c.id} onClick={() => { setLibraryPersonaChar(c); setShowPersonaModal(true); }} className="bg-white p-4 rounded-2xl shadow-sm border border-slate-100 flex flex-col items-center gap-3 cursor-pointer hover:shadow-md transition-all active:scale-95">
-                                    <img src={c.avatar} className="w-16 h-16 rounded-full object-cover border-2 border-slate-50" />
+                                    <TokenImg value={c.avatar} className="w-16 h-16 rounded-full object-cover border-2 border-slate-50" />
                                     <div className="text-center"><div className="font-bold text-slate-700 text-sm">{c.name}</div><div className="text-[10px] text-slate-400 mt-1 px-2 py-0.5 bg-slate-50 rounded-full">共创者</div></div>
                                 </div>
                             ))}
@@ -266,7 +275,7 @@ const NovelApp: React.FC = () => {
                             isEditingPersona ? (
                                 <div className="space-y-2">
                                     <textarea value={personaDraft} onChange={e => setPersonaDraft(e.target.value)} className="w-full h-64 bg-slate-50 border border-slate-200 rounded-xl p-3 text-sm leading-relaxed resize-none outline-none focus:border-slate-400 font-mono" />
-                                    <button onClick={() => setPersonaDraft(analyzeWriterPersonaSimple(libraryChar))} className="text-xs text-slate-400 underline">重置为自动分析</button>
+                                    <button onClick={() => { setPersonaDraft(analyzeWriterPersonaSimple(libraryChar)); trackEvent('重置创作档案为自动分析'); }} className="text-xs text-slate-400 underline">重置为自动分析</button>
                                 </div>
                             ) : (
                                 <div className="bg-slate-50 p-4 rounded-xl border border-slate-100 text-sm leading-relaxed text-slate-700 whitespace-pre-wrap">{libraryChar.writerPersona || analyzeWriterPersonaSimple(libraryChar)}</div>
@@ -283,13 +292,13 @@ const NovelApp: React.FC = () => {
         return (
             <div className="h-full w-full bg-slate-50 flex flex-col font-sans relative">
                 <ConfirmDialog isOpen={!!confirmDialog} title={confirmDialog?.title || ''} message={confirmDialog?.message || ''} variant={confirmDialog?.variant} confirmText={confirmDialog?.confirmText || (confirmDialog?.onConfirm ? '确认' : 'OK')} onConfirm={confirmDialog?.onConfirm || (() => setConfirmDialog(null))} onCancel={() => setConfirmDialog(null)} />
-                <div className="bg-white/80 backdrop-blur-md z-20 shrink-0 border-b border-slate-100" style={{ paddingTop: 'var(--safe-top)' }}>
+                <div className="bg-white/80 backdrop-blur-md z-20 shrink-0 border-b border-slate-100" style={{ paddingTop: 'var(--chrome-top)' }}>
                     <div className="flex items-center justify-between px-6 py-3">
                     <button onClick={closeApp} className="p-3 -ml-3 rounded-full hover:bg-slate-100 active:scale-95 transition-all"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-6 h-6 text-slate-600"><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" /></svg></button>
                     <span className="font-black text-2xl text-slate-800 tracking-tight">我的手稿</span>
                     <div className="flex gap-2">
-                        <button onClick={() => setView('library')} className="w-10 h-10 bg-white text-slate-600 border border-slate-200 rounded-full flex items-center justify-center shadow-sm active:scale-95 transition-transform hover:bg-slate-50"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5"><path strokeLinecap="round" strokeLinejoin="round" d="M15 19.128a9.38 9.38 0 0 0 2.625.372 9.337 9.337 0 0 0 4.121-.952 4.125 4.125 0 0 0-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 0 1 8.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0 1 11.964-3.07M12 6.375a3.375 3.375 0 1 1-6.75 0 3.375 3.375 0 0 1 6.75 0Zm8.25 2.25a2.625 2.625 0 1 1-5.25 0 2.625 2.625 0 0 1 5.25 0Z" /></svg></button>
-                        <button onClick={() => { setView('create'); resetTempState(); }} className="w-10 h-10 bg-slate-900 text-white rounded-full flex items-center justify-center shadow-lg active:scale-95 transition-transform hover:bg-black"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor" className="w-5 h-5"><path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" /></svg></button>
+                        <button onClick={() => { setView('library'); trackEvent('打开角色库'); }} className="w-10 h-10 bg-white text-slate-600 border border-slate-200 rounded-full flex items-center justify-center shadow-sm active:scale-95 transition-transform hover:bg-slate-50"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5"><path strokeLinecap="round" strokeLinejoin="round" d="M15 19.128a9.38 9.38 0 0 0 2.625.372 9.337 9.337 0 0 0 4.121-.952 4.125 4.125 0 0 0-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 0 1 8.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0 1 11.964-3.07M12 6.375a3.375 3.375 0 1 1-6.75 0 3.375 3.375 0 0 1 6.75 0Zm8.25 2.25a2.625 2.625 0 1 1-5.25 0 2.625 2.625 0 0 1 5.25 0Z" /></svg></button>
+                        <button onClick={() => { setView('create'); resetTempState(); trackEvent('打开新建书稿页'); }} className="w-10 h-10 bg-slate-900 text-white rounded-full flex items-center justify-center shadow-lg active:scale-95 transition-transform hover:bg-black"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor" className="w-5 h-5"><path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" /></svg></button>
                     </div>
                     </div>
                 </div>
@@ -299,14 +308,14 @@ const NovelApp: React.FC = () => {
                         const wordCount = book.segments.reduce((acc, seg) => acc + (seg.type === 'story' ? seg.content.length : 0), 0);
                         const bgStyle = book.coverImage ? { backgroundImage: `url(${book.coverImage})`, backgroundSize: 'cover', backgroundPosition: 'center' } : {};
                         return (
-                            <div key={book.id} onClick={() => { setActiveBook(book); setView('write'); }} className="group relative aspect-auto min-h-[14rem] bg-white rounded-2xl shadow-sm hover:shadow-xl transition-all duration-300 overflow-hidden border border-slate-100 cursor-pointer flex flex-col">
+                            <div key={book.id} onClick={() => { setActiveBook(book); setView('write'); trackEvent('打开书稿写作页'); }} className="group relative aspect-auto min-h-[14rem] bg-white rounded-2xl shadow-sm hover:shadow-xl transition-all duration-300 overflow-hidden border border-slate-100 cursor-pointer flex flex-col">
                                 <div className={`h-28 shrink-0 ${style.bg} relative p-4 flex flex-col justify-end`} style={bgStyle}>
                                     <div className={`absolute inset-0 ${book.coverImage ? 'bg-black/30' : ''}`}></div>
                                     <div className="relative z-10"><h3 className={`font-bold text-lg leading-tight line-clamp-2 ${book.coverImage ? 'text-white drop-shadow-md' : style.text}`}>{book.title}</h3>{book.subtitle && <p className={`text-[10px] font-bold opacity-80 uppercase tracking-wide truncate ${book.coverImage ? 'text-white' : style.text}`}>{book.subtitle}</p>}</div>
                                 </div>
                                 <div className="p-4 flex-1 flex flex-col justify-between">
                                     <p className="text-xs text-slate-500 line-clamp-3 leading-relaxed mb-3">{book.summary || '暂无简介...'}</p>
-                                    <div className="flex items-center justify-between pt-3 border-t border-slate-50"><div className="flex -space-x-2">{characters.filter(c => book.collaboratorIds.includes(c.id)).map(c => (<img key={c.id} src={c.avatar} className="w-6 h-6 rounded-full border-2 border-white object-cover" />))}</div><span className="text-[10px] text-slate-400 font-mono bg-slate-50 px-2 py-0.5 rounded-full">{(wordCount/1000).toFixed(1)}k 字</span></div>
+                                    <div className="flex items-center justify-between pt-3 border-t border-slate-50"><div className="flex -space-x-2">{characters.filter(c => book.collaboratorIds.includes(c.id)).map(c => (<TokenImg key={c.id} value={c.avatar} className="w-6 h-6 rounded-full border-2 border-white object-cover" />))}</div><span className="text-[10px] text-slate-400 font-mono bg-slate-50 px-2 py-0.5 rounded-full">{(wordCount/1000).toFixed(1)}k 字</span></div>
                                 </div>
                                 <button onClick={(e) => { e.stopPropagation(); handleDeleteBook(book.id); }} className="absolute top-2 right-2 text-slate-400/50 hover:text-red-500 p-2 opacity-0 group-hover:opacity-100 transition-opacity bg-white/20 backdrop-blur rounded-full">×</button>
                             </div>
@@ -323,7 +332,7 @@ const NovelApp: React.FC = () => {
         return (
             <div className="h-full w-full bg-slate-50 flex flex-col font-sans relative">
                 <ConfirmDialog isOpen={!!confirmDialog} title={confirmDialog?.title || ''} message={confirmDialog?.message || ''} variant={confirmDialog?.variant} confirmText={confirmDialog?.confirmText || (confirmDialog?.onConfirm ? '确认' : 'OK')} onConfirm={confirmDialog?.onConfirm || (() => setConfirmDialog(null))} onCancel={() => setConfirmDialog(null)} />
-                <div className="bg-white border-b border-slate-200 shrink-0 sticky top-0 z-20" style={{ paddingTop: 'var(--safe-top)' }}>
+                <div className="bg-white border-b border-slate-200 shrink-0 sticky top-0 z-20" style={{ paddingTop: 'var(--chrome-top)' }}>
                     <div className="h-16 flex items-center justify-between px-4">
                     <button onClick={() => setView(view === 'create' ? 'shelf' : 'write')} className="text-slate-500 text-sm">取消</button>
                     <span className="font-bold text-slate-800">{view === 'create' ? '新建书稿' : '小说设定'}</span>
@@ -348,22 +357,22 @@ const NovelApp: React.FC = () => {
                         </div>
                     </section>
                     <section className="space-y-4">
-                        <div className="flex justify-between items-center"><label className="text-xs font-bold text-slate-400 uppercase block">世界观设定</label><button onClick={() => setIsWorldbookModalOpen(true)} className="text-[10px] bg-indigo-50 text-indigo-600 px-2 py-1 rounded font-bold hover:bg-indigo-100 flex items-center gap-1"><Books size={12} /> 导入世界书</button></div>
+                        <div className="flex justify-between items-center"><label className="text-xs font-bold text-slate-400 uppercase block">世界观设定</label><button onClick={() => { setIsWorldbookModalOpen(true); trackEvent('打开导入世界书弹窗'); }} className="text-[10px] bg-indigo-50 text-indigo-600 px-2 py-1 rounded font-bold hover:bg-indigo-100 flex items-center gap-1"><Books size={12} /> 导入世界书</button></div>
                         <textarea value={tempWorld} onChange={e => setTempWorld(e.target.value)} placeholder="世界观设定..." className="w-full h-32 bg-white border border-slate-200 rounded-xl p-3 text-sm resize-none outline-none focus:border-slate-400" />
                     </section>
                     <section className="space-y-4">
                         <label className="text-xs font-bold text-slate-400 uppercase block">共创者</label>
                         {/* 分组筛选（没建分组时不渲染）：只影响可选项的显示，不影响已勾选共创者 */}
                         <CharacterGroupFilterBar characters={characters} groups={characterGroups} value={collabGroupId} onChange={setCollabGroupId} />
-                        <div className="flex gap-3 overflow-x-auto pb-2 no-scrollbar">{filterCharactersByGroup(characters, characterGroups, collabGroupId).map(c => (<div key={c.id} onClick={() => { const s = new Set(selectedCollaborators); if(s.has(c.id)) s.delete(c.id); else s.add(c.id); setSelectedCollaborators(s); }} className={`flex flex-col items-center gap-2 cursor-pointer transition-opacity ${selectedCollaborators.has(c.id) ? 'opacity-100' : 'opacity-50 grayscale'}`}><img src={c.avatar} className="w-12 h-12 rounded-full object-cover shadow-sm" /><span className="text-[10px] font-bold text-slate-600">{c.name}</span></div>))}</div>
+                        <div className="flex gap-3 overflow-x-auto pb-2 no-scrollbar">{filterCharactersByGroup(characters, characterGroups, collabGroupId).map(c => (<div key={c.id} onClick={() => { const s = new Set(selectedCollaborators); if(s.has(c.id)) s.delete(c.id); else s.add(c.id); setSelectedCollaborators(s); }} className={`flex flex-col items-center gap-2 cursor-pointer transition-opacity ${selectedCollaborators.has(c.id) ? 'opacity-100' : 'opacity-50 grayscale'}`}><TokenImg value={c.avatar} className="w-12 h-12 rounded-full object-cover shadow-sm" /><span className="text-[10px] font-bold text-slate-600">{c.name}</span></div>))}</div>
                     </section>
                     <section className="space-y-4">
-                        <div className="flex justify-between items-center"><label className="text-xs font-bold text-slate-400 uppercase">剧中人</label><div className="flex gap-2"><button onClick={() => setIsProtoImportOpen(true)} className="text-[10px] bg-indigo-50 text-indigo-600 px-2 py-1 rounded font-bold hover:bg-indigo-100 border border-indigo-100 flex items-center gap-1"><FolderOpen size={12} /> 导入</button><button onClick={() => openProtagonistEdit()} className="text-[10px] bg-slate-100 px-2 py-1 rounded text-slate-600 hover:bg-slate-200 transition-colors">+ 添加</button></div></div>
+                        <div className="flex justify-between items-center"><label className="text-xs font-bold text-slate-400 uppercase">剧中人</label><div className="flex gap-2"><button onClick={() => { setIsProtoImportOpen(true); trackEvent('打开导入剧中人弹窗'); }} className="text-[10px] bg-indigo-50 text-indigo-600 px-2 py-1 rounded font-bold hover:bg-indigo-100 border border-indigo-100 flex items-center gap-1"><FolderOpen size={12} /> 导入</button><button onClick={() => openProtagonistEdit()} className="text-[10px] bg-slate-100 px-2 py-1 rounded text-slate-600 hover:bg-slate-200 transition-colors">+ 添加</button></div></div>
                         <div className="grid grid-cols-2 gap-3">{tempProtagonists.map((p, idx) => (<ProtagonistCard key={p.id} p={p} onClick={() => openProtagonistEdit(p)} onDelete={() => setTempProtagonists(tempProtagonists.filter((_, i) => i !== idx))} />))}</div>
                     </section>
                 </div>
                 <Modal isOpen={isProtagonistModalOpen} title="编辑角色" onClose={() => setIsProtagonistModalOpen(false)} footer={<button onClick={saveProtagonist} className="w-full py-3 bg-slate-800 text-white font-bold rounded-2xl">保存</button>}>{editingProtagonist && (<div className="space-y-4"><div><label className="text-xs font-bold text-slate-400 uppercase block mb-1">姓名</label><input value={editingProtagonist.name} onChange={e => setEditingProtagonist({...editingProtagonist, name: e.target.value})} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm font-bold" /></div><div><label className="text-xs font-bold text-slate-400 uppercase block mb-1">定位</label><input value={editingProtagonist.role} onChange={e => setEditingProtagonist({...editingProtagonist, role: e.target.value})} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm" placeholder="主角 / 反派" /></div><div><label className="text-xs font-bold text-slate-400 uppercase block mb-1">设定</label><textarea value={editingProtagonist.description} onChange={e => setEditingProtagonist({...editingProtagonist, description: e.target.value})} className="w-full h-32 bg-slate-50 border border-slate-200 rounded-xl p-3 text-sm resize-none leading-relaxed" /></div></div>)}</Modal>
-                <Modal isOpen={isProtoImportOpen} title="导入角色" onClose={() => setIsProtoImportOpen(false)}><div className="flex p-1 bg-slate-100 rounded-xl mb-3"><button onClick={() => setImportTab('system')} className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition-all ${importTab === 'system' ? 'bg-white shadow text-indigo-600' : 'text-slate-400'}`}>系统角色 (AI)</button><button onClick={() => setImportTab('history')} className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition-all ${importTab === 'history' ? 'bg-white shadow text-indigo-600' : 'text-slate-400'}`}>历史角色</button></div><div className="max-h-[50vh] overflow-y-auto no-scrollbar space-y-3 p-1">{importTab === 'system' && characters.map(c => (<button key={c.id} onClick={() => handleImportProtagonist({name: c.name, role: '客串', description: c.description})} className="w-full flex items-center gap-3 p-3 bg-white border border-slate-100 rounded-xl hover:border-indigo-200 shadow-sm active:scale-95 transition-all text-left"><img src={c.avatar} className="w-8 h-8 rounded-full object-cover" /><div className="flex-1 min-w-0"><div className="font-bold text-sm text-slate-700">{c.name}</div><div className="text-[10px] text-slate-400 truncate">{c.description}</div></div></button>))}{importTab === 'history' && historyProtagonists.map((p, idx) => (<button key={`hist-${idx}`} onClick={() => handleImportProtagonist(p)} className="w-full flex items-center gap-3 p-3 bg-white border border-slate-100 rounded-xl hover:border-indigo-200 shadow-sm active:scale-95 transition-all text-left"><div className="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center text-xs font-bold text-slate-500 border border-slate-200">{p.name[0]}</div><div className="flex-1 min-w-0"><div className="font-bold text-sm text-slate-700">{p.name}</div><div className="text-[10px] text-slate-400 truncate">{p.role} - {p.description || "无描述"}</div></div></button>))}</div></Modal>
+                <Modal isOpen={isProtoImportOpen} title="导入角色" onClose={() => setIsProtoImportOpen(false)}><div className="flex p-1 bg-slate-100 rounded-xl mb-3"><button onClick={() => setImportTab('system')} className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition-all ${importTab === 'system' ? 'bg-white shadow text-indigo-600' : 'text-slate-400'}`}>系统角色 (AI)</button><button onClick={() => setImportTab('history')} className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition-all ${importTab === 'history' ? 'bg-white shadow text-indigo-600' : 'text-slate-400'}`}>历史角色</button></div><div className="max-h-[50vh] overflow-y-auto no-scrollbar space-y-3 p-1">{importTab === 'system' && characters.map(c => (<button key={c.id} onClick={() => handleImportProtagonist({name: c.name, role: '客串', description: c.description})} className="w-full flex items-center gap-3 p-3 bg-white border border-slate-100 rounded-xl hover:border-indigo-200 shadow-sm active:scale-95 transition-all text-left"><TokenImg value={c.avatar} className="w-8 h-8 rounded-full object-cover" /><div className="flex-1 min-w-0"><div className="font-bold text-sm text-slate-700">{c.name}</div><div className="text-[10px] text-slate-400 truncate">{c.description}</div></div></button>))}{importTab === 'history' && historyProtagonists.map((p, idx) => (<button key={`hist-${idx}`} onClick={() => handleImportProtagonist(p)} className="w-full flex items-center gap-3 p-3 bg-white border border-slate-100 rounded-xl hover:border-indigo-200 shadow-sm active:scale-95 transition-all text-left"><div className="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center text-xs font-bold text-slate-500 border border-slate-200">{p.name[0]}</div><div className="flex-1 min-w-0"><div className="font-bold text-sm text-slate-700">{p.name}</div><div className="text-[10px] text-slate-400 truncate">{p.role} - {p.description || "无描述"}</div></div></button>))}</div></Modal>
                 <Modal isOpen={isWorldbookModalOpen} title="导入世界书设定" onClose={() => setIsWorldbookModalOpen(false)}><div className="max-h-[50vh] overflow-y-auto no-scrollbar space-y-2 p-1">{worldbooks.map(wb => (<button key={wb.id} onClick={() => importWorldbook(wb)} className="w-full text-left p-3 rounded-xl border border-slate-100 hover:border-indigo-300 bg-white shadow-sm active:scale-95 transition-all"><div className="font-bold text-slate-700 text-sm">{wb.title}</div><div className="text-[10px] text-slate-400 mt-1">{wb.category || '未分类'}</div></button>))}</div></Modal>
             </div>
         );

@@ -7,7 +7,7 @@ const read = (relative: string) =>
 
 describe('proactive and schedule main failover contract', () => {
     it('routes default proactive messages through chat failover but keeps secondary direct', () => {
-        const source = read('context/OSContext.tsx');
+        const source = read('context/OSContext.tsx').replace(/\r\n/g, '\n');
         expect(source).toContain("resolveApiExecutionPlan(\n                  'chat',\n                  api,\n                  !useSecondary");
         expect(source).toContain('executeOpenAiChatPlan({');
         expect(source).toContain("purpose: '主动消息'");

@@ -190,11 +190,27 @@ export function parseWranglerConfig(toml: string): WorkerDeployConfig {
 }
 
 /**
- * 拼上传用的 bindings。D1 一条 + 每个非空密钥一条。
+ * 即时对话起跳器的 binding 名 / 类名 / 建库用的 migration tag。
+ *
+ * 三处必须跟 worker 侧对齐：`worker/amsg/wrangler.toml`、`worker/amsg/src/index.ts`
+ * 里的 `InstantTickDO`、以及 `selfUpdate.ts`（老 Worker 更新时补建走那条）。
+ */
+const INSTANT_TICK_BINDING = 'INSTANT_TICK';
+const INSTANT_TICK_CLASS = 'InstantTickDO';
+export const INSTANT_TICK_MIGRATIONS = {
+  new_tag: 'amsg-instant-tick-v1',
+  new_sqlite_classes: [INSTANT_TICK_CLASS],
+};
+
+/**
+ * 拼上传用的 bindings。D1 一条 + Durable Object 一条 + 每个非空密钥一条。
  *
  * 空值一律不写：Cloudflare 会原样收下空字符串，而 worker 侧
  * 「配了 AMSG_SERVER_TOKEN 就强制校验 X-Client-Token」判断的是有没有这一项——
  * 塞个空串进去，等于打开了一道永远对不上的门。
+ *
+ * Durable Object 不用先建资源：namespace 会随这次上传一起创建（靠 metadata 里的
+ * migrations，见 INSTANT_TICK_MIGRATIONS），不像 D1 要先调一次建库接口拿 id。
  */
 export function buildBindings(
   d1Binding: string,
@@ -204,6 +220,7 @@ export function buildBindings(
 ): Array<Record<string, string>> {
   const bindings: Array<Record<string, string>> = [
     { type: 'd1', name: d1Binding, id: databaseId },
+    { type: 'durable_object_namespace', name: INSTANT_TICK_BINDING, class_name: INSTANT_TICK_CLASS },
   ];
   for (const [name, value] of Object.entries(secrets)) {
     if (typeof value === 'string' && value.trim()) {
@@ -244,27 +261,50 @@ export function scriptNameFromWorkerUrl(workerUrl: string): string | null {
 }
 
 /**
- * 把 Cloudflare 的报错翻译成能照着做的话。
- * 权限类的最常见——用户建 token 时少勾一项，光看「Unauthorized」根本不知道少了哪个。
+ * 把 Cloudflare 的报错翻译成能照着做的话，末尾一律缀上原文。
+ *
+ * 翻译是给用户看的，原文是给排障用的，两个都要有：
+ *
+ * - 权限类最常见——用户建 token 时少勾一项，光看「Unauthorized」根本不知道少了哪个，
+ *   所以要翻译；
+ * - 可 401/403 的不只 Cloudflare。中转层（路径不让走、没带 Authorization）和路上的
+ *   WAF 也回这两个码，一样会被翻成「权限不够」，于是 token 明明没问题的人被指使着
+ *   反复去改 token。原文里有没有 CF 的 code、是不是 proxy 那句话，一眼就分得开。
+ *
+ * 原文取 CF 的 `errors[].message`；中转层的错误体是 `{ error }`，不是同一个形状，
+ * 单独捞一手。两边都没有（非 JSON 响应）就只剩 HTTP 状态码，那也得说出来。
+ *
+ * `request` 是出事的那个请求（方法 + 路径）。部署要连着调七八个接口，光有一句报错
+ * 认不出卡在建库还是传代码，界面上的步骤名又在失败时就清掉了。
  */
-export function explainCfError(status: number, body: unknown): string {
-  const errors = (body as { errors?: Array<{ code?: number; message?: string }> } | null)?.errors;
-  const first = Array.isArray(errors) && errors.length ? errors[0] : null;
-  const code = first?.code;
-  const raw = first?.message || '';
+export function explainCfError(status: number, body: unknown, request?: string): string {
+  const payload = body as {
+    errors?: Array<{ code?: number; message?: string }>;
+    error?: string;
+  } | null;
+  const errors = Array.isArray(payload?.errors) ? payload.errors : [];
+  const code = errors[0]?.code;
+  const raw =
+    errors.map((e) => e?.message).filter(Boolean).join('；')
+    || (typeof payload?.error === 'string' ? payload.error : '');
 
   const PERMISSION_HINT =
     'Token 权限不够。建 token 时这三项都要勾上：Account → Workers Scripts:Edit、'
     + 'Account → D1:Edit、Account → Account Settings:Read。';
 
-  if (code === 6003 || code === 6111) return 'Token 格式不对，多半是复制时多带了空格或换行。';
-  if (code === 9109 || code === 10000 || status === 401 || status === 403) return PERMISSION_HINT;
-  if (code === 10016) return `Worker 名字不合法：${raw}`;
-  if (code === 10027) return 'Worker 代码超过 Cloudflare 的体积上限，装不上去。';
-  if (code === 10037) return '这个账号的 Worker 数量已经到上限了，先去面板删掉不用的。';
-  if (code === 10054 || code === 10055) return `密钥数量或长度超限：${raw}`;
-  if (code === 7003) return '请求路径不对（多半是代理那边的问题，不是你的 token）。';
-  return raw ? `Cloudflare 返回：${raw}（code ${code ?? '?'}）` : `Cloudflare 返回 HTTP ${status}`;
+  const explain = (): string => {
+    if (code === 6003 || code === 6111) return 'Token 格式不对，多半是复制时多带了空格或换行。';
+    if (code === 9109 || code === 10000 || status === 401 || status === 403) return PERMISSION_HINT;
+    if (code === 10016) return 'Worker 名字不合法。';
+    if (code === 10027) return 'Worker 代码超过 Cloudflare 的体积上限，装不上去。';
+    if (code === 10037) return '这个账号的 Worker 数量已经到上限了，先去面板删掉不用的。';
+    if (code === 10054 || code === 10055) return '密钥数量或长度超限。';
+    if (code === 7003) return '请求路径不对（多半是代理那边的问题，不是你的 token）。';
+    return '这个错没见过，照原文查吧。';
+  };
+
+  const detail = `原文：${raw || '（空）'}｜code ${code ?? '无'}｜HTTP ${status}`;
+  return `${explain()}\n${detail}${request ? `｜${request}` : ''}`;
 }
 
 /**
@@ -331,8 +371,57 @@ async function cfApi<T = unknown>(
     ok: success,
     status: res.status,
     body: body as T,
-    error: success ? undefined : explainCfError(res.status, body),
+    error: success ? undefined : explainCfError(res.status, body, `${init.method || 'GET'} ${apiPath}`),
   };
+}
+
+/** DO migration 的乐观锁冲突：这个 Worker 已经应用过 migration，「全新部署」的断言不成立。 */
+const MIGRATION_TAG_CONFLICT = 10079;
+
+function firstCfErrorCode(body: unknown): number | null {
+  const errors = (body as { errors?: Array<{ code?: number }> } | null)?.errors;
+  return (Array.isArray(errors) && errors.length ? errors[0]?.code : null) ?? null;
+}
+
+async function putScript(
+  token: string,
+  accountId: string,
+  scriptName: string,
+  metadata: Record<string, unknown>,
+  code: string,
+): Promise<CfResponse> {
+  const form = new FormData();
+  form.set('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
+  form.set(MAIN_MODULE, new Blob([code], { type: 'application/javascript+module' }), MAIN_MODULE);
+  return cfApi(token, `/accounts/${accountId}/workers/scripts/${encodeURIComponent(scriptName)}`, {
+    method: 'PUT',
+    body: form,
+  });
+}
+
+/**
+ * 上传 Worker 脚本。metadata 带着建 DO namespace 的 migrations，等于断言「全新部署」；
+ * 对着一个已经装过的 Worker 重装（清了地址重跑、换设备对同一个账号再部署）时这个断言
+ * 不成立，CF 会回 10079 把整次上传顶回来。
+ *
+ * 这时 namespace 本来就已经在了，migrations 纯属多余——去掉重传一次即可，binding 原样
+ * 保留（与 worker 侧 selfUpdate 的补建路径同一套实测结论：migration_tag 不变、DO 类还在）。
+ * 只对 10079 重试：全新部署一次就过，其他错误照旧当场返回。
+ */
+export async function uploadWorkerScript(
+  token: string,
+  accountId: string,
+  scriptName: string,
+  metadata: Record<string, unknown>,
+  code: string,
+): Promise<CfResponse & { reusedExistingWorker?: boolean }> {
+  const first = await putScript(token, accountId, scriptName, metadata, code);
+  if (first.ok || firstCfErrorCode(first.body) !== MIGRATION_TAG_CONFLICT) return first;
+
+  const withoutMigrations = { ...metadata };
+  delete withoutMigrations.migrations;
+  const second = await putScript(token, accountId, scriptName, withoutMigrations, code);
+  return second.ok ? { ...second, reusedExistingWorker: true } : second;
 }
 
 /** 当前生效的网络代理 Worker 支不支持一键部署（老版本没有 /cf-api 这条路由）。 */
@@ -464,7 +553,7 @@ async function ensureDatabase(
  * 拿账号的 workers.dev 子域；没有就用 desiredSubdomain 注册一个。
  * 全新的 Cloudflare 账号是没有子域的，而它决定了最终的 Worker 地址，绕不过去。
  */
-async function ensureSubdomain(
+export async function ensureSubdomain(
   token: string,
   accountId: string,
   desired?: string,
@@ -473,6 +562,17 @@ async function ensureSubdomain(
     token,
     `/accounts/${accountId}/workers/subdomain`,
   );
+  // 401/403 是「没让我读」，不是「这个账号没有子域名」。不单独拎出来的话，下面会把它
+  // 当成新账号，请用户起一个名字——而读都读不动，注册那一步同样过不去，用户于是对着
+  // 「换一个名字再试」换个不停。只挑这两个状态码：账号真没有子域名时 CF 回什么没实测过，
+  // 把所有失败都当权限的话，会把全新账号堵死在这里，那比现在更糟。
+  if (!current.ok && (current.status === 401 || current.status === 403)) {
+    return {
+      ok: false,
+      code: 'CF_ERROR',
+      error: `读不到这个账号的 workers.dev 子域名。\n${current.error}`,
+    };
+  }
   const existing = current.body?.result?.subdomain;
   if (current.ok && existing) return { ok: true, subdomain: existing };
 
@@ -778,20 +878,17 @@ export async function provisionAmsgBackend(input: ProvisionInput): Promise<Provi
     // 官方的 multipart-upload-metadata 文档没把 observability 列进合法字段，但实测是认的
     // ——上传 enabled:false 能关掉、true 能开起来、不带就没有，三向都验过。
     observability: { enabled: true, logs: { enabled: true } },
+    // 建即时对话起跳器的 Durable Object namespace。不给 old_tag 即断言「还没应用过
+    // 任何 migration」；重装撞上 10079 时由 uploadWorkerScript 去掉它重传。注意它是
+    // 一个对象，不是 wrangler.toml 里那种数组——传数组会被 10021 顶回来。
+    migrations: INSTANT_TICK_MIGRATIONS,
   };
-  const form = new FormData();
-  form.set('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
-  form.set(
-    MAIN_MODULE,
-    new Blob([bundle.code], { type: 'application/javascript+module' }),
-    MAIN_MODULE,
-  );
-  const uploaded = await cfApi(token, `/accounts/${accountId}/workers/scripts/${encodeURIComponent(scriptName)}`, {
-    method: 'PUT',
-    body: form,
-  });
+  const uploaded = await uploadWorkerScript(token, accountId, scriptName, metadata, bundle.code);
   if (!uploaded.ok) {
     return { ok: false, code: 'UPLOAD_FAILED', message: uploaded.error || '上传 Worker 失败。' };
+  }
+  if (uploaded.reusedExistingWorker) {
+    warnings.push(`账号里已经有一套装好的 ${scriptName}，这次是在它上面覆盖更新。`);
   }
 
   report('cron', '设置定时触发…');

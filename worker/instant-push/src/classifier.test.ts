@@ -273,26 +273,166 @@ describe('classifyLLMOutput', () => {
       expect(types).toContain('feishu_write_diary');
     }
   });
+});
 
-  it('游戏厅自主启动标记从正文剥离并结构化保存 payload', () => {
-    const r = classifyLLMOutput('我去玩啦。\n[[GAME_HALL_AUTOPLAY_START {"instruction":"继续那局","returnToMainChat":true}]]');
+describe('classifyLLMOutput — LIFE / NEWS_CARD', () => {
+  it('[[LIFE:...]] → life_record directive, 正文剥干净', () => {
+    const r = classifyLLMOutput('你今天吃药了吗\n[[LIFE:MED|布洛芬]]');
     expect(r.kind).toBe('finish');
     if (r.kind === 'finish') {
-      expect(r.cleanedText).toBe('我去玩啦。');
-      expect(r.directives).toEqual([{
-        type: 'game_hall_autoplay',
-        action: 'start',
-        payload: { instruction: '继续那局', gameHint: undefined, goal: undefined, returnToMainChat: true },
-      }]);
+      expect(r.cleanedText).toBe('你今天吃药了吗');
+      expect(r.sanitizedBody).toBe('你今天吃药了吗');
+      expect(r.directives).toEqual([{ type: 'life_record', body: 'MED|布洛芬' }]);
     }
   });
 
-  it('游戏厅控制标记与 SEARCH 同轮时挂在 tool-request directives', () => {
-    const r = classifyLLMOutput('先查一下。[[SEARCH: 攻略]][[GAME_HALL_AUTOPLAY_PAUSE]]');
-    expect(r.kind).toBe('tool-request');
-    if (r.kind === 'tool-request') {
-      expect(r.prefix).toBe('先查一下。');
-      expect(r.directives).toEqual([{ type: 'game_hall_autoplay', action: 'pause', payload: undefined }]);
+  it('无参形态 [[LIFE:PERIOD_START]] 一样收', () => {
+    const r = classifyLLMOutput('记下了[[LIFE:PERIOD_START]]');
+    expect(r.kind).toBe('finish');
+    if (r.kind === 'finish') {
+      expect(r.cleanedText).toBe('记下了');
+      expect(r.directives).toEqual([{ type: 'life_record', body: 'PERIOD_START' }]);
+    }
+  });
+
+  it('一条消息里多个 LIFE → 逐个收', () => {
+    const r = classifyLLMOutput('[[LIFE:MED|布洛芬]][[LIFE:EXERCISE|跑步|30分钟]]');
+    expect(r.kind).toBe('finish');
+    if (r.kind === 'finish') {
+      expect(r.directives).toEqual([
+        { type: 'life_record', body: 'MED|布洛芬' },
+        { type: 'life_record', body: 'EXERCISE|跑步|30分钟' },
+      ]);
+    }
+  });
+
+  it('[[NEWS_CARD: 来源|标题]] → news_card directive, 前后空格归一', () => {
+    const r = classifyLLMOutput('刷到条新闻\n[[NEWS_CARD: 微博|某某官宣 ]]');
+    expect(r.kind).toBe('finish');
+    if (r.kind === 'finish') {
+      expect(r.cleanedText).toBe('刷到条新闻');
+      expect(r.sanitizedBody).toBe('刷到条新闻');
+      expect(r.directives).toEqual([{ type: 'news_card', body: '微博|某某官宣' }]);
+    }
+  });
+
+  it('省略来源的 [[NEWS_CARD: 标题]] 也收', () => {
+    const r = classifyLLMOutput('[[NEWS_CARD: 某某官宣]]');
+    expect(r.kind).toBe('finish');
+    if (r.kind === 'finish') {
+      expect(r.cleanedText).toBe('');
+      expect(r.directives).toEqual([{ type: 'news_card', body: '某某官宣' }]);
+    }
+  });
+});
+
+// 复述型模型经常把整条消息重写一遍 (先说一遍再"总结"一遍), 同一个标签就出现两次。
+// 客户端重放不去重, 放过去就是同一笔钱转两次账。
+describe('classifyLLMOutput — 同一条消息里重复的副作用只出一个 directive', () => {
+  it('两个一模一样的转账标签 → 只出一个 transfer directive', () => {
+    const r = classifyLLMOutput('给你买奶茶[[ACTION:TRANSFER:520]]\n刚刚给你转了[[ACTION:TRANSFER:520]]');
+    expect(r.kind).toBe('finish');
+    if (r.kind === 'finish') {
+      expect(r.directives).toEqual([{ type: 'transfer', amount: 520 }]);
+    }
+  });
+
+  it('金额不同的两笔仍然是两件事, 都留', () => {
+    const r = classifyLLMOutput('[[ACTION:TRANSFER:520]][[ACTION:TRANSFER:1314]]');
+    expect(r.kind).toBe('finish');
+    if (r.kind === 'finish') {
+      expect(r.directives).toEqual([
+        { type: 'transfer', amount: 520 },
+        { type: 'transfer', amount: 1314 },
+      ]);
+    }
+  });
+
+  it('重复的日程 / 生活记录同样只留第一个', () => {
+    const r = classifyLLMOutput(
+      '[[ACTION:ADD_EVENT|面试|2026-08-03]][[LIFE:MED|布洛芬]]\n'
+      + '再说一遍：[[ACTION:ADD_EVENT|面试|2026-08-03]][[LIFE:MED|布洛芬]]',
+    );
+    expect(r.kind).toBe('finish');
+    if (r.kind === 'finish') {
+      expect(r.directives).toEqual([
+        { type: 'add_event', title: '面试', date: '2026-08-03' },
+        { type: 'life_record', body: 'MED|布洛芬' },
+      ]);
+    }
+  });
+
+  it('参数不同的小红书动作不会被误吞', () => {
+    const r = classifyLLMOutput('[[XHS_LIKE: n1]][[XHS_LIKE: n1]][[XHS_LIKE: n2]]');
+    expect(r.kind).toBe('finish');
+    if (r.kind === 'finish') {
+      expect(r.directives).toEqual([
+        { type: 'xhs_like', noteId: 'n1' },
+        { type: 'xhs_like', noteId: 'n2' },
+      ]);
+    }
+  });
+});
+
+// 角色改自己日程要跨两侧才算齐：worker 这边把标签认成 change_schedule directive，
+// 客户端那边拼回原标签、落库、顺带打脏让 fire_pack 重新上云。worker 不认的话，标签会
+// 留在正文里，然后被 sanitizeIntoSegments 的 stripBusinessTagsForNotification（正则含
+// ACTION）连 raw 一起剥掉，客户端什么都收不到——而角色嘴上已经说了「改好了」。
+// 即时对话是 amsg2 的主路径，前台那份 prompt 又照常教这个能力，所以这条通道必须在。
+describe('classifyLLMOutput — 日程修改走 directive 通道', () => {
+  it('规范标签 → change_schedule directive，正文里不留痕', () => {
+    const r = classifyLLMOutput('那今晚就不睡了，陪你聊。\n[[ACTION:CHANGE_SCHEDULE | 22:00 | 陪你聊天]]');
+    expect(r.kind).toBe('finish');
+    if (r.kind === 'finish') {
+      expect(r.directives).toEqual([
+        { type: 'change_schedule', time: '22:00', activity: '陪你聊天' },
+      ]);
+      expect(r.cleanedText).toBe('那今晚就不睡了，陪你聊。');
+      expect(r.cleanedText).not.toContain('CHANGE_SCHEDULE');
+    }
+  });
+
+  it('掉格式的写法一样认（跟客户端共用同一份容错解析）', () => {
+    for (const raw of [
+      '【【修改日程：22:00：陪你聊天】】',
+      '[[change schedule: (22:00): 陪你聊天]]',
+      '改日程 | 22点 | 陪你聊天',
+    ]) {
+      const r = classifyLLMOutput(raw);
+      expect(r.kind).toBe('finish');
+      if (r.kind === 'finish') {
+        expect(r.directives.some((d) => d.type === 'change_schedule')).toBe(true);
+      }
+    }
+  });
+
+  it('只输出这一个标签时也到得了客户端（directive-only，没有可见正文）', () => {
+    const r = classifyLLMOutput('[[ACTION:CHANGE_SCHEDULE | 22:00 | 陪你聊天]]');
+    expect(r.kind).toBe('finish');
+    if (r.kind === 'finish') {
+      expect(r.directives).toHaveLength(1);
+      expect(r.cleanedText).toBe('');
+    }
+  });
+
+  it('没有这个标签时正文一个字都不动（解析层的空行压缩不该殃及普通消息）', () => {
+    const text = '今天好累。\n\n\n不过还是想跟你说说话。';
+    const r = classifyLLMOutput(text);
+    expect(r.kind).toBe('finish');
+    if (r.kind === 'finish') expect(r.cleanedText).toBe(text);
+  });
+
+  it('跟别的副作用标签共存时互不干扰', () => {
+    const r = classifyLLMOutput(
+      '[[ACTION:POKE]]\n[[ACTION:CHANGE_SCHEDULE | 22:00 | 陪你聊天]]\n[[ACTION:ADD_EVENT|纪念日|2026-08-20]]',
+    );
+    expect(r.kind).toBe('finish');
+    if (r.kind === 'finish') {
+      expect(r.directives).toEqual([
+        { type: 'change_schedule', time: '22:00', activity: '陪你聊天' },
+        { type: 'poke' },
+        { type: 'add_event', title: '纪念日', date: '2026-08-20' },
+      ]);
     }
   });
 });

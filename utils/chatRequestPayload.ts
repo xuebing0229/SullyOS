@@ -13,9 +13,15 @@ import { buildGameHallAutoplayControlPrompt } from './gameHallAutoplayIntent';
  * 等价。新增 caller（runProactive）只是补齐了过去缺的字段。
  */
 
-import type { CharacterProfile, UserProfile, GroupProfile, Emoji, EmojiCategory, Message, RealtimeConfig, TranslationConfig } from '../types';
-import { ChatPrompts } from './chatPrompts';
+import type { CharacterProfile, UserProfile, GroupProfile, Emoji, EmojiCategory, Message, RealtimeConfig, TranslationConfig, VisionApiConfig } from '../types';
+import { ChatPrompts, detectChatModeTransition } from './chatPrompts';
 import { injectMemoryPalace } from './memoryPalace/pipeline';
+import { renderLocalContextGuidance } from './memoryPalace/recallRouter';
+import { renderInteractionAdaptationGuidance } from './memoryPalace/interactionAdaptation';
+import { renderDeepEngagementGuidance } from './memoryPalace/deepEngagement';
+import { renderConversationEngagementGuidance } from './memoryPalace/conversationEngagement';
+import type { ConversationEngagementAnalysis } from './memoryPalace/conversationEngagement';
+import type { DeepEngagementAnalysis } from './memoryPalace/deepEngagement';
 import { buildHtmlPrompt } from './htmlPrompt';
 import { buildThinkingChainPrompt } from './thinkingChainPrompt';
 import { buildMcdMiniAppContextBlock } from './mcdToolBridge';
@@ -30,6 +36,8 @@ import { mergeSystemMessages } from './systemMessageMerge';
 import { injectWorldbookDepthEntries, resolveWorldbookEntries } from './worldbook';
 import { normalizeTranslationLangLabel } from './translationLang';
 import { cleanApiMessages, flattenImageContentParts } from './promptMessageCleanup';
+import { materializeVisionDescriptions } from './visionApi';
+import type { RecallEntryPoint, RecallTrace } from './memoryPalace/trace';
 
 export { cleanApiMessages, flattenImageContentParts } from './promptMessageCleanup';
 
@@ -65,6 +73,8 @@ export interface BuildChatPayloadInput {
      * 让角色能回忆起自己跟对面这些人的关系，而不是只按聊天历史召回。
      */
     recallQueryHint?: string;
+    /** 只用于 Trace 和后续功能的作用域判断，不参与当前召回排序。 */
+    recallEntryPoint?: RecallEntryPoint;
     /** 仅真正的 1v1 主聊天允许角色发出游戏厅自主游玩控制指令。 */
     allowGameHallAutoplayControl?: boolean;
 
@@ -86,6 +96,8 @@ export interface BuildChatPayloadInput {
     translationConfig?: TranslationConfig | { enabled: boolean; sourceLang: string; targetLang: string };
     htmlMode?: { enabled: boolean; customPrompt?: string };
     thinkingChain?: { enabled: boolean; customPrompt?: string };
+    /** 可选识图 API：开启后先把图片持久化转写为 [图片：描述]，主模型只接收文字。 */
+    visionApiConfig?: VisionApiConfig;
     mcdMiniSnap?: McdMiniAppSnapshot;
     luckinMiniSnap?: LuckinMiniAppSnapshot;
     /** 瑞幸聊天点单模式 (点"瑞一杯"激活, 角色直接调真实工具) */
@@ -103,7 +115,13 @@ export interface BuildChatPayloadInput {
     worldbookQueryMessages?: Message[];
     /** 是否允许通用 MCP 聊天工具；默认 true。 */
     allowMcpChat?: boolean;
-    /** 本轮由主动消息 2.0 worker 生成；时间、真实世界与 MCP 说明由 worker 在执行时补。 */
+    /** 旧游戏厅调用方的兼容输入；连续性已迁移到 game_hall_card。 */
+    gameHallBridgeBlock?: string;
+    /**
+     * 这一轮交给 amsg worker 在 fire 时刻生成（即时对话）。时钟 / 真实世界块 /
+     * MCP 说明由 worker 那边独家供给，前端这份就不再烤进去，免得一份 prompt 里
+     * 出现两个钟、两份热搜、两套工具名。
+     */
     timelyByWorker?: boolean;
 }
 
@@ -113,7 +131,9 @@ export interface BuildChatPayloadResult {
     /** 已剥离双语标签的历史消息（emotion eval 也吃这份） */
     cleanedApiMessages: ChatPayloadMessage[];
     /** [system, ...cleanedApiMessages, 末尾 bilingual reminder?] —— 主 API 直接发这个 */
-    fullMessages: ChatPayloadMessage[];
+    fullMessages: Array<{ role: string; content: any }>;
+    /** 本轮记忆召回的脱敏 Trace；Prompt Build 被整体跳过时不存在。 */
+    recallTrace?: RecallTrace;
     /** 调试用：bilingual / mcd 是否实际注入 */
     flags: {
         bilingualActive: boolean;
@@ -216,15 +236,39 @@ export async function buildChatRequestPayload(input: BuildChatPayloadInput): Pro
         input.categories,
         char.id,
     );
-    const recentMsgsHint = input.recentMsgsHint ?? historyMsgs;
+    const rawRecentMsgsHint = input.recentMsgsHint ?? historyMsgs;
+    const useVisionDescriptions = input.visionApiConfig?.enabled === true;
+    let historyMsgsForPrompt = historyMsgs;
+    let recentMsgsHint = rawRecentMsgsHint;
+
+    if (useVisionDescriptions) {
+        // historyMsgs 通常来自 DB、recentMsgsHint 通常来自 React state；按 id 合并后只识别一次，
+        // 再把写回 metadata 的新快照映射回两套窗口，避免同一轮的 system/history 各跑一次识图。
+        const uniqueMessages = new Map<number, Message>();
+        for (const message of rawRecentMsgsHint) uniqueMessages.set(message.id, message);
+        for (const message of historyMsgs) uniqueMessages.set(message.id, message);
+        const prepared = await materializeVisionDescriptions(
+            [...uniqueMessages.values()],
+            input.visionApiConfig,
+        );
+        const preparedById = new Map(prepared.map(message => [message.id, message]));
+        historyMsgsForPrompt = historyMsgs.map(message => preparedById.get(message.id) || message);
+        recentMsgsHint = rawRecentMsgsHint.map(message => preparedById.get(message.id) || message);
+    }
 
     if (isPromptBuildSkipped()) {
-        const { apiMessages } = ChatPrompts.buildMessageHistory(historyMsgs, contextLimit, char, userProfile, emojis);
-        const cleanedHistory = cleanApiMessages(
-            input.stripImages ? flattenImageContentParts(apiMessages) : apiMessages,
-        ) as ChatPayloadMessage[];
+        const { apiMessages } = ChatPrompts.buildMessageHistory(
+            historyMsgsForPrompt,
+            contextLimit,
+            char,
+            userProfile,
+            emojis,
+            undefined,
+            { useVisionDescriptions },
+        );
+        const cleanedApiMessages = cleanApiMessages(input.stripImages ? flattenImageContentParts(apiMessages) : apiMessages);
         const requestMessages: ChatPayloadMessage[] = [
-            ...cleanedHistory,
+            ...(cleanedApiMessages as ChatPayloadMessage[]),
             ...(input.ephemeralMessages ?? []),
         ];
         console.warn('[DevDebug] Prompt Build skipped: sending chat history without system prompt injection.');
@@ -246,7 +290,13 @@ export async function buildChatRequestPayload(input: BuildChatPayloadInput): Pro
     }
 
     // ── 1. Memory Palace 向量召回 ─────────────────────────
-    await injectMemoryPalace(char, recentMsgsHint, input.recallQueryHint, userProfile?.name);
+    const recallTrace = await injectMemoryPalace(
+        char,
+        recentMsgsHint,
+        input.recallQueryHint,
+        userProfile?.name,
+        { entryPoint: input.recallEntryPoint ?? 'chat_payload' },
+    );
 
     // ── 2. 解析音乐共听（如果 caller 没显式给，就从 snapshot 推） ──
     let userListeningContext = input.userListeningContext;
@@ -268,6 +318,10 @@ export async function buildChatRequestPayload(input: BuildChatPayloadInput): Pro
     // volatileTail → 历史消息之后的 system（时间/召回/buff/日程/音乐等实时状态 + 点单类模式块）；
     // recencyTail（总纲+「回到你自己」钢印）最后拼进 volatileTail 末尾，保证它是模型
     // 开口前读到的最后内容 —— 双语/HTML/思考链等格式块都只能拼在 stable 里、排它前面。
+    // UI 为了不把通话/见面/剧情正文画进 ChatApp，会把这些 source 从 React state 过滤掉；
+    // 但主 API 的 historyMsgsForPrompt 来自完整 DB，仍然会看到它们。模式切换必须以 API
+    // 真正要发送的历史为准，否则模型会收到特殊模式正文，却收不到「切回聊天格式」的提示。
+    const returningFromMode = detectChatModeTransition(historyMsgsForPrompt);
     const parts = await ChatPrompts.buildSystemPromptParts(
         char, userProfile, groups, emojis, categories, recentMsgsHint,
         realtimeConfig, innerState || undefined,
@@ -275,10 +329,11 @@ export async function buildChatRequestPayload(input: BuildChatPayloadInput): Pro
         !!isListeningTogether,
         musicCfg,
         recentTrackSwitch,
-        {
+        (input.timelyByWorker || returningFromMode || input.worldbookQueryMessages) ? {
             worldbookMessages: input.worldbookQueryMessages ?? recentMsgsHint,
-            timelyByWorker: input.timelyByWorker,
-        },
+            timelyByWorker: input.timelyByWorker === true,
+            returningFromMode: returningFromMode || undefined,
+        } : undefined,
     );
     let systemPrompt = parts.stable;
     let volatileTail = parts.volatileState;
@@ -331,7 +386,15 @@ export async function buildChatRequestPayload(input: BuildChatPayloadInput): Pro
     }
 
     // ── 7. 历史消息构造 ───────────────────────────────────
-    const { apiMessages } = ChatPrompts.buildMessageHistory(historyMsgs, contextLimit, char, userProfile, emojis);
+    const { apiMessages } = ChatPrompts.buildMessageHistory(
+        historyMsgsForPrompt,
+        contextLimit,
+        char,
+        userProfile,
+        emojis,
+        undefined,
+        { useVisionDescriptions },
+    );
 
     // ── 8. 剥离历史里旧的双语标签（stripImages 时先压平 image_url → 纯文本占位） ──
     const cleanedHistory = cleanApiMessages(
@@ -381,6 +444,10 @@ export async function buildChatRequestPayload(input: BuildChatPayloadInput): Pro
 
     // ── 9d. 通用 MCP 工具模式 (用户自配的远程 MCP 服务器, 见 docs/mcp-client.md) ──
     // 工具清单来自持久化的发现结果，变化很慢 → 稳定段。
+    //
+    // 即时对话路径：MCP 说明由 worker 的 buildMcpFireBlock 独家供给（与凭据同源同拍），
+    // 前端这份不注入——两份工具说明两套工具名，模型会两种都写一遍。
+    // mcpChatActive 的取值不受影响：它还要告诉上层「这一轮算不算 MCP 模式」。
     const mcpChatActive = input.allowMcpChat !== false && isMcpChatAvailable(char.id);
     if (mcpChatActive && !input.timelyByWorker) {
         const block = buildMcpSystemBlock(userProfile?.name || '用户', char.id);
@@ -390,6 +457,22 @@ export async function buildChatRequestPayload(input: BuildChatPayloadInput): Pro
     }
 
     // ── 10. recency 钢印归位 + 组装 fullMessages ─────────
+    // 本地语境分析只在 ChatApp 主回复使用：它告诉主模型“这句话此刻在做什么”，
+    // 不指定具体记忆答案、不改变角色人格，也不进入其他 App 的专属写作提示。
+    if (input.recallEntryPoint === 'chat_app') {
+        volatileTail += renderLocalContextGuidance(recallTrace.contextAnalyzer);
+        volatileTail += renderInteractionAdaptationGuidance(recallTrace.interactionAdaptation?.analysis);
+        const engagementTrace = recallTrace.deepEngagement;
+        if (engagementTrace?.engine === 'legacy_depth') {
+            volatileTail += renderDeepEngagementGuidance(engagementTrace.analysis as DeepEngagementAnalysis | undefined);
+        } else if (engagementTrace?.engine === 'conversation_v2') {
+            // M3 核心原则常驻；分析结果只决定是否在后面追加当轮状态策略。
+            volatileTail += renderConversationEngagementGuidance(
+                engagementTrace.analysis as ConversationEngagementAnalysis | undefined,
+            );
+        }
+    }
+
     // 「关于对方的表达」+「回到你自己」必须是易变尾段的最后内容：修复旧版把双语/HTML/
     // 思考链/点单块拼在钢印之后、模型开口前最后读到的是格式说明书的问题。
     // 游戏厅跨功能连续性现在通过真正写入 messages 主表的 game_hall_card 完成。
@@ -429,7 +512,8 @@ export async function buildChatRequestPayload(input: BuildChatPayloadInput): Pro
         // 只是主 API 的实际消息结构把易变尾段放在历史之后（见上）。
         systemPrompt: systemPrompt + volatileTail,
         cleanedApiMessages: messagesWithWorldbookDepth,
-        fullMessages: finalMessages as ChatPayloadMessage[],
+        fullMessages: finalMessages,
+        recallTrace,
         flags: { bilingualActive, mcdActive, luckinActive, luckinChatActive, mcpChatActive, htmlActive, thinkingActive, promptBuildSkipped: false },
     };
 }

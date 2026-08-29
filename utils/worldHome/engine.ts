@@ -22,7 +22,7 @@ import type {
 import { DB } from '../db';
 import { buildChatRequestPayload } from '../chatRequestPayload';
 import { safeFetchJson } from '../safeApi';
-import { processNewMessages } from '../memoryPalace/pipeline';
+import { processNewMessagesWithAutoArchive } from '../memoryPalace/autoArchive';
 import { getDailyScheduleForChar } from '../dailySchedule';
 import {
     worldTimeLabel, buildWorldSystemAddendum, buildWorldCharTurn, buildNpcTurn,
@@ -354,6 +354,7 @@ export async function runWorldEpisode(deps: WorldEpisodeDeps): Promise<WorldEpis
                 const payload = await buildChatRequestPayload({
                     char: worldChar, userProfile, groups, emojis: [], categories: [],
                     historyMsgs, contextLimit, realtimeConfig, recallQueryHint,
+                    recallEntryPoint: 'world_home',
                     // 家园可配独立 API（可能不支持视觉，image_url 会 400）→ 历史图片压平成文本占位
                     stripImages: true,
                 });
@@ -535,7 +536,7 @@ export async function runWorldEpisode(deps: WorldEpisodeDeps): Promise<WorldEpis
                         const char = members.find(m => m.id === beat.charId);
                         if (!char?.memoryPalaceEnabled) continue;
                         const recentMsgs = await DB.getRecentMessagesByCharId(char.id, 50);
-                        void processNewMessages(recentMsgs, char.id, char.name, mpEmb as any, mpLLM as any, userProfile?.name || '', false).catch(() => {});
+                        void processNewMessagesWithAutoArchive(recentMsgs, char.id, char.name, mpEmb as any, mpLLM as any, userProfile?.name || '', false).catch(() => {});
                     }
                 }
             } catch { /* 记忆失败不影响主流程 */ }
@@ -593,6 +594,7 @@ export async function rerollWorldCharBeat(
         const payload = await buildChatRequestPayload({
             char: worldChar, userProfile, groups, emojis: [], categories: [],
             historyMsgs, contextLimit, realtimeConfig, recallQueryHint,
+            recallEntryPoint: 'world_home',
             // 同上：独立 API 可能不支持视觉 → 历史图片压平成文本占位
             stripImages: true,
         });

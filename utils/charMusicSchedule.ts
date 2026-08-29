@@ -50,13 +50,14 @@ const slotStartToDate = (slot: ScheduleSlot, baseDate: Date): Date => {
 };
 
 /**
- * 基于 (today + slot.startTime + charId) 种子从 char 歌单里稳定抽一首。
- * 同一 slot 期间永远是同一首歌，不会跳。
+ * 抽样池：按歌单顺序去重取前 MAX_SAMPLED_SONGS 首。
+ *
+ * 单独 export 是给主动消息用的——fire_pack 把这份池子随包带给 worker，worker 到点用
+ * 下面同一个 pickSongFromPool 抽，抽出来的跟角色在聊天里说的是同一首。
  */
 export const buildSongPool = (char: CharacterProfile): CharPlaylistSong[] => {
     const p = char.musicProfile;
     if (!p) return [];
-
     const pool: CharPlaylistSong[] = [];
     const seen = new Set<number>();
     for (const pl of p.playlists) {
@@ -71,7 +72,16 @@ export const buildSongPool = (char: CharacterProfile): CharPlaylistSong[] => {
     return pool;
 };
 
-export const pickSongFromPool = <T,>(pool: T[], slotStartTime: string, today: string, charId: string): T | null => {
+/**
+ * 基于 (today + slot.startTime + charId) 种子从池子里稳定抽一首。
+ * 同一 slot 期间永远是同一首歌，不会跳。
+ */
+export const pickSongFromPool = <T,>(
+    pool: T[],
+    slotStartTime: string,
+    today: string,
+    charId: string,
+): T | null => {
     if (pool.length === 0) return null;
     const seedStr = `${today}-${slotStartTime}-${charId}`;
     let h = 0;

@@ -4,16 +4,6 @@ export interface NativeFcmEnv {
   FCM_PROJECT_ID?: string;
   FCM_SERVICE_ACCOUNT_EMAIL?: string;
   FCM_SERVICE_ACCOUNT_PRIVATE_KEY?: string;
-  DB?: {
-    prepare(sql: string): {
-      bind(...values: unknown[]): {
-        run(): Promise<unknown>;
-        all<T = unknown>(): Promise<{ results?: T[] }>;
-      };
-      run(): Promise<unknown>;
-    };
-    batch(statements: unknown[]): Promise<unknown>;
-  };
 }
 
 interface PushTransport {
@@ -98,53 +88,6 @@ export const fcmTokenFromEndpoint = (endpoint: unknown): string | null => {
   return endpoint.slice(4).trim() || null;
 };
 
-export const pollTokenFromEndpoint = (endpoint: unknown): string | null => {
-  if (typeof endpoint !== 'string' || !endpoint.startsWith('poll:')) return null;
-  const token = endpoint.slice(5).trim();
-  return /^[A-Za-z0-9_-]{32,128}$/.test(token) ? token : null;
-};
-
-const ensureMailbox = async (env: NativeFcmEnv) => {
-  if (!env.DB) throw new Error('D1 DB 未绑定');
-  await env.DB.batch([
-    env.DB.prepare(`CREATE TABLE IF NOT EXISTS native_push_mailbox (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      device_token TEXT NOT NULL,
-      payload TEXT NOT NULL,
-      created_at INTEGER NOT NULL
-    )`),
-    env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_native_push_mailbox_device ON native_push_mailbox(device_token, id)'),
-  ]);
-};
-
-export const enqueueNativePollPayload = async (env: NativeFcmEnv, token: string, payload: string) => {
-  await ensureMailbox(env);
-  const now = Date.now();
-  await env.DB!.batch([
-    env.DB!.prepare('DELETE FROM native_push_mailbox WHERE created_at < ?').bind(now - 7 * 86400_000),
-    env.DB!.prepare('INSERT INTO native_push_mailbox (device_token, payload, created_at) VALUES (?, ?, ?)')
-      .bind(token, payload, now),
-  ]);
-};
-
-export const pullNativePollPayloads = async (env: NativeFcmEnv, token: string, limit = 20) => {
-  await ensureMailbox(env);
-  const result = await env.DB!.prepare(
-    'SELECT id, payload, created_at AS createdAt FROM native_push_mailbox WHERE device_token = ? ORDER BY id ASC LIMIT ?',
-  ).bind(token, Math.max(1, Math.min(50, Math.floor(limit)))).all<{ id: number; payload: string; createdAt: number }>();
-  return result.results ?? [];
-};
-
-export const ackNativePollPayloads = async (env: NativeFcmEnv, token: string, ids: number[]) => {
-  await ensureMailbox(env);
-  const safeIds = ids.filter((id) => Number.isSafeInteger(id) && id > 0).slice(0, 50);
-  if (!safeIds.length) return;
-  const placeholders = safeIds.map(() => '?').join(',');
-  await env.DB!.prepare(
-    `DELETE FROM native_push_mailbox WHERE device_token = ? AND id IN (${placeholders})`,
-  ).bind(token, ...safeIds).run();
-};
-
 /** notification 承载正文、data 承载其余 AMSG2 结构，避免正文重复两份顶穿 4KB。 */
 export const buildFcmMessage = (token: string, rawPayload: string) => {
   const payload = JSON.parse(rawPayload) as Record<string, any>;
@@ -204,8 +147,6 @@ export const createHybridPushTransport = (
   webPush: PushTransport,
 ): PushTransport => ({
   async sendNotification(subscription: any, payload: string) {
-    const pollToken = pollTokenFromEndpoint(subscription?.endpoint);
-    if (pollToken) return enqueueNativePollPayload(env, pollToken, payload);
     const token = fcmTokenFromEndpoint(subscription?.endpoint);
     if (token) return sendFcmNotification(env, token, payload);
     return webPush.sendNotification(subscription, payload);

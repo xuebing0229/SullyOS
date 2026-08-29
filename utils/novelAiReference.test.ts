@@ -7,7 +7,6 @@ import {
     chooseReferenceCanvas,
     isNovelAiReferenceType,
     prepareBuiltinImageToolArguments,
-    stripNovelAiReferenceForTextOnlyBackup,
     sanitizeNovelAiReferenceToolArguments,
     stripNovelAiReferenceForTextOnlyBackup,
 } from './novelAiReference';

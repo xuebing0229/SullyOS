@@ -59,8 +59,7 @@ const sampleBackup = () => ({
     timestamp: 123,
     version: 3,
     theme: { name: 'dark', wallpaper: 'assets/asset_1.png' },
-    userProfile: { name: '楪', avatar: 'assets/asset_2.png' },
-    activeApiPresetId: 'preset-priced-exactly',
+    userProfile: { name: '小明', avatar: 'assets/asset_2.png' },
     lifeSimState: null,                 // 单例空 → null，仍要原样带回（v1 语义：清目标）
     apiConfig: undefined,               // undefined 字段 → JSON 丢弃，导入端拿不到（与 v1 一致）
     // 数组字段 → 分片
@@ -92,7 +91,6 @@ describe('backupFormat v2 往返', () => {
         expect(data.memoryNodes).toEqual(src.memoryNodes);
         expect(data.theme).toEqual(src.theme);
         expect(data.userProfile).toEqual(src.userProfile);
-        expect(data.activeApiPresetId).toBe('preset-priced-exactly');
         expect(data.lifeSimState).toBe(null);                // null 原样带回
         expect('apiConfig' in data).toBe(false);             // undefined 字段被 JSON 丢弃，导入端没有
         expect(data.timestamp).toBe(123);
@@ -196,11 +194,33 @@ describe('backupFormat v2 校验档（写库前 abort，DB 未动）', () => {
         await expect(assembleV2Backup(zip, tampered)).rejects.toThrow(/对不上|中止导入/);
     });
 
-    it('formatVersion 不是 2（如未来 v3）→ abort，不拿 v2 parser 硬解', async () => {
+    it('formatVersion 不在支持清单（如未来 v4）→ abort，不拿现有 parser 硬解', async () => {
         const zip = new FakeZip();
         const manifest = await writeV2Backup(zip, { messages: [{ id: 1 }] }, {});
-        const v3: BackupManifest = { ...manifest, formatVersion: 3 };
-        await expect(assembleV2Backup(zip, v3)).rejects.toThrow(/不支持的备份格式版本/);
+        const v4: BackupManifest = { ...manifest, formatVersion: 4 };
+        await expect(assembleV2Backup(zip, v4)).rejects.toThrow(/不支持的备份格式版本/);
+    });
+
+    it('formatVersion 2 的老包仍可组装（回归守卫：升 v3 不弃 v2）', async () => {
+        const zip = new FakeZip();
+        const manifest = await writeV2Backup(zip, { messages: [{ id: 1, t: 'a' }] }, {});
+        const v2: BackupManifest = { ...manifest, formatVersion: 2 };
+        const data = await assembleV2Backup(zip, v2);
+        expect(data.messages).toEqual([{ id: 1, t: 'a' }]);
+    });
+
+    it('onSerialized 钩子看到每条分片记录与 metadata 的落包文本', async () => {
+        const zip = new FakeZip();
+        const seen: string[] = [];
+        await writeV2Backup(
+            zip,
+            { theme: { wallpaper: 'blobref:b_meta' }, messages: [{ id: 1, img: 'blobref:b_item' }, { id: 2 }] },
+            { onSerialized: s => seen.push(s) },
+        );
+        // 两条 messages 记录 + 一段 metadata，逐段可见（v3 blob 旁路靠它收集令牌）
+        expect(seen.some(s => s.includes('blobref:b_item'))).toBe(true);
+        expect(seen.some(s => s.includes('blobref:b_meta'))).toBe(true);
+        expect(seen.filter(s => s.startsWith('{"id"')).length).toBe(2);
     });
 
     it('分片内容不是数组 → abort', async () => {

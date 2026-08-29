@@ -60,6 +60,15 @@ describe('buildPushDecision D 系列 (pushPayloads 数组)', () => {
     expect(ps[0].notification?.body).toBe('你看');
   });
 
+  it('D1b 非内置双语长句中的 CJK 空格不拆 push', () => {
+    const text = '「1日3個くらいなら死にはしないよ（一天三个死不了人的。比起鸡蛋 你还是多担心一下蔬菜为零这件事吧）」';
+    const r = buildPushDecision(baseInput({ llmOutputText: text }));
+    const ps = pushes(r);
+    expect(ps).toHaveLength(1);
+    expect(ps[0].message).toBe(text);
+    expect(ps[0].notification?.body).toBe(text);
+  });
+
   it('D2 finish 含 SEND_EMOJI → emoji 独立 segment, message 留 raw 给客户端 Step 9', () => {
     const r = buildPushDecision(baseInput({
       llmOutputText: '你看\n[[SEND_EMOJI: 笑]]\n我没事的',
@@ -349,30 +358,5 @@ describe('buildPushDecision skip-push (空内容)', () => {
     const ps = (r as Extract<typeof r, { decision: 'finish' }>).pushPayloads;
     expect(ps).toHaveLength(1);
     expect((ps[0] as { metadata: { directives: unknown[] } }).metadata.directives).toEqual([{ type: 'poke' }]);
-  });
-
-  it('纯游戏厅自主标记走 directive-only push，不显示通知', () => {
-    const r = buildPushDecision(baseInput({ llmOutputText: '[[GAME_HALL_AUTOPLAY_STOP]]' }));
-    expect(r.decision).toBe('finish');
-    const ps = pushes(r);
-    expect(ps).toHaveLength(1);
-    expect(ps[0].message).toBe('');
-    expect(ps[0].notification).toBeUndefined();
-    expect(ps[0].metadata?.directives).toEqual([
-      { type: 'game_hall_autoplay', action: 'stop', payload: undefined },
-    ]);
-  });
-
-  it('游戏厅标记与 SEARCH 同轮时挂到 tool-request push metadata', () => {
-    const r = buildPushDecision(baseInput({
-      llmOutputText: '查攻略[[SEARCH: 攻略]][[GAME_HALL_AUTOPLAY_PAUSE]]',
-    }));
-    expect(r.decision).toBe('tool-request');
-    const ps = pushes(r);
-    const toolPush = ps.at(-1)!;
-    expect(toolPush.messageKind).toBe('tool_request');
-    expect(toolPush.metadata?.directives).toEqual([
-      { type: 'game_hall_autoplay', action: 'pause', payload: undefined },
-    ]);
   });
 });

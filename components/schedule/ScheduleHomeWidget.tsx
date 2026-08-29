@@ -1,10 +1,12 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { CharacterProfile, DailySchedule, ScheduleSlot } from '../../types';
 import ScheduleCard from './ScheduleCard';
 import { getCurrentScheduleSlotIndex, getScheduleWallClock } from '../../utils/scheduleTime';
 import { useOS } from '../../context/OSContext';
 import { resolveScheduleCardPalette } from '../../utils/scheduleAppearance';
 import ScheduleAppearanceButton, { ScheduleCustomCssStyle } from './ScheduleAppearanceButton';
+import TokenImg from '../os/TokenImg';
+import { useBlobRefUrl } from '../../utils/blobRef';
 
 interface ScheduleSquareWidgetProps {
     schedule: DailySchedule | null;
@@ -28,7 +30,7 @@ export const ScheduleSquareWidget: React.FC<ScheduleSquareWidgetProps> = ({
 
     const palette = resolveScheduleCardPalette(
         theme.scheduleCardAppearance,
-        character?.themeColor ?? theme.hue ?? 260,
+        theme.hue ?? 260,
         inheritedContentColor,
     );
     const contentColor = palette.text;
@@ -73,8 +75,8 @@ export const ScheduleSquareWidget: React.FC<ScheduleSquareWidgetProps> = ({
             </div>
             {/* Background avatar */}
             {character?.avatar && (
-                <img
-                    src={character.avatar}
+                <TokenImg
+                    value={character.avatar}
                     alt=""
                     loading="lazy"
                     className="absolute inset-0 w-full h-full object-cover opacity-55"
@@ -170,6 +172,8 @@ export const ScheduleHomeWidget: React.FC<ScheduleHomeWidgetProps> = ({
     paper = false,
 }) => {
     const { theme } = useOS();
+    // 头像光晕是 CSS 背景，拿不到 <img> 的自动解析，这里在组件顶层先把令牌解开
+    const avatarUrl = useBlobRefUrl(character?.avatar);
     const currentIdx = schedule ? getCurrentScheduleSlotIndex(schedule.slots, character) : -1;
     const currentSlot = currentIdx >= 0 ? schedule!.slots[currentIdx] : null;
     const nextSlot = schedule && currentIdx < schedule.slots.length - 1
@@ -178,7 +182,7 @@ export const ScheduleHomeWidget: React.FC<ScheduleHomeWidgetProps> = ({
 
     const palette = resolveScheduleCardPalette(
         theme.scheduleCardAppearance,
-        character?.themeColor ?? theme.hue ?? 260,
+        theme.hue ?? 260,
         inheritedContentColor,
     );
     const effectivePaper = paper && palette.isOriginal;
@@ -233,7 +237,7 @@ export const ScheduleHomeWidget: React.FC<ScheduleHomeWidgetProps> = ({
                         <div className="w-[64px] h-[64px] shrink-0 rounded-[22%] overflow-hidden bg-[#e8e2d6] flex items-center justify-center"
                             style={{ border: '3px solid #fff', boxShadow: '0 4px 10px -3px rgba(61,52,40,0.25)' }}>
                             {character?.avatar
-                                ? <img src={character.avatar} alt="" loading="lazy" className="w-full h-full object-cover" style={{ objectPosition: 'center 28%' }} />
+                                ? <TokenImg value={character.avatar} alt="" loading="lazy" className="w-full h-full object-cover" style={{ objectPosition: 'center 28%' }} />
                                 : <span className="text-lg font-bold" style={{ color: '#9f927d' }}>{character?.name?.[0] || '🍃'}</span>}
                         </div>
                         <div className="flex-1 min-w-0">
@@ -316,11 +320,11 @@ export const ScheduleHomeWidget: React.FC<ScheduleHomeWidgetProps> = ({
                 <ScheduleAppearanceButton compact />
             </div>
             {/* Blurred avatar glow（动森奶油底下省略，避免糊脏） */}
-            {!effectivePaper && palette.isOriginal && character?.avatar && (
+            {!effectivePaper && palette.isOriginal && avatarUrl && (
                 <div
                     className="absolute inset-0 opacity-25 pointer-events-none"
                     style={{
-                        backgroundImage: `url(${character.avatar})`,
+                        backgroundImage: `url(${avatarUrl})`,
                         backgroundSize: 'cover',
                         backgroundPosition: 'center 28%',
                         filter: 'blur(36px) saturate(1.6)',
@@ -357,8 +361,8 @@ export const ScheduleHomeWidget: React.FC<ScheduleHomeWidgetProps> = ({
                         }}
                     >
                         {character?.avatar ? (
-                            <img
-                                src={character.avatar}
+                            <TokenImg
+                                value={character.avatar}
                                 alt=""
                                 loading="lazy"
                                 className="w-full h-full object-cover"
@@ -497,10 +501,8 @@ export const ScheduleFullscreenViewer: React.FC<ScheduleFullscreenViewerProps> =
         return () => window.removeEventListener('keydown', onKey);
     }, [open, onClose]);
 
-    const accentHsl = useMemo(
-        () => `hsl(${activeCharacter?.themeColor ?? 260}, 70%, 65%)`,
-        [activeCharacter?.themeColor]
-    );
+    // 这层全屏查看器不跟随卡片配色，固定用默认色相做强调色
+    const accentHsl = 'hsl(260, 70%, 65%)';
 
     if (!open) return null;
 
@@ -564,12 +566,12 @@ export const ScheduleFullscreenViewer: React.FC<ScheduleFullscreenViewerProps> =
                                                 ? `2px solid ${accentHsl}`
                                                 : '2px solid rgba(255,255,255,0.12)',
                                             boxShadow: isActive
-                                                ? `0 6px 18px hsla(${c.themeColor ?? 260}, 70%, 55%, 0.45)`
+                                                ? '0 6px 18px hsla(260, 70%, 55%, 0.45)'
                                                 : 'none',
                                         }}
                                     >
                                         {c.avatar ? (
-                                            <img src={c.avatar} alt="" className="w-full h-full object-cover" loading="lazy" />
+                                            <TokenImg value={c.avatar} alt="" className="w-full h-full object-cover" loading="lazy" />
                                         ) : (
                                             <div className="w-full h-full bg-white/10 flex items-center justify-center text-sm font-bold">
                                                 {c.name[0]}

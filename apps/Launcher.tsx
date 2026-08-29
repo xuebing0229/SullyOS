@@ -3,6 +3,8 @@ import { isPaperWallpaper, useOS } from '../context/OSContext';
 import { INSTALLED_APPS, DOCK_APPS } from '../constants';
 import { isDevDebugAvailable, subscribeDevDebugAvailability } from '../utils/devDebug';
 import AppIcon from '../components/os/AppIcon';
+import TokenImg from '../components/os/TokenImg';
+import { useBlobRefUrl } from '../utils/blobRef';
 import { DB } from '../utils/db';
 import { CharacterProfile, Anniversary, AppID, DailySchedule } from '../types';
 import { ScheduleHomeWidget, ScheduleFullscreenViewer } from '../components/schedule/ScheduleHomeWidget';
@@ -13,6 +15,9 @@ import TamagotchiHome from '../components/os/TamagotchiHome';
 import { getDailyScheduleForChar } from '../utils/dailySchedule';
 import { useLocalDateKey } from '../hooks/useLocalDateKey';
 import { resolveCharTimeZone } from '../utils/timezone';
+import { trackEvent } from '../utils/analytics';
+
+const CompanionHome = React.lazy(() => import('../components/os/CompanionHome'));
 
 // --- Isolated Components to prevent full re-renders ---
 
@@ -123,6 +128,8 @@ const CharacterWidget = React.memo(({
 }) => {
     const { theme } = useOS();
     const acnh = theme.skin === 'animalcrossing'; // 动森彩蛋：会"说话"的村民卡
+    // 卡片底的虚化头像画在 CSS background-image 上，吃不到 TokenImg 的解析，这里自己解析一次。
+    const avatarUrl = useBlobRefUrl(char?.avatar);
 
     // 动森：村民头像 + AC 对话气泡（显示最近消息，点开聊天）
     if (acnh) {
@@ -133,7 +140,7 @@ const CharacterWidget = React.memo(({
                     <div className="relative w-[60px] h-[60px] shrink-0 rounded-[26%] overflow-hidden bg-[#e8e2d6]"
                         style={{ border: '3px solid #ffffff', boxShadow: '0 4px 10px -2px rgba(61,52,40,0.28)' }}>
                         {char?.avatar
-                            ? <img src={char.avatar} className="w-full h-full object-cover" alt="char" loading="lazy" />
+                            ? <TokenImg value={char.avatar} className="w-full h-full object-cover" alt="char" loading="lazy" />
                             : <div className="w-full h-full flex items-center justify-center text-2xl">🍃</div>}
                         {unreadCount > 0 && (
                             <div className="absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 bg-[#fc736d] rounded-full flex items-center justify-center text-[10px] font-bold text-white"
@@ -182,10 +189,10 @@ const CharacterWidget = React.memo(({
                 }}
              >
                  {/* 背景虚化角色头像（动森模式下省略，避免糊在奶油底上） */}
-                 {!acnh && !paper && char?.avatar && (
+                 {!acnh && !paper && avatarUrl && (
                      <div className="absolute inset-0 opacity-25 pointer-events-none"
                          style={{
-                             backgroundImage: `url(${char.avatar})`,
+                             backgroundImage: `url(${avatarUrl})`,
                              backgroundSize: 'cover',
                              backgroundPosition: 'center',
                              filter: 'blur(30px) saturate(1.6)',
@@ -201,7 +208,7 @@ const CharacterWidget = React.memo(({
                              boxShadow: paper ? '0 5px 14px rgba(91,72,51,0.13)' : acnh ? '0 4px 12px -4px rgba(61,52,40,0.25)' : '0 4px 14px rgba(0,0,0,0.25)',
                          }}>
                          {char ? (
-                             <img src={char.avatar} className="w-full h-full object-cover" alt="char" loading="lazy" />
+                             <TokenImg value={char.avatar} className="w-full h-full object-cover" alt="char" loading="lazy" />
                          ) : <div className="w-full h-full bg-white/10 animate-pulse" />}
                          {unreadCount > 0 ? (
                             <div className="absolute bottom-0.5 right-0.5 min-w-[16px] h-[16px] px-1 bg-red-500 rounded-full border border-white/30 shadow-sm flex items-center justify-center text-[9px] font-bold text-white">
@@ -317,7 +324,7 @@ const DesktopSquareImage = React.memo(({ image, contentColor, onClick, acnh = fa
             }}
         >
             {image ? (
-                <img src={image} alt="" className="w-full h-full object-cover" loading="lazy" />
+                <TokenImg value={image} alt="" className="w-full h-full object-cover" loading="lazy" />
             ) : (
                 <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 px-3 text-center">
                     <div className="w-9 h-9 rounded-full flex items-center justify-center"
@@ -846,6 +853,7 @@ const Launcher: React.FC = () => {
           isDragging.current = false;
           suppressLayoutClickUntil.current = Date.now() + 700;
           setLayoutEditing(true);
+          trackEvent('进入桌面整理模式');
       }, 520);
   };
 
@@ -929,6 +937,14 @@ const Launcher: React.FC = () => {
   // 电子宠物主题：桌面即养成机——角色真实小屋做舞台 + 四颗糖果实体键（独立组件自渲染）。
   if (theme.skin === 'tamagotchi') {
     return <TamagotchiHome />;
+  }
+
+  if (theme.skin === 'companion') {
+    return (
+      <React.Suspense fallback={<div className="h-full w-full bg-[#100d1c]" />}>
+        <CompanionHome />
+      </React.Suspense>
+    );
   }
 
   return (
@@ -1038,7 +1054,7 @@ const Launcher: React.FC = () => {
                                   schedule={scheduleData}
                                   character={scheduleChar}
                                   contentColor={contentColor}
-                                  onOpen={() => setScheduleViewerOpen(true)}
+                                  onOpen={() => { setScheduleViewerOpen(true); trackEvent('打开角色日程面板'); }}
                                   acnh={acnh}
                                   paper={paper}
                               />
@@ -1085,14 +1101,14 @@ const Launcher: React.FC = () => {
                                       <div className="flex gap-2">
                                         {['tl', 'tr'].map(key => w[key] ? (
                                           <div key={key} className="flex-1 aspect-square rounded-2xl overflow-hidden shadow-md border border-white/20">
-                                            <img src={w[key]} className="w-full h-full object-cover" alt="" loading="lazy" />
+                                            <TokenImg value={w[key]} className="w-full h-full object-cover" alt="" loading="lazy" />
                                           </div>
                                         ) : <div key={key} className="flex-1"></div>)}
                                       </div>
                                     )}
                                     {w['wide'] && (
                                       <div className="w-full h-32 rounded-2xl overflow-hidden shadow-md border border-white/20">
-                                        <img src={w['wide']} className="w-full h-full object-cover" alt="" loading="lazy" />
+                                        <TokenImg value={w['wide']} className="w-full h-full object-cover" alt="" loading="lazy" />
                                       </div>
                                     )}
                                   </div>
@@ -1149,15 +1165,19 @@ const Launcher: React.FC = () => {
 
       {/* Page Indicators */}
       <div
-          className="absolute left-0 w-full flex justify-center gap-2 pointer-events-none z-20"
+          className="absolute left-0 w-full flex justify-center gap-1 pointer-events-none z-20"
           style={{ bottom: `calc(${launcherBottomInset} + 5.5rem)` }}
+          aria-hidden="true"
       >
           {Array.from({ length: totalPages }).map((_, i) => (
-              <div 
-                key={i}
-                className={`h-1.5 rounded-full transition-all duration-300 ${activePageIndex === i ? 'w-4 opacity-100' : 'w-1.5 opacity-40'}`} 
-                style={{ backgroundColor: contentColor }}
-              ></div>
+              // 每个页码占固定 16px 槽位，只动画内部圆点。旧版直接动画 flex child 的宽度，
+              // 快速划过多页时 WebKit 会一边改宽一边重算整行居中，几个过渡态就会挤成方块串。
+              <div key={i} className="flex h-1.5 w-4 shrink-0 items-center justify-center">
+                  <div
+                    className={`h-1.5 rounded-full transform-gpu transition-[width,opacity] duration-300 ${activePageIndex === i ? 'w-4 opacity-100' : 'w-1.5 opacity-40'}`}
+                    style={{ backgroundColor: contentColor }}
+                  />
+              </div>
           ))}
       </div>
 

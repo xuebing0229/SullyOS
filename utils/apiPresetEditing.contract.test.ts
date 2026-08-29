@@ -7,13 +7,13 @@ const settings = fs.readFileSync(path.join(root, 'apps/Settings.tsx'), 'utf8');
 const context = fs.readFileSync(path.join(root, 'context/OSContext.tsx'), 'utf8');
 
 describe('editable API preset integration contract', () => {
-  it('updates the selected preset directly instead of clearing it via updateApiConfig first', () => {
+  it('updates the selected preset and then applies the same config through the credential-sync path', () => {
     const handler = settings.slice(
       settings.indexOf('const handleSaveApi ='),
       settings.indexOf('const handleSaveOtherApis ='),
     );
     expect(handler).toContain('updateApiPreset(selectedApiPreset.id, { name: presetName, config: nextConfig })');
-    expect(handler.indexOf('updateApiPreset')).toBeLessThan(handler.indexOf('updateApiConfig'));
+    expect(handler.indexOf('updateApiPreset')).toBeLessThan(handler.indexOf('commitApiConfig'));
     expect(handler).toContain('保存到「');
   });
 

@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowsClockwise, Check, ClipboardText, DownloadSimple, Power, Trash, Wrench, X } from '@phosphor-icons/react';
+import { ArrowsClockwise, Broom, Check, ClipboardText, DownloadSimple, Power, Trash, Wrench, X } from '@phosphor-icons/react';
 import {
     clearDevDebugLog,
     closeDevDebug,
@@ -15,11 +15,14 @@ import {
     writeDevDebugFlags,
 } from '../utils/devDebug';
 import { BUILD_LABEL } from '../utils/buildInfo';
-import { resetLoyalRecruitmentForTesting } from '../utils/loyalUserRecruitment';
+import { trackEvent } from '../utils/analytics';
+import { runBlobGc } from '../utils/blobGc';
 import type { DevDebugCaptureCategory, DevDebugFlags, DevDebugFloatingPosition } from '../utils/devDebug';
+import { shareOrDownloadFile } from '../utils/shareExport';
 
 const FLOATING_BUTTON_SIZE = 44;
 const FLOATING_SAFE_MARGIN = 16;
+const FLOATING_BOTTOM_RESERVED = 92;
 const PANEL_WIDTH = 342;
 const PANEL_ESTIMATED_HEIGHT = 392;
 const DRAG_THRESHOLD_PX = 4;
@@ -40,7 +43,7 @@ function clampFloatingPosition(position: DevDebugFloatingPosition): DevDebugFloa
     const viewport = getViewportSize();
     return {
         x: clamp(position.x, FLOATING_SAFE_MARGIN, viewport.width - FLOATING_BUTTON_SIZE - FLOATING_SAFE_MARGIN),
-        y: clamp(position.y, FLOATING_SAFE_MARGIN, viewport.height - FLOATING_BUTTON_SIZE - FLOATING_SAFE_MARGIN),
+        y: clamp(position.y, FLOATING_SAFE_MARGIN, viewport.height - FLOATING_BUTTON_SIZE - FLOATING_BOTTOM_RESERVED),
     };
 }
 
@@ -48,7 +51,7 @@ function getDefaultFloatingPosition(): DevDebugFloatingPosition {
     const viewport = getViewportSize();
     return clampFloatingPosition({
         x: FLOATING_SAFE_MARGIN,
-        y: viewport.height - FLOATING_BUTTON_SIZE - FLOATING_SAFE_MARGIN,
+        y: viewport.height - FLOATING_BUTTON_SIZE - FLOATING_BOTTOM_RESERVED,
     });
 }
 
@@ -147,6 +150,13 @@ const DevDebugPanel: React.FC = () => {
     const [flags, setFlags] = useState<DevDebugFlags>(() => readDevDebugFlags());
     const [logCount, setLogCount] = useState(() => readDevDebugLog().length);
     const [copied, setCopied] = useState(false);
+    // 孤儿图片 GC 是一次性动作不是行为开关，状态只在本次会话内有效——不进 DevDebugFlags，不持久化。
+    const [blobGcRunning, setBlobGcRunning] = useState(false);
+    const [blobGcResult, setBlobGcResult] = useState<
+        | { kind: 'done'; deleted: number; kept: number; keptBoundary: number; aborted: boolean }
+        | { kind: 'error'; message: string }
+        | null
+    >(null);
     // 位置不持久化：每次出现都回默认角，拖动只在本次会话内有效（prod 刷新=失效=类似关闭，没必要存）。
     const [floatingPosition, setFloatingPosition] = useState<DevDebugFloatingPosition>(getDefaultFloatingPosition);
     const dragStateRef = useRef<{
@@ -224,6 +234,7 @@ const DevDebugPanel: React.FC = () => {
                 : current.captureLogs.filter((item) => item !== category),
         };
         setFlags(writeDevDebugFlags(next));
+        trackEvent('勾选调试日志类别', { 类别: category, 状态: checked ? '勾选' : '取消' });
     };
     const resetFlags = () => {
         // 重置 = 回默认（总开关关 + 清空勾选）+ 清空所有日志，比「全不勾」更彻底。
@@ -231,38 +242,48 @@ const DevDebugPanel: React.FC = () => {
         // 是为了「即便上次就是 false」时也保证清干净（重置语义包含清理日志）。
         setFlags(writeDevDebugFlags(DEFAULT_DEV_DEBUG_FLAGS));
         clearDevDebugLog();
+        trackEvent('重置调试面板', { 范围: '开关与日志' });
     };
     const handleForceClose = () => {
         // 「关闭」= 收起 + 位置回默认（纯内存）+ 强制关掉；任意分支生效，里面的开关另存不动。
         setOpen(false);
         setFloatingPosition(getDefaultFloatingPosition());
         closeDevDebug();
+        trackEvent('强制关闭调试面板');
     };
-    const resetRecruitment = () => {
-        if (!window.confirm('清除本机的社区迁移检测结果并刷新？仅用于测试不同数据集。')) return;
-        resetLoyalRecruitmentForTesting();
-        window.location.reload();
+    const handleBlobGc = async () => {
+        if (blobGcRunning) return;
+        setBlobGcRunning(true);
+        setBlobGcResult(null);
+        try {
+            // 不传参 = 默认 72h 新鲜豁免（挡「已 put、引用未落盘」的竞态），调试面板不提供改小的口子。
+            const result = await runBlobGc();
+            setBlobGcResult({ kind: 'done', ...result });
+        } catch (error) {
+            setBlobGcResult({ kind: 'error', message: error instanceof Error ? error.message : String(error) });
+        } finally {
+            setBlobGcRunning(false);
+        }
     };
     const copyLog = async () => {
         const text = formatDevDebugLog();
         if (!text) return;
         await navigator.clipboard.writeText(text);
         setCopied(true);
+        trackEvent('导出调试日志', { 方式: '复制' });
         window.setTimeout(() => setCopied(false), 1200);
     };
-    const downloadLog = () => {
+    const downloadLog = async () => {
         const text = formatDevDebugLog();
         if (!text) return;
-        const blob = new Blob([text], { type: 'application/json' });
-        const url = URL.createObjectURL(blob);
-        const anchor = document.createElement('a');
         const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-        anchor.href = url;
-        anchor.download = `devdebug-log-${__BUILD_BRANCH__}-${stamp}.json`;
-        document.body.appendChild(anchor);
-        anchor.click();
-        anchor.remove();
-        URL.revokeObjectURL(url);
+        const result = await shareOrDownloadFile({
+            content: text,
+            fileName: `devdebug-log-${__BUILD_BRANCH__}-${stamp}.json`,
+            mimeType: 'application/json;charset=utf-8',
+            shareTitle: 'SullyOS 调试日志',
+        });
+        trackEvent('导出调试日志', { 方式: result === 'shared' ? '分享' : '下载' });
     };
     const handlePointerDown = (event: React.PointerEvent<HTMLButtonElement>) => {
         if (open || (event.pointerType === 'mouse' && event.button !== 0)) return;
@@ -324,6 +345,7 @@ const DevDebugPanel: React.FC = () => {
             return;
         }
         setOpen(true);
+        trackEvent('打开调试面板');
     };
 
     if (!available) return null;
@@ -411,13 +433,24 @@ const DevDebugPanel: React.FC = () => {
                             onChange={(checked) => updateFlag('mergeSystemMessages', checked)}
                         />
                         <div className="h-px bg-white/10" />
+                        {/* 只是入口：打开后由 Amsg2DebugPanel 自己在页面上挂小窗，本面板不渲染它的内容。 */}
+                        <ToggleRow
+                            title="amsg2 任务观察窗"
+                            detail="右上角常驻小窗：任务倒计时、cron 实际触发时刻、通道 trace。"
+                            checked={flags.amsg2Panel}
+                            onChange={(checked) => updateFlag('amsg2Panel', checked)}
+                        />
+                        <div className="h-px bg-white/10" />
 
                         {/* 记录日志：总开关；打开后才露出 类型 / 记录完整 / 复制 / 下载 一整套 —— 关掉时整段收起。
                             true→false 时清空日志这一步在 writeDevDebugFlags 数据层做，这里走通用 updateFlag。 */}
                         <ToggleRow
                             title="记录日志"
                             checked={flags.captureEnabled}
-                            onChange={(checked) => updateFlag('captureEnabled', checked)}
+                            onChange={(checked) => {
+                                updateFlag('captureEnabled', checked);
+                                trackEvent('切换调试日志录制', { 状态: checked ? '开' : '关' });
+                            }}
                         />
                         {flags.captureEnabled && (
                             <>
@@ -446,7 +479,10 @@ const DevDebugPanel: React.FC = () => {
                                     />
                                     {/* 「清空」只清日志，不动开关 / 勾选；区别于「重置」（连开关一起回默认）和关掉总开关（清完后类型 UI 也收起）。 */}
                                     <LogActionButton
-                                        onClick={() => clearDevDebugLog()}
+                                        onClick={() => {
+                                            clearDevDebugLog();
+                                            trackEvent('重置调试面板', { 范围: '仅日志' });
+                                        }}
                                         disabled={logCount === 0}
                                         icon={<Trash size={13} weight="bold" />}
                                         label="清空"
@@ -461,17 +497,42 @@ const DevDebugPanel: React.FC = () => {
                                 />
                             </>
                         )}
+                        <div className="h-px bg-white/10" />
+
+                        {/* 孤儿图片 GC：手动跑一轮（默认 72h 新鲜豁免）。SDK 宁可留孤儿绝不删活图，
+                            引用面枚举出错时整轮放弃（aborted），一个都不删。 */}
+                        <div className="py-3">
+                            <div className="flex">
+                                <LogActionButton
+                                    onClick={handleBlobGc}
+                                    disabled={blobGcRunning}
+                                    icon={<Broom size={13} weight="bold" />}
+                                    label={blobGcRunning ? '清理中…' : '清理孤儿图片'}
+                                />
+                            </div>
+                            {blobGcResult && (
+                                <div className="mt-2 text-[11px] leading-relaxed text-white/55">
+                                    {blobGcResult.kind === 'error' ? (
+                                        `清理出错：${blobGcResult.message}`
+                                    ) : (
+                                        <>
+                                            已清理 {blobGcResult.deleted} · 保留 {blobGcResult.kept} · 边界豁免 {blobGcResult.keptBoundary}
+                                            {blobGcResult.aborted && (
+                                                <><br />引用面枚举或 blob 表扫描出错，本轮已放弃、未删除任何东西。</>
+                                            )}
+                                            {/* keptBoundary 是唯一报警信号：deleted:0 和「真没垃圾」同形，
+                                                它接近保留数 = 某个引用面混进了杂散令牌前缀文本，GC 整轮空转。 */}
+                                            {blobGcResult.keptBoundary > 0 && (
+                                                <><br />注意：边界豁免 &gt; 0，可能有引用面混进了杂散的令牌前缀文本；若它接近保留数，说明 GC 整轮空转，需要排查。</>
+                                            )}
+                                        </>
+                                    )}
+                                </div>
+                            )}
+                        </div>
                     </div>
 
                     <div className="flex shrink-0 items-center justify-end gap-2 border-t border-white/10 px-4 py-3">
-                        <button
-                            type="button"
-                            onClick={resetRecruitment}
-                            className="flex h-8 shrink-0 items-center gap-1 rounded-full bg-amber-300/15 px-3 text-[11px] font-bold text-amber-100 active:scale-95"
-                        >
-                            <ArrowsClockwise size={13} weight="bold" />
-                            迁移重测
-                        </button>
                         <button
                             type="button"
                             onClick={handleForceClose}

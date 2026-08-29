@@ -10,6 +10,8 @@ import type { PixelAsset } from './types';
 import type { MemoryRoom } from '../../utils/memoryPalace/types';
 import { PixelAssetDB } from './pixelHomeDb';
 import PixelAssetGenerator from './PixelAssetGenerator';
+import { trackEvent } from '../../utils/analytics';
+import { shareOrDownloadBlob } from '../../utils/shareExport';
 
 interface Props {
   assets: PixelAsset[];
@@ -129,6 +131,7 @@ const AssetLibrary: React.FC<Props> = ({ assets, onChanged, onSelectAsset, isSel
     await PixelAssetDB.save({ ...asset, tags: [...asset.tags, t] });
     onChanged();
     setTagInput('');
+    trackEvent('给像素素材加标签');
   }, [assets, onChanged]);
 
   // 移除标签
@@ -158,6 +161,7 @@ const AssetLibrary: React.FC<Props> = ({ assets, onChanged, onSelectAsset, isSel
     setSelectedIds(new Set());
     setSelectMode(false);
     onChanged();
+    trackEvent('批量删除像素素材');
   }, [selectedIds, onChanged]);
 
   // 导出
@@ -171,22 +175,23 @@ const AssetLibrary: React.FC<Props> = ({ assets, onChanged, onSelectAsset, isSel
       zip.file(`${asset.name}_${asset.pixelSize}px.png`, blob);
     }
     const content = await zip.generateAsync({ type: 'blob' });
-    const url = URL.createObjectURL(content);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `pixel_assets_${Date.now()}.zip`;
-    a.click();
-    URL.revokeObjectURL(url);
+    const result = await shareOrDownloadBlob({
+      blob: content,
+      fileName: `pixel_assets_${Date.now()}.zip`,
+      shareTitle: 'SullyOS 像素素材包',
+    });
+    if (result === 'cancelled') return;
+    trackEvent('导出像素素材包');
   }, [assets, selectedIds, selectMode, filtered]);
 
   // 顶部大 tab
   const SubTabs = (
     <div className="shrink-0 flex gap-1 bg-slate-800/80 mx-3 mt-2 p-1 rounded-xl">
-      <button onClick={() => setSubView('library')}
+      <button onClick={() => { setSubView('library'); trackEvent('切换仓库与工坊分区', { subView: 'library' }); }}
         className={`flex-1 py-1.5 rounded-lg text-[11px] font-bold transition-all ${subView === 'library' ? 'bg-amber-500 text-white' : 'text-slate-400 hover:text-slate-200'}`}>
         仓库 ({assets.length})
       </button>
-      <button onClick={() => setSubView('workshop')}
+      <button onClick={() => { setSubView('workshop'); trackEvent('切换仓库与工坊分区', { subView: 'workshop' }); }}
         className={`flex-1 py-1.5 rounded-lg text-[11px] font-bold transition-all ${subView === 'workshop' ? 'bg-amber-500 text-white' : 'text-slate-400 hover:text-slate-200'}`}>
         像素工坊
       </button>

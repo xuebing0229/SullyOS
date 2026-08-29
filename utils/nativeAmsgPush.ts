@@ -5,10 +5,9 @@ import {
   type Token,
 } from '@capacitor/push-notifications';
 import type { ActiveMsg2InboxMessage } from '../types';
-import { ActiveMsgClient } from './activeMsgClient';
+import { ActiveMsgClient, NATIVE_PUSH_TOKEN_STORAGE_KEY } from './activeMsgClient';
 import { ActiveMsgStore } from './activeMsgStore';
 import { flushInboxToChat } from './activeMsgRuntime';
-import { NATIVE_PUSH_TOKEN_STORAGE_KEY } from './nativePushTransport';
 
 const RECEIVED_IDS_KEY = 'amsg2_native_received_ids_v1';
 let initialized = false;
@@ -105,9 +104,10 @@ export const initNativeAmsgPush = async (): Promise<void> => {
       }
     });
   });
-  // 启动时只给已经授权过的设备补登记；首次权限弹窗必须由设置页按钮触发，
-  // 否则用户刚打开 App 就被一张来历不明的系统弹窗迎面拦住。
   const current = await PushNotifications.checkPermissions();
-  if (current.receive === 'granted') await PushNotifications.register();
+  const permission = current.receive === 'prompt'
+    ? await PushNotifications.requestPermissions()
+    : current;
+  if (permission.receive === 'granted') await PushNotifications.register();
 };
 

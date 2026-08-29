@@ -5,7 +5,8 @@
  *   - DATA tags (RECALL / SEARCH / READ_DIARY / FS_READ_DIARY / READ_NOTE / XHS_*) →
  *     tool-request: worker截断, 推送 toolCalls, 客户端跑工具后 POST /continue.
  *   - SIDE-EFFECT tags (ACTION:POKE / TRANSFER / ADD_EVENT / MUSIC_ACTION / XHS_LIKE /
- *     XHS_FAV / XHS_COMMENT / XHS_REPLY / XHS_POST / XHS_SHARE / schedule_message) →
+ *     XHS_FAV / XHS_COMMENT / XHS_REPLY / XHS_POST / XHS_SHARE / schedule_message /
+ *     DIARY / FS_DIARY / LIFE / NEWS_CARD) →
  *     finish + directive metadata. worker 识别但不执行, 客户端 applyAssistantPostProcessing
  *     看到 directives 非空时只重放、不再扫原文.
  *   - 其他 (结构型 + 纯文本) → finish, 原文给客户端 13 步管线消化.
@@ -21,6 +22,7 @@
 
 import { sanitizeForNotification } from '../../../utils/sanitize';
 import { extractTransferCommands, parseTransferAmount } from '../../../utils/transferFormat';
+import { extractScheduleChangeDirectives } from '../../../utils/scheduleChangeParse';
 
 export type ToolCall = {
   id: string;
@@ -28,7 +30,16 @@ export type ToolCall = {
   function: { name: string; arguments: string };
 };
 
+/**
+ * MUSIC_ACTION 说的是哪一首歌 —— 标签语法里只有歌单名，带不动歌名。
+ *
+ * classifier 自己永远不产这个字段（它只看得到正文，看不到角色此刻在听什么）。填它的是
+ * 主动消息 2.0 的 worker：到点渲染「你此刻在听：《X》」的时候顺手把 X 冻进来，客户端
+ * 重放时才知道角色说的是哪首（见 worker/amsg/src/agentic.ts 的 attachSceneSong）。
+ * instant push 路径不填，客户端照旧取「用户此刻在听的那首」。
+ */
 export interface MusicActionSong {
+  /** 歌曲 id；从角色歌单抽出来的都有，缺了就只能按名字对。 */
   id?: number;
   name: string;
   artists: string;
@@ -42,7 +53,12 @@ export type Directive =
   | { type: 'transfer_accept' }
   | { type: 'transfer_return' }
   | { type: 'add_event'; title: string; date: string }
+  // 角色改自己今天的日程 [[ACTION:CHANGE_SCHEDULE | 22:00 | 陪你聊天]]。不在 SIDE_EFFECT_TAGS
+  // 里而走旁路，理由同转账：解析要认中文别名 / 全角标点 / 漏括号那一堆写法，那份容错
+  // 跟客户端共用一份源码（utils/scheduleChangeParse）。
+  | { type: 'change_schedule'; time: string; activity: string }
   | { type: 'schedule_message'; time: string; text: string }
+  // song 是可选的后补字段（见 MusicActionSong），只有主动消息 2.0 的定时路径会填。
   | { type: 'music_action'; verb: string; args: string[]; song?: MusicActionSong }
   | { type: 'xhs_like'; noteId: string }
   | { type: 'xhs_fav'; noteId: string }
@@ -50,11 +66,16 @@ export type Directive =
   | { type: 'xhs_reply'; noteId: string; commentId: string; text: string }
   | { type: 'xhs_post'; title: string; content: string; tags: string }
   | { type: 'xhs_share'; idx: number }
+  // 生活记录代记 [[LIFE:MED|布洛芬]] / [[LIFE:PERIOD_START]] / [[LIFE:EXPENSE|38|打车]] ...
+  // body = 冒号后的整段原文, 客户端拼回原 tag 交给 lifeRecords.executeLifeDirectives 解析,
+  // 开关校验 / 去重 / 写库都在那边, 这里不拆字段。
+  | { type: 'life_record'; body: string }
+  // 分享热点卡片 [[NEWS_CARD: 来源|标题]] (来源可省略). body 原样带走, 客户端按 `|` 切。
+  | { type: 'news_card'; body: string }
   // 写日记: 短形态 [[DIARY: title|content]] 或长形态 [[DIARY_START: title|mood]]\n content \n[[DIARY_END]],
   // 飞书同形态 (FS_ 前缀). title 可空 → 客户端兜底用 `${char.name}的日记 - M/D`. mood 可空.
   | { type: 'notion_write_diary'; title: string; content: string; mood?: string }
-  | { type: 'feishu_write_diary'; title: string; content: string; mood?: string }
-  | { type: 'game_hall_autoplay'; action: 'start' | 'pause' | 'resume' | 'stop'; payload?: { instruction?: string; gameHint?: string; goal?: string; returnToMainChat?: boolean } };
+  | { type: 'feishu_write_diary'; title: string; content: string; mood?: string };
 
 export type ClassificationResult =
   | {
@@ -68,7 +89,6 @@ export type ClassificationResult =
        */
       sanitizedPrefix: string;
       toolCalls: ToolCall[];
-      directives: Directive[];
     }
   | {
       kind: 'finish';
@@ -81,38 +101,6 @@ export type ClassificationResult =
       sanitizedBody: string;
       directives: Directive[];
     };
-
-
-const GAME_HALL_AUTOPLAY_RE =
-  /\[\[GAME_HALL_AUTOPLAY_(START|PAUSE|RESUME|STOP)(?:\s+([\s\S]*?))?\]\]/gi;
-
-function extractGameHallAutoplayDirectives(text: string): { text: string; directives: Directive[] } {
-  const directives: Directive[] = [];
-  const cleaned = text.replace(
-    GAME_HALL_AUTOPLAY_RE,
-    (_full, actionRaw: string, payloadRaw?: string) => {
-      const action = actionRaw.toLowerCase() as 'start' | 'pause' | 'resume' | 'stop';
-      let payload: Record<string, unknown> | undefined;
-      if (action === 'start' && payloadRaw?.trim()) {
-        try {
-          const parsed = JSON.parse(payloadRaw);
-          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) payload = parsed;
-        } catch {
-          payload = { instruction: payloadRaw.trim() };
-        }
-      }
-      const startPayload = payload ? {
-        instruction: typeof payload.instruction === 'string' ? payload.instruction : undefined,
-        gameHint: typeof payload.gameHint === 'string' ? payload.gameHint : undefined,
-        goal: typeof payload.goal === 'string' ? payload.goal : undefined,
-        returnToMainChat: typeof payload.returnToMainChat === 'boolean' ? payload.returnToMainChat : undefined,
-      } : undefined;
-      directives.push({ type: 'game_hall_autoplay', action, payload: startPayload });
-      return '';
-    },
-  ).replace(/\n{3,}/g, '\n\n').trim();
-  return { text: cleaned, directives };
-}
 
 // ── 数据型 (tool-request) ────────────────────────────────────────────────
 
@@ -255,6 +243,17 @@ const SIDE_EFFECT_TAGS: SideEffectSpec[] = [
     re: /\[\[XHS_SHARE:\s*(\d+)\]\]/g,
     toDirective: (m) => ({ type: 'xhs_share', idx: Number(m[1]) }),
   },
+  // [[LIFE:MED|布洛芬]] 生活记录代记 — 跟 chatParser.ts 的 `\[\[LIFE:[^\]]*\]\]` 同口径,
+  // 冒号后整段原样带走, 不在这里拆 verb/args (那份解析在 lifeRecords.parseLifeDirective)。
+  {
+    re: /\[\[LIFE:([^\]]*)\]\]/g,
+    toDirective: (m) => ({ type: 'life_record', body: m[1] }),
+  },
+  // [[NEWS_CARD: 来源|标题]] 分享热点卡片 — 跟 chatParser.ts:NEWS_CARD_RE 同口径。
+  {
+    re: /\[\[NEWS_CARD:\s*([^\]]*?)\s*\]\]/g,
+    toDirective: (m) => ({ type: 'news_card', body: m[1] }),
+  },
   // 写日记 — 长形态: [[DIARY_START: title|mood]]\n content \n[[DIARY_END]]
   // 短形态: [[DIARY: title|content]] 或 [[DIARY: content]] (无 title)
   // 行为跟 applyAssistantPostProcessing.ts:465-495 字节对齐:
@@ -329,9 +328,6 @@ function parseDiaryShort(m: RegExpMatchArray, type: DiaryDirectiveType): Directi
  *              格式. 但保留兼容性: 空字符串 → finish + 空 cleanedText)
  */
 export function classifyLLMOutput(text: string): ClassificationResult {
-  const autoplay = extractGameHallAutoplayDirectives(text);
-  text = autoplay.text;
-
   // 1. 先扫数据标签. 任意一个命中就走 tool-request, 同一轮多个 SEARCH/RECALL 也一次性收集.
   const toolCalls: ToolCall[] = [];
   for (const spec of DATA_TAGS) {
@@ -355,11 +351,11 @@ export function classifyLLMOutput(text: string): ClassificationResult {
     for (const spec of DATA_TAGS) prefix = prefix.replace(spec.re, '');
     prefix = prefix.trim();
     const sanitizedPrefix = sanitizeForNotification(prefix);
-    return { kind: 'tool-request', prefix, sanitizedPrefix, toolCalls, directives: autoplay.directives };
+    return { kind: 'tool-request', prefix, sanitizedPrefix, toolCalls };
   }
 
   // 2. 没数据标签 → 扫副作用标签, 凑成 directives.
-  const directives: Directive[] = [...autoplay.directives];
+  const directives: Directive[] = [];
 
   // 2.0 转账先走 utils/transferFormat —— 跟客户端 chatParser 共用同一份解析, 规范标签
   // (`[[ACTION:TRANSFER:520元]]` 这类金额写法一并容错) 和模仿历史日志的口语形态
@@ -381,20 +377,48 @@ export function classifyLLMOutput(text: string): ClassificationResult {
     }
   }
 
+  // 2.0b 日程修改同理走 directive 通道。不走的话标签会留在正文里，被 sanitizeIntoSegments
+  // 的 stripBusinessTagsForNotification（正则含 ACTION）连 raw 一起剥掉——客户端永远收不到，
+  // 角色嘴上说「日程改好了」而表其实没动，下一轮它读到的还是旧安排。
+  // 解析跟客户端 scheduleChange 共用一份（中文「修改日程」、全角冒号、漏括号都认）。
+  // 一个标签都没认出来时 cleanedText 就是原文——这条由 extractScheduleChangeDirectives
+  // 自己保证，两侧都不必在外面再守一道（守漏的那一侧正文会悄悄少一截）。
+  const scheduleParsed = extractScheduleChangeDirectives(textAfterTransfers);
+  const textAfterSchedule = scheduleParsed.cleanedText;
+  for (const d of scheduleParsed.directives) {
+    directives.push({ type: 'change_schedule', time: d.startTime, activity: d.activity });
+  }
+
   for (const spec of SIDE_EFFECT_TAGS) {
-    const matches = Array.from(textAfterTransfers.matchAll(spec.re));
+    const matches = Array.from(textAfterSchedule.matchAll(spec.re));
     for (const m of matches) {
       const d = spec.toDirective(m);
       if (d) directives.push(d);
     }
   }
 
+  // 2.5 同一件事只出一个 directive.
+  // 复述型模型经常把整条消息重写一遍 (先说一遍、再"总结"一遍), 同一个 [[ACTION:TRANSFER:520]]
+  // 就会出现两次; 客户端重放没有去重, 放过去就是同一笔钱转两次账、同一篇日记写两遍。
+  // 判据是 type + 参数**完全一致**: 金额不同 / 笔记 id 不同的两条仍是两件事, 照常都留。
+  const dedupedDirectives: Directive[] = [];
+  const seenDirectives = new Set<string>();
+  for (const d of directives) {
+    const key = JSON.stringify(d);
+    if (seenDirectives.has(key)) {
+      console.warn('[classifier] 同一条消息里重复的副作用, 只保留第一个:', key);
+      continue;
+    }
+    seenDirectives.add(key);
+    dedupedDirectives.push(d);
+  }
+
   // 3. 不管 directives 有没有, 都剥光所有标签 (数据 + 副作用) 出干净文本.
-  let cleanedText = textAfterTransfers;
+  let cleanedText = textAfterSchedule;
   for (const spec of DATA_TAGS) cleanedText = cleanedText.replace(spec.re, '');
   for (const spec of SIDE_EFFECT_TAGS) cleanedText = cleanedText.replace(spec.re, '');
   cleanedText = cleanedText.trim();
   const sanitizedBody = sanitizeForNotification(cleanedText);
 
-  return { kind: 'finish', cleanedText, sanitizedBody, directives };
+  return { kind: 'finish', cleanedText, sanitizedBody, directives: dedupedDirectives };
 }

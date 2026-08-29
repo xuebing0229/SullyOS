@@ -2,8 +2,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useOS } from '../context/OSContext';
 import { useMusic, musicApi, normalizeCookie, toHttps, Song } from '../context/MusicContext';
-import { getProxyWorkerUrl } from '../utils/proxyWorker';
 import { DB } from '../utils/db';
+import { trackEvent } from '../utils/analytics';
 import { Gear, User as UserIcon, Crosshair, Play as PlayIcon, Pause as PauseIcon } from '@phosphor-icons/react';
 import {
   C, Sparkle, CrossStar, MizuHeader, SearchBar, SongRow, MiniPlayer,
@@ -12,6 +12,7 @@ import {
 } from './music/MusicUI';
 import NeteaseProfilePage from './music/NeteaseProfilePage';
 import CharVisitPage from './music/CharVisitPage';
+import { shareOrDownloadBlob } from '../utils/shareExport';
 
 // ------------------------- 工具 -------------------------
 const fmtTime = (s: number) => {
@@ -27,7 +28,7 @@ type View = 'search' | 'settings' | 'player' | 'profile' | 'visit_char';
 const MusicApp: React.FC = () => {
   const { closeApp, addToast, characters, userProfile } = useOS();
   const {
-    cfg, setCfg,
+    cfg, setCfg, effectiveWorkerUrl,
     current, playing, progress, duration, loadingSong,
     lyric, tlyric, activeLyricIdx,
     profile, playSong, togglePlay, nextSong, prevSong, seek,
@@ -54,12 +55,10 @@ const MusicApp: React.FC = () => {
       const mime = current.localMimeType || (entry && !(entry instanceof Blob) ? entry.mimeType : '') || blob.type || 'audio/mpeg';
       const ext = /wav/i.test(mime) ? 'wav' : /ogg/i.test(mime) ? 'ogg' : /flac/i.test(mime) ? 'flac' : /m4a|aac|mp4/i.test(mime) ? 'm4a' : 'mp3';
       const safe = (current.name || 'song').replace(/[\\/:*?"<>|]+/g, '_').slice(0, 80);
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url; a.download = `${safe}.${ext}`;
-      document.body.appendChild(a); a.click(); a.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
-      addToast('已下载', 'success');
+      const result = await shareOrDownloadBlob({ blob, fileName: `${safe}.${ext}`, shareTitle: current.name || '生成的歌曲' });
+      if (result === 'cancelled') return;
+      addToast(result === 'shared' ? '已打开系统保存/分享' : '已开始下载', 'success');
+      trackEvent('下载生成的歌到本地文件');
     } catch {
       addToast('下载失败', 'error');
     }
@@ -69,6 +68,7 @@ const MusicApp: React.FC = () => {
     const order: ('loop' | 'single' | 'shuffle')[] = ['loop', 'single', 'shuffle'];
     const next = order[(order.indexOf(playMode) + 1) % order.length];
     setPlayMode(next);
+    trackEvent('切换播放模式', { mode: next });
     addToast(next === 'loop' ? '列表循环' : next === 'single' ? '单曲循环' : '随机播放', 'info');
   }, [playMode, setPlayMode, addToast]);
 
@@ -122,6 +122,7 @@ const MusicApp: React.FC = () => {
   const doSearch = useCallback(async () => {
     const kw = keyword.trim(); if (!kw) return;
     setSearching(true);
+    trackEvent('搜索一首歌');
     try {
       const r = await musicApi.search(cfg, kw);
       const songs: Song[] = (r?.result?.songs || []).map((s: any) => ({
@@ -225,7 +226,7 @@ const MusicApp: React.FC = () => {
             duration={fmtTime(s.duration)}
             isVip={s.fee === 1}
             isActive={current?.id === s.id}
-            onClick={() => playSong(s)}
+            onClick={() => { playSong(s); trackEvent('播放搜索结果里的一首歌'); }}
           />
         ))}
       </div>
@@ -236,14 +237,14 @@ const MusicApp: React.FC = () => {
           artists={current.artists}
           albumPic={current.albumPic}
           playing={playing}
-          onTap={() => setView('player')}
-          onPrev={prevSong}
+          onTap={() => { setView('player'); trackEvent('打开播放页'); }}
+          onPrev={() => { prevSong(); trackEvent('切歌（上一首/下一首）', { direction: 'prev' }); }}
           onToggle={togglePlay}
-          onNext={nextSong}
+          onNext={() => { nextSong(); trackEvent('切歌（上一首/下一首）', { direction: 'next' }); }}
           userAvatar={userProfile?.avatar}
           userName={userProfile?.name}
           companions={companions}
-          onKickCompanion={removeListeningPartner}
+          onKickCompanion={charId => { removeListeningPartner(charId); trackEvent('结束和角色的一起听'); }}
           charsWithSong={charsWithSong}
           regenStatus={isCurrentRegenerating ? regeneratingStatus : undefined}
         />
@@ -420,17 +421,24 @@ const MusicApp: React.FC = () => {
           <div className="shrink-0 relative">
             <Sparkle size={9} className="absolute top-1 left-[30%]" color={C.sakura} delay={0} />
             <Sparkle size={7} className="absolute top-3 right-[28%]" color={C.lavender} delay={1.2} />
-            <PlayControls playing={playing} loading={loadingSong} onPrev={prevSong} onToggle={togglePlay} onNext={nextSong} />
+            <PlayControls
+              playing={playing}
+              loading={loadingSong}
+              onPrev={() => { prevSong(); trackEvent('切歌（上一首/下一首）', { direction: 'prev' }); }}
+              onToggle={togglePlay}
+              onNext={() => { nextSong(); trackEvent('切歌（上一首/下一首）', { direction: 'next' }); }}
+            />
           </div>
 
           <div className="shrink-0 mt-3 w-full">
             <SubActions
               liked={liked}
-              onLike={toggleLike}
+              onLike={() => { toggleLike(); trackEvent('收藏或取消收藏当前歌', { action: liked ? 'unlike' : 'like' }); }}
               showSync={!!(current.local && current.localLyrics && lyric.length > 0)}
               onSync={() => {
                 setSyncDraft(lyric.map(l => l.t));
                 setShowLyricSync(true);
+                trackEvent('打开歌词对轴面板');
               }}
               showDownload={!!(current.local && current.localAssetKey)}
               onDownload={downloadCurrentLocal}
@@ -446,14 +454,11 @@ const MusicApp: React.FC = () => {
   // ════════════════ 设置页 ════════════════
   const renderSettings = () => {
     const setDraft = (updates: Partial<typeof cfg>) => setCfg({ ...cfg, ...updates });
-    // 音乐的 worker 地址是独立持久化的，中心设置里的「恢复默认」管不到它——
-    // 这里必须自己兜底：地址清空就保存 = 跟随中心 worker，立即生效（不然存进空串，
-    // 请求会打相对路径直接挂，要等下次刷新 loadCfg 迁移才恢复）。
     const commit = () => {
-      if (!cfg.workerUrl.trim()) setCfg({ ...cfg, workerUrl: getProxyWorkerUrl() });
       addToast('已保存', 'success');
       setView('search');
     };
+    const followsCentral = !cfg.workerUrl.trim();
     return (
       <div className="flex flex-col h-full relative"
         style={{ background: `linear-gradient(180deg, #ffffff 0%, ${C.bg} 50%, ${C.bgDeep} 100%)` }}>
@@ -463,16 +468,18 @@ const MusicApp: React.FC = () => {
           <div className="rounded-2xl p-3.5 shizuku-glass" style={{ boxShadow: `0 2px 16px ${C.glow}08` }}>
             <div className="text-[10px] mb-2 tracking-wider flex items-center justify-between" style={{ color: C.muted }}>
               <span className="flex items-center gap-1.5"><Sparkle size={6} color={C.glow} delay={0} /> 服务地址</span>
-              {cfg.workerUrl.trim() !== getProxyWorkerUrl() && (
-                <button onClick={() => setDraft({ workerUrl: getProxyWorkerUrl() })}
-                  className="text-[9px] underline" style={{ color: C.muted }}>恢复默认</button>
+              {!followsCentral && (
+                <button onClick={() => setDraft({ workerUrl: '' })}
+                  className="text-[9px] underline" style={{ color: C.muted }}>改回跟随中心</button>
               )}
             </div>
             <input className="w-full rounded-xl px-3 py-2 outline-none text-xs shizuku-glass" value={cfg.workerUrl}
-              onChange={e => setDraft({ workerUrl: e.target.value })} placeholder={getProxyWorkerUrl()}
+              onChange={e => setDraft({ workerUrl: e.target.value })} placeholder={effectiveWorkerUrl}
               style={{ color: C.text }} />
             <div className="text-[9px] mt-1.5 italic" style={{ color: C.faint }}>
-              留空保存 = 跟随「设置 → 自定义网络代理」的地址
+              {followsCentral
+                ? <>跟随「设置 → 网络代理」：{effectiveWorkerUrl}</>
+                : <>只在音乐里用这个地址，「设置 → 网络代理」改了也不跟</>}
             </div>
           </div>
           <div className="rounded-2xl p-3.5 shizuku-glass" style={{ boxShadow: `0 2px 16px ${C.glow}08` }}>
@@ -492,7 +499,7 @@ const MusicApp: React.FC = () => {
             </div>
             <div className="grid grid-cols-5 gap-1.5">
               {(['standard', 'higher', 'exhigh', 'lossless', 'hires'] as const).map(q => (
-                <button key={q} onClick={() => setDraft({ quality: q })}
+                <button key={q} onClick={() => { setDraft({ quality: q }); trackEvent('切换音质档位', { quality: q }); }}
                   className="py-2 rounded-xl text-[10px] transition-all"
                   style={{
                     background: cfg.quality === q ? `linear-gradient(135deg, ${C.primary}, ${C.accent})` : C.glass,
@@ -509,12 +516,13 @@ const MusicApp: React.FC = () => {
           <div className="space-y-3 pt-1">
             <button
               onClick={async () => {
+                trackEvent('运行音乐服务诊断');
                 const lines: string[] = [];
                 const ck = normalizeCookie(cfg.cookie);
-                lines.push(`Worker: ${cfg.workerUrl}`);
+                lines.push(`Worker: ${effectiveWorkerUrl}${followsCentral ? '（跟随中心）' : '（音乐单独设的）'}`);
                 lines.push(`Cookie: ${ck ? ck.slice(0, 18) + '...(' + ck.length + 'c)' : '(未填)'}`);
                 try {
-                  const res = await fetch(`${cfg.workerUrl.replace(/\/+$/, '')}/netease/search`, {
+                  const res = await fetch(`${effectiveWorkerUrl}/netease/search`, {
                     method: 'POST', headers: { 'Content-Type': 'application/json', ...(ck ? { 'X-Netease-Cookie': ck } : {}) },
                     body: JSON.stringify({ keyword: '晴天', limit: 3 }),
                   });
@@ -553,7 +561,7 @@ const MusicApp: React.FC = () => {
           onOpenPlayer={() => setView('player')}
           onOpenSearch={() => setView('search')}
           onOpenSettings={() => setView('settings')}
-          onVisitChar={id => { setVisitCharId(id); setView('visit_char'); }}
+          onVisitChar={id => { setVisitCharId(id); setView('visit_char'); trackEvent('进入角色音乐角落'); }}
         />
       )}
       {/* 手动对轴 modal — 全屏覆盖，不开新 view */}
@@ -589,6 +597,7 @@ const MusicApp: React.FC = () => {
           playSong(updated, { alsoSetQueue: false });
           setShowLyricSync(false);
           addToast('对轴已保存 ✦', 'success');
+          trackEvent('保存歌词对轴');
         };
 
         return (

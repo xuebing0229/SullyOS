@@ -6,6 +6,8 @@ import { BankFullState, BankTransaction, SavingsGoal, ShopStaff, BankGuestbookIt
 import { safeResponseJson } from '../utils/safeApi';
 import { injectMemoryPalace } from '../utils/memoryPalace/pipeline';
 import Modal from '../components/os/Modal';
+import TokenImg from '../components/os/TokenImg';
+import { isBlobRef } from '../utils/blobRef';
 import BankShopScene from '../components/bank/BankShopScene';
 import BankDollhouse from '../components/bank/BankDollhouse';
 import BankGameMenu from '../components/bank/BankGameMenu';
@@ -15,7 +17,9 @@ import { processImage } from '../utils/file';
 import { ContextBuilder } from '../utils/context';
 import { Coffee, ClipboardText, ChartBar, Coin, Target, UserCircle, BookOpen, Lightning, Storefront } from '@phosphor-icons/react';
 import { addLocalDays, getLocalDateKey } from '../utils/localDate';
+import { roundMoney, sumMoney } from '../utils/format';
 import { useLocalDateKey } from '../hooks/useLocalDateKey';
+import { trackEvent } from '../utils/analytics';
 
 const INITIAL_STATE: BankFullState = {
     config: {
@@ -283,7 +287,7 @@ const BankApp: React.FC = () => {
         }
 
         const todayTx = txs.filter(t => t.dateStr === today);
-        const spent = todayTx.reduce((sum, t) => sum + t.amount, 0);
+        const spent = sumMoney(todayTx.map(t => t.amount));
         const appeal = calculateAppeal(currentState.shop.staff.length, currentState.shop.unlockedRecipes);
 
         const finalState = { ...currentState, todaySpent: spent, shop: { ...currentState.shop, appeal } };
@@ -320,9 +324,10 @@ const BankApp: React.FC = () => {
         };
         
         await DB.saveTransaction(newTx);
-        
+        trackEvent('记一笔账');
+
         const cur = stateRef.current;
-        const newSpent = cur.todaySpent + amount;
+        const newSpent = roundMoney(cur.todaySpent + amount);
         const newState = { ...cur, todaySpent: newSpent };
         stateRef.current = newState;
         setState(newState);
@@ -345,12 +350,13 @@ const BankApp: React.FC = () => {
         const tx = transactions.find(t => t.id === id);
         if (!tx) return;
         await DB.deleteTransaction(id);
+        trackEvent('删除一笔账');
 
         const cur = stateRef.current;
         let newSpent = cur.todaySpent;
         const today = getLocalDateKey();
         if (tx.dateStr === today) {
-            newSpent = Math.max(0, cur.todaySpent - tx.amount);
+            newSpent = Math.max(0, roundMoney(cur.todaySpent - tx.amount));
         }
 
         const newState = { ...cur, todaySpent: newSpent };
@@ -390,6 +396,7 @@ const BankApp: React.FC = () => {
         stateRef.current = newState;
         setState(newState);
         await DB.saveBankState(newState);
+        trackEvent('让店员休息');
         addToast('店员休息好了！', 'success');
     };
 
@@ -411,6 +418,7 @@ const BankApp: React.FC = () => {
         stateRef.current = newState;
         setState(newState);
         await DB.saveBankState(newState);
+        trackEvent('解锁新甜品配方');
         addToast('新甜品解锁！店铺人气上升', 'success');
     };
 
@@ -433,6 +441,7 @@ const BankApp: React.FC = () => {
         stateRef.current = newState;
         setState(newState);
         await DB.saveBankState(newState);
+        trackEvent('解雇店员');
         addToast(`${staff.name} 已被解雇`, 'info');
     };
 
@@ -491,6 +500,7 @@ const BankApp: React.FC = () => {
         stateRef.current = newState;
         setState(newState);
         await DB.saveBankState(newState);
+        trackEvent('雇一个新店员');
         addToast('新店员入职！', 'success');
     };
 
@@ -504,6 +514,7 @@ const BankApp: React.FC = () => {
         if (!apiConfig.apiKey) { addToast('需配置 API Key', 'error'); return; }
 
         setIsRefreshingGuestbook(true);
+        trackEvent('手动刷新店铺情报志');
         try {
             const current = stateRef.current;
             // 1. Pick a random Char (Try to avoid last visitor if possible)
@@ -732,6 +743,7 @@ ${previousGuestbook}
         stateRef.current = newState;
         setState(newState);
         await DB.saveBankState(newState);
+        trackEvent('新增一个存钱心愿');
         setShowGoalModal(false);
         setGoalName('');
         setGoalTarget('');
@@ -763,13 +775,13 @@ ${previousGuestbook}
 
                     <div className="flex items-center gap-2">
                         <button
-                            onClick={() => setShowTutorial(true)}
+                            onClick={() => { setShowTutorial(true); trackEvent('打开玩法说明'); }}
                             className="w-9 h-9 rounded-xl bg-white/10 text-white/80 flex items-center justify-center hover:bg-white/20 active:scale-95 transition-all text-sm font-bold"
                         >
                             ?
                         </button>
                         <button
-                            onClick={() => setShowAddTxModal(true)}
+                            onClick={() => { setShowAddTxModal(true); trackEvent('打开记一笔弹窗'); }}
                             className="flex items-center gap-1.5 bg-gradient-to-r from-[#FF8A65] to-[#FF7043] text-white px-4 py-2.5 rounded-xl text-xs font-bold shadow-lg hover:shadow-xl active:scale-95 transition-all"
                             style={{ boxShadow: '0 4px 14px rgba(255, 112, 67, 0.4)' }}
                         >
@@ -789,7 +801,7 @@ ${previousGuestbook}
                     <BankDollhouse
                         shopState={state.shop}
                         dollhouseState={dollhouseState}
-                        onDollhouseChange={persistDollhouseUpdate}
+                        onDollhouseChange={async (updater) => { await persistDollhouseUpdate(updater); }}
                         characters={characters}
                         userProfile={userProfile}
                         apiConfig={apiConfig}
@@ -800,7 +812,7 @@ ${previousGuestbook}
                             await DB.saveBankState(nextState);
                         }}
                         onStaffClick={handleOpenStaffEdit}
-                        onOpenGuestbook={() => setShowGuestbook(true)}
+                        onOpenGuestbook={() => { setShowGuestbook(true); trackEvent('打开店铺情报志'); }}
                     />
                     ) : (
                         <div className="flex-1 flex items-center justify-center text-sm text-[#8A5A3D]">加载咖啡店中...</div>
@@ -841,7 +853,7 @@ ${previousGuestbook}
                             onRehireStaff={handleRehireStaff}
                             onDeleteFiredStaff={handleDeleteFiredStaff}
                             onUpdateConfig={handleConfigUpdate}
-                            onAddGoal={() => setShowGoalModal(true)}
+                            onAddGoal={() => { setShowGoalModal(true); trackEvent('打开新增心愿弹窗'); }}
                             onDeleteGoal={async (id) => {
                                 await persistStateUpdate(prev => ({
                                     ...prev,
@@ -998,7 +1010,7 @@ ${previousGuestbook}
                     ].map(tab => (
                         <button
                             key={tab.key}
-                            onClick={() => setActiveTab(tab.key as any)}
+                            onClick={() => { setActiveTab(tab.key as any); trackEvent('切换记账 App 底部标签', { tab: tab.key }); }}
                             className={`flex-1 flex flex-col items-center justify-center py-2.5 rounded-xl transition-all duration-300 ${
                                 activeTab === tab.key
                                     ? 'bg-gradient-to-br from-[#8D6E63] to-[#6D4C41] shadow-lg scale-105'
@@ -1093,8 +1105,9 @@ ${previousGuestbook}
                                 className="w-24 h-24 rounded-2xl bg-gradient-to-br from-[#FFF8E1] to-[#FFE0B2] border-2 border-[#E8DCC8] flex items-center justify-center text-5xl relative overflow-hidden group cursor-pointer shadow-inner"
                                 onClick={() => staffImageInputRef.current?.click()}
                             >
-                                {editingStaff.avatar.startsWith('http') || editingStaff.avatar.startsWith('data')
-                                    ? <img src={editingStaff.avatar} className="w-full h-full object-cover" />
+                                {/* 店员头像可能是图床直链 / base64 / blobref 令牌，三种都算图；其余当 emoji 显示。 */}
+                                {editingStaff.avatar.startsWith('http') || editingStaff.avatar.startsWith('data') || isBlobRef(editingStaff.avatar)
+                                    ? <TokenImg value={editingStaff.avatar} className="w-full h-full object-cover" />
                                     : editingStaff.avatar
                                 }
                                 <div className="absolute inset-0 bg-black/30 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">

@@ -63,6 +63,7 @@ export interface AmsgToolConfig extends AgenticToolRealtimeConfig {
     enabled: boolean;
     serverUrl: string;
     cookie?: string;
+    platform?: 'xhs' | 'rednote';
     loggedInUserId?: string;
     loggedInNickname?: string;
     userXsecToken?: string;
@@ -72,7 +73,7 @@ export interface AmsgToolConfig extends AgenticToolRealtimeConfig {
    * 见 mcpClient.collectMcpFireServers）。代理字段不上云——worker 直连没有 CORS。
    */
   mcpServers?: McpFireServer[];
-  /** 前台「兼容模式」同款开关：false = 中转拒 tools，worker 退到正文协议。缺省按 true。 */
+  /** 前台「原生 tools」开关：false = 中转拒 tools，worker 退到正文协议。缺省按 true。 */
   mcpUseNativeTools?: boolean;
 }
 
@@ -153,6 +154,7 @@ export const buildToolConfig = (
             enabled: !!xhs.enabled,
             serverUrl: xhs.serverUrl,
             ...(xhs.cookie ? { cookie: xhs.cookie } : {}),
+            ...(xhs.platform ? { platform: xhs.platform } : {}),
             ...(xhs.loggedInUserId ? { loggedInUserId: xhs.loggedInUserId } : {}),
             ...(xhs.loggedInNickname ? { loggedInNickname: xhs.loggedInNickname } : {}),
             ...(xhs.userXsecToken ? { userXsecToken: xhs.userXsecToken } : {}),

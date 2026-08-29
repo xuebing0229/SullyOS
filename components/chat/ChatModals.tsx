@@ -95,6 +95,8 @@ interface ChatModalsProps {
     // Translation
     translationEnabled?: boolean;
     onToggleTranslation?: () => void;
+    translationExpanded?: boolean;
+    onToggleTranslationExpanded?: () => void;
     translateSourceLang?: string;
     translateTargetLang?: string;
     onSetTranslateSourceLang?: (lang: string) => void;
@@ -249,7 +251,7 @@ const ChatModals: React.FC<ChatModalsProps> = ({
     onArchive, onCreatePrompt, onEditPrompt, onSavePrompt, onDeletePrompt,
     onSetHistoryStart, onRestoreAdaptiveContext, onJumpToMessageInChat, onEnterSelectionMode, onReplyMessage, onEditMessageStart, onConfirmEditMessage, onDeleteMessage, onCopyMessage, onDeleteEmoji, onDeleteCategory,
     allCharacters = [], onSaveCategoryVisibility,
-    translationEnabled, onToggleTranslation, translateSourceLang, translateTargetLang, onSetTranslateSourceLang, onSetTranslateLang,
+    translationEnabled, onToggleTranslation, translationExpanded, onToggleTranslationExpanded, translateSourceLang, translateTargetLang, onSetTranslateSourceLang, onSetTranslateLang,
     xhsEnabled, onToggleXhs,
     htmlModeEnabled, onToggleHtmlMode, htmlModeCustomPrompt, setHtmlModeCustomPrompt,
     chatVoiceEnabled, onToggleChatVoice, chatVoiceLang, onSetChatVoiceLang,
@@ -509,7 +511,7 @@ const ChatModals: React.FC<ChatModalsProps> = ({
                      <div>
                          <label className="text-xs font-bold text-slate-400 uppercase mb-2 block">聊天背景</label>
                          <div onClick={() => bgInputRef.current?.click()} className="h-24 bg-slate-100 rounded-xl border-2 border-dashed border-slate-200 flex items-center justify-center cursor-pointer hover:border-primary/50 overflow-hidden relative">
-                             {activeCharacter.chatBackground ? <img src={activeCharacter.chatBackground} className="w-full h-full object-cover opacity-60" /> : <span className="text-xs text-slate-400">点击上传图片 (原画质)</span>}
+                             {activeCharacter.chatBackground ? <TokenImg value={activeCharacter.chatBackground} className="w-full h-full object-cover opacity-60" /> : <span className="text-xs text-slate-400">点击上传图片 (原画质)</span>}
                              {activeCharacter.chatBackground && <span className="absolute z-10 text-xs bg-white/80 px-2 py-1 rounded">更换</span>}
                          </div>
                          <input type="file" ref={bgInputRef} className="hidden" accept="image/*" onChange={(e) => e.target.files?.[0] && onBgUpload(e.target.files[0])} />
@@ -611,6 +613,14 @@ const ChatModals: React.FC<ChatModalsProps> = ({
                          </p>
                          {translationEnabled && (
                              <div className="mt-3 space-y-3">
+                                 <button
+                                     type="button"
+                                     onClick={onToggleTranslationExpanded}
+                                     className={`w-full rounded-xl border px-3 py-2 text-left text-xs transition-colors ${translationExpanded ? 'border-violet-300 bg-violet-50 text-violet-700' : 'border-slate-200 bg-slate-50 text-slate-500'}`}
+                                 >
+                                     <span className="font-bold">原文与译文同时展开</span>
+                                     <span className="block mt-0.5 text-[10px] opacity-75">{translationExpanded ? '已开启：气泡同时显示两种语言' : '已关闭：点“译”在两种语言间切换'}</span>
+                                 </button>
                                  <TranslationLanguagePicker
                                      label="选（气泡显示语言）"
                                      value={translateSourceLang}
