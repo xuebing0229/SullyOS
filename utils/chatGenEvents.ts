@@ -41,6 +41,8 @@ export interface ChatGenDetail {
     charName: string;
     /** emotionFailed 专用：失败原因（人话，可直接展示给用户） */
     reason?: string;
+    /** Optional lifetime for long-running cloud generation indicators. */
+    ttlMs?: number;
 }
 
 export function announceChatGen(event: string, detail: ChatGenDetail): void {

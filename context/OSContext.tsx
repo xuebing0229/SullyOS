@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useEffect, useState, useRef, useCallback } from 'react';
-import { APIConfig, AppID, OSTheme, VirtualTime, CharacterProfile, CharacterGroup, ChatTheme, Toast, FullBackupData, UserProfile, ApiPreset, ApiPricing, GroupProfile, SystemLog, Worldbook, NovelBook, SongSheet, Message, RealtimeConfig, AppearancePreset, CloudBackupConfig, CloudBackupFile } from '../types';
+import { APIConfig, AppID, OSTheme, VirtualTime, CharacterProfile, CharacterGroup, ChatTheme, Toast, FullBackupData, UserProfile, ApiPreset, ApiPricing, GroupProfile, SystemLog, Worldbook, NovelBook, SongSheet, Message, RealtimeConfig, AppearancePreset, CloudBackupConfig, CloudBackupFile, MemoryPalaceFeatureFlags } from '../types';
 import { DB } from '../utils/db';
+import type { AvatarTouchRecord } from '../utils/avatarTouch';
 import {
   API_FAILOVER_STORAGE_KEY,
   executeOpenAiChatPlan,
@@ -9,9 +10,12 @@ import {
 } from '../utils/apiFailover';
 import { deleteRemoteNovelAiReference, stripNovelAiReferenceForTextOnlyBackup } from '../utils/novelAiReference';
 import { applyApiPresetConfig, mergeApiPresetPatch } from '../utils/apiPresetConfig';
-import { modelRejectsSamplingParams, stripSamplingParams, isSamplingParamError } from '../utils/samplingParamCompat';
-import { extractImagesInPlace, deepCloneForExport } from '../utils/backupExport';
-import { isBlobRef, getBlobForRef, migrateDataUrlToRef, migrateAppearancePresetBlobRefs, resolveBlobRefsDeep, BLOBREF_PREFIX, deleteBlobRefIfUnreferenced } from '../utils/blobRef';
+import { clampClaudeTemperature, modelRejectsSamplingParams, stripSamplingParams, isSamplingParamError } from '../utils/samplingParamCompat';
+import { buildMalformedImageDiagnostics, extractImagesInPlace, deepCloneForExport, parseImageDataUrlForBackup, type BackupObjectPath, type MalformedBackupImageDiagnostic } from '../utils/backupExport';
+import { isBlobRef, getBlobForRef, restoreBlobRef, migrateDataUrlToRef, migrateAppearancePresetBlobRefs, migrateChatThemeBlobRefs, resolveBlobRefsDeep, resolveRefToDataUrl, BLOBREF_PREFIX, deleteBlobRefIfUnreferenced } from '../utils/blobRef';
+import { resolveBlobRefsInRequestBody } from '../utils/apiBlobRefs';
+import { collectBlobRefs, writeBlobsToZip, readBlobsIndex, restoreBlobsFromZip } from '../utils/backupBlobs';
+import { initPwaIcon, clearPwaIcon } from '../utils/appIcon';
 import { externalizeBlobRefsInPlace, restorePortableBlobRefsInPlace } from '../utils/blobBackup';
 import { exportImageGenerationLocalForMode, importImageGenerationLocal } from '../utils/imageGenerationPresets';
 import { importMcpLocal } from '../utils/mcpClient';
@@ -19,6 +23,8 @@ import { LEGACY_DEFAULT_WALLPAPER, isLegacyDefaultWallpaper, shouldPreserveLegac
 import { migrateSharkpanAssets } from '../utils/sharkpanAssetMigration';
 import { stripCompanionChatStyleResidue } from '../utils/companionThemeIsolation';
 import { SULLY_DEFAULT_AVATAR_URL, shouldMigrateSullyAvatar } from '../utils/sullyAvatar';
+import { createBuiltinSullyLive2DConfig, isBuiltinSullyLive2D, upgradeBuiltinSullyLive2DDefaults } from '../utils/builtinSullyLive2D';
+import { normalizeCharacterRoomAssetsInPlace } from '../utils/roomTemplateAssets';
 import { exportStoryTheaterAppearanceSetting, restoreStoryTheaterAppearanceSetting } from '../utils/storyTheaterBackup';
 import { createV2ArrayFieldWriter, writeV2Backup, assembleV2Backup, type BackupManifest, type ZipFileWriter, type ZipFileReader } from '../utils/backupFormat';
 import { externalizeVoiceMessageBlobs, restoreVoiceMessageBlobs, shouldIncludeVoiceRelatedAssetInBackup } from '../utils/voiceMessageBackup';
@@ -35,7 +41,7 @@ import { runWorldEpisode, rerollWorldCharBeat } from '../utils/worldHome/engine'
 import { migrateWorldDaySegs } from '../utils/worldHome/prompts';
 import { ChatParser } from '../utils/chatParser';
 import { safeFetchJson } from '../utils/safeApi';
-import { captureApiBillingContext, getApiCallAmbientContext, recordApiCall, setApiCallAmbientContext } from '../utils/apiCallLog';
+import { captureApiBillingContext, captureApiRequestOnce, getApiCallAmbientContext, recordApiCall, setApiCallAmbientContext } from '../utils/apiCallLog';
 import { isGlobalStreamEnabled, upgradeChatBodyToStream, assembleUpgradedResponse } from '../utils/streamUpgrade';
 import { rewriteStaleWorkerUrl } from '../utils/proxyWorker';
 import { buildFetchFailureDetail, classifyFetchFailure, describeReachabilityProbe, parseTargetUrl, probeOriginReachability, shouldProbeReachability, summarizeFetchRequestBody } from '../utils/networkFailureDiagnosis';
@@ -292,6 +298,13 @@ const defaultMemoryPalaceConfig: MemoryPalaceGlobalConfig = {
   rerank: { enabled: false, baseUrl: '', apiKey: '', model: 'BAAI/bge-reranker-v2-m3', topN: 5 },
   featureFlags: { recallRouter: false, interactionAdaptation: false, deepEngagement: false, epistemicState: false },
 };
+
+const normalizeMemoryPalaceConfig = (value?: Partial<MemoryPalaceGlobalConfig> | null): MemoryPalaceGlobalConfig => ({
+  embedding: { ...defaultMemoryPalaceConfig.embedding, ...(value?.embedding || {}) },
+  lightLLM: { ...defaultMemoryPalaceConfig.lightLLM, ...(value?.lightLLM || {}) },
+  rerank: { ...defaultMemoryPalaceConfig.rerank, ...(value?.rerank || {}) },
+  featureFlags: { ...defaultMemoryPalaceConfig.featureFlags, ...(value?.featureFlags || {}) },
+});
 
 export type DeleteCharacterResult = { status: 'deleted' } | { status: 'cloud-cleanup-failed' };
 

@@ -38,7 +38,7 @@ import ApiCallLogModal from '../components/settings/ApiCallLogModal';
 import StorageUsagePanel from '../components/settings/StorageUsagePanel';
 import ApiFailoverSettings from '../components/settings/ApiFailoverSettings';
 import ApiPricingEditor from '../components/settings/ApiPricingEditor';
-import type { ApiPricing } from '../types';
+import type { APIConfig, ApiPricing, TtsProvider } from '../types';
 import { buildApiPresetConfig } from '../utils/apiPresetConfig';
 import { configFromPreset, findActivePresetId, type PresetSwitchPatch } from '../utils/apiPresetSwitch';
 import { backfillUnpricedCallsForPreset } from '../utils/apiCostBackfill';
@@ -46,6 +46,22 @@ import ImageGenerationSettings from '../components/settings/ImageGenerationSetti
 import OrphanImageCleanupCard from '../components/settings/OrphanImageCleanupCard';
 import { DB } from '../utils/db';
 import { getBackupReminderState, setBackupReminderIntervalDays, daysSinceLastBackup, BACKUP_REMINDER_MIN_DAYS, BACKUP_REMINDER_MAX_DAYS } from '../utils/backupReminder';
+import {
+    createAvatarModelBackup,
+    getAvatarModelBackupInventory,
+    restoreAvatarModelBackup,
+    type AvatarModelBackupInventory,
+    type AvatarModelBackupProgress,
+} from '../utils/avatarModelBackup';
+import { normalizeApiBaseUrl, normalizeApiCredential, normalizeApiModel } from '../utils/apiConfigNormalize';
+import { describeImageWithVisionApi, VISION_API_TEST_IMAGE_DATA_URL } from '../utils/visionApi';
+import {
+    FIRECRAWL_API_KEYS_URL,
+    getFirecrawlApiKey,
+    getFirecrawlCreditUsage,
+    setFirecrawlApiKey,
+    type FirecrawlCreditUsage,
+} from '../utils/firecrawl';
 
 // hot_news（orz.ai）可选热榜平台。key 必须与 API 的 ?platform= 完全一致。
 const HOTNEWS_PLATFORM_OPTIONS: { key: string; label: string }[] = [
@@ -463,7 +479,8 @@ const McpServersCard: React.FC<{
 const Settings: React.FC = () => {
   const {
       apiConfig, updateApiConfig, closeApp, availableModels, setAvailableModels,
-      exportSystem, importSystem, addToast, showError, resetSystem,
+      theme, updateTheme,
+      exportSystem, importSystem, addToast, showError, resetSystem, updateCharacter,
       apiPresets, activeApiPresetId, activateApiPreset, addApiPreset, updateApiPreset, removeApiPreset,
       sysOperation, // Get progress state
       realtimeConfig, updateRealtimeConfig, // 实时感知配置
@@ -3130,7 +3147,7 @@ const Settings: React.FC = () => {
                     <h2 className="text-sm font-semibold text-slate-600 tracking-wider">主动消息 2.0</h2>
                 </div>
                 <button
-                    onClick={() => { trackEvent('打开主动消息2.0配置'); setShowAmsg2Modal(true); }}
+                    onClick={() => { trackEvent('打开主动消息2.0配置'); setShowActiveMsg2GlobalModal(true); }}
                     className="text-[10px] bg-violet-100 text-violet-600 px-3 py-1.5 rounded-full font-bold shadow-sm active:scale-95 transition-transform"
                 >
                     配置

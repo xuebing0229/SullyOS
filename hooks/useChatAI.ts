@@ -1,6 +1,6 @@
 
 import { useState, useRef, useEffect, MutableRefObject } from 'react';
-import { CharacterProfile, UserProfile, Message, Emoji, EmojiCategory, GroupProfile, RealtimeConfig, CharacterBuff, Amsg2ExpiredNoticeRecord } from '../types';
+import { CharacterProfile, UserProfile, Message, Emoji, EmojiCategory, GroupProfile, RealtimeConfig, CharacterBuff, Amsg2ExpiredNoticeRecord, APIConfig } from '../types';
 import { DB } from '../utils/db';
 import { ChatPrompts } from '../utils/chatPrompts';
 import { safeFetchJson, safeResponseJson } from '../utils/safeApi';
@@ -1135,8 +1135,9 @@ export const useChatAI = ({
             // 历史备注：曾为串行中转做过 1.5s 错峰（评估抢跑会把主回复压后一个评估时长），
             // 用户侧已排查确认当前渠道无该并发问题，2026-07 应用户要求取消延迟。
             // 上云模式不受影响：worker 那边自己安排评估的时机。
-            const fireLocalEmotionEval = (emotionEvalEnabled && !cloudGenRoute && emotionApi) ? async () => {
+            const fireLocalEmotionEval = (emotionEvalEnabled && !cloudGenRoute && emotionApi) ? async (assistantText: string) => {
                 setEmotionStatus('evaluating');
+                const latestUserMessage = [...contextMsgs].reverse().find(message => message.role === 'user');
                 const assistantMessageId = `response-${(await sha256Hex(assistantText)).slice(0, 24)}`;
                 evaluateEmotionBackground(
                     charForGen,

@@ -25,6 +25,9 @@ interface ChatModalsProps {
     setSettingsContextRangeMode: (v: ContextRangeMode) => void;
     settingsHideSysLogs: boolean;
     setSettingsHideSysLogs: (v: boolean) => void;
+    contextSuiteAnyEnabled: boolean;
+    contextSuiteAllEnabled: boolean;
+    onToggleContextSuite: () => void;
     preserveContext: boolean;
     setPreserveContext: (v: boolean) => void;
     editContent: string;
@@ -87,6 +90,8 @@ interface ChatModalsProps {
     onConfirmEditMessage: () => void;
     onDeleteMessage: () => void;
     onCopyMessage: () => void;
+    onToggleMessageFavorite?: () => void;
+    messageFavorited?: boolean;
     onDeleteEmoji: () => void;
     onDeleteCategory: () => void;
     // Category Visibility
@@ -112,6 +117,8 @@ interface ChatModalsProps {
     // Voice TTS
     chatVoiceEnabled?: boolean;
     onToggleChatVoice?: () => void;
+    chatVoiceAutoPlay?: boolean;
+    onToggleChatVoiceAutoPlay?: () => void;
     chatVoiceLang?: string;
     onSetChatVoiceLang?: (lang: string) => void;
     // Voice generation from long-press
@@ -119,6 +126,9 @@ interface ChatModalsProps {
     voiceAvailable?: boolean; // true if char has voiceProfile configured
     onDownloadVoice?: () => void;
     voiceDownloadable?: boolean; // true if the selected message already has generated voice
+    voiceCollectable?: boolean;
+    onToggleVoiceFavorite?: () => void;
+    voiceFavorited?: boolean;
     // Schedule
     scheduleData?: DailySchedule | null;
     isScheduleGenerating?: boolean;
@@ -138,6 +148,14 @@ interface ChatModalsProps {
     vectorizePendingCount?: number | null;
     /** 处理中的逐轮进度文案，如「第 2 轮 · 剩余 340 条」 */
     vectorizeProgress?: string;
+    retainRecentForVectorize?: boolean;
+    setRetainRecentForVectorize?: (value: boolean) => void;
+    vectorizeResult?: {
+        processedMessages: number;
+        storedMemories: number;
+        retainedMessages: number;
+        waterlineAlreadyAhead: boolean;
+    } | null;
     onForceVectorize?: () => void;
     // Emotion (embedded under schedule modal, synced on/off with scheduleStyle)
     apiPresets?: ApiPreset[];

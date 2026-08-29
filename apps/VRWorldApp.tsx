@@ -24,6 +24,7 @@ import { Signal, getMyAuthorship, setSignalWhisper, hasSignalNoticeAck, ackSigna
 import type { SignalPoem, SignalBooklet } from '../types';
 import { getVRApi, setVRApi, getVRApiLog, clearVRApiLog, type VRApiCall } from '../utils/vrWorld/vrApi';
 import { safeResponseJson } from '../utils/safeApi';
+import { getAutonomousRoomPolicy, resolveAutonomousRoomPool, VR_AUTONOMOUS_ROOM_IDS } from '../utils/vrWorld/roomSelection';
 
 const genLocalId = (p: string) => `${p}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
 
@@ -3707,6 +3708,10 @@ const SettingsView: React.FC<{
                 const chibi = getChibi(char);
                 const failStreak = VRScheduler.getFailStreak(char.id);
                 const preferredNovelCount = (st?.preferredNovelIds || []).filter(id => validNovelIds.has(id)).length;
+                const roomPolicy = getAutonomousRoomPolicy(char);
+                const roomScopeText = roomPolicy.mode === 'free'
+                    ? '自由漫游'
+                    : roomPolicy.roomIds.map(roomId => getRoom(roomId).name).join('、') || '尚未选择';
                 return (
                     <div key={char.id} className="rounded-2xl p-3.5 backdrop-blur-sm" style={{ background: 'rgba(255,255,255,0.045)', border: '1px solid rgba(255,255,255,0.07)' }}>
                         <div className="flex items-center gap-2.5">

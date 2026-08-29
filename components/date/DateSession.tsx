@@ -25,6 +25,7 @@ import { fetchBlobForShare } from '../../utils/shareExport';
 import VoiceFavoriteActionSheet from '../voice/VoiceFavoriteActionSheet';
 import { getVoiceFavorite, makeVoiceFavoriteId, removeVoiceFavorite, saveVoiceFavorite } from '../../utils/voiceFavorites';
 import { MEETING_CONTINUE_DISPLAY_TEXT } from '../../utils/meetingContinue';
+import TokenImg from '../os/TokenImg';
 
 // 语音情绪标记 [v:xxx]：跟立绘情绪 [emotion] 分开的独立通道。立绘的 happy 是
 // 夸张的表情、语音的 happy 是音色情绪，两者强度/语义差异大，不能一概而论。
@@ -130,7 +131,38 @@ interface DateSessionProps {
     historyReachedEnd?: boolean;
 }
 
+const NOVEL_MESSAGE_WINDOW_SIZE = 40;
+const NOVEL_HISTORY_FETCH_STEP = 220;
+const NOVEL_MESSAGE_LOAD_STEP = 40;
+const REQUIRED_EMOTIONS_SET = ['normal', 'happy', 'angry', 'sad', 'shy'];
+
+type DateSpeechResult = { url: string; spokenText: string };
+type DateVoiceFavoriteTarget = {
+    sourceKey: string;
+    originalText: string;
+    sourceTimestamp: number;
+    voiceEmotion?: string;
+};
+
+const ReadingAvatar: React.FC<{ src?: string; name: string; light: boolean }> = ({ src, name, light }) => {
+    const [imageFailed, setImageFailed] = useState(false);
+    useEffect(() => setImageFailed(false), [src]);
+    const canShowImage = !!src && !imageFailed;
+    return (
+        <div className={`mt-1 h-9 w-9 shrink-0 overflow-hidden rounded-full ring-1 shadow-sm ${light ? 'bg-stone-200 text-stone-500 ring-stone-300/70' : 'bg-white/10 text-white/70 ring-white/15'}`} aria-hidden="true">
+            {canShowImage ? (
+                <TokenImg value={src} alt="" className="h-full w-full object-cover" loading="lazy" decoding="async" referrerPolicy="no-referrer" onError={() => setImageFailed(true)} />
+            ) : (
+                <span className="flex h-full w-full items-center justify-center text-xs font-bold">{(name || '·').trim().slice(0, 1) || '·'}</span>
+            )}
+        </div>
+    );
+};
+
 const DateSession: React.FC<DateSessionProps> = ({
+    onLoadMoreHistory,
+    historyLoadLimit = 0,
+    historyReachedEnd = true,
     char,
     userProfile,
     messages,
@@ -178,6 +210,11 @@ const DateSession: React.FC<DateSessionProps> = ({
     useEffect(() => () => { mountedRef.current = false; }, []);
     const [isShowingOpening, setIsShowingOpening] = useState(!initialState); // True until first user interaction
     const [showExitModal, setShowExitModal] = useState(false);
+    const [pendingRetryText, setPendingRetryText] = useState('');
+
+    useEffect(() => {
+        if (!getPendingReplyText(messages)) setPendingRetryText('');
+    }, [messages]);
 
     // Settings Overlay State (Internal)
     const [showSettings, setShowSettings] = useState(false);

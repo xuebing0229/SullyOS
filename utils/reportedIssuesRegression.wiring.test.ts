@@ -8,6 +8,14 @@ const read = (relative: string): string => readFileSync(
 ).replace(/\r\n?/g, '\n');
 
 describe('用户反馈回归保护', () => {
+    it('OSContext 创建内置 Sully Live2D 默认角色时显式导入工厂，避免启动阶段黑屏', () => {
+        const osContext = read('../context/OSContext.tsx');
+
+        expect(osContext).toMatch(/import \{[^}]*createBuiltinSullyLive2DConfig[^}]*\} from '\.\.\/utils\/builtinSullyLive2D';/);
+        expect(osContext).toContain("videoAvatar: createBuiltinSullyLive2DConfig('balanced')");
+        expect(osContext).toContain('const normalizeMemoryPalaceConfig =');
+    });
+
     it('见面输入栏允许 Firefox 在窄屏收缩 textarea，并固定保留发送按钮', () => {
         const source = read('../components/date/DateSession.tsx');
         const inputLayer = source.slice(source.indexOf('{/* Input Layer */}'), source.indexOf('{/* Settings Overlay */}'));

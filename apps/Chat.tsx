@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import { useOS } from '../context/OSContext';
 import { DB } from '../utils/db';
 import { Message, MessageType, MemoryFragment, Emoji, EmojiCategory, DailySchedule, ScheduleSlot } from '../types';
-import { processImage } from '../utils/file';
+import { processImage, processImageToBlob } from '../utils/file';
 import {
     allocateUniqueEmojiName,
     limitEmojiImportBatch,
@@ -90,8 +90,25 @@ import {
     AMSG_INSTANT_CHAT_PENDING_LS_KEY,
     getInstantChatPending,
 } from '../utils/amsgInstantChat';
-import { markAmsgStateDirty } from '../utils/amsgStateSync';
-import { trackEvent } from '../utils/analytics';
+import { markAmsgStateDirty, markAmsgStateDirtyForAll } from '../utils/amsgStateSync';
+import { trackEvent, noteMessageSent, presetOrCustom } from '../utils/analytics';
+import { formatAmsgToolTrace } from '../utils/amsgToolTrace';
+import { formatHours } from '../utils/format';
+import {
+    VOICE_FAVORITES_CHANGED_EVENT,
+    getVoiceFavorite,
+    listVoiceFavorites,
+    removeVoiceFavorite,
+    saveVoiceFavorite,
+} from '../utils/voiceFavorites';
+import {
+    CONTENT_FAVORITES_CHANGED_EVENT,
+    contentFavoriteIdForMessage,
+    listContentFavorites,
+    removeContentFavoriteById,
+    saveMessageContentFavorite,
+} from '../utils/contentFavorites';
+import { SCHEDULE_CHANGE_EVENT, type ScheduleChangeEventDetail } from '../utils/scheduleChange';
 import { resolveActiveSound, playWhiteboxSound, unlockWhiteboxAudio, parseWhiteboxSound, upsertWhiteboxSound, stripWhiteboxSoundDirective, WhiteboxSound } from '../utils/whiteboxSound';
 import WhiteboxSoundEditor from '../components/chat/WhiteboxSoundEditor';
 import { normalizeTranslationLangLabel, isTranslationLangPreset } from '../utils/translationLang';
@@ -113,6 +130,16 @@ import {
 } from '../utils/chatHistoryWindow';
 
 const VOICE_LANG_LABELS: Record<string, string> = { en: 'English', ja: '日本語', ko: '한국어', fr: 'Français', es: 'Español' };
+const HISTORY_WINDOW_RADIUS = 25;
+const HISTORY_WINDOW_BATCH_SIZE = 30;
+
+const isVisibleChatMessage = (message: Message, hideSystemLogs = false) => (
+    message.metadata?.source !== 'date'
+    && message.metadata?.source !== 'call'
+    && message.metadata?.source !== 'story_theater_memory'
+    && !message.metadata?.proactiveHint
+    && !(hideSystemLogs && message.role === 'system' && message.type !== 'score_card')
+);
 const INSTANT_VOICE_SCAN_WINDOW_MS = 30_000;
 type InstantToolUiStatus = {
     charId: string;
@@ -481,6 +508,7 @@ const Chat: React.FC = () => {
     const instantVoiceScanUntilRef = useRef(0);
     const instantVoiceScanCharRef = useRef<string | undefined>(undefined);
     // Track blob: URLs we created so we can revoke them on character switch / unmount.
+    const voiceFailedRef = useRef<Set<number>>(new Set());
     const voiceBlobUrlsRef = useRef<Set<string>>(new Set());
     // We warn the user at most once (per character) that the active TTS provider isn't configured —
     // a character can produce many <语音> messages and we don't want to spam toasts.
@@ -1141,6 +1169,19 @@ const Chat: React.FC = () => {
             window.removeEventListener('storage', onStorage);
         };
     }, [activeCharacterId]);
+
+    useEffect(() => {
+        const onScheduleChange = (event: Event) => {
+            const detail = (event as CustomEvent<ScheduleChangeEventDetail>).detail;
+            if (!detail || detail.charId !== activeCharIdRef.current) return;
+            setScheduleData(detail.schedule);
+            setScheduleChangeNotice(detail);
+        };
+        window.addEventListener(SCHEDULE_CHANGE_EVENT, onScheduleChange);
+        return () => window.removeEventListener(SCHEDULE_CHANGE_EVENT, onScheduleChange);
+    }, []);
+
+    useEffect(() => setScheduleChangeNotice(null), [activeCharacterId]);
 
     // Auto-generate daily schedule (fire-and-forget on chat load)
     // 总开关关闭时完全跳过：不查询 DB、不调用副 API、不跑兜底

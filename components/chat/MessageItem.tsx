@@ -20,7 +20,7 @@ import LuckinCheckoutCard from './LuckinCheckoutCard';
 import GameHallHandoffCard from './GameHallHandoffCard';
 import BlobImage from '../media/BlobImage';
 import { openChatImageViewer } from '../../utils/chatImageViewer';
-import TokenImg from '../os/TokenImg';
+import QixiEventCardView from './QixiEventCard';
 
 // 思考链卡片支持的 12 种风格预设 — 同时被 MessageItem 与 ThinkingChainSettingsModal 复用
 export type ThinkingChainStyleId = 'echo' | 'whisper' | 'minimal' | 'ink' | 'neon' | 'terminal' | 'stellar' | 'tama' | 'pixel' | 'muji' | 'ins' | 'custom';
