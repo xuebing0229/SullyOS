@@ -37,7 +37,7 @@ jobs:
       ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
       ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
       ANDROID_KEYSTORE_FILE: /tmp/sullyos-release.jks
-      VITE_AMSG_NATIVE_PUSH: 'poll'
+      VITE_AMSG_NATIVE_PUSH: 'true'
       GH_TOKEN: ${{ github.token }}
 
     steps:

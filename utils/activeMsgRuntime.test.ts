@@ -2167,8 +2167,10 @@ describe('即时对话的待收记录（走真库）', () => {
   // 「正在输入…」跨重启常亮、每 60s 空转、该角色 fire_pack 同步被无限期挂起。
   it('联网状态下状态查询连续失败到第 5 次 → 先取消远端那行，再判失联收场', async () => {
     const charId = 'char-instant-unreachable';
+    let now = Date.now();
+    vi.spyOn(Date, 'now').mockImplementation(() => now);
     await DB.saveCharacter({ id: charId, name: '即时角色' } as any);
-    setInstantChatPending(charId, 'uuid-unreachable', Date.now());
+    setInstantChatPending(charId, 'uuid-unreachable', now);
     vi.spyOn(ActiveMsgClient, 'readClientStateValue').mockResolvedValue(null);
     vi.spyOn(ActiveMsgClient, 'getRemoteTaskStatus').mockRejectedValue(new Error('Unexpected token < in JSON'));
     const cancel = vi.spyOn(ActiveMsgClient, 'cancelTask')
@@ -2180,6 +2182,7 @@ describe('即时对话的待收记录（走真库）', () => {
         await runInstantChatStatusCheck();
         expect(getInstantChatPending(charId)?.uuid, `第 ${i + 1} 次失败还不够判死`).toBe('uuid-unreachable');
         expect(cancel, '还没判死就不许动远端那行').not.toHaveBeenCalled();
+        now += 60_000;
       }
       await runInstantChatStatusCheck();
     } finally {
@@ -2204,15 +2207,20 @@ describe('即时对话的待收记录（走真库）', () => {
   // 清楚：那行可能自己跑完，回复还会来。
   it('判死时连取消也失败 → 照样收场，但说明里挑明回复可能稍后还会到', async () => {
     const charId = 'char-instant-unreachable-nocancel';
+    let now = Date.now();
+    vi.spyOn(Date, 'now').mockImplementation(() => now);
     await DB.saveCharacter({ id: charId, name: '即时角色' } as any);
-    setInstantChatPending(charId, 'uuid-nocancel', Date.now());
+    setInstantChatPending(charId, 'uuid-nocancel', now);
     vi.spyOn(ActiveMsgClient, 'readClientStateValue').mockResolvedValue(null);
     vi.spyOn(ActiveMsgClient, 'getRemoteTaskStatus').mockRejectedValue(new Error('Unexpected token < in JSON'));
     const cancel = vi.spyOn(ActiveMsgClient, 'cancelTask').mockRejectedValue(new Error('worker 也连不上'));
 
     const timers = captureStatusPollTimers();
     try {
-      for (let i = 0; i < 5; i += 1) await runInstantChatStatusCheck();
+      for (let i = 0; i < 5; i += 1) {
+        await runInstantChatStatusCheck();
+        now += 60_000;
+      }
     } finally {
       timers.restore();
     }

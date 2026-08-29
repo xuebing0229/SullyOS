@@ -2225,10 +2225,12 @@ let instantChatStatusPollTimer: ReturnType<typeof setTimeout> | null = null;
 // 计数按任务 uuid 记，查询成功或换了轮次就清零；断网（navigator.onLine=false）不计数
 // ——那是这台设备暂时没网，不是 worker 的错。
 const instantStatusCheckFailures = new Map<string, number>();
+const instantLastStatusCheckAt = new Map<string, number>();
 const INSTANT_STATUS_CHECK_MAX_FAILURES = 5;
+const INSTANT_STATUS_CHECK_MIN_INTERVAL_MS = 60_000;
 
 /**
- * 还欠着回复时，把下一跳点名排到 60s 后；一条都不欠就直接撤掉定时器。
+ * 还欠着回复时，把下一跳账本补收排到短间隔后；一条都不欠就直接撤掉定时器。
  *
  * 每次待收记录变动都重排一次（受理 / 收到回复 / 判失败都会调）。绝大多数时候一条
  * 待收记录都没有，那时一个定时器都不留，不给所有人加一条轮询。
@@ -2248,14 +2250,14 @@ const scheduleNextInstantChatStatusCheck = () => {
 /**
  * 即时对话的「一直等」状态机。客户端不按时长宣判——worker 一次 fire 最长 10 分钟、
  * 失败重试间隔 2/4/6 分钟，任何固定的客户端超时都会抢在云端结论之前把还在路上的
- * 回复判死（甚至顺手 cancel 掉）。这里的做法是：还欠着回复时，前台每 60s 点名问一次
+ * 回复判死（甚至顺手 cancel 掉）。这里的做法是：还欠着回复时，前台短间隔补收账本，每 60s 点名问一次
  * 那条任务行：
  *   pending → 继续等（云端还在跑或在排队重试；nextSendAt 过期是重试中的常态，不当信号）；
  *   completed（一次性任务 = 已失败）→ 补收兜底后落一条带 lastError 的失败说明；
  *   gone → 补收兜底后要么已收到（销账在 flush 里做掉了），要么明确告知取不回；
  *   查询失败（网络）→ 什么都不做，等下一跳。
  *
- * 冷启动、回到前台、60s 定时器三个时机都走这一个入口。页面不可见时直接走人，**也不排
+ * 冷启动、回到前台、前台补收定时器三个时机都走这一个入口。页面不可见时直接走人，**也不排
  * 下一跳**：后台每分钟醒一次去打网络毫无意义（用户看不见结果，移动端还会被系统掐），
  * 回前台的 visibilitychange 会立刻再点一次名，周期从那时接上。
  *
@@ -2270,6 +2272,9 @@ export const runInstantChatStatusCheck = async (): Promise<void> => {
   for (const uuid of [...instantStatusCheckFailures.keys()]) {
     if (!activeUuids.has(uuid)) instantStatusCheckFailures.delete(uuid);
   }
+  for (const uuid of [...instantLastStatusCheckAt.keys()]) {
+    if (!activeUuids.has(uuid)) instantLastStatusCheckAt.delete(uuid);
+  }
   // 账本是按用户存的，一趟就把所有角色欠的都捞回来了——放在循环外拉，几个角色同时
   // 等着回复时也只有一次往返。
   //
@@ -2280,6 +2285,14 @@ export const runInstantChatStatusCheck = async (): Promise<void> => {
   for (const pending of pendings) {
     // 补收那一步如果把回复放进来了，flush 里已经销账了——这一轮就此结束。
     if (getInstantChatPending(pending.charId)?.uuid !== pending.uuid) continue;
+
+    // 为了让已经生成好的回复尽快上屏，账本会短间隔补收；但任务状态不需要也
+    // 每次都问。保持原来一分钟一次的状态点名，避免用户等模型时对 Worker 和 D1
+    // 制造无意义的额外请求，也保留连续 5 次失败才判定失联的原时间口径。
+    const now = Date.now();
+    const lastStatusCheckAt = instantLastStatusCheckAt.get(pending.uuid) ?? 0;
+    if (now - lastStatusCheckAt < INSTANT_STATUS_CHECK_MIN_INTERVAL_MS) continue;
+    instantLastStatusCheckAt.set(pending.uuid, now);
 
     let status: RemoteTaskStatus;
     try {
@@ -2367,6 +2380,13 @@ export const runInstantChatStatusCheck = async (): Promise<void> => {
       log.warn('即时对话云端那行已经没了，回复也取不回', { charId: pending.charId, uuid: pending.uuid, reason });
       await failInstantChatPending(pending.charId, pending.uuid, reason);
     }
+  }
+  const remainingUuids = new Set(listInstantChatPendings().map((pending) => pending.uuid));
+  for (const uuid of [...instantStatusCheckFailures.keys()]) {
+    if (!remainingUuids.has(uuid)) instantStatusCheckFailures.delete(uuid);
+  }
+  for (const uuid of [...instantLastStatusCheckAt.keys()]) {
+    if (!remainingUuids.has(uuid)) instantLastStatusCheckAt.delete(uuid);
   }
   scheduleNextInstantChatStatusCheck();
 };

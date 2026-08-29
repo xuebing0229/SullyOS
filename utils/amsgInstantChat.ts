@@ -31,8 +31,12 @@ import type { AmsgEmotionEvalSpec } from '../worker/amsg/src/emotionEval';
 
 const HEADER = '[AmsgInstantChat]';
 
-/** 还欠着回复时，前台每隔这么久去云端点名问一次任务状态。不到明确报错不放弃。 */
-export const INSTANT_CHAT_STATUS_CHECK_INTERVAL_MS = 60_000;
+/**
+ * 还欠着回复时，前台每隔这么久补收一次云端账本并点名问任务状态。
+ * 只在页面可见且确实有一轮即时对话欠着时存在；回复一到就停。Android 后台
+ * 主动消息仍用原来的低频轮询，不会因为用户在前台等回复而平白多等一分钟。
+ */
+export const INSTANT_CHAT_STATUS_CHECK_INTERVAL_MS = 3_000;
 
 /** 待收记录的落盘位置。存 localStorage 而不是内存：重启后指示灯要还在。 */
 export const AMSG_INSTANT_CHAT_PENDING_LS_KEY = 'amsg2_instant_chat_pending';
