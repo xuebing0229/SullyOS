@@ -37,7 +37,9 @@ interface UnifiedPushNativePlugin {
 const NativeUnifiedPush = registerPlugin<UnifiedPushNativePlugin>('AmsgUnifiedPush');
 
 export const isUnifiedPushPlatform = (): boolean =>
-  Capacitor.isNativePlatform() && Capacitor.getPlatform() === 'android';
+  import.meta.env.VITE_AMSG_NATIVE_PUSH === 'true'
+  && Capacitor.isNativePlatform()
+  && Capacitor.getPlatform() === 'android';
 
 const readPermission = async (): Promise<UnifiedPushStatus['permission']> => {
   const result = await LocalNotifications.checkPermissions();

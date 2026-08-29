@@ -158,6 +158,7 @@ import {
 import { buildScheduleChangeResult } from '../../../utils/amsgScheduleResult';
 import type { ActiveMsg2TaskRecord } from '../../../types';
 import { createHybridPushTransport, isFcmConfigured, type NativeFcmEnv } from './nativeFcm';
+import { handleNativePollRequest, type NativePollDb } from './nativePoll';
 
 interface Env extends NativeFcmEnv {
   AMSG_MASTER_KEY: string;
@@ -167,7 +168,7 @@ interface Env extends NativeFcmEnv {
   /** 可选共享密钥；配了才校验 X-Client-Token，不配则端点全开。 */
   AMSG_SERVER_TOKEN?: string;
   /** D1 binding（factory 默认 createD1Adapter(env.DB)，这里只是标注存在）。 */
-  DB: unknown;
+  DB: NativePollDb;
   /** 以下三项给 /self-update 用，都可选；没配 CF_API_TOKEN 就是不开自更新。见 ./selfUpdate。 */
   CF_API_TOKEN?: string;
   CF_ACCOUNT_ID?: string;
@@ -3008,6 +3009,7 @@ export default {
           // 正常，而门牌永远不更新。报的是**这份代码有没有**，不是版本号：自更新永远由
           // 旧代码执行，版本号对上了不代表新逻辑真的在跑。
           backgroundJobs: true,
+          nativePoll: true,
           workerVersion: AMSG_BUNDLE_VERSION,
         },
       });
@@ -3061,6 +3063,11 @@ export default {
         success: false,
         error: { code: 'WORKER_CONFIG_MISSING', message: report.message, missing: report.missing },
       });
+    }
+
+    if (pathname.endsWith('/native-poll') || pathname.endsWith('/native-poll/ack')) {
+      const result = await handleNativePollRequest(request, env.DB);
+      return jsonWithCors(result.status, result.body);
     }
 
     // 即时对话：一个请求把「传云端状态 + 建任务」串完，回 202 之后立刻起一跳。

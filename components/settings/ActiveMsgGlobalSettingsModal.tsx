@@ -1462,7 +1462,9 @@ const ActiveMsgGlobalSettingsModal: React.FC<ActiveMsgGlobalSettingsModalProps> 
         <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 space-y-3">
           <div className="flex items-center justify-between gap-3">
             <span className="font-bold text-slate-700">
-              {pushStatus?.transport === 'unified-push' ? 'UnifiedPush 通知' : '通知权限'}
+              {pushStatus?.transport === 'unified-push'
+                ? 'UnifiedPush 通知'
+                : pushStatus?.transport === 'native-poll' ? 'Android 后台通知' : '通知权限'}
             </span>
             <span className={`text-xs font-bold ${pushStatus?.hasSubscription ? 'text-emerald-600' : 'text-amber-600'}`}>
               {pushStatus?.hasSubscription ? '已开启' : '未开启'}
@@ -1475,6 +1477,11 @@ const ActiveMsgGlobalSettingsModal: React.FC<ActiveMsgGlobalSettingsModalProps> 
             <p className="text-xs leading-relaxed text-slate-500">
               Android App 通过开放的 UnifiedPush 收消息，不依赖 Firebase 或 Google 服务。
               ntfy 只负责在后台唤醒本 App，AMSG Worker 仍是你自己部署的那一台。
+            </p>
+          ) : pushStatus?.transport === 'native-poll' ? (
+            <p className="text-xs leading-relaxed text-slate-500">
+              Android App 使用内置后台服务定期领取消息，不需要安装 ntfy，也不依赖 Firebase 或 Google 服务。
+              开启后系统会保留一条低打扰的“主动消息 2.0 运行中”通知，角色消息会另行弹出。
             </p>
           ) : (
             <p className="text-xs leading-relaxed text-slate-500">

@@ -17,4 +17,14 @@ describe('Android native push release wiring', () => {
     expect(installer).toContain('FOREGROUND_SERVICE_DATA_SYNC');
     expect(installer).toContain('SullyAmsgPollService');
   });
+
+  it('轮询构建从设置按钮一路接到 Worker 收件箱，不再误走 UnifiedPush', () => {
+    const client = readFileSync(resolve(__dirname, '../utils/activeMsgClient.ts'), 'utf8');
+    const unified = readFileSync(resolve(__dirname, '../utils/unifiedPushPlugin.ts'), 'utf8');
+    const worker = readFileSync(resolve(__dirname, '../worker/amsg/src/index.ts'), 'utf8');
+    expect(client).toContain("VITE_AMSG_NATIVE_PUSH === 'poll'");
+    expect(client).toContain('endpoint: `poll:${token}`');
+    expect(unified).toContain("VITE_AMSG_NATIVE_PUSH === 'true'");
+    expect(worker).toContain("pathname.endsWith('/native-poll')");
+  });
 });

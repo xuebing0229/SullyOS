@@ -12353,6 +12353,64 @@ function buildScheduleChangeResult(args) {
   };
 }
 
+// worker/amsg/src/nativePoll.ts
+var TOKEN_RE = /^[A-Za-z0-9_-]{32,128}$/;
+var MAX_BATCH = 20;
+var MAX_ACK_IDS = 50;
+var RETENTION_MS = 7 * 24 * 60 * 60 * 1e3;
+var nativePollTokenFromEndpoint = (endpoint) => {
+  if (typeof endpoint !== "string" || !endpoint.startsWith("poll:")) return null;
+  const token = endpoint.slice(5).trim();
+  return TOKEN_RE.test(token) ? token : null;
+};
+var ensureTable = async (db) => {
+  await db.prepare(`CREATE TABLE IF NOT EXISTS native_poll_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    device_token TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  )`).run();
+  await db.prepare(
+    "CREATE INDEX IF NOT EXISTS idx_native_poll_device ON native_poll_messages(device_token, id)"
+  ).run();
+};
+var enqueueNativePollMessage = async (db, deviceToken, payload) => {
+  if (!db) throw new Error("NATIVE_POLL_DB_MISSING: Worker \u672A\u7ED1\u5B9A D1");
+  if (!TOKEN_RE.test(deviceToken)) throw new Error("NATIVE_POLL_TOKEN_INVALID");
+  await ensureTable(db);
+  const now = Date.now();
+  await db.prepare(
+    "INSERT INTO native_poll_messages (device_token, payload, created_at) VALUES (?, ?, ?)"
+  ).bind(deviceToken, payload, now).run();
+  await db.prepare("DELETE FROM native_poll_messages WHERE created_at < ?").bind(now - RETENTION_MS).run();
+  return { statusCode: 201 };
+};
+var readToken = (request) => {
+  const token = request.headers.get("X-Device-Token")?.trim() || "";
+  return TOKEN_RE.test(token) ? token : null;
+};
+var handleNativePollRequest = async (request, db) => {
+  if (!db) return { status: 503, body: { success: false, error: { code: "DB_MISSING", message: "Worker \u672A\u7ED1\u5B9A D1" } } };
+  const token = readToken(request);
+  if (!token) return { status: 401, body: { success: false, error: { code: "INVALID_DEVICE_TOKEN", message: "\u8BBE\u5907\u4EE4\u724C\u65E0\u6548" } } };
+  await ensureTable(db);
+  if (request.method === "GET") {
+    const rows = await db.prepare(
+      "SELECT id, payload FROM native_poll_messages WHERE device_token = ? ORDER BY id ASC LIMIT ?"
+    ).bind(token, MAX_BATCH).all();
+    return { status: 200, body: { success: true, data: { messages: rows.results || [] } } };
+  }
+  if (request.method === "POST") {
+    const parsed = await request.json().catch(() => null);
+    const ids = Array.isArray(parsed?.ids) ? parsed.ids.filter((id) => Number.isSafeInteger(id) && id > 0).slice(0, MAX_ACK_IDS) : [];
+    for (const id of ids) {
+      await db.prepare("DELETE FROM native_poll_messages WHERE device_token = ? AND id = ?").bind(token, id).run();
+    }
+    return { status: 200, body: { success: true, data: { acknowledged: ids.length } } };
+  }
+  return { status: 405, body: { success: false, error: { code: "METHOD_NOT_ALLOWED", message: "\u4E0D\u652F\u6301\u7684\u8BF7\u6C42\u65B9\u6CD5" } } };
+};
+
 // worker/amsg/src/nativeFcm.ts
 var accessTokenCache = null;
 var utf83 = new TextEncoder();
@@ -12475,6 +12533,8 @@ var sendFcmNotification = async (env, token, payload) => {
 };
 var createHybridPushTransport = (env, webPush) => ({
   async sendNotification(subscription, payload) {
+    const pollToken = nativePollTokenFromEndpoint(subscription?.endpoint);
+    if (pollToken) return enqueueNativePollMessage(env.DB, pollToken, payload);
     const token = fcmTokenFromEndpoint(subscription?.endpoint);
     if (token) return sendFcmNotification(env, token, payload);
     return webPush.sendNotification(subscription, payload);
@@ -13902,6 +13962,7 @@ var src_default = {
           // 正常，而门牌永远不更新。报的是**这份代码有没有**，不是版本号：自更新永远由
           // 旧代码执行，版本号对上了不代表新逻辑真的在跑。
           backgroundJobs: true,
+          nativePoll: true,
           workerVersion: AMSG_BUNDLE_VERSION
         }
       });
@@ -13945,6 +14006,10 @@ var src_default = {
         success: false,
         error: { code: "WORKER_CONFIG_MISSING", message: report.message, missing: report.missing }
       });
+    }
+    if (pathname.endsWith("/native-poll") || pathname.endsWith("/native-poll/ack")) {
+      const result = await handleNativePollRequest(request, env.DB);
+      return jsonWithCors(result.status, result.body);
     }
     if (pathname.endsWith("/instant-chat")) {
       if (method === "OPTIONS") return new Response(null, { status: 204, headers: CORS_HEADERS });

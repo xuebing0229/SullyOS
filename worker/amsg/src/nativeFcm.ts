@@ -1,9 +1,16 @@
-/** Capacitor 原生 FCM 通道；普通 Web Push endpoint 完整委托给既有发送器。 */
+/** Capacitor 原生通道；FCM / 内置轮询在这里分流，普通 Web Push 原样委托。 */
+
+import {
+  enqueueNativePollMessage,
+  nativePollTokenFromEndpoint,
+  type NativePollDb,
+} from './nativePoll';
 
 export interface NativeFcmEnv {
   FCM_PROJECT_ID?: string;
   FCM_SERVICE_ACCOUNT_EMAIL?: string;
   FCM_SERVICE_ACCOUNT_PRIVATE_KEY?: string;
+  DB?: NativePollDb;
 }
 
 interface PushTransport {
@@ -147,6 +154,8 @@ export const createHybridPushTransport = (
   webPush: PushTransport,
 ): PushTransport => ({
   async sendNotification(subscription: any, payload: string) {
+    const pollToken = nativePollTokenFromEndpoint(subscription?.endpoint);
+    if (pollToken) return enqueueNativePollMessage(env.DB, pollToken, payload);
     const token = fcmTokenFromEndpoint(subscription?.endpoint);
     if (token) return sendFcmNotification(env, token, payload);
     return webPush.sendNotification(subscription, payload);

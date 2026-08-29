@@ -107,9 +107,13 @@ import {
   type SubscribeFailureKind,
 } from './pushSubscribeShared';
 import { isUnifiedPushPlatform } from './unifiedPushPlugin';
+import { Capacitor } from '@capacitor/core';
 
 export const NATIVE_PUSH_TOKEN_STORAGE_KEY = 'amsg2_fcm_token_v1';
 const nativePushBuildEnabled = () => import.meta.env.VITE_AMSG_NATIVE_PUSH === 'true';
+const nativePollBuildEnabled = () => import.meta.env.VITE_AMSG_NATIVE_PUSH === 'poll'
+  && Capacitor.isNativePlatform()
+  && Capacitor.getPlatform() === 'android';
 const readNativePushToken = () => nativePushBuildEnabled() && typeof localStorage !== 'undefined'
   && !isUnifiedPushPlatform()
   ? localStorage.getItem(NATIVE_PUSH_TOKEN_STORAGE_KEY)?.trim() || ''
@@ -121,7 +125,7 @@ export interface ActiveMsg2PushStatus {
   hasSubscription: boolean;
   vapidConfigured: boolean;
   detail?: string;
-  transport?: 'web-push' | 'unified-push';
+  transport?: 'web-push' | 'unified-push' | 'native-poll';
   distributor?: string | null;
   needsDistributor?: boolean;
 }
@@ -1550,6 +1554,36 @@ export const ActiveMsgClient = {
   async getPushStatus(): Promise<ActiveMsg2PushStatus> {
     const config = await ensureGlobalReady();
     const workerConfigured = Boolean(config.workerUrl.trim());
+    if (nativePollBuildEnabled()) {
+      try {
+        const { getNativeAmsgPollStatus, readNativeAmsgPollToken } = await import('./nativeAmsgPoll');
+        const status = await getNativeAmsgPollStatus();
+        const hasSubscription = Boolean(readNativeAmsgPollToken()) && status.running;
+        return {
+          supported: status.supported,
+          permission: status.permission === 'prompt' ? 'default' : status.permission,
+          hasSubscription,
+          vapidConfigured: workerConfigured,
+          transport: 'native-poll',
+          detail: !workerConfigured
+            ? '请先填写 Worker 地址。'
+            : status.permission === 'denied'
+              ? '通知权限被拒绝，请到 Android 系统设置里允许 SullyOS 通知。'
+              : !hasSubscription && readNativeAmsgPollToken()
+                ? '后台通知服务尚未运行，请重新点一次开启。'
+                : undefined,
+        };
+      } catch (error) {
+        return {
+          supported: false,
+          permission: 'unsupported',
+          hasSubscription: false,
+          vapidConfigured: workerConfigured,
+          transport: 'native-poll',
+          detail: `Android 后台通知组件不可用：${(error as Error)?.message || error}`,
+        };
+      }
+    }
     if (isUnifiedPushPlatform()) {
       try {
         const { getUnifiedPushStatus } = await import('./unifiedPushPlugin');
@@ -1612,6 +1646,12 @@ export const ActiveMsgClient = {
   },
 
   async ensurePushSubscription() {
+    if (nativePollBuildEnabled()) {
+      const config = await ensureWorkerReady();
+      const { startNativeAmsgPoll } = await import('./nativeAmsgPoll');
+      const token = await startNativeAmsgPoll(config.workerUrl);
+      return { endpoint: `poll:${token}` };
+    }
     if (isUnifiedPushPlatform()) {
       const config = await ensureWorkerReady();
       const client = createClient(config);
@@ -1726,6 +1766,13 @@ export const ActiveMsgClient = {
    * 按钮要治的病，不能自己再犯一遍。
    */
   async resetPushSubscription(): Promise<void> {
+    if (nativePollBuildEnabled()) {
+      const config = await ensureWorkerReady();
+      const client = await initializeClient(config);
+      const subscription = await this.ensurePushSubscription();
+      await client.putPushSubscription(subscription);
+      return;
+    }
     if (isUnifiedPushPlatform()) {
       const config = await ensureWorkerReady();
       const client = await initializeClient(config);
@@ -1767,6 +1814,10 @@ export const ActiveMsgClient = {
    * 的 D1 里、跟 SW 无关，不用像 proactive-push 那样重新推排程回去。
    */
   async deepResetPushSubscription(): Promise<void> {
+    if (nativePollBuildEnabled()) {
+      await this.resetPushSubscription();
+      return;
+    }
     if (isUnifiedPushPlatform()) {
       await this.resetPushSubscription();
       return;
@@ -1818,6 +1869,23 @@ export const ActiveMsgClient = {
    * 返回值只为单测断言：'registered' 补了 / 'skipped' 条件不满足 / 'failed' 补失败了。
    */
   async reconcilePushSubscription(): Promise<'registered' | 'skipped' | 'failed'> {
+    if (nativePollBuildEnabled()) {
+      try {
+        const { getNativeAmsgPollStatus, readNativeAmsgPollToken, startNativeAmsgPoll } = await import('./nativeAmsgPoll');
+        const token = readNativeAmsgPollToken();
+        if (!token) return 'skipped';
+        const status = await getNativeAmsgPollStatus();
+        if (status.permission !== 'granted') return 'skipped';
+        const config = await ensureWorkerReady();
+        if (!status.running) await startNativeAmsgPoll(config.workerUrl);
+        const client = await initializeClient(config);
+        await client.putPushSubscription({ endpoint: `poll:${token}` });
+        return 'registered';
+      } catch (error) {
+        console.warn('[ActiveMsg] 连接后补登记 Android 后台通知失败', error);
+        return 'failed';
+      }
+    }
     if (isUnifiedPushPlatform()) {
       try {
         const { readUnifiedPushSubscription } = await import('./unifiedPushPlugin');

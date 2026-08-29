@@ -16,6 +16,27 @@ describe('AMSG2 native FCM transport', () => {
     expect(fcmTokenFromEndpoint('fcm:   ')).toBeNull();
   });
 
+  it('poll: endpoint 写入 D1 收件箱，不误交给 Web Push', async () => {
+    const calls: Array<{ sql: string; values: unknown[] }> = [];
+    const db = {
+      prepare: (sql: string) => {
+        let values: unknown[] = [];
+        const statement = {
+          bind: (...next: unknown[]) => { values = next; return statement; },
+          run: async () => { calls.push({ sql, values }); },
+          first: async () => null,
+          all: async () => ({ results: [] }),
+        };
+        return statement;
+      },
+    };
+    const sendNotification = vi.fn();
+    const transport = createHybridPushTransport({ DB: db }, { sendNotification });
+    await transport.sendNotification({ endpoint: `poll:${'a'.repeat(64)}` }, '{"message":"hi"}');
+    expect(calls.some((call) => call.sql.startsWith('INSERT INTO native_poll_messages'))).toBe(true);
+    expect(sendNotification).not.toHaveBeenCalled();
+  });
+
   it('正文只放 notification 一份，data 保留 AMSG2 路由字段', () => {
     const request = buildFcmMessage('token', JSON.stringify({
       messageId: 'm1', message: '你好', contactName: 'Sully',
