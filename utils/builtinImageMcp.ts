@@ -302,14 +302,15 @@ export async function fetchBuiltinImageRemoteConfig(
 export async function fetchBuiltinImageModels(
     binding: BuiltinImageBinding,
     draft?: UpdateRemoteConfigPayload,
-): Promise<string[]> {
+): Promise<{ models: string[]; source: 'remote' | 'configured' }> {
     const response = await controlRequest(binding, '/models', {
         method: 'POST',
         body: JSON.stringify(draft || {}),
     });
-    return Array.isArray(response?.models)
+    const models = Array.isArray(response?.models)
         ? response.models.filter((item: unknown): item is string => typeof item === 'string' && Boolean(item.trim()))
         : [];
+    return { models, source: response?.source === 'configured' ? 'configured' : 'remote' };
 }
 
 export interface UpdateRemoteConfigPayload {

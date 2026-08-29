@@ -247,6 +247,7 @@ app.post("/models", requireBearer, async (req, res, next) => {
   try {
     const runtime = await runtimeStore.preview(req.body || {});
     const { config } = await effectiveUpstreamConfig(runtime);
+    const configuredModels = [...new Set([runtime.modelFull, runtime.modelCurated].filter(Boolean))];
     const url = `${config.upstreamBaseUrl}${config.upstreamModelsPath}`;
     const response = await fetch(url, {
       method: "GET",
@@ -254,13 +255,19 @@ app.post("/models", requireBearer, async (req, res, next) => {
       signal: AbortSignal.timeout(Math.min(config.upstreamTimeoutMs, 30_000))
     });
     const text = await response.text();
-    if (!response.ok) throw new Error(`Model discovery failed: HTTP ${response.status}${text ? ` - ${text.slice(0, 200)}` : ""}`);
+    if (!response.ok) {
+      if (response.status === 404 || response.status === 405) {
+        res.setHeader("Cache-Control", "no-store");
+        return res.json({ models: configuredModels, source: "configured" });
+      }
+      throw new Error(`Model discovery failed: HTTP ${response.status}${text ? ` - ${text.slice(0, 200)}` : ""}`);
+    }
     let payload;
     try { payload = text ? JSON.parse(text) : null; } catch { throw new Error("Model discovery returned invalid JSON"); }
     const candidates = Array.isArray(payload) ? payload : Array.isArray(payload?.data) ? payload.data : Array.isArray(payload?.models) ? payload.models : [];
     const models = [...new Set(candidates.map(item => typeof item === "string" ? item : item?.id ?? item?.name).filter(item => typeof item === "string" && item.trim()).map(item => item.trim()))].sort();
     res.setHeader("Cache-Control", "no-store");
-    return res.json({ models });
+    return res.json(models.length ? { models, source: "remote" } : { models: configuredModels, source: "configured" });
   } catch (error) { next(error); }
 });
 app.post("/config/test", requireBearer, async (req, res, next) => {

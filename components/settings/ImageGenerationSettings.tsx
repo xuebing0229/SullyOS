@@ -352,8 +352,10 @@ const EngineCard: React.FC<{
         try {
             const { apiKeyConfigured: _configured, apiKeyHint: _hint, version: _version, revision: _revision, ...patch } = remote as any;
             const discovered = await fetchBuiltinImageModels(binding, { patch, ...(apiKey.trim() ? { apiKey: apiKey.trim() } : {}) });
-            setModels(discovered);
-            setStatus(discovered.length ? `✅ 已发现 ${discovered.length} 个模型` : '当前线路返回了空模型列表，仍可手动输入模型 ID');
+            setModels(discovered.models);
+            setStatus(discovered.source === 'configured'
+                ? `✅ 当前线路没有提供模型列表，已载入预设中的 ${discovered.models.length} 个模型`
+                : discovered.models.length ? `✅ 已发现 ${discovered.models.length} 个模型` : '当前线路返回了空模型列表，仍可手动输入模型 ID');
         } catch (error: any) { setStatus(`❌ ${error?.message || String(error)}`); }
         finally { setBusy(false); }
     };
