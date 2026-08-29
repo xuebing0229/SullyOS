@@ -11,6 +11,7 @@ import {
     shouldRetryMcpWithoutTools,
 } from '../mcpToolBridge';
 import { buildToolResultMessage, normalizeToolCallsForCompat } from '../toolCallCompat';
+import type { CharacterProfile, UserProfile } from '../../types';
 
 interface GroupMcpCompletionOptions {
     url: string;
@@ -18,6 +19,8 @@ interface GroupMcpCompletionOptions {
     body: Record<string, any>;
     groupId: string;
     userName: string;
+    character?: CharacterProfile | null;
+    userProfile?: UserProfile | null;
     signal?: AbortSignal;
     onStatus?: (status: string) => void;
 }
@@ -112,7 +115,7 @@ export async function completeGroupChatWithMcp(options: GroupMcpCompletionOption
                 continue;
             }
             options.onStatus?.(`正在调用 MCP 工具：${exposedName}…`);
-const preparedArgs = await prepareBuiltinImageToolArguments({ server: hit.server, toolName: hit.toolName, args, character: null });
+            const preparedArgs = await prepareBuiltinImageToolArguments({ server: hit.server, toolName: hit.toolName, args, character: options.character, userProfile: options.userProfile });
             const result = await callMcpTool(hit.server, hit.toolName, preparedArgs);
             conversationMessages.push(buildToolResultMessage(
                 toolCall,
@@ -142,7 +145,7 @@ const preparedArgs = await prepareBuiltinImageToolArguments({ server: hit.server
         options.onStatus?.(`正在调用 MCP 工具：${calls.map(call => call.exposedName).join('、')}…`);
         const results: string[] = [];
         for (const call of calls) {
-            const preparedArgs = await prepareBuiltinImageToolArguments({ server: call.server, toolName: call.toolName, args: call.args, character: null });
+            const preparedArgs = await prepareBuiltinImageToolArguments({ server: call.server, toolName: call.toolName, args: call.args, character: options.character, userProfile: options.userProfile });
             const result = await callMcpTool(call.server, call.toolName, preparedArgs);
             results.push(result.success
                 ? `工具 ${call.exposedName} 成功。结果: ${formatMcpToolResult(result.data)}`

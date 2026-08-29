@@ -10,14 +10,18 @@ test("normalizes numeric strings emitted by tool-calling models", () => {
     steps: "28",
     guidance: "5.5",
     reference_strength: "0.75",
-    reference_fidelity: "0.85"
+    reference_fidelity: "0.85",
+    user_reference_strength: "0.65",
+    user_reference_fidelity: "0.8"
   }), {
     prompt: "2boys",
     seed: 123,
     steps: 28,
     guidance: 5.5,
     reference_strength: 0.75,
-    reference_fidelity: 0.85
+    reference_fidelity: 0.85,
+    user_reference_strength: 0.65,
+    user_reference_fidelity: 0.8
   });
 });
 

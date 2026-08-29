@@ -2,6 +2,7 @@ import type {
     CharacterProfile,
     NovelAiPreciseReferenceConfig,
     NovelAiReferenceType,
+    UserProfile,
 } from '../types';
 import {
     dataUrlToBlob,
@@ -24,6 +25,10 @@ const REFERENCE_FIELDS = [
     'reference_type',
     'reference_strength',
     'reference_fidelity',
+    'user_reference_id',
+    'user_reference_type',
+    'user_reference_strength',
+    'user_reference_fidelity',
 ] as const;
 
 export interface PreparedReferenceImage {
@@ -304,17 +309,28 @@ export function sanitizeNovelAiReferenceToolArguments(
 
 export function applyManagedNovelAiReferenceArguments(
     args: Record<string, any>,
-    reference?: NovelAiPreciseReferenceConfig,
+    characterReference?: NovelAiPreciseReferenceConfig,
+    userReference?: NovelAiPreciseReferenceConfig,
 ): Record<string, any> {
     const clean = sanitizeNovelAiReferenceToolArguments(args);
-    if (!reference?.enabled) return clean;
-    return {
-        ...clean,
-        reference_id: reference.slotId,
-        reference_type: reference.type,
-        reference_strength: reference.strength,
-        reference_fidelity: reference.fidelity,
-    };
+    const result = { ...clean };
+    if (characterReference?.enabled) {
+        Object.assign(result, {
+            reference_id: characterReference.slotId,
+            reference_type: characterReference.type,
+            reference_strength: characterReference.strength,
+            reference_fidelity: characterReference.fidelity,
+        });
+    }
+    if (userReference?.enabled) {
+        Object.assign(result, {
+            user_reference_id: userReference.slotId,
+            user_reference_type: userReference.type,
+            user_reference_strength: userReference.strength,
+            user_reference_fidelity: userReference.fidelity,
+        });
+    }
+    return result;
 }
 
 export async function prepareBuiltinImageToolArguments({
@@ -322,11 +338,13 @@ export async function prepareBuiltinImageToolArguments({
     toolName,
     args,
     character,
+    userProfile,
 }: {
     server: McpServerConfig;
     toolName: string;
     args: Record<string, any>;
     character?: CharacterProfile | null;
+    userProfile?: UserProfile | null;
 }): Promise<Record<string, any>> {
     if (
         server.id !== 'builtin_image_novelai'
@@ -336,18 +354,31 @@ export async function prepareBuiltinImageToolArguments({
     }
 
     const clean = sanitizeNovelAiReferenceToolArguments(args);
-    const reference = character?.novelAiReference;
-    if (!reference?.enabled) return clean;
-    if (!reference.imageRef) throw new Error('当前角色已开启锁脸，但没有参考图');
-    if (!SLOT_RE.test(reference.slotId)) throw new Error('当前角色的锁脸槽位无效');
+    const characterReference = character?.novelAiReference;
+    const userReference = userProfile?.novelAiReference;
+    const enabledReferences = [
+        { label: '当前角色', value: characterReference },
+        { label: '用户', value: userReference },
+    ].filter(item => item.value?.enabled) as Array<{ label: string; value: NovelAiPreciseReferenceConfig }>;
+    if (!enabledReferences.length) return clean;
 
-    await ensureNovelAiReferenceUploaded(reference);
+    for (const item of enabledReferences) {
+        if (!item.value.imageRef) throw new Error(`${item.label}已开启精密参照，但没有参考图`);
+        if (!SLOT_RE.test(item.value.slotId)) throw new Error(`${item.label}的精密参照槽位无效`);
+    }
+    await Promise.all(enabledReferences.map(item => ensureNovelAiReferenceUploaded(item.value)));
 
-    return applyManagedNovelAiReferenceArguments(clean, reference);
+    return applyManagedNovelAiReferenceArguments(clean, characterReference, userReference);
 }
 
 export function stripNovelAiReferenceForTextOnlyBackup(character: CharacterProfile): CharacterProfile {
     const clean = { ...character };
+    delete clean.novelAiReference;
+    return clean;
+}
+
+export function stripNovelAiReferenceForTextOnlyUserBackup(profile: UserProfile): UserProfile {
+    const clean = { ...profile };
     delete clean.novelAiReference;
     return clean;
 }

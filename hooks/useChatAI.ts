@@ -35,7 +35,7 @@ import { buildToolResultMessage, normalizeToolCallsForCompat } from '../utils/to
 import { toolCallFingerprint } from '../utils/agenticToolFeedback';
 import { buildChatRequestPayload } from '../utils/chatRequestPayload';
 import { persistMcpGeneratedImages } from '../utils/mcpImagePersistence';
-import { prepareBuiltinImageToolArguments, sanitizeNovelAiReferenceToolArguments } from '../utils/novelAiReference';
+import { prepareBuiltinImageToolArguments } from '../utils/novelAiReference';
 import {
     isInstantConfigReady,
     sendInstantPushAndAwaitReply,
@@ -2108,8 +2108,9 @@ export const useChatAI = ({
                             lastMcpCallSignature = callSignature;
                             setSearchStatus(`正在调用 MCP 工具：${fname}...`);
                             let mcpResult: any;
+                            let preparedArgs = cleanedArgs;
                             try {
-                                const preparedArgs = await prepareBuiltinImageToolArguments({ server: mcpHit.server, toolName: mcpHit.toolName, args: cleanedArgs, character: char });
+                                preparedArgs = await prepareBuiltinImageToolArguments({ server: mcpHit.server, toolName: mcpHit.toolName, args: cleanedArgs, character: char, userProfile });
                                 mcpResult = await callMcpToolWithBackgroundImage(mcpHit.server, mcpHit.toolName, {
                                     ...preparedArgs, after_generate_action: afterGenerateAction,
                                 }, { charId: char.id });
@@ -2124,7 +2125,7 @@ export const useChatAI = ({
                                     mcpResult,
                                     { id: mcpHit.server.id, name: mcpHit.server.name },
                                     mcpHit.toolName,
-                                    sanitizeNovelAiReferenceToolArguments(cleanedArgs),
+                                    preparedArgs,
                                 );
                                 await runSynchronousImageInspect(
                                     afterGenerateAction,
@@ -2309,8 +2310,9 @@ export const useChatAI = ({
                         executedAny = true;
                         lastExecutedSig = toolCallFingerprint(call.exposedName, call.args);
                         let r: any;
+                        let preparedArgs = cleanedArgs;
                         try {
-                            const preparedArgs = await prepareBuiltinImageToolArguments({ server: call.server, toolName: call.toolName, args: cleanedArgs, character: char });
+                            preparedArgs = await prepareBuiltinImageToolArguments({ server: call.server, toolName: call.toolName, args: cleanedArgs, character: char, userProfile });
                             r = await callMcpToolWithBackgroundImage(call.server, call.toolName, {
                                 ...preparedArgs, after_generate_action: afterGenerateAction,
                             }, { charId: char.id });
@@ -2325,7 +2327,7 @@ export const useChatAI = ({
                                 r,
                                 { id: call.server.id, name: call.server.name },
                                 call.toolName,
-                                sanitizeNovelAiReferenceToolArguments(cleanedArgs),
+                                preparedArgs,
                             );
                             await runSynchronousImageInspect(
                                 afterGenerateAction,

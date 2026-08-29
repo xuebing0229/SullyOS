@@ -12,7 +12,7 @@ import {
     type ResolvedMcpTool,
 } from './mcpToolBridge';
 import { normalizeToolCallsForCompat } from './toolCallCompat';
-import { prepareBuiltinImageToolArguments, sanitizeNovelAiReferenceToolArguments } from './novelAiReference';
+import { prepareBuiltinImageToolArguments } from './novelAiReference';
 import { persistMcpGeneratedImages } from './mcpImagePersistence';
 import { makeMeetingCgBackground, type MeetingCgBackground, type MeetingCgEngine } from './meetingCg';
 
@@ -161,16 +161,16 @@ export async function generateMeetingCgViaChatPlanner(input: GenerateMeetingCgIn
         toolName: selected.toolName,
         args: rawArgs,
         character: input.char,
+        userProfile: input.userProfile,
     });
     const result: McpToolResult = await callMcpTool(selected.server, selected.toolName, preparedArgs);
     if (!result.success) throw new Error(result.error || '线下 CG 生成失败');
-    const safeArgs = sanitizeNovelAiReferenceToolArguments(preparedArgs);
     const outcome = await persistMcpGeneratedImages({
         result,
         char: input.char,
         server: { id: selected.server.id, name: selected.server.name },
         toolName: selected.toolName,
-        toolArgs: safeArgs,
+        toolArgs: preparedArgs,
         recentMessages: recentMeetingMessages,
         ownerType: 'meeting-cg',
         allowTemporaryUrlFallback: false,

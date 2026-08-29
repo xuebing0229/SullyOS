@@ -3,7 +3,9 @@ const NUMERIC_ARGUMENTS = [
   "steps",
   "guidance",
   "reference_strength",
-  "reference_fidelity"
+  "reference_fidelity",
+  "user_reference_strength",
+  "user_reference_fidelity"
 ];
 
 export function normalizeNovelAiToolArguments(rawArgs) {

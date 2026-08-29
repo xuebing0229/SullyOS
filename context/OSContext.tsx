@@ -8,7 +8,7 @@ import {
   resetApiFailoverRuntime,
   resolveApiExecutionPlan,
 } from '../utils/apiFailover';
-import { deleteRemoteNovelAiReference, stripNovelAiReferenceForTextOnlyBackup } from '../utils/novelAiReference';
+import { deleteRemoteNovelAiReference, stripNovelAiReferenceForTextOnlyBackup, stripNovelAiReferenceForTextOnlyUserBackup } from '../utils/novelAiReference';
 import { applyApiPresetConfig, mergeApiPresetPatch } from '../utils/apiPresetConfig';
 import { clampClaudeTemperature, modelRejectsSamplingParams, stripSamplingParams, isSamplingParamError } from '../utils/samplingParamCompat';
 import { buildMalformedImageDiagnostics, extractImagesInPlace, deepCloneForExport, parseImageDataUrlForBackup, type BackupObjectPath, type MalformedBackupImageDiagnostic } from '../utils/backupExport';
@@ -4432,6 +4432,9 @@ recordApiCall({ requestId: (config as any)?.__sullyApiCallId, url: urlStr, body:
               } else if (mode === 'text_only') {
                   if (storeName === 'characters' && Array.isArray(rawData)) {
                       rawData = rawData.map(stripNovelAiReferenceForTextOnlyBackup);
+                  }
+                  if (storeName === 'user_profile' && Array.isArray(rawData)) {
+                      rawData = rawData.map(stripNovelAiReferenceForTextOnlyUserBackup);
                   }
                   processedData = Array.isArray(rawData) && rawData.length > 200
                       ? await processArrayChunked(rawData, stripTextOnlyMedia)

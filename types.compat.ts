@@ -49,6 +49,11 @@ declare module './types' {
     novelAiReference?: NovelAiPreciseReferenceConfig;
   }
 
+  interface UserProfile {
+    /** 用户本人在 NovelAI 生图中的精密参照；与当前角色参考图可同时启用。 */
+    novelAiReference?: NovelAiPreciseReferenceConfig;
+  }
+
   interface GalleryImage {
     source?: 'manual' | 'chat-upload' | 'mcp-generated';
     sourceMeta?: {

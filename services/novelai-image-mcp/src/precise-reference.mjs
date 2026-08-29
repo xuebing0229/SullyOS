@@ -37,29 +37,31 @@ export function normalizePreciseReference(input) {
   };
 }
 
-export function applyPreciseReference(parameters, input) {
-  const reference = normalizePreciseReference(input);
-  if (!reference) return parameters;
+export function normalizePreciseReferences(input) {
+  if (!input) return [];
+  const values = Array.isArray(input) ? input : [input];
+  if (values.length > 2) throw new Error("at most two reference images are supported");
+  return values.map(normalizePreciseReference);
+}
 
-  const imageBase64 = reference.imageBuffer.toString("base64");
+export function applyPreciseReference(parameters, input) {
+  const references = normalizePreciseReferences(input);
+  if (!references.length) return parameters;
+
   return {
     ...parameters,
     normalize_reference_strength_multiple: false,
-    director_reference_images: [imageBase64],
-    director_reference_descriptions: [
-      {
+    director_reference_images: references.map(reference => reference.imageBuffer.toString("base64")),
+    director_reference_descriptions: references.map(reference => ({
         caption: {
           base_caption: reference.type,
           char_captions: []
         },
         legacy_uc: false
-      }
-    ],
-    director_reference_information_extracted: [1],
-    director_reference_secondary_strength_values: [
-      round2(1 - reference.fidelity)
-    ],
-    director_reference_strength_values: [reference.strength]
+      })),
+    director_reference_information_extracted: references.map(() => 1),
+    director_reference_secondary_strength_values: references.map(reference => round2(1 - reference.fidelity)),
+    director_reference_strength_values: references.map(reference => reference.strength)
   };
 }
 

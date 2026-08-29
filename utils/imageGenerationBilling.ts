@@ -45,13 +45,24 @@ export function captureImageGenerationBilling(
 }
 
 export function detectImageGenerationFeatureUsage(args?: Record<string, any>): ImageGenerationFeatureUsage {
-    const referenceId = Boolean(args?.reference_id || args?.referenceId || args?.character_reference_id || args?.characterReferenceId);
-    const referenceType = String(args?.reference_type || args?.referenceType || 'character').toLowerCase();
+    const references = [
+        {
+            id: args?.reference_id || args?.referenceId || args?.character_reference_id || args?.characterReferenceId,
+            type: args?.reference_type || args?.referenceType || 'character',
+        },
+        {
+            id: args?.user_reference_id || args?.userReferenceId,
+            type: args?.user_reference_type || args?.userReferenceType || 'character',
+        },
+    ].filter(reference => Boolean(reference.id));
     return {
         characterReference: Boolean(args?.character_reference_id || args?.characterReferenceId)
-            || (referenceId && referenceType.includes('character')),
+            || references.some(reference => String(reference.type).toLowerCase().includes('character')),
         vibeReference: Boolean(args?.vibe_reference_id || args?.vibeReferenceId || args?.style_reference_id || args?.styleReferenceId)
-            || (referenceId && (referenceType.includes('style') || referenceType.includes('vibe'))),
+            || references.some(reference => {
+                const type = String(reference.type).toLowerCase();
+                return type.includes('style') || type.includes('vibe');
+            }),
     };
 }
 

@@ -9,6 +9,7 @@ import {
     prepareBuiltinImageToolArguments,
     sanitizeNovelAiReferenceToolArguments,
     stripNovelAiReferenceForTextOnlyBackup,
+    stripNovelAiReferenceForTextOnlyUserBackup,
 } from './novelAiReference';
 
 const reference: NovelAiPreciseReferenceConfig = {
@@ -30,7 +31,33 @@ describe('NovelAI 精密参照工具参数', () => {
             reference_type: 'style',
             reference_strength: 1,
             reference_fidelity: 0,
+            user_reference_id: 'forged-user',
+            user_reference_type: 'character',
+            user_reference_strength: 1,
+            user_reference_fidelity: 0,
         })).toEqual({ prompt: 'hello' });
+    });
+
+    it('按开关组合零张、角色一张、用户一张或两张参考图', () => {
+        const userReference = { ...reference, slotId: 'c'.repeat(64), strength: 0.6 };
+        const prompt = { prompt: 'hello', reference_id: 'forged' };
+
+        expect(applyManagedNovelAiReferenceArguments(prompt)).toEqual({ prompt: 'hello' });
+        expect(applyManagedNovelAiReferenceArguments(prompt, reference)).toMatchObject({
+            prompt: 'hello',
+            reference_id: 'a'.repeat(64),
+        });
+        expect(applyManagedNovelAiReferenceArguments(prompt, undefined, userReference)).toEqual({
+            prompt: 'hello',
+            user_reference_id: 'c'.repeat(64),
+            user_reference_type: 'character',
+            user_reference_strength: 0.6,
+            user_reference_fidelity: 0.85,
+        });
+        expect(applyManagedNovelAiReferenceArguments(prompt, reference, userReference)).toMatchObject({
+            reference_id: 'a'.repeat(64),
+            user_reference_id: 'c'.repeat(64),
+        });
     });
 
     it('由客户端配置覆盖并注入受管字段', () => {
@@ -76,6 +103,13 @@ describe('NovelAI 精密参照工具参数', () => {
         const clean = stripNovelAiReferenceForTextOnlyBackup(character);
         expect(clean.novelAiReference).toBeUndefined();
         expect(character.novelAiReference).toBe(reference);
+    });
+
+    it('纯文字备份删除用户参考图且不修改原档案', () => {
+        const profile = { name: 'Me', avatar: '', bio: '', novelAiReference: reference } as any;
+        const clean = stripNovelAiReferenceForTextOnlyUserBackup(profile);
+        expect(clean.novelAiReference).toBeUndefined();
+        expect(profile.novelAiReference).toBe(reference);
     });
 
 

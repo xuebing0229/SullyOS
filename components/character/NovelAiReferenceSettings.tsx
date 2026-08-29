@@ -16,7 +16,8 @@ import {
 } from '../../utils/novelAiReference';
 
 interface Props {
-    characterId: string;
+    characterId?: string;
+    owner?: 'character' | 'user';
     value?: NovelAiPreciseReferenceConfig;
     onChange: (value: NovelAiPreciseReferenceConfig | undefined) => void;
     addToast: (message: string, type?: 'success' | 'error' | 'info') => void;
@@ -48,17 +49,19 @@ const Range: React.FC<{
 
 const NovelAiReferenceSettings: React.FC<Props> = ({
     characterId,
+    owner = 'character',
     value,
     onChange,
     addToast,
 }) => {
+    const isUser = owner === 'user';
     const inputRef = useRef<HTMLInputElement>(null);
     const [busy, setBusy] = useState(false);
     const [showGallery, setShowGallery] = useState(false);
     const [gallery, setGallery] = useState<GalleryImage[]>([]);
 
     useEffect(() => {
-        if (!showGallery) return;
+        if (!showGallery || !characterId) return;
         DB.getGalleryImages(characterId)
             .then(items => setGallery(items.sort((a, b) => b.timestamp - a.timestamp)))
             .catch(() => setGallery([]));
@@ -74,7 +77,7 @@ const NovelAiReferenceSettings: React.FC<Props> = ({
         try {
             const next = await createReferenceConfigFromSource(blob, name, value);
             onChange(next);
-            addToast('锁脸参考图已保存到本机', 'success');
+            addToast(`${isUser ? '用户' : '角色'}参考图已保存到本机`, 'success');
         } catch (error: any) {
             addToast(error?.message || '参考图处理失败', 'error');
         } finally {
@@ -121,7 +124,7 @@ const NovelAiReferenceSettings: React.FC<Props> = ({
                 // Server is only a cache. Local removal must not be blocked by network failure.
             });
         }
-        addToast('已移除锁脸参考图', 'info');
+        addToast(`已移除${isUser ? '用户' : '角色'}参考图`, 'info');
     };
 
     return (
@@ -129,8 +132,8 @@ const NovelAiReferenceSettings: React.FC<Props> = ({
             <section className="mt-5 rounded-2xl border border-violet-100 bg-violet-50/50 p-4">
                 <div className="flex items-center justify-between gap-3">
                     <div>
-                        <h3 className="text-sm font-bold text-slate-700">NovelAI 精密参照</h3>
-                        <p className="mt-0.5 text-[10px] text-slate-400">为这个角色保持脸、发型和关键外观</p>
+                        <h3 className="text-sm font-bold text-slate-700">NovelAI {isUser ? '用户' : '角色'}精密参照</h3>
+                        <p className="mt-0.5 text-[10px] text-slate-400">为{isUser ? '你自己' : '这个角色'}保持脸、发型和关键外观</p>
                     </div>
                     <button
                         type="button"
@@ -149,7 +152,7 @@ const NovelAiReferenceSettings: React.FC<Props> = ({
                         <div className="overflow-hidden rounded-2xl border border-white bg-black">
                             <BlobImage
                                 src={value.imageRef}
-                                alt="NovelAI 锁脸参考图"
+                                alt={`NovelAI ${isUser ? '用户' : '角色'}参考图`}
                                 className="mx-auto max-h-64 w-full object-contain"
                             />
                         </div>
@@ -192,14 +195,14 @@ const NovelAiReferenceSettings: React.FC<Props> = ({
                             >
                                 更换本机图片
                             </button>
-                            <button
+                            {!isUser && <button
                                 type="button"
                                 disabled={busy}
                                 onClick={() => setShowGallery(true)}
                                 className="rounded-xl bg-white py-2.5 text-[11px] font-bold text-violet-600 disabled:opacity-40"
                             >
                                 从相册选择
-                            </button>
+                            </button>}
                             <button
                                 type="button"
                                 disabled={busy}
@@ -228,14 +231,14 @@ const NovelAiReferenceSettings: React.FC<Props> = ({
                         >
                             {busy ? '正在处理…' : '从本机选择参考图'}
                         </button>
-                        <button
+                        {!isUser && <button
                             type="button"
                             disabled={busy}
                             onClick={() => setShowGallery(true)}
                             className="w-full rounded-xl bg-white py-3 text-xs font-bold text-violet-600 disabled:opacity-40"
                         >
                             从该角色相册选择
-                        </button>
+                        </button>}
                     </div>
                 )}
 
@@ -253,13 +256,14 @@ const NovelAiReferenceSettings: React.FC<Props> = ({
 
                 <p className="mt-3 text-[10px] leading-relaxed text-slate-400">
                     参考图不会进入聊天 Prompt。第一次生图前会自动同步到你自己的 NovelAI MCP。
+                    {isUser ? ' 与角色参考图同时开启时会一起发送两张；单独开启时只发送这一张。' : ''}
                     精密参照只支持 V4.5；API 站若不支持会明确报错，不会偷偷退化。
                 </p>
             </section>
 
             <Modal
                 isOpen={showGallery}
-                title="选择锁脸参考图"
+                title="选择角色参考图"
                 onClose={() => setShowGallery(false)}
             >
                 {gallery.length ? (

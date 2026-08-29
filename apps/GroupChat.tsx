@@ -1403,6 +1403,7 @@ ${memberTimeline || '(暂无互动记录)'}
                 },
                 groupId: activeGroup.id,
                 userName: userProfile.name,
+                userProfile,
                 signal: abort.signal,
                 onStatus: setMcpStatus,
             });
@@ -1518,6 +1519,8 @@ ${memberTimeline || '(暂无互动记录)'}
                         },
                         groupId: activeGroup.id,
                         userName: userProfile.name,
+                        character: member,
+                        userProfile,
                         signal: abort.signal,
                         onStatus: status => setMcpStatus(status ? `${member.name}：${status}` : ''),
                     });

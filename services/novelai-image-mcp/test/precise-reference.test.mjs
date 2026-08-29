@@ -39,6 +39,25 @@ test("builds the NovelAI director_reference parameter shape", () => {
   );
 });
 
+test("keeps two reference images and their settings aligned", () => {
+  const parameters = applyPreciseReference(
+    { width: 1024, height: 1024 },
+    [
+      { imageBuffer: Buffer.from("character"), type: "character", strength: 0.75, fidelity: 0.85 },
+      { imageBuffer: Buffer.from("user"), type: "character&style", strength: 0.6, fidelity: 0.7 }
+    ]
+  );
+
+  assert.deepEqual(parameters.director_reference_images, [
+    Buffer.from("character").toString("base64"),
+    Buffer.from("user").toString("base64")
+  ]);
+  assert.deepEqual(parameters.director_reference_descriptions.map(item => item.caption.base_caption), ["character", "character&style"]);
+  assert.deepEqual(parameters.director_reference_information_extracted, [1, 1]);
+  assert.deepEqual(parameters.director_reference_strength_values, [0.75, 0.6]);
+  assert.deepEqual(parameters.director_reference_secondary_strength_values, [0.15, 0.3]);
+});
+
 test("validates type and unit interval", () => {
   assert.throws(() =>
     normalizePreciseReference({

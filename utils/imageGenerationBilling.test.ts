@@ -49,4 +49,17 @@ describe('image generation billing', () => {
         expect(entry.costStatus).toBe('unpriced');
         expect(entry.billingUsage.usageAvailable).toBe(false);
     });
+
+    it('counts character and user references as one add-on per feature', () => {
+        expect(detectImageGenerationFeatureUsage({
+            reference_id: 'character-slot',
+            reference_type: 'character',
+            user_reference_id: 'user-slot',
+            user_reference_type: 'character&style',
+        })).toEqual({ characterReference: true, vibeReference: true });
+        expect(detectImageGenerationFeatureUsage({
+            user_reference_id: 'user-slot',
+            user_reference_type: 'character',
+        })).toEqual({ characterReference: true, vibeReference: false });
+    });
 });

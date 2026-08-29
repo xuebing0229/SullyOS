@@ -5,6 +5,7 @@ import { processImage } from '../utils/file';
 import { migrateDataUrlToRef } from '../utils/blobRef';
 import LifeRecordPanel from '../components/lifeRecord/LifeRecordPanel';
 import PerCharAvatarPicker from '../components/user/PerCharAvatarPicker';
+import NovelAiReferenceSettings from '../components/character/NovelAiReferenceSettings';
 import TokenImg from '../components/os/TokenImg';
 import { trackEvent } from '../utils/analytics';
 
@@ -106,6 +107,13 @@ const UserApp: React.FC = () => {
 
                 {/* 分角色聊天头像：上面的整体头像是宏观默认，这里可给每个角色的私聊单独换「你」的头像 */}
                 <PerCharAvatarPicker />
+
+                <NovelAiReferenceSettings
+                    owner="user"
+                    value={userProfile.novelAiReference}
+                    onChange={(next) => updateUserProfile({ novelAiReference: next })}
+                    addToast={addToast}
+                />
 
                 {/* About / setting card */}
                 <div className="bg-white rounded-[1.75rem] shadow-[0_10px_30px_-12px_rgba(80,70,120,0.18)] border border-slate-100 p-5">

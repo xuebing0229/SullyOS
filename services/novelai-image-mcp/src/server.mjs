@@ -95,7 +95,11 @@ const novelAiInputShape = {
   reference_id: z.string().regex(/^[a-f0-9]{64}$/).optional().describe("SullyOS-managed private reference slot. Never invent or expose it."),
   reference_type: z.enum(["character", "style", "character&style"]).optional().default("character"),
   reference_strength: z.number().min(0).max(1).optional().default(0.75),
-  reference_fidelity: z.number().min(0).max(1).optional().default(0.85)
+  reference_fidelity: z.number().min(0).max(1).optional().default(0.85),
+  user_reference_id: z.string().regex(/^[a-f0-9]{64}$/).optional().describe("SullyOS-managed private user reference slot. Never invent or expose it."),
+  user_reference_type: z.enum(["character", "style", "character&style"]).optional().default("character"),
+  user_reference_strength: z.number().min(0).max(1).optional().default(0.75),
+  user_reference_fidelity: z.number().min(0).max(1).optional().default(0.85)
 };
 const novelAiArgumentsSchema = z.object(novelAiInputShape).strict();
 async function effectiveUpstreamConfig(runtimeOverride, { forcePersist = false } = {}) {
@@ -108,13 +112,31 @@ async function effectiveUpstreamConfig(runtimeOverride, { forcePersist = false }
 async function executeNovelAiGeneration(rawArgs, { runtimeOverride, forcePersist = false } = {}) {
   const args = novelAiArgumentsSchema.parse(normalizeNovelAiToolArguments(rawArgs));
   const { runtime, config } = await effectiveUpstreamConfig(runtimeOverride, { forcePersist });
+  const referenceSpecs = [
+    args.reference_id ? {
+      id: args.reference_id,
+      label: "character",
+      type: args.reference_type,
+      strength: args.reference_strength,
+      fidelity: args.reference_fidelity
+    } : null,
+    args.user_reference_id ? {
+      id: args.user_reference_id,
+      label: "user",
+      type: args.user_reference_type,
+      strength: args.user_reference_strength,
+      fidelity: args.user_reference_fidelity
+    } : null
+  ].filter(Boolean);
   let preciseReference = null;
-  if (args.reference_id) {
+  if (referenceSpecs.length) {
     const upstreamModel = args.model === "curated" ? config.upstreamModelCurated : config.upstreamModelFull;
     if (!isNovelAiV45Model(upstreamModel)) throw new Error("NovelAI Precise Reference is only supported by V4.5 Full/Curated models");
-    const stored = await referenceStore.readImage(args.reference_id);
-    if (!stored) throw new Error("The character reference image is missing on the MCP server. Reopen the character settings and sync it again.");
-    preciseReference = { imageBuffer: stored.buffer, type: args.reference_type, strength: args.reference_strength, fidelity: args.reference_fidelity };
+    preciseReference = await Promise.all(referenceSpecs.map(async reference => {
+      const stored = await referenceStore.readImage(reference.id);
+      if (!stored) throw new Error(`The ${reference.label} reference image is missing on the MCP server. Reopen its settings and sync it again.`);
+      return { imageBuffer: stored.buffer, type: reference.type, strength: reference.strength, fidelity: reference.fidelity };
+    }));
   }
   const request = buildUpstreamRequest({
     prompt: args.prompt, undesiredContent: args.undesired_content, model: args.model,
@@ -134,11 +156,12 @@ async function executeNovelAiGeneration(rawArgs, { runtimeOverride, forcePersist
     upstreamModel: request.modelId, size: args.size, seed: generated.seed,
     delivery: forcePersist ? "background-proxy" : generated.imageUrl ? "direct" : "proxy",
     referenceUsed: Boolean(preciseReference),
-    ...(preciseReference ? { referenceType: preciseReference.type } : {}),
+    referenceCount: preciseReference?.length || 0,
+    ...(preciseReference ? { referenceTypes: preciseReference.map(reference => reference.type) } : {}),
     ...(saved ? { fileName: saved.fileName } : {})
   });
   return {
-    structuredContent: { imageUrl, requestId: generated.requestId, seed: generated.seed, model: request.modelId, size: `${request.dimensions.width}x${request.dimensions.height}`, referenceUsed: Boolean(preciseReference), ...(saved ? { expiresAt: saved.expiresAt } : {}) },
+    structuredContent: { imageUrl, requestId: generated.requestId, seed: generated.seed, model: request.modelId, size: `${request.dimensions.width}x${request.dimensions.height}`, referenceUsed: Boolean(preciseReference), referenceCount: preciseReference?.length || 0, ...(saved ? { expiresAt: saved.expiresAt } : {}) },
     content: [{ type: "text", text: ["Image generated successfully.", `Image URL: ${imageUrl}`, `Seed: ${generated.seed}`, `Model: ${request.modelId}`, `Size: ${request.dimensions.width}x${request.dimensions.height}`, ...(saved ? [`Expires at: ${saved.expiresAt}`] : []), "Show the image to the user and continue speaking in character."].join("\n") }]
   };
 }
