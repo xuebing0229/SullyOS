@@ -23,7 +23,7 @@ import {
 import { classifyLLMOutput } from './classifier';
 import { sanitizeIntoSegments, type Segment } from '../../../utils/sanitize';
 import { INSTANT_WORKER_VERSION } from '../../../utils/instantWorkerVersion';
-import { requestEmotionEval, restoreEvalPrompt } from '../../../utils/emotionEvalCore';
+import { requestEmotionEvalWithFailover, restoreEvalPrompt } from '../../../utils/emotionEvalCore';
 
 export interface Env {
   VAPID_PUBLIC_KEY: string;
@@ -477,8 +477,8 @@ async function runEmotionEval(body: any): Promise<{ raw: string; error?: string 
   // 与 amsg worker 的即时对话评估共用同一份——改格式两边一起动, 不再手工同步两份副本.
   const priorMessages = Array.isArray(body?.messages) ? body.messages : [];
   const contactName = body?.contactName || '角色';
-  const outcome = await requestEmotionEval(
-    ee.api,
+  const outcome = await requestEmotionEvalWithFailover(
+    [ee.api, ...(Array.isArray(ee.fallbackApis) ? ee.fallbackApis : [])],
     restoreEvalPrompt(String(ee.prompt), priorMessages, contactName),
   );
   return outcome.raw != null

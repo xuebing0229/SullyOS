@@ -379,7 +379,6 @@ export async function evaluateEmotionBackground(
     apiMessages: Array<{ role: string; content: any }>,
     api: { baseUrl: string; apiKey: string; model: string; stream?: boolean },
     round?: { conversationId: string; userMessageId: string; assistantMessageId: string; forceRefresh?: boolean },
-    failoverScope?: 'emotion',
 ): Promise<string | null> {
     // 全局横幅「xx 正在感受…」（ChatBroadcast）。这里是所有本地评估路径的汇聚点
     // （主链路 fire & forget / post-push 补跑 / OSContext 主动消息），在函数级
@@ -389,10 +388,13 @@ export async function evaluateEmotionBackground(
         const ambientSection = shouldRequestAmbient(charData.id) ? buildAmbientEvalSection(charData) : '';
         const prompt = buildEmotionEvalPrompt(charData, userProfile, mainSystemPrompt, apiMessages, true, ambientSection);
 
+        // 情绪评估只要启用了 emotion 故障转移组，就始终按该组执行。
+        // 过去这里由调用方额外传一个 scope 开关，导致「配置了独立情绪 API」时
+        // 反而把故障转移关掉；所有本地入口现在统一收敛到这一处。
         const apiPlan = resolveApiExecutionPlan(
             'emotion',
             api as APIConfig,
-            failoverScope === 'emotion',
+            true,
         );
         const effectiveApi = apiPlan.primaryApi;
 
@@ -738,7 +740,6 @@ export const useChatAI = ({
                 const innerState = await evaluateEmotionBackground(
                     evalChar, deps.userProfile, payload.systemPrompt, payload.cleanedApiMessages, emotionApi,
                     undefined,
-                    evalChar.emotionConfig?.api?.baseUrl ? undefined : 'emotion',
                 );
                 if (innerState) setEvolvedNarrative(innerState);
                 // 成功后清 pending. 失败不清 → 下次 mount drain 重试.
@@ -1133,6 +1134,11 @@ export const useChatAI = ({
                     ? { ...char.emotionConfig!.api!, stream: (char.emotionConfig!.api as any).stream ?? evalStream }
                     : { baseUrl: apiConfig.baseUrl, apiKey: apiConfig.apiKey, model: apiConfig.model, stream: evalStream })
                 : null;
+            // 云端不能读取浏览器 localStorage 里的故障转移组，所以在发送这一轮时把已经
+            // resolve 好的情绪线路顺序一并带上去。主线路仍是 routes[0]，后面的只在失败时接力。
+            const emotionFailoverPlan = (emotionEvalEnabled && emotionApi)
+                ? resolveApiExecutionPlan('emotion', emotionApi as APIConfig, true)
+                : null;
             // 本地路径的情绪评估：主 fetch 发出后立即发射（见下方调用点）。
             // 历史备注：曾为串行中转做过 1.5s 错峰（评估抢跑会把主回复压后一个评估时长），
             // 用户侧已排查确认当前渠道无该并发问题，2026-07 应用户要求取消延迟。
@@ -1153,7 +1159,6 @@ export const useChatAI = ({
                         assistantMessageId,
                         forceRefresh: !!opts?.forceRefresh,
                     },
-                    char.emotionConfig?.api?.baseUrl ? undefined : 'emotion',
                 )
                     .then((innerState) => {
                         if (innerState) setEvolvedNarrative(innerState);
@@ -1165,7 +1170,8 @@ export const useChatAI = ({
             // 交给云端跑的那份评估配置。两条上云路径共用同一个形状（提示词模板 + 副 API 凭据），
             // 只是搭在各自请求体的不同位置上：Instant Push 放顶层 emotionEval 字段，
             // 即时对话放任务 metadata.amsgEmotionEval（那份走加密信封）。
-            const cloudEmotionEval = (emotionEvalEnabled && cloudGenRoute && emotionApi)
+            const cloudEmotionRoutes = emotionFailoverPlan?.routes ?? [];
+            const cloudEmotionEval = (emotionEvalEnabled && cloudGenRoute && cloudEmotionRoutes.length > 0)
                 ? {
                     // includeContext=false: 不嵌 system prompt + 对话历史 (worker 复用本次请求的 messages 作前文),
                     // 把 emotionEval 块压到最小, 让请求体留在 keepalive 64KB 上限内 (关前端也能跑完).
@@ -1173,7 +1179,18 @@ export const useChatAI = ({
                         charForGen, userProfile, systemPrompt, cleanedApiMessages, false,
                         shouldRequestAmbient(charForGen.id) ? buildAmbientEvalSection(charForGen) : ''
                     ),
-                    api: { baseUrl: emotionApi.baseUrl, apiKey: emotionApi.apiKey, model: emotionApi.model },
+                    api: {
+                        baseUrl: cloudEmotionRoutes[0].api.baseUrl,
+                        apiKey: cloudEmotionRoutes[0].api.apiKey,
+                        model: cloudEmotionRoutes[0].api.model,
+                    },
+                    ...(cloudEmotionRoutes.length > 1 ? {
+                        fallbackApis: cloudEmotionRoutes.slice(1).map(route => ({
+                            baseUrl: route.api.baseUrl,
+                            apiKey: route.api.apiKey,
+                            model: route.api.model,
+                        })),
+                    } : {}),
                 }
                 : undefined;
 

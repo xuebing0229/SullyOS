@@ -198,3 +198,69 @@ describe('takeEmotionEvalSpec 认新旧两种形状', () => {
     expect(takeEmotionEvalSpec({ amsgEmotionEval: { prompt: '' } })).toBeNull();
   });
 });
+
+
+describe('情绪 API 故障转移', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('首线路 503 时自动切到备用线路，并返回备用线路结果', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 503,
+        text: async () => 'upstream unavailable',
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          choices: [{ message: { content: '{"changed":false,"buffs":[],"injection":"","innerState":"ok"}' } }],
+        }),
+      });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const outcome = await runAmsgEmotionEval(
+      {
+        prompt: TEMPLATE,
+        fallbackApis: [
+          { baseUrl: 'https://backup.example.com/v1', apiKey: 'sk-backup', model: 'eval-backup' },
+        ],
+      },
+      { baseUrl: 'https://primary.example.com/v1', apiKey: 'sk-primary', model: 'eval-primary' },
+      [{ role: 'user', content: '在吗' }],
+      'Nyah',
+    );
+
+    expect(outcome.raw).toContain('"innerState":"ok"');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(String(fetchMock.mock.calls[0][0])).toContain('primary.example.com');
+    expect(String(fetchMock.mock.calls[1][0])).toContain('backup.example.com');
+  });
+
+  it('首线路 400 时不切备用线路，避免把同一个坏请求重复烧一遍', async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: false,
+      status: 400,
+      text: async () => 'bad request',
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const outcome = await runAmsgEmotionEval(
+      {
+        prompt: TEMPLATE,
+        fallbackApis: [
+          { baseUrl: 'https://backup.example.com/v1', apiKey: 'sk-backup', model: 'eval-backup' },
+        ],
+      },
+      { baseUrl: 'https://primary.example.com/v1', apiKey: 'sk-primary', model: 'eval-primary' },
+      [{ role: 'user', content: '在吗' }],
+      'Nyah',
+    );
+
+    expect(outcome.raw).toBeNull();
+    expect(outcome.error).toContain('HTTP 400');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});

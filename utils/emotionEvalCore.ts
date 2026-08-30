@@ -87,6 +87,10 @@ export interface EmotionEvalOutcome {
   raw: string | null;
   /** 没跑出来的原因（人话、一句话）；成功时为 null。 */
   error: string | null;
+  /** HTTP 失败时的状态码；网络/超时等没有。 */
+  status?: number;
+  /** 这类失败是否应该换下一条线路。 */
+  failoverEligible?: boolean;
 }
 
 /**
@@ -125,7 +129,19 @@ export const requestEmotionEval = async (
       try { body = await res.text(); } catch { /* 读不出正文就只报状态码 */ }
       console.warn('[emotion-eval] 副 API 拒了这次评估（主流程不受影响）', res.status);
       const snippet = maskAndSnip(body, api.apiKey);
-      return { raw: null, error: `副 API HTTP ${res.status}${snippet ? `：${snippet}` : ''}` };
+      const failoverEligible = res.status === 401
+        || res.status === 403
+        || res.status === 404
+        || res.status === 408
+        || res.status === 425
+        || res.status === 429
+        || res.status >= 500;
+      return {
+        raw: null,
+        error: `副 API HTTP ${res.status}${snippet ? `：${snippet}` : ''}`,
+        status: res.status,
+        failoverEligible,
+      };
     }
     const data = await res.json() as any;
     // 个别中转把全部输出塞进 reasoning_content 而 content 留空——与客户端
@@ -137,9 +153,10 @@ export const requestEmotionEval = async (
       return {
         raw: null,
         error: `评估模型没有输出内容（finish_reason: ${data?.choices?.[0]?.finish_reason ?? '?'}）`,
+        failoverEligible: false,
       };
     }
-    return { raw, error: null };
+    return { raw, error: null, failoverEligible: false };
   } catch (error) {
     console.warn('[emotion-eval] 评估失败（主流程不受影响）', error);
     // 只带异常名/消息，不带栈：这句要走 push 出门，短一点、也别把内部路径抖出去。
@@ -148,8 +165,43 @@ export const requestEmotionEval = async (
     const reason = controller.signal.aborted
       ? `评估超时（${Math.round(timeoutMs / 1000)} 秒没回来）`
       : `评估请求没发出去：${maskAndSnip(error instanceof Error ? error.message : String(error), api.apiKey)}`;
-    return { raw: null, error: reason };
+    return { raw: null, error: reason, failoverEligible: true };
   } finally {
     clearTimeout(timer);
   }
+};
+
+
+/**
+ * Worker 侧的情绪故障转移：按客户端已经解析好的顺序逐条尝试。
+ * 400/422、空输出这类「换线路也大概率还是同一个请求问题」不切；鉴权、限流、
+ * 网络、超时、404/5xx 才接下一条，和浏览器 apiFailover 的口径保持一致。
+ */
+export const requestEmotionEvalWithFailover = async (
+  apis: EmotionEvalApi[],
+  promptContent: string,
+  timeoutMs: number = EMOTION_EVAL_TIMEOUT_MS,
+): Promise<EmotionEvalOutcome> => {
+  const routes = (Array.isArray(apis) ? apis : []).filter((api) =>
+    !!api?.baseUrl && !!api?.model
+  );
+  if (routes.length === 0) {
+    return { raw: null, error: '没有可用的情绪评估 API 线路', failoverEligible: false };
+  }
+
+  let last: EmotionEvalOutcome | null = null;
+  for (let i = 0; i < routes.length; i += 1) {
+    const outcome = await requestEmotionEval(routes[i], promptContent, timeoutMs);
+    if (outcome.raw != null) return outcome;
+    last = outcome;
+    if (!outcome.failoverEligible) return outcome;
+  }
+
+  if (!last) return { raw: null, error: '情绪评估失败', failoverEligible: false };
+  return routes.length > 1
+    ? {
+        ...last,
+        error: `情绪评估故障转移已耗尽（${routes.length} 条线路）：${last.error || '未知错误'}`,
+      }
+    : last;
 };

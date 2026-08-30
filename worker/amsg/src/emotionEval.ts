@@ -22,7 +22,7 @@
 
 import {
   EMOTION_EVAL_TIMEOUT_MS,
-  requestEmotionEval,
+  requestEmotionEvalWithFailover,
   restoreEvalPrompt as coreRestoreEvalPrompt,
   type EmotionEvalOutcome,
 } from '../../../utils/emotionEvalCore';
@@ -47,6 +47,8 @@ export interface AmsgEmotionEvalSpec {
    * 还带着它的是老 Worker 建的任务，或旧版前端排的存量任务，照旧直接用。
    */
   api?: AmsgEmotionEvalApi;
+  /** 故障转移备用线路。新前端按用户设置里的 emotion 组顺序生成；老任务没有这一项。 */
+  fallbackApis?: AmsgEmotionEvalApi[];
 }
 
 /** fire 时按名字取一行凭据（上游 amsg-server 2.6.0-next.17+ 挂在 hook ctx 上）。 */
@@ -206,4 +208,8 @@ export const runAmsgEmotionEval = async (
   charName: string,
   timeoutMs: number = EMOTION_EVAL_TIMEOUT_MS,
 ): Promise<AmsgEmotionEvalOutcome> =>
-  requestEmotionEval(api, coreRestoreEvalPrompt(spec.prompt, chatMessages, charName), timeoutMs);
+  requestEmotionEvalWithFailover(
+    [api, ...(Array.isArray(spec.fallbackApis) ? spec.fallbackApis : [])],
+    coreRestoreEvalPrompt(spec.prompt, chatMessages, charName),
+    timeoutMs,
+  );
