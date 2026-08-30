@@ -35,8 +35,12 @@ describe('NovelAI 精密参照工具参数', () => {
             user_reference_type: 'character',
             user_reference_strength: 1,
             user_reference_fidelity: 0,
+            vibe_reference_id: 'forged-vibe',
+            vibe_reference_strength: 1,
+            vibe_reference_fidelity: 0,
             use_character_reference: false,
             use_user_reference: true,
+            use_vibe_reference: false,
         })).toEqual({ prompt: 'hello' });
     });
 

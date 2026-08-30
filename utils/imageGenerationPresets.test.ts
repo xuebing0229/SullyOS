@@ -9,6 +9,7 @@ import {
     updateImageGenerationPreset,
 } from './imageGenerationPresets';
 import { loadBuiltinImageSettings } from './builtinImageMcp';
+import { loadVibeReferenceLibrary, saveVibeReferenceLibrary } from './vibeReference';
 
 describe('image generation presets', () => {
     beforeEach(() => localStorage.clear());
@@ -138,6 +139,27 @@ describe('image generation presets', () => {
         expect(exportImageGenerationLocalForMode('full')?.presetState.presets[0].apiKey).toBe('mode-api-secret');
         expect(exportImageGenerationLocalForMode('text_only')?.presetState.presets[0].binding.token).toBe('mode-mcp-secret');
         expect(exportImageGenerationLocalForMode('media_only')).toBeUndefined();
+    });
+
+    it('round trips the Vibe library in full backups without leaving dead image refs in text-only backups', () => {
+        saveVibeReferenceLibrary({
+            version: 1,
+            enabled: true,
+            activeId: 'vibe-1',
+            items: [{
+                id: 'vibe-1', name: '雨夜霓虹', enabled: true,
+                imageRef: 'blobref:sha256:0123456789abcdef', imageSha256: 'a'.repeat(64), slotId: 'b'.repeat(64),
+                type: 'style', strength: 0.55, fidelity: 0.8, updatedAt: 1,
+            }],
+        });
+
+        const full = exportImageGenerationLocalForMode('full')!;
+        expect(full.vibeLibrary?.items[0]).toMatchObject({ name: '雨夜霓虹', strength: 0.55 });
+        expect(exportImageGenerationLocalForMode('text_only')?.vibeLibrary).toBeUndefined();
+
+        localStorage.clear();
+        importImageGenerationLocal(full);
+        expect(loadVibeReferenceLibrary()).toMatchObject({ enabled: true, activeId: 'vibe-1' });
     });
 
 });

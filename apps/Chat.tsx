@@ -69,6 +69,7 @@ import Modal from '../components/os/Modal';
 import ProactiveSettingsModal from '../components/chat/ProactiveSettingsModal';
 import ActiveMsg2SettingsModal from '../components/chat/ActiveMsg2SettingsModal';
 import ThinkingChainSettingsModal from '../components/chat/ThinkingChainSettingsModal';
+import VibeReferenceLibraryModal from '../components/chat/VibeReferenceLibraryModal';
 import ScheduleChangeNotice from '../components/chat/ScheduleChangeNotice';
 import { useChatAI } from '../hooks/useChatAI';
 import { cleanTextForTts, parseVoiceOutput } from '../utils/minimaxTts';
@@ -128,6 +129,7 @@ import {
     expandChatHistoryWindow,
     type ChatHistoryWindowRange,
 } from '../utils/chatHistoryWindow';
+import { getActiveVibeReference, VIBE_REFERENCE_CHANGED_EVENT } from '../utils/vibeReference';
 
 const VOICE_LANG_LABELS: Record<string, string> = { en: 'English', ja: '日本語', ko: '한국어', fr: 'Français', es: 'Español' };
 const HISTORY_WINDOW_RADIUS = 25;
@@ -180,6 +182,17 @@ const Chat: React.FC = () => {
     const [showPanel, setShowPanel] = useState<'none' | 'actions' | 'emojis' | 'chars'>('none');
     const [memoryRepairOpen, setMemoryRepairOpen] = useState(false);
     const [favoritesOpen, setFavoritesOpen] = useState(false);
+    const [showVibeReferenceLibrary, setShowVibeReferenceLibrary] = useState(false);
+    const [vibeReferenceActive, setVibeReferenceActive] = useState(() => Boolean(getActiveVibeReference()));
+    useEffect(() => {
+        const sync = () => setVibeReferenceActive(Boolean(getActiveVibeReference()));
+        window.addEventListener(VIBE_REFERENCE_CHANGED_EVENT, sync);
+        window.addEventListener('storage', sync);
+        return () => {
+            window.removeEventListener(VIBE_REFERENCE_CHANGED_EVENT, sync);
+            window.removeEventListener('storage', sync);
+        };
+    }, []);
     
     // Emoji State
     const [emojis, setEmojis] = useState<Emoji[]>([]);
@@ -1760,7 +1773,7 @@ const Chat: React.FC = () => {
         // 选表情、选分类之类的动作不上报。
         if ([
             'transfer', 'archive', 'settings', 'chrome-css', 'chrome-sound', 'fine-tune',
-            'meetup', 'proactive', 'active-msg-2', 'schedule', 'mcd-request', 'luckin-request',
+            'meetup', 'proactive', 'active-msg-2', 'schedule', 'mcd-request', 'luckin-request', 'vibe-reference',
             'html-mode-toggle', 'html-mode-settings', 'thinking-settings', 'favorites',
             // 独立小功能：点一下就是用了一次，跟「打开某个面板」同一性质。
             // send-emoji / select-category 这些是「挑哪一个」，不进名单。
@@ -1790,6 +1803,7 @@ const Chat: React.FC = () => {
             case 'proactive': setShowPanel('none'); setShowProactiveChoice(true); break;
             case 'emotion': setModalType('schedule'); break; // 情绪已并入日程，打开同一 modal
             case 'schedule': setModalType('schedule'); break;
+            case 'vibe-reference': setShowPanel('none'); setShowVibeReferenceLibrary(true); break;
             case 'mcd-not-configured':
                 addToast('请先到设置 → 麦当劳 启用并填入 MCP Token', 'info');
                 break;
@@ -4407,6 +4421,7 @@ const Chat: React.FC = () => {
                     mcdActivated={mcdActivated}
                     luckinConfigured={luckinConfiguredFlag}
                     luckinActivated={luckinActivated}
+                    vibeReferenceActive={vibeReferenceActive}
                     htmlModeEnabled={!!(char as any).htmlModeEnabled}
                     showThinkingChain={!!(char as any).showThinkingChain}
                     inputStyle={osTheme.chatInputStyle}
@@ -4769,6 +4784,13 @@ const Chat: React.FC = () => {
             <LuckinHelpModal
                 open={showLuckinHelp}
                 onClose={() => setShowLuckinHelp(false)}
+            />
+
+            <VibeReferenceLibraryModal
+                isOpen={showVibeReferenceLibrary}
+                onClose={() => setShowVibeReferenceLibrary(false)}
+                onChanged={() => setVibeReferenceActive(Boolean(getActiveVibeReference()))}
+                addToast={addToast}
             />
 
 

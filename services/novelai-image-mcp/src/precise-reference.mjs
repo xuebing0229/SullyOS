@@ -40,7 +40,7 @@ export function normalizePreciseReference(input) {
 export function normalizePreciseReferences(input) {
   if (!input) return [];
   const values = Array.isArray(input) ? input : [input];
-  if (values.length > 2) throw new Error("at most two reference images are supported");
+  if (values.length > 3) throw new Error("at most three managed reference images are supported");
   return values.map(normalizePreciseReference);
 }
 

@@ -99,7 +99,10 @@ const novelAiInputShape = {
   user_reference_id: z.string().regex(/^[a-f0-9]{64}$/).optional().describe("SullyOS-managed private user reference slot. Never invent or expose it."),
   user_reference_type: z.enum(["character", "style", "character&style"]).optional().default("character"),
   user_reference_strength: z.number().min(0).max(1).optional().default(0.75),
-  user_reference_fidelity: z.number().min(0).max(1).optional().default(0.85)
+  user_reference_fidelity: z.number().min(0).max(1).optional().default(0.85),
+  vibe_reference_id: z.string().regex(/^[a-f0-9]{64}$/).optional().describe("SullyOS-managed active style reference slot. Never invent or expose it."),
+  vibe_reference_strength: z.number().min(0).max(1).optional().default(0.6),
+  vibe_reference_fidelity: z.number().min(0).max(1).optional().default(0.85)
 };
 const novelAiArgumentsSchema = z.object(novelAiInputShape).strict();
 async function effectiveUpstreamConfig(runtimeOverride, { forcePersist = false } = {}) {
@@ -126,6 +129,13 @@ async function executeNovelAiGeneration(rawArgs, { runtimeOverride, forcePersist
       type: args.user_reference_type,
       strength: args.user_reference_strength,
       fidelity: args.user_reference_fidelity
+    } : null,
+    args.vibe_reference_id ? {
+      id: args.vibe_reference_id,
+      label: "vibe",
+      type: "style",
+      strength: args.vibe_reference_strength,
+      fidelity: args.vibe_reference_fidelity
     } : null
   ].filter(Boolean);
   let preciseReference = null;

@@ -1,5 +1,5 @@
 import React, { useRef, useState, useEffect } from 'react';
-import { ShareNetwork, Trash, Plus, Smiley, PaperPlaneTilt, Money, BookOpenText, GearSix, Image, Lock, ArrowsClockwise, ChatCircleDots, CalendarBlank, ForkKnife, Coffee, Code, Brain, PencilSimple, BellSimpleRinging, Sparkle, CaretDown, FadersHorizontal, LinkSimple } from '@phosphor-icons/react';
+import { ShareNetwork, Trash, Plus, Smiley, PaperPlaneTilt, Money, BookOpenText, GearSix, Image, Lock, ArrowsClockwise, ChatCircleDots, CalendarBlank, ForkKnife, Coffee, Code, Brain, PencilSimple, BellSimpleRinging, Sparkle, CaretDown, FadersHorizontal, LinkSimple, Palette } from '@phosphor-icons/react';
 import { CharacterProfile, ChatTheme, EmojiCategory, Emoji } from '../../types';
 import { PRESET_THEMES } from './ChatConstants';
 import { AcnhActionTile } from '../os/acnhIcons';
@@ -49,6 +49,7 @@ interface ChatInputAreaProps {
     // 瑞幸 MCP
     luckinConfigured?: boolean;
     luckinActivated?: boolean;
+    vibeReferenceActive?: boolean;
     // HTML 模块模式
     htmlModeEnabled?: boolean;
     // 思考过程展示（会话级）
@@ -76,6 +77,7 @@ const ChatInputArea: React.FC<ChatInputAreaProps> = ({
     mcdActivated = false,
     luckinConfigured = false,
     luckinActivated = false,
+    vibeReferenceActive = false,
     htmlModeEnabled = false,
     showThinkingChain = false,
     inputStyle = 'default',
@@ -727,6 +729,14 @@ const ChatInputArea: React.FC<ChatInputAreaProps> = ({
                                 <span className="text-xs font-bold">相册</span>
                             </button>
                             <input type="file" ref={chatImageInputRef} className="hidden" accept="image/*" onChange={(e) => handleImageChange(e, 'chat')} />
+
+                            <button onClick={() => onPanelAction('vibe-reference')} className={`flex flex-col items-center gap-2 active:scale-95 transition-transform relative ${acnh ? 'text-[#725d42]' : isDiscordStyle ? 'text-slate-200' : 'text-slate-600'}`}>
+                                <div className={`w-14 h-14 rounded-2xl flex items-center justify-center shadow-sm border ${vibeReferenceActive ? (isDiscordStyle ? 'bg-violet-500/20 text-violet-300 border-violet-400/40' : 'bg-violet-100 text-violet-600 border-violet-300') : (isDiscordStyle ? 'bg-slate-800 text-violet-300 border-violet-400/20' : 'bg-violet-50 text-violet-500 border-violet-100')}`}>
+                                    <Palette className="w-6 h-6" weight="bold" />
+                                </div>
+                                <span className="text-xs font-bold">Vibe 图库</span>
+                                {vibeReferenceActive && <span className={`absolute top-0 right-1 w-2.5 h-2.5 rounded-full border-2 ${isDiscordStyle ? 'bg-violet-400 border-slate-900' : 'bg-violet-500 border-white'}`} />}
+                            </button>
 
                             {/* Regenerate Button */}
                             <button onClick={onReroll} disabled={!canReroll} className={`flex flex-col items-center gap-2 active:scale-95 transition-transform ${canReroll ? (isDiscordStyle ? 'text-slate-200' : 'text-slate-600') : 'text-slate-300 opacity-50'}`}>

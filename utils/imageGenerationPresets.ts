@@ -16,6 +16,11 @@ import {
     resetMcpSession,
     type McpToolDef,
 } from './mcpClient';
+import {
+    exportVibeReferenceLibrary,
+    importVibeReferenceLibrary,
+    type VibeReferenceLibrary,
+} from './vibeReference';
 
 export const IMAGE_PRESET_STATE_KEY = 'aetheros.imageGeneration.presets.v1';
 
@@ -77,6 +82,8 @@ export interface ImageGenerationBackupLocal {
     builtinSettings: BuiltinImageSettings;
     presetState: ImageGenerationPresetState;
     mcpLocal?: Record<string, string>;
+    /** Full backups only: metadata plus blobref pointers for the reusable Vibe library. */
+    vibeLibrary?: VibeReferenceLibrary;
 }
 
 const EMPTY_STATE: ImageGenerationPresetState = { version: 1, presets: [], activePresetIds: {} };
@@ -311,12 +318,13 @@ export async function applyImageGenerationPreset(preset: ImageGenerationPreset):
     return { settings: temporarySettings, remote };
 }
 
-export function exportImageGenerationLocal(): ImageGenerationBackupLocal {
+export function exportImageGenerationLocal(includeVibeLibrary = true): ImageGenerationBackupLocal {
     return {
         version: 1,
         builtinSettings: clone(loadBuiltinImageSettings()),
         presetState: clone(loadImageGenerationPresetState()),
         mcpLocal: exportMcpLocal(),
+        vibeLibrary: includeVibeLibrary ? exportVibeReferenceLibrary() : undefined,
     };
 }
 
@@ -326,7 +334,7 @@ export function exportImageGenerationLocalForMode(
     mode: ImageGenerationBackupMode,
 ): ImageGenerationBackupLocal | undefined {
     return mode === 'full' || mode === 'text_only'
-        ? exportImageGenerationLocal()
+        ? exportImageGenerationLocal(mode === 'full')
         : undefined;
 }
 
@@ -350,6 +358,7 @@ export function importImageGenerationLocal(data: ImageGenerationBackupLocal | nu
         saveImageGenerationPresetState({ version: 1, presets, activePresetIds });
     }
     if (data.mcpLocal) importMcpLocal(data.mcpLocal);
+    if (data.vibeLibrary) importVibeReferenceLibrary(data.vibeLibrary);
     resetMcpSession('builtin_image_gpt-image');
     resetMcpSession('builtin_image_novelai');
 }

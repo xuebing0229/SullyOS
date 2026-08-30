@@ -5,7 +5,9 @@ const NUMERIC_ARGUMENTS = [
   "reference_strength",
   "reference_fidelity",
   "user_reference_strength",
-  "user_reference_fidelity"
+  "user_reference_fidelity",
+  "vibe_reference_strength",
+  "vibe_reference_fidelity"
 ];
 
 export function normalizeNovelAiToolArguments(rawArgs) {

@@ -16,6 +16,7 @@ import {
     type BuiltinImageBinding,
 } from './builtinImageMcp';
 import type { McpServerConfig } from './mcpClient';
+import { getActiveVibeReference } from './vibeReference';
 
 const SLOT_RE = /^[a-f0-9]{64}$/;
 const SHA_RE = /^[a-f0-9]{64}$/;
@@ -29,8 +30,12 @@ const REFERENCE_FIELDS = [
     'user_reference_type',
     'user_reference_strength',
     'user_reference_fidelity',
+    'vibe_reference_id',
+    'vibe_reference_strength',
+    'vibe_reference_fidelity',
     'use_character_reference',
     'use_user_reference',
+    'use_vibe_reference',
 ] as const;
 
 export interface PreparedReferenceImage {
@@ -359,13 +364,16 @@ export async function prepareBuiltinImageToolArguments({
     const selection = {
         character: args?.use_character_reference !== false,
         user: args?.use_user_reference !== false,
+        vibe: args?.use_vibe_reference !== false,
     };
     const clean = sanitizeNovelAiReferenceToolArguments(args);
     const characterReference = character?.novelAiReference;
     const userReference = userProfile?.novelAiReference;
+    const vibeReference = selection.vibe ? getActiveVibeReference() : null;
     const enabledReferences = [
         { label: '当前角色', value: characterReference, selected: selection.character },
         { label: '用户', value: userReference, selected: selection.user },
+        { label: 'Vibe', value: vibeReference, selected: selection.vibe },
     ].filter(item => item.value?.enabled && item.selected) as Array<{ label: string; value: NovelAiPreciseReferenceConfig; selected: boolean }>;
     if (!enabledReferences.length) return clean;
 
@@ -375,7 +383,15 @@ export async function prepareBuiltinImageToolArguments({
     }
     await Promise.all(enabledReferences.map(item => ensureNovelAiReferenceUploaded(item.value)));
 
-    return applyManagedNovelAiReferenceArguments(clean, characterReference, userReference, selection);
+    const result = applyManagedNovelAiReferenceArguments(clean, characterReference, userReference, selection);
+    if (vibeReference?.enabled && selection.vibe) {
+        Object.assign(result, {
+            vibe_reference_id: vibeReference.slotId,
+            vibe_reference_strength: vibeReference.strength,
+            vibe_reference_fidelity: vibeReference.fidelity,
+        });
+    }
+    return result;
 }
 
 export function stripNovelAiReferenceForTextOnlyBackup(character: CharacterProfile): CharacterProfile {
