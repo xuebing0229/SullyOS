@@ -11,7 +11,7 @@
     "cap:sync": "cap sync",
     "cap:android": "cap open android",
     "cap:install-gallery": "node scripts/install-android-gallery-plugin.mjs",
-    "capacitor:sync:after": "node scripts/install-android-gallery-plugin.mjs && node scripts/install-android-game-hall-plugin.mjs && node scripts/install-android-app-updater.mjs && node scripts/install-android-unified-push.mjs && node scripts/install-android-amsg-poll.mjs",
+    "capacitor:sync:after": "node scripts/install-android-gallery-plugin.mjs && node scripts/install-android-game-hall-plugin.mjs && node scripts/install-android-app-updater.mjs && node scripts/install-android-unified-push.mjs && node scripts/install-android-amsg-poll.mjs && node scripts/install-android-live2d-directory-plugin.mjs",
     "build:workers": "node scripts/build-workers.mjs",
     "test": "vitest",
     "test:run": "vitest run",

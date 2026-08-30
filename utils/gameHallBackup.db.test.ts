@@ -131,12 +131,12 @@ describe.sequential('Game Hall database backup restore', () => {
           version: 1, runId: 'run-1', status: 'running', requestedFrom: 'main-chat',
           instruction: '继续玩', returnToMainChat: true, turnCount: 4, maxTurns: null,
           stepDelayMs: 0, createdAt: 1, updatedAt: 2,
-          latestState: { gameId: 'game-1', raw: { score: 9 } },
+          latestState: { gameId: 'game-1', summary: 'score: 9', stateHash: 'state-9', raw: { score: 9 } },
         },
       }],
       gameHallMessages: [{ id: 'm1', sessionId: 'session-running', charId: 'char-1', role: 'tool', content: '完整工具返回', createdAt: 3 }],
       characterExternalAccounts: [{ accountRef: 'a1', charId: 'char-1', provider: 'cedar', serverId: 's1', marker: 'account-kept' }],
-    } as FullBackupData);
+    } as unknown as FullBackupData);
     const sessions = await DB.getRawStoreData('gameHallSessions');
     expect(sessions[0]).toMatchObject({
       id: 'session-running', openTurnId: 'turn-next',

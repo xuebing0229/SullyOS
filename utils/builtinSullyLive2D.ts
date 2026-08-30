@@ -13,10 +13,12 @@ const newDefaultFraming = () => ({ ...BUILTIN_SULLY_DEFAULT_FRAMING });
 const framingMatches = (
   framing: SullyLive2DConfig['framing'],
   expected: NonNullable<SullyLive2DConfig['framing']>,
-): boolean => Boolean(framing)
-  && Math.abs(framing.scale - expected.scale) <= 0.03
-  && Math.abs(framing.offsetX - expected.offsetX) <= 0.015
-  && Math.abs(framing.offsetY - expected.offsetY) <= 0.015;
+): boolean => {
+  if (!framing) return false;
+  return Math.abs(framing.scale - expected.scale) <= 0.03
+    && Math.abs(framing.offsetX - expected.offsetX) <= 0.015
+    && Math.abs(framing.offsetY - expected.offsetY) <= 0.015;
+};
 
 const VARIANTS: Record<BuiltinSullyLive2DQuality, {
   assetId: string;

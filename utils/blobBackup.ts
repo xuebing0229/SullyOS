@@ -130,7 +130,8 @@ export async function restorePortableBlobRefsInPlace(
                 for (const location of locations) location.parent[location.key] = '';
                 continue;
             }
-            blobRef = await putImageBlob(new Blob([bytes], { type: mimeForBackupPath(path) }));
+            const ownedBytes = Uint8Array.from(bytes);
+            blobRef = await putImageBlob(new Blob([ownedBytes.buffer], { type: mimeForBackupPath(path) }));
             refByPath.set(path, blobRef);
         }
         for (const location of locations) {

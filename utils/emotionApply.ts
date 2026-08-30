@@ -328,7 +328,18 @@ export function parseEmotionEvalOutput(rawText: string): EmotionEvalResult | nul
             const v = tryParseObject(attempt);
             if (v && looksLikeEvalResult(v)) {
                 // 模型偶尔把布尔写成字符串 "true"/"false"
-                const changed = v.changed === true || (typeof v.changed === 'string' && v.changed.toLowerCase() === 'true');
+                // changed 偶尔会整字段漏掉。只要完整结果里已经有 buffs / injection，
+                // 就和字段级抢救分支一样视为有变化；否则明明生成了新情绪也会在落库前
+                // 被 changed=false 短路，用户侧只看到 API 调用成功、情绪却没有更新。
+                const explicitChanged = v.changed === true
+                    || (typeof v.changed === 'string' && v.changed.toLowerCase() === 'true');
+                const explicitUnchanged = v.changed === false
+                    || (typeof v.changed === 'string' && v.changed.toLowerCase() === 'false');
+                const changed = explicitChanged
+                    ? true
+                    : explicitUnchanged
+                        ? false
+                        : Array.isArray(v.buffs) || (typeof v.injection === 'string' && !!v.injection.trim());
                 return {
                     changed,
                     buffs: Array.isArray(v.buffs) ? v.buffs : undefined,

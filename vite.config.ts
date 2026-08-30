@@ -90,31 +90,36 @@ export default defineConfig({
         changeOrigin: true,
         secure: true,
         rewrite: () => '/v1/t2a_v2',
-        // Route to 国服 / 海外 based on X-MiniMax-Region header sent by the client.
-        router: (req) => {
-          const region = String(req.headers['x-minimax-region'] || '').toLowerCase();
-          return region === 'overseas' ? 'https://api.minimax.io' : 'https://api.minimaxi.com';
-        },
       },
       '/api/minimax/get-voice': {
         target: 'https://api.minimaxi.com',
         changeOrigin: true,
         secure: true,
         rewrite: () => '/v1/get_voice',
-        router: (req) => {
-          const region = String(req.headers['x-minimax-region'] || '').toLowerCase();
-          return region === 'overseas' ? 'https://api.minimax.io' : 'https://api.minimaxi.com';
-        },
       },
       '/api/minimax/music': {
         target: 'https://api.minimaxi.com',
         changeOrigin: true,
         secure: true,
         rewrite: () => '/v1/music_generation',
-        router: (req) => {
-          const region = String(req.headers['x-minimax-region'] || '').toLowerCase();
-          return region === 'overseas' ? 'https://api.minimax.io' : 'https://api.minimaxi.com';
-        },
+      },
+      '/api/minimax-overseas/t2a': {
+        target: 'https://api.minimax.io',
+        changeOrigin: true,
+        secure: true,
+        rewrite: () => '/v1/t2a_v2',
+      },
+      '/api/minimax-overseas/get-voice': {
+        target: 'https://api.minimax.io',
+        changeOrigin: true,
+        secure: true,
+        rewrite: () => '/v1/get_voice',
+      },
+      '/api/minimax-overseas/music': {
+        target: 'https://api.minimax.io',
+        changeOrigin: true,
+        secure: true,
+        rewrite: () => '/v1/music_generation',
       },
       // 鱼声 Fish Audio TTS：转发到 https://api.fish.audio/v1/tts（返回二进制音频）
       '/api/fishaudio/tts': {

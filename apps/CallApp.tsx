@@ -34,7 +34,8 @@ import CallSetupGuide, { type CallSetupGuideStep } from '../components/call/Call
 import CallPreferencesSheet from '../components/call/CallPreferencesSheet';
 import CallUpdateAnnouncement from '../components/call/CallUpdateAnnouncement';
 import { deleteAvatarModel, inspectAvatarFile, saveAvatarModel } from '../utils/avatarModelStore';
-import { getLive2DAIActions, prewarmLive2DModelSource, saveLive2DModelFromFiles, saveLive2DModelFromZip, upgradeLive2DAutoPermissions, type Live2DAvatarConfig } from '../utils/live2dModelStore';
+import { getLive2DAIActions, prewarmLive2DModelSource, saveLive2DModelFromEntries, saveLive2DModelFromFiles, saveLive2DModelFromZip, upgradeLive2DAutoPermissions, type Live2DAvatarConfig } from '../utils/live2dModelStore';
+import { canPickNativeLive2DDirectory, clearNativeLive2DDirectoryImport, isNativeAndroidLive2DDirectoryPlatform, loadNativeLive2DDirectoryEntries, pickNativeLive2DDirectory } from '../utils/nativeLive2DDirectory';
 import { preloadLive2DRuntime } from '../utils/live2dCore';
 import { buildThinkingChainPrompt } from '../utils/thinkingChainPrompt';
 import { parseCallAssistantMessage, stripCallTextFormatting, type ParsedCallReply } from '../utils/callReplyFormat';
@@ -1138,13 +1139,49 @@ const CallApp: React.FC = () => {
     }
   };
 
-  const chooseLive2DDirectory = () => {
+  const chooseLive2DDirectory = async () => {
     if (!selectedChar) {
       addToast('先选择一个角色', 'info');
       return;
     }
     void preloadLive2DRuntime().catch(() => { /* loading UI will surface a retryable error */ });
     const character = selectedChar;
+    if (isNativeAndroidLive2DDirectoryPlatform() && !canPickNativeLive2DDirectory()) {
+      addToast('当前 Android 安装包缺少文件夹选择组件，请更新或重新安装最新版', 'error');
+      return;
+    }
+    if (canPickNativeLive2DDirectory()) {
+      let sessionId: string | undefined;
+      try {
+        const selection = await pickNativeLive2DDirectory();
+        if (selection.cancelled) return;
+        sessionId = selection.sessionId;
+        const files = selection.files || [];
+        if (!files.length) throw new Error('选择的文件夹是空的。');
+        if ((selection.totalBytes || 0) > 250 * 1024 * 1024) {
+          trackEvent('导入通话形象', { 来源: 'Live2D 文件夹', 结果: '体积超限' });
+          addToast('Live2D 文件夹超过 250 MB，请先压缩纹理尺寸或删掉无关文件', 'error');
+          return;
+        }
+        setAvatarImportStatus(`已选择 ${files.length} 个文件，正在读取模型…`);
+        const entries = await loadNativeLive2DDirectoryEntries(selection);
+        bindVideoAvatar(character, await saveLive2DModelFromEntries(
+          entries,
+          selection.directoryName || '',
+          setAvatarImportStatus,
+        ));
+        trackEvent('导入通话形象', { 来源: 'Live2D 文件夹', 结果: '成功' });
+      } catch (error: any) {
+        trackEvent('导入通话形象', { 来源: 'Live2D 文件夹', 结果: '失败' });
+        addToast(error?.message || 'Live2D 文件夹导入失败', 'error');
+      } finally {
+        setAvatarImportStatus('');
+        void clearNativeLive2DDirectoryImport(sessionId).catch(error => {
+          console.warn('[live2d] native import cache cleanup skipped:', error);
+        });
+      }
+      return;
+    }
     const input = document.createElement('input');
     input.type = 'file';
     input.multiple = true;

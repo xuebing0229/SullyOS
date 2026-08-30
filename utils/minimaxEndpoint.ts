@@ -573,9 +573,12 @@ export async function minimaxFetch(
   }
 
   try {
+    const webProxyPath = import.meta.env.DEV && region === 'overseas'
+      ? proxyPath.replace('/api/minimax/', '/api/minimax-overseas/')
+      : proxyPath;
     const response =
       await fetch(
-        proxyPath,
+        webProxyPath,
         enrichedInit,
       );
 

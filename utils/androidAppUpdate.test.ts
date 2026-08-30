@@ -82,7 +82,7 @@ describe('downloadAndVerifyAndroidUpdate', () => {
   it('creates the nested cache directory before the first download', async () => {
     filesystemMocks.deleteFile.mockRejectedValueOnce(new Error('file does not exist'));
 
-    await expect(downloadAndVerifyAndroidUpdate(validManifest)).resolves.toBe(
+    await expect(downloadAndVerifyAndroidUpdate(parseAndroidUpdateManifest(validManifest))).resolves.toBe(
       'file:///cache/updates/SullyOS-update.apk',
     );
 

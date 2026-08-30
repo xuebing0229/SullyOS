@@ -21,6 +21,7 @@ import {
   removeLive2DWardrobeAction,
   sniffImageMime,
   upgradeLive2DAutoPermissions,
+  validateLive2DDirectoryRoot,
   type Live2DAvatarConfig,
 } from './live2dModelStore';
 
@@ -70,6 +71,30 @@ const packageEntries = [
 ];
 
 describe('Live2D 模型导入解析', () => {
+  it('只接受所选目录直属层级的唯一 model3 入口', () => {
+    expect(validateLive2DDirectoryRoot([
+      'mowang.model3.json',
+      'mowang.moc3',
+      'mowang.8192/texture_00.png',
+      'expressions/happy.exp3.json',
+    ])).toBe('mowang.model3.json');
+    expect(validateLive2DDirectoryRoot([
+      'mowang/mowang.model3.json',
+      'mowang/mowang.8192/texture_00.png',
+    ], 'mowang')).toBe('mowang/mowang.model3.json');
+    expect(() => validateLive2DDirectoryRoot([
+      'mowang.8192/texture_00.png',
+    ])).toThrow('未找到 *.model3.json');
+    expect(() => validateLive2DDirectoryRoot([
+      'nested/mowang.model3.json',
+      'nested/mowang.moc3',
+    ])).toThrow('未找到 *.model3.json');
+    expect(() => validateLive2DDirectoryRoot([
+      'a.model3.json',
+      'b.model3.json',
+    ])).toThrow('检测到多个 *.model3.json');
+  });
+
   it('把运行包写成 STORE 存档并保持路径与内容可读取', async () => {
     const repeated = 'x'.repeat(64 * 1024);
     const stored = await buildStoredLive2DPackage([

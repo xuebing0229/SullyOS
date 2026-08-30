@@ -131,7 +131,7 @@ export interface BuildChatPayloadResult {
     /** 已剥离双语标签的历史消息（emotion eval 也吃这份） */
     cleanedApiMessages: ChatPayloadMessage[];
     /** [system, ...cleanedApiMessages, 末尾 bilingual reminder?] —— 主 API 直接发这个 */
-    fullMessages: Array<{ role: string; content: any }>;
+    fullMessages: ChatPayloadMessage[];
     /** 本轮记忆召回的脱敏 Trace；Prompt Build 被整体跳过时不存在。 */
     recallTrace?: RecallTrace;
     /** 调试用：bilingual / mcd 是否实际注入 */

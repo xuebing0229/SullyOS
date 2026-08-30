@@ -54,8 +54,9 @@ const UnpricedCostResolver: React.FC<{
     setError('');
     try {
       const costMicros = yuanStringToMicros(amount);
+      if (costMicros == null) throw new Error('请输入有效的非负金额');
       setBusy(true);
-      await DB.resolveApiCostUnpriced(entry.id, { kind: 'manual_cost', costMicros });
+      await DB.resolveApiCostUnpriced(entry.id, { kind: 'manual_cost', costMicros: costMicros.toString() });
       setEditingId(null);
       setAmount('');
       await onUpdated();

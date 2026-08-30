@@ -24,6 +24,6 @@ describe('gameHallBackup registry', () => {
 
   it('keeps the regenerable protocol cache outside permanent backup', () => {
     expect(GAME_HALL_PROTOCOL_CACHE_STORE).toBe('gameHallProtocolCache');
-    expect(GAME_HALL_BACKUP_STORES.some(item => item.storeName === GAME_HALL_PROTOCOL_CACHE_STORE)).toBe(false);
+    expect(GAME_HALL_BACKUP_STORES.some(item => String(item.storeName) === GAME_HALL_PROTOCOL_CACHE_STORE)).toBe(false);
   });
 });

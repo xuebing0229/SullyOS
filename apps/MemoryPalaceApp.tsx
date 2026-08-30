@@ -2811,7 +2811,9 @@ export default function MemoryPalaceApp() {
 
     // ─── 未启用记忆宫殿 ─────────────────────────────────
 
-    if (!char!.memoryPalaceEnabled && view !== 'globalSettings') {
+    if (view !== 'globalSettings' && !char) return null;
+
+    if (view !== 'globalSettings' && char && !char.memoryPalaceEnabled) {
         return (
             <div style={{ paddingLeft: 16, paddingRight: 16, paddingBottom: 16, paddingTop: SAFE_PAD_TOP, maxHeight: '100%', overflowY: 'auto' }}>
                 <div
@@ -2875,7 +2877,7 @@ export default function MemoryPalaceApp() {
         v <= 0.5 ? '偶尔会想起旧事' :
         v <= 0.8 ? '敏感，容易纠结旧事' : '执念很深，难以释怀';
 
-    if (detectingPersonality && view !== 'globalSettings') {
+    if (detectingPersonality && view !== 'globalSettings' && char) {
         return (
             <div style={{ paddingLeft: 32, paddingRight: 32, paddingBottom: 32, paddingTop: SAFE_PAD_TOP, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: 300 }}>
                 <div style={{ marginBottom: 16, color: '#7c3aed', animation: 'pulse 2s ease-in-out infinite', display: 'inline-flex' }}>
@@ -2891,7 +2893,7 @@ export default function MemoryPalaceApp() {
         );
     }
 
-    if (pendingPersonality && view !== 'globalSettings') {
+    if (pendingPersonality && view !== 'globalSettings' && char) {
         return (
             <div style={{ paddingLeft: 24, paddingRight: 24, paddingBottom: 24, paddingTop: SAFE_PAD_TOP, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: 300 }}>
                 <div style={{ marginBottom: 12, color: '#7c3aed', display: 'inline-flex' }}>
@@ -3779,7 +3781,7 @@ create table if not exists memory_vectors (
                 </>)}
 
                 {/* 人格风格 & 反刍倾向：由 LLM 自动推断，默认折叠 */}
-                {!isGlobal && (<>
+                {!isGlobal && char && (<>
                 <details style={{ marginTop: 16 }}>
                     <summary style={{ fontSize: 10, color: '#c4c4c4', cursor: 'pointer', userSelect: 'none' }}>
                         认知参数
@@ -4802,6 +4804,8 @@ create table if not exists memory_vectors (
     }
 
     // ─── 宫殿概览视图 ────────────────────────────────
+
+    if (!char) return null;
 
     if (view === 'palace') {
         return (

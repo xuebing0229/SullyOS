@@ -45,6 +45,7 @@ import {
   CHAT_GEN_EVENTS,
 } from './chatGenEvents';
 import { isCorrectableGameHallToolFailure } from './gameHallToolCorrection';
+import { DB } from './db';
 
 interface MemoryConfigLike {
   embedding?: {
@@ -341,7 +342,7 @@ async function runUnlocked(
     const loaded = await getGameHallSession(deps.sessionId);
     if (!loaded?.autoplay) return;
     let session = loaded;
-    const autoplay = session.autoplay;
+    const autoplay = loaded.autoplay;
 
     if (autoplay.status === 'paused') {
       const restored =
@@ -421,7 +422,7 @@ async function runUnlocked(
         realtimeConfig: deps.realtimeConfig,
         mode: 'auto-turn',
         userText: syntheticTurnText(session),
-        state: session.autoplay?.latestState,
+        state: autoplay.latestState,
         availableTools: deps.connection.tools || [],
         sessionId: session.id,
         history,
@@ -432,9 +433,9 @@ async function runUnlocked(
           session.schemaValidationMode || 'off',
         repairAttempts: session.planRepairAttempts || 0,
         autonomousRun: {
-          runId: session.autoplay!.runId,
-          instruction: session.autoplay!.instruction,
-          turnCount: session.autoplay!.turnCount,
+          runId: autoplay.runId,
+          instruction: autoplay.instruction,
+          turnCount: autoplay.turnCount,
         },
       });
     } catch (error: any) {
@@ -464,8 +465,32 @@ async function runUnlocked(
     }
     session = latestAfterPlan;
 
-    if (plan.reply?.trim()) {
-      await append(session, 'assistant', plan.reply.trim());
+    const emojis = plan.replies.some(part => part.type === 'emoji')
+      ? await DB.getEmojis()
+      : [];
+    let firstVisibleReply = true;
+    for (let index = 0; index < plan.replies.length; index += 1) {
+      const part = plan.replies[index];
+      if (part.type === 'emoji') {
+        const emoji = emojis.find(item => item.name === part.name);
+        if (!emoji) continue;
+        await append(session, 'assistant', '[表情包]', {
+          batchIndex: index,
+          displayType: 'emoji',
+          emojiName: part.name,
+          emojiUrl: emoji.url,
+          thinkingChain: firstVisibleReply ? plan.thinkingChain : undefined,
+        });
+      } else if (part.content.trim()) {
+        await append(session, 'assistant', part.content.trim(), {
+          batchIndex: index,
+          displayType: 'text',
+          thinkingChain: firstVisibleReply ? plan.thinkingChain : undefined,
+        });
+      } else {
+        continue;
+      }
+      firstVisibleReply = false;
     }
     if (plan.validationWarnings?.length) {
       await append(

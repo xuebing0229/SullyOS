@@ -64,6 +64,19 @@ describe('parseEmotionEvalOutput — 正常形态', () => {
         const r = parseEmotionEvalOutput(JSON.stringify({ ...VALID, changed: 'true' }));
         expect(r?.changed).toBe(true);
     });
+
+    it('模型漏写 changed 但生成了 buffs/injection 时仍判定需要更新', () => {
+        const { changed: _changed, ...withoutChanged } = VALID;
+        const r = parseEmotionEvalOutput(JSON.stringify(withoutChanged));
+        expect(r?.changed).toBe(true);
+        expect(r?.buffs?.[0]?.label).toBe('焦虑');
+        expect(r?.injection).toContain('当前情绪底色');
+    });
+
+    it('显式 changed=false 时即使附带旧状态快照也不更新', () => {
+        const r = parseEmotionEvalOutput(JSON.stringify({ ...VALID, changed: false }));
+        expect(r?.changed).toBe(false);
+    });
 });
 
 describe('parseEmotionEvalOutput — 格式劣化修复', () => {
@@ -135,6 +148,13 @@ describe('applyEmotionEvalRaw — 落库语义', () => {
         expect(saved.activeBuffs[0].label).toBe('焦虑');
         expect(saved.activeBuffs[0].intensity).toBe(3); // 4 被钳到上限 3
         expect(saved.buffInjection).toContain('当前情绪底色');
+    });
+
+    it('漏写 changed 的完整结果仍保存新情绪', async () => {
+        const { changed: _changed, ...withoutChanged } = VALID;
+        await applyEmotionEvalRaw(JSON.stringify(withoutChanged), makeChar());
+        expect(saveCharacter).toHaveBeenCalledTimes(1);
+        expect(saveCharacter.mock.calls[0][0].activeBuffs[0].label).toBe('焦虑');
     });
 
     it('changed=false → 不动 buff, 只返回 innerState', async () => {

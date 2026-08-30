@@ -21,6 +21,7 @@ import CedarToySurface from '../components/gameHall/CedarToySurface';
 import GameHallBottomSheet from '../components/gameHall/GameHallBottomSheet';
 import { ThinkingChainBlock } from '../components/chat/MessageItem';
 import { DB } from '../utils/db';
+import { AppID } from '../types';
 import type { AssistantDisplayPart } from '../utils/assistantDisplayPipeline';
 import {
   buildCedarCapabilityMap,
@@ -691,7 +692,7 @@ const GameHallApp: React.FC = () => {
         updatedAt: Date.now(),
       } : value);
       setActiveCharacterId(selected.id);
-      openApp('chat');
+      openApp(AppID.Chat);
     } catch (error: any) {
       await append('system', `回主对话交接失败：${error?.message || String(error)}`);
     } finally {
@@ -721,7 +722,8 @@ const GameHallApp: React.FC = () => {
     const next = { ...connection, tools: result.tools || [], updatedAt: Date.now() };
     setConnection(next);
     saveCedarConnection(next);
-    const map = result.capabilities || buildCedarCapabilityMap(result.tools || []);
+    const map = ('capabilities' in result && result.capabilities)
+      || buildCedarCapabilityMap(result.tools || []);
     setCapabilities(map);
     setDiagnostic(
       `${result.message}。角色实际可见 ${result.tools?.length || 0} 个原始工具；下面分类只作辅助说明，不参与任何执行判断。`,

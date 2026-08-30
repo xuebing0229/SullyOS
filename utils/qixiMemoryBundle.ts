@@ -187,16 +187,19 @@ const simpleHash = (value: string): string => {
 };
 
 export function createQixiFallbackBundle(contextSignature = '', charLayerColor = QIXI_FALLBACK_CHAR_LAYER_COLOR): QixiMemoryBundle {
-    const emptyScenes = Object.fromEntries(QIXI_SCENE_IDS.map(sceneId => [sceneId, {
-        transitionLines: [],
-        sharedObject: '',
-        memoryLine: '',
-        options: [],
-        charAction: '',
-        reveal: '',
-        artifactIds: [],
-        charSelectionIds: [],
-    }])) as Record<QixiSceneId, QixiScenePayload>;
+    const emptyScenes = QIXI_SCENE_IDS.reduce<Record<QixiSceneId, QixiScenePayload>>((scenes, sceneId) => {
+        scenes[sceneId] = {
+            transitionLines: [],
+            sharedObject: '',
+            memoryLine: '',
+            options: [],
+            charAction: '',
+            reveal: '',
+            artifactIds: [],
+            charSelectionIds: [],
+        };
+        return scenes;
+    }, {} as Record<QixiSceneId, QixiScenePayload>);
     return {
         version: QIXI_MEMORY_BUNDLE_VERSION,
         source: 'fallback',

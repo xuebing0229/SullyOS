@@ -58,7 +58,7 @@ export const classifyUserCameraBlendshapes = (shapes: ReadonlyMap<string, number
   const jawOpen = score(shapes, 'jawOpen');
   const browInnerUp = score(shapes, 'browInnerUp');
 
-  const candidates: Array<{
+  const rawCandidates: Array<{
     emotion: Exclude<UserCameraEmotion, 'neutral'>;
     value: number;
     threshold: number;
@@ -100,7 +100,8 @@ export const classifyUserCameraBlendshapes = (shapes: ReadonlyMap<string, number
       threshold: 0.58,
       eligible: eyeClosed >= 0.58,
     },
-  ].map(item => ({ ...item, value: item.eligible ? clamp01(item.value) : 0 }));
+  ];
+  const candidates = rawCandidates.map(item => ({ ...item, value: item.eligible ? clamp01(item.value) : 0 }));
   candidates.sort((a, b) => (b.value / b.threshold) - (a.value / a.threshold));
   const winner = candidates[0];
   const runnerUp = candidates[1];

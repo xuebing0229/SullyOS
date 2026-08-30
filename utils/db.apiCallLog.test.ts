@@ -10,6 +10,8 @@ describe('API call log atomic persistence', () => {
         const entries = Array.from({ length: 30 }, (_, index) => ({
             id: `concurrent-${index}`,
             timestamp: Date.now() + index,
+            presetName: '测试预设',
+            baseUrl: 'https://example.test/v1',
             model: 'test-model',
             ok: true,
         }));
@@ -22,10 +24,12 @@ describe('API call log atomic persistence', () => {
 
     it('merges duplicate request IDs instead of counting one HTTP request twice', async () => {
         const id = 'same-http-request';
-        await DB.appendApiCallLog({ id, timestamp: Date.now(), model: 'm', ok: true });
+        await DB.appendApiCallLog({ id, timestamp: Date.now(), presetName: '测试预设', baseUrl: 'https://example.test/v1', model: 'm', ok: true });
         await DB.appendApiCallLog({
             id,
             timestamp: Date.now(),
+            presetName: '测试预设',
+            baseUrl: 'https://example.test/v1',
             model: 'm',
             backendModel: 'm-backend',
             totalTokens: 123,
@@ -52,7 +56,7 @@ describe('one-shot API request capture persistence', () => {
 
     it('clears the full capture without clearing normal call logs', async () => {
         const logId = `kept-${Date.now()}`;
-        await DB.appendApiCallLog({ id: logId, timestamp: Date.now(), model: 'm', ok: true });
+        await DB.appendApiCallLog({ id: logId, timestamp: Date.now(), presetName: '测试预设', baseUrl: 'https://example.test/v1', model: 'm', ok: true });
         await DB.saveApiRequestCapture({ id: 'capture' });
         await DB.clearApiRequestCapture();
 

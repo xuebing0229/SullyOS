@@ -474,7 +474,7 @@ describe('上云的这一轮也进「API 调用记录」', () => {
   /** 收走写库的那几笔（apiCallLog 走动态 import('./db')，按 DB 单例打桩拦得到）。 */
   const captureLog = () => {
     const logged: any[] = [];
-    vi.spyOn(DB, 'appendApiCallLog').mockImplementation(async (entry: any) => { logged.push(entry); });
+    vi.spyOn(DB, 'appendApiCallLog').mockImplementation(async (entry: any) => { logged.push(entry); return true; });
     return logged;
   };
 

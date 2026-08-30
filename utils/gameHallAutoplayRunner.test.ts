@@ -57,7 +57,7 @@ async function start(options: { maxTurns?: number | null; returnToMainChat?: boo
 describe('GameHall autonomous runner', () => {
   it('continues plan and execute until action=null', async () => {
     await start();
-    fakes.plan.mockResolvedValueOnce({ reply: 'one', pending: pending('a1') }).mockResolvedValueOnce({ reply: 'two', pending: pending('a2') }).mockResolvedValueOnce({ reply: 'done' });
+    fakes.plan.mockResolvedValueOnce({ replies: [{ type: 'text', content: 'one' }], pending: pending('a1') }).mockResolvedValueOnce({ replies: [{ type: 'text', content: 'two' }], pending: pending('a2') }).mockResolvedValueOnce({ replies: [{ type: 'text', content: 'done' }] });
     fakes.execute.mockResolvedValue({ request: { name: 'play' }, result: { success: true, data: { gameId: 'g' } } });
     await runGameHallAutoplay(deps() as any);
     expect(fakes.plan).toHaveBeenCalledTimes(3); expect(fakes.execute).toHaveBeenCalledTimes(2);
@@ -66,8 +66,8 @@ describe('GameHall autonomous runner', () => {
 
   it('has no hidden cap when maxTurns=null', async () => {
     await start({ maxTurns: null });
-    for (let i = 0; i < 5; i += 1) fakes.plan.mockResolvedValueOnce({ reply: `step ${i}`, pending: pending(`a${i}`) });
-    fakes.plan.mockResolvedValueOnce({ reply: 'done' });
+    for (let i = 0; i < 5; i += 1) fakes.plan.mockResolvedValueOnce({ replies: [{ type: 'text', content: `step ${i}` }], pending: pending(`a${i}`) });
+    fakes.plan.mockResolvedValueOnce({ replies: [{ type: 'text', content: 'done' }] });
     fakes.execute.mockResolvedValue({ request: {}, result: { success: true, data: {} } });
     await runGameHallAutoplay(deps() as any);
     expect(fakes.execute).toHaveBeenCalledTimes(5); expect(fakes.session.autoplay.turnCount).toBe(5);
@@ -75,7 +75,7 @@ describe('GameHall autonomous runner', () => {
 
   it('stops after the visible maxTurns count completes', async () => {
     await start({ maxTurns: 3 });
-    fakes.plan.mockImplementation(async () => ({ reply: 'continue', pending: pending(`a${fakes.plan.mock.calls.length}`) }));
+    fakes.plan.mockImplementation(async () => ({ replies: [{ type: 'text', content: 'continue' }], pending: pending(`a${fakes.plan.mock.calls.length}`) }));
     fakes.execute.mockResolvedValue({ request: {}, result: { success: true, data: {} } });
     await runGameHallAutoplay(deps() as any);
     expect(fakes.execute).toHaveBeenCalledTimes(3);
@@ -85,7 +85,7 @@ describe('GameHall autonomous runner', () => {
   it('pauses without planning and resumes from persisted progress', async () => {
     await start(); fakes.session = await pauseGameHallAutoplay(fakes.session);
     await runGameHallAutoplay(deps() as any); expect(fakes.plan).not.toHaveBeenCalled();
-    fakes.session = await resumeGameHallAutoplay(fakes.session); fakes.plan.mockResolvedValue({ reply: 'done' });
+    fakes.session = await resumeGameHallAutoplay(fakes.session); fakes.plan.mockResolvedValue({ replies: [{ type: 'text', content: 'done' }] });
     await runGameHallAutoplay(deps() as any); expect(fakes.plan).toHaveBeenCalledTimes(1);
   });
 
@@ -116,7 +116,7 @@ describe('GameHall autonomous runner', () => {
   });
 
   it('persists MCP success=false and stops failed', async () => {
-    await start(); fakes.plan.mockResolvedValue({ reply: 'try', pending: pending('bad') });
+    await start(); fakes.plan.mockResolvedValue({ replies: [{ type: 'text', content: 'try' }], pending: pending('bad') });
     fakes.execute.mockResolvedValue({ request: { name: 'play' }, result: { success: false, error: 'remote rejected' } });
     await runGameHallAutoplay(deps() as any);
     expect(fakes.session.autoplay).toMatchObject({ status: 'failed', stopReason: 'mcp-error' });
@@ -126,9 +126,9 @@ describe('GameHall autonomous runner', () => {
   it('feeds a correctable failure back once, executes the replacement, and continues', async () => {
     await start();
     fakes.plan
-      .mockResolvedValueOnce({ reply: 'try', pending: pending('bad') })
-      .mockResolvedValueOnce({ reply: 'corrected', pending: pending('fixed') })
-      .mockResolvedValueOnce({ reply: 'done' });
+      .mockResolvedValueOnce({ replies: [{ type: 'text', content: 'try' }], pending: pending('bad') })
+      .mockResolvedValueOnce({ replies: [{ type: 'text', content: 'corrected' }], pending: pending('fixed') })
+      .mockResolvedValueOnce({ replies: [{ type: 'text', content: 'done' }] });
     fakes.execute
       .mockResolvedValueOnce({
         request: { name: 'play', modelArgs: { move: 'bad' } },
@@ -159,8 +159,8 @@ describe('GameHall autonomous runner', () => {
   it('stops after the single corrected action also fails', async () => {
     await start();
     fakes.plan
-      .mockResolvedValueOnce({ reply: 'try', pending: pending('bad') })
-      .mockResolvedValueOnce({ reply: 'corrected', pending: pending('still-bad') });
+      .mockResolvedValueOnce({ replies: [{ type: 'text', content: 'try' }], pending: pending('bad') })
+      .mockResolvedValueOnce({ replies: [{ type: 'text', content: 'corrected' }], pending: pending('still-bad') });
     fakes.execute
       .mockResolvedValueOnce({ request: {}, result: { success: false, error: 'unknown arcade action "play"' } })
       .mockResolvedValueOnce({ request: {}, result: { success: false, error: 'invalid argument: gameId' } });
@@ -176,7 +176,7 @@ describe('GameHall autonomous runner', () => {
   it('does not spend a correction call on auth, network, throttling, or server failures', async () => {
     for (const error of ['HTTP 401 Unauthorized', 'network timeout', 'HTTP 429 rate limited', 'HTTP 503 unavailable']) {
       await start();
-      fakes.plan.mockResolvedValue({ reply: 'try', pending: pending(`bad-${error}`) });
+      fakes.plan.mockResolvedValue({ replies: [{ type: 'text', content: 'try' }], pending: pending(`bad-${error}`) });
       fakes.execute.mockResolvedValue({ request: {}, result: { success: false, error } });
 
       await runGameHallAutoplay(deps() as any);
@@ -190,28 +190,28 @@ describe('GameHall autonomous runner', () => {
 
   it('marks transport exceptions failed and preserves original messages', async () => {
     await start(); fakes.messages.push({ id: 'original', sessionId: 'session-1', charId: 'char-1', role: 'user', content: 'keep', createdAt: 1 });
-    fakes.plan.mockResolvedValue({ reply: 'try', pending: pending('boom') }); fakes.execute.mockRejectedValue(new Error('network down'));
+    fakes.plan.mockResolvedValue({ replies: [{ type: 'text', content: 'try' }], pending: pending('boom') }); fakes.execute.mockRejectedValue(new Error('network down'));
     await runGameHallAutoplay(deps() as any);
     expect(fakes.session.autoplay).toMatchObject({ status: 'failed', lastError: 'network down' });
     expect(fakes.messages.some(message => message.id === 'original')).toBe(true); expect(fakes.handoff).not.toHaveBeenCalled();
   });
 
   it('uses the existing handoff once after requested successful completion', async () => {
-    await start({ returnToMainChat: true }); fakes.plan.mockResolvedValue({ reply: 'done' });
+    await start({ returnToMainChat: true }); fakes.plan.mockResolvedValue({ replies: [{ type: 'text', content: 'done' }] });
     await runGameHallAutoplay(deps() as any);
     expect(fakes.handoff).toHaveBeenCalledTimes(1); expect(fakes.session.autoplay.handoffMessageId).toBe(42);
   });
 
   it('records handoffError while preserving original messages', async () => {
     await start({ returnToMainChat: true }); fakes.messages.push({ id: 'original', sessionId: 'session-1', charId: 'char-1', role: 'user', content: 'keep', createdAt: 1 });
-    fakes.plan.mockResolvedValue({ reply: 'done' }); fakes.handoff.mockRejectedValue(new Error('summary failed'));
+    fakes.plan.mockResolvedValue({ replies: [{ type: 'text', content: 'done' }] }); fakes.handoff.mockRejectedValue(new Error('summary failed'));
     await runGameHallAutoplay(deps() as any);
     expect(fakes.session.autoplay.handoffError).toBe('summary failed'); expect(fakes.messages.some(message => message.id === 'original')).toBe(true);
   });
 
   it('deduplicates concurrent wakeups for one session', async () => {
     await start(); let release!: () => void; const gate = new Promise<void>(resolve => { release = resolve; });
-    fakes.plan.mockImplementationOnce(async () => { await gate; return { reply: 'done' }; });
+    fakes.plan.mockImplementationOnce(async () => { await gate; return { replies: [{ type: 'text', content: 'done' }] }; });
     const first = runGameHallAutoplay(deps() as any); const second = runGameHallAutoplay(deps() as any);
     expect(first).toBe(second); release(); await Promise.all([first, second]); expect(fakes.plan).toHaveBeenCalledTimes(1);
   });

@@ -1064,16 +1064,34 @@ const fileRelativePath = (file: File): string => (
   (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name
 );
 
-export const saveLive2DModelFromFiles = async (
-  files: File[],
+export const validateLive2DDirectoryRoot = (paths: string[], rootPathPrefix = ''): string => {
+  const prefix = rootPathPrefix ? `${normalizePath(rootPathPrefix).replace(/\/$/, '')}/` : '';
+  const modelPaths = paths
+    .map(normalizePath)
+    .filter(path => dirname(path) === prefix && path.toLowerCase().endsWith('.model3.json'));
+  if (!modelPaths.length) {
+    throw new Error('所选文件夹不是有效的 Live2D 模型目录，未找到 *.model3.json');
+  }
+  if (modelPaths.length > 1) {
+    throw new Error('所选文件夹检测到多个 *.model3.json，请一次只导入一个模型');
+  }
+  return modelPaths[0];
+};
+
+export const saveLive2DModelFromEntries = async (
+  entries: PackageEntry[],
+  fileName: string,
   onProgress?: Live2DImportProgress,
+  rootPathPrefix = '',
 ): Promise<Live2DAvatarConfig> => {
-  const sourceFiles = files.filter(file => file.size > 0 && !/(^|\/)\.DS_Store$/i.test(fileRelativePath(file)));
-  if (!sourceFiles.length) throw new Error('选择的文件夹是空的。');
-  const entries = sourceFiles.map(file => ({ path: normalizePath(fileRelativePath(file)), blob: file }));
-  onProgress?.(`正在扫描 ${entries.length} 个文件和 VTube Studio 热键…`);
-  const parsed = await parsePackage(entries);
-  const sourceOptimized = await downscaleOversizedLive2DTextures(entries, parsed.texturePaths, onProgress, LIVE2D_MAX_TEXTURE_DIMENSION);
+  const sourceEntries = entries
+    .filter(entry => entry.blob.size > 0 && !/(^|\/)\.DS_Store$/i.test(entry.path))
+    .map(entry => ({ path: normalizePath(entry.path), blob: entry.blob }));
+  if (!sourceEntries.length) throw new Error('选择的文件夹是空的。');
+  validateLive2DDirectoryRoot(sourceEntries.map(entry => entry.path), rootPathPrefix);
+  onProgress?.(`正在扫描 ${sourceEntries.length} 个文件和 VTube Studio 热键…`);
+  const parsed = await parsePackage(sourceEntries);
+  const sourceOptimized = await downscaleOversizedLive2DTextures(sourceEntries, parsed.texturePaths, onProgress, LIVE2D_MAX_TEXTURE_DIMENSION);
   const runtimeOptimized = await downscaleOversizedLive2DTextures(
     sourceOptimized.entries,
     parsed.texturePaths,
@@ -1086,7 +1104,7 @@ export const saveLive2DModelFromFiles = async (
   // PNG/JPEG/moc are already compressed. Re-deflating a large 8K texture can
   // freeze the UI for tens of seconds without meaningfully reducing its size.
   const packageBlob = await buildStoredLive2DPackage(sourceOptimized.entries);
-  const rootName = parsed.modelPath.includes('/') ? parsed.modelPath.split('/')[0] : parsed.modelName;
+  const rootName = fileName || (parsed.modelPath.includes('/') ? parsed.modelPath.split('/')[0] : parsed.modelName);
   onProgress?.('正在写入本地模型库，请保持页面打开…');
   return createConfig(
     packageBlob,
@@ -1096,6 +1114,17 @@ export const saveLive2DModelFromFiles = async (
     runtimeOptimized.entries,
     runtimeOptimized.resizedTextures.length > 0,
   );
+};
+
+export const saveLive2DModelFromFiles = async (
+  files: File[],
+  onProgress?: Live2DImportProgress,
+): Promise<Live2DAvatarConfig> => {
+  const sourceFiles = files.filter(file => file.size > 0 && !/(^|\/)\.DS_Store$/i.test(fileRelativePath(file)));
+  const entries = sourceFiles.map(file => ({ path: fileRelativePath(file), blob: file }));
+  const firstPath = sourceFiles[0] ? fileRelativePath(sourceFiles[0]) : '';
+  const rootName = firstPath.includes('/') ? firstPath.split('/')[0] : '';
+  return saveLive2DModelFromEntries(entries, rootName, onProgress, rootName);
 };
 
 export const saveLive2DModelFromZip = async (
