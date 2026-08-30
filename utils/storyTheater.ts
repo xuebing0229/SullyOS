@@ -181,6 +181,7 @@ export const createStoryTheaterDraft = (now: number = Date.now()): StoryTheaterE
     openingMode: 'user',
     mask: { type: 'user' },
     characterIds: [],
+    imageGeneration: { enabled: false, width: 1216, height: 832, characterAnchors: {} },
     writesToCharacterMemory: false,
     characterMemoryDates: {},
     carryCharacterMemory: false,
@@ -211,6 +212,15 @@ export const normalizeStoryTheater = (entry: StoryTheaterEntry): StoryTheaterEnt
                 ? { type: 'custom', id: entry.mask.id }
                 : { type: 'user' },
         characterIds: Array.isArray(entry.characterIds) ? entry.characterIds.filter(Boolean) : [],
+        imageGeneration: entry.imageGeneration ? {
+            enabled: entry.imageGeneration.enabled === true,
+            stylePrompt: String(entry.imageGeneration.stylePrompt || ''),
+            negativePrompt: String(entry.imageGeneration.negativePrompt || ''),
+            width: Math.max(256, Math.min(2048, Number(entry.imageGeneration.width) || 1216)),
+            height: Math.max(256, Math.min(2048, Number(entry.imageGeneration.height) || 832)),
+            userAnchor: String(entry.imageGeneration.userAnchor || ''),
+            characterAnchors: entry.imageGeneration.characterAnchors || {},
+        } : { enabled: false, width: 1216, height: 832, characterAnchors: {} },
         writesToCharacterMemory: entry.writesToCharacterMemory === true,
         characterMemoryDates: entry.characterMemoryDates || {},
         carryCharacterMemory: entry.writesToCharacterMemory ? true : entry.carryCharacterMemory !== false,

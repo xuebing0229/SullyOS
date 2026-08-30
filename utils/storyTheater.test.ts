@@ -372,7 +372,7 @@ describe('剧情预设发送器', () => {
 
 describe('剧情沙盒辅助逻辑', () => {
     it('新虚构剧场默认不读取记忆，真实陪伴强制摘下面具', () => {
-        expect(createStoryTheaterDraft(1)).toMatchObject({ openingMode: 'user', writesToCharacterMemory: false, carryCharacterMemory: false, forceUserLastMessage: false, omitSamplingParams: false });
+        expect(createStoryTheaterDraft(1)).toMatchObject({ openingMode: 'user', writesToCharacterMemory: false, carryCharacterMemory: false, forceUserLastMessage: false, omitSamplingParams: false, imageGeneration: { enabled: false, width: 1216, height: 832, characterAnchors: {} } });
         const normalized = normalizeStoryTheater({
             ...createStoryTheaterDraft(1),
             openingMode: 'assistant',

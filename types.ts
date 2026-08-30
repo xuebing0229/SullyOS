@@ -29,6 +29,7 @@ export enum AppID {
   Room = 'room',
   CheckPhone = 'check_phone',
   Social = 'social',
+  Moments = 'moments', // 朋友圈 — 本地生活流、角色互动与私聊联动
   Study = 'study',
   FAQ = 'faq',
   Game = 'game',
@@ -2159,6 +2160,26 @@ export interface StoryTheaterMask {
     updatedAt: number;
 }
 
+/** 每条剧情独立的配图偏好；接口、模型与计费仍复用“内置生图引擎”。 */
+export interface StoryTheaterImageConfig {
+    enabled: boolean;
+    stylePrompt?: string;
+    negativePrompt?: string;
+    width: number;
+    height: number;
+    userAnchor?: string;
+    characterAnchors: Record<string, string>;
+}
+
+/** 附着在剧场正文消息上的单张本地配图。 */
+export interface StoryTheaterImageFrame {
+    imageRef: string;
+    galleryImageId: string;
+    prompt?: string;
+    engine?: string;
+    generatedAt: number;
+}
+
 /**
  * 一条可反复进入的剧情。演员与世界书只保存 id/沙盒选择，不反写外部挂载配置。
  * 消息正文复用 messages 表，charId 使用 `story-theater:${id}` 独立线程；仅显式开启时镜像到角色记忆流。
@@ -2172,6 +2193,8 @@ export interface StoryTheaterEntry {
     /** 本剧情中用户执笔的身份；缺省时使用真实用户档案。 */
     mask?: StoryTheaterMaskSelection;
     characterIds: string[];
+    /** 开启后，每轮正文落库并显示后自动生成一张剧情配图。 */
+    imageGeneration?: StoryTheaterImageConfig;
     /** true=像【陪伴】一样，把第三人称正文分别写入每个角色的正常记忆流。 */
     writesToCharacterMemory: boolean;
     /** 每位演员各自的剧情时间锚点（datetime-local 字符串），允许跨时区/跨世界线。 */
@@ -3629,6 +3652,10 @@ export interface SocialComment {
     isCharacter?: boolean;
     authorType?: 'user' | 'character' | 'stranger';
     authorCharId?: string;
+    /** 朋友圈二级回复只允许指向一条一级评论。 */
+    replyToCommentId?: string;
+    replyToName?: string;
+    timestamp?: number;
 }
 
 export interface SocialPost {
@@ -3647,6 +3674,44 @@ export interface SocialPost {
     bgStyle?: string;
     authorType?: 'user' | 'character' | 'stranger';
     authorCharId?: string;
+    /** Spark 与朋友圈共用 social_posts store，以 platform 隔离。 */
+    platform?: 'spark' | 'moments';
+    location?: { label: string; visible: boolean };
+    likedBy?: Array<{ id: string; name: string; charId?: string; type: 'user' | 'character' }>;
+    /** charId → 同步到对应私聊的 social_card 消息 id。 */
+    syncedMessageIds?: Record<string, number>;
+    updatedAt?: number;
+}
+
+export type MomentsActivityLevel = 'quiet' | 'normal' | 'lively';
+
+export interface MomentsSettings {
+    version: 1;
+    coverImage?: string;
+    coverPositionY: number;
+    displayNameOverride?: string;
+    invitedCharIds: string[];
+    generationPreset: string;
+    autoPublishEnabled: boolean;
+    activityLevel: MomentsActivityLevel;
+    minIntervalHours: number;
+    lastAutoRunAt: number;
+    nextAutoAt: number;
+    unreadPostIds: string[];
+}
+
+export interface MomentsRoleDigest {
+    charId: string;
+    summary: string;
+    recentTopics: string[];
+    recentFingerprints: string[];
+    compactedPostIds: string[];
+    updatedAt: number;
+}
+
+export interface MomentsMemoryState {
+    version: 1;
+    roles: Record<string, MomentsRoleDigest>;
 }
 
 export interface SubAccount {

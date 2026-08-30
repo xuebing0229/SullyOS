@@ -222,6 +222,8 @@ const SocialApp: React.FC = () => {
 
     useEffect(() => {
         DB.getSocialPosts().then(posts => {
+            // Spark 与朋友圈共用 social_posts；旧 Spark 数据没有 platform 字段。
+            posts = posts.filter(post => post.platform !== 'moments');
             if (posts.length > 0) {
                 const sorted = posts.sort((a,b) => b.timestamp - a.timestamp);
                 // IndexedDB can be slow on mobile. If the user already created
@@ -885,7 +887,9 @@ ${identityMap}
         feedRef.current = [];
         setFeed([]);
         setSelectedPost(null);
-        DB.clearSocialPosts();
+        void DB.getSocialPosts().then(posts => Promise.all(
+            posts.filter(post => post.platform !== 'moments').map(post => DB.deleteSocialPost(post.id)),
+        ));
         setShowSettings(false);
         addToast('推荐流已清空', 'success');
         trackEvent('清空 Spark 推荐流');

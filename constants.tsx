@@ -39,6 +39,7 @@ import {
   Cube,
   BookOpen,
   Broadcast,
+  CirclesFour,
 } from '@phosphor-icons/react';
 
 // SVG 图标库 - Phosphor Icons
@@ -83,6 +84,7 @@ export const Icons: Record<string, React.FC<{ className?: string }>> = {
   Simulator: ({ className }) => <Cube className={className} weight="regular" />,
   ReadingTogether: ({ className }) => <BookOpen className={className} weight="regular" />,
   Live: ({ className }) => <Broadcast className={className} weight="fill" />,
+  Moments: ({ className }) => <CirclesFour className={className} weight="fill" />,
 };
 
 export const INSTALLED_APPS: AppConfig[] = [
@@ -102,6 +104,7 @@ export const INSTALLED_APPS: AppConfig[] = [
   { id: AppID.Journal, name: '交换日记', icon: 'Journal', color: 'amber' },
   // { id: AppID.Handbook, name: '手账', icon: 'Handbook', color: 'fuchsia' }, // Hidden temporarily, pending update
   { id: AppID.Social, name: 'Spark', icon: 'Social', color: 'red' },
+  { id: AppID.Moments, name: '朋友圈', icon: 'Moments', color: 'green' },
   { id: AppID.Study, name: '自习室', icon: 'Study', color: 'emerald' },
   { id: AppID.Game, name: 'TRPG', icon: 'Game', color: 'orange' },
   { id: AppID.GameHall, name: '游戏厅', icon: 'GameHall', color: 'violet' },
