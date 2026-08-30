@@ -87,7 +87,7 @@ const ChatInputArea: React.FC<ChatInputAreaProps> = ({
 }) => {
     const chatImageInputRef = useRef<HTMLInputElement>(null);
     const textareaRef = useRef<HTMLTextAreaElement>(null);
-    const [actionsPage, setActionsPage] = useState<0 | 1 | 2>(0);
+    const [actionsPage, setActionsPage] = useState<0 | 1 | 2 | 3>(0);
     // 气泡样式面板：搜索 + 两步确认删除（防止 hover 小 × 误删）
     const [bubbleSearch, setBubbleSearch] = useState('');
     // 会话面板的主要用途仍是切换聊天；气泡选择作为次级工具默认收起。
@@ -220,10 +220,10 @@ const ChatInputArea: React.FC<ChatInputAreaProps> = ({
         actionsSwipeStart.current = null;
         const SWIPE_THRESHOLD = 40;
         if (Math.abs(dx) > SWIPE_THRESHOLD && Math.abs(dx) > Math.abs(dy)) {
-            if (dx < 0 && actionsPage < 2) {
-                setActionsPage((actionsPage + 1) as 0 | 1 | 2);
+            if (dx < 0 && actionsPage < 3) {
+                setActionsPage((actionsPage + 1) as 0 | 1 | 2 | 3);
             } else if (dx > 0 && actionsPage > 0) {
-                setActionsPage((actionsPage - 1) as 0 | 1 | 2);
+                setActionsPage((actionsPage - 1) as 0 | 1 | 2 | 3);
             }
         }
     };
@@ -674,7 +674,7 @@ const ChatInputArea: React.FC<ChatInputAreaProps> = ({
                             {actionsContent}
                         </div>
                     )}
-                    {/* Actions Panel：固定 4 列，每页最多 8 个功能项；新增项向后顺延，最后一页兼容记忆链接。 */}
+                    {/* Actions Panel：固定 4 列，每页最多 8 个普通功能项；新增项逐页顺延，记忆链接固定独立在最后一页。 */}
                     {showPanel === 'actions' && !actionsContent && (
                         <div
                             className="overflow-y-auto no-scrollbar"
@@ -869,7 +869,7 @@ const ChatInputArea: React.FC<ChatInputAreaProps> = ({
 
                           </div>
 
-                          {/* Page 2: 承接前两页溢出的功能项，并保留本轮记忆修补入口。 */}
+                           {/* Page 2: 承接继续顺延的普通功能项。 */}
                           <div className={`${actionsPage === 2 ? 'flex' : 'hidden'} min-h-[13rem] px-6 py-5 flex-col items-center justify-center text-center`}>
                              <div className="w-full grid grid-cols-4 gap-8 mb-4">
                             {/* 提示音：打开该角色专属的「白框提示音」弹窗（挨着白框，独立于白框可绑定/解绑） */}
@@ -883,6 +883,10 @@ const ChatInputArea: React.FC<ChatInputAreaProps> = ({
                               <span className="text-xs font-bold">提示音</span>
                             </button>
                              </div>
+                          </div>
+
+                           {/* Page 3: 记忆链接独立一页，不参与普通功能项顺延。 */}
+                           <div className={`${actionsPage === 3 ? 'flex' : 'hidden'} min-h-[13rem] px-6 py-5 flex-col items-center justify-center text-center`}>
                             <div className={`mb-3 text-[9px] font-bold uppercase tracking-[.24em] ${isDiscordStyle ? 'text-purple-300/55' : acnh ? 'text-[#8f7658]/65' : 'text-purple-400/55'}`}>
                               memory repair
                             </div>
@@ -912,7 +916,7 @@ const ChatInputArea: React.FC<ChatInputAreaProps> = ({
                                 </span>
                               </span>
                             </button>
-                          </div>
+                           </div>
 
                           {/* 翻页指示器 */}
                           <div className="flex items-center justify-center gap-3 pb-3 -mt-2">
@@ -934,6 +938,12 @@ const ChatInputArea: React.FC<ChatInputAreaProps> = ({
                               onClick={() => setActionsPage(2)}
                               className={`w-2 h-2 rounded-full transition-all ${actionsPage === 2 ? (isDiscordStyle ? 'bg-slate-200 w-5' : 'bg-purple-500 w-5') : (isDiscordStyle ? 'bg-slate-600' : 'bg-slate-300')}`}
                             />
+                             <button
+                               type="button"
+                               aria-label="第 4 页"
+                               onClick={() => setActionsPage(3)}
+                               className={`w-2 h-2 rounded-full transition-all ${actionsPage === 3 ? (isDiscordStyle ? 'bg-slate-200 w-5' : 'bg-purple-500 w-5') : (isDiscordStyle ? 'bg-slate-600' : 'bg-slate-300')}`}
+                             />
                           </div>
                         </div>
                      )}
