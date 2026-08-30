@@ -1398,7 +1398,7 @@ ${isInitialGeneration ? `
                                            onClick={() => handleChange('timeAwarenessEnabled', formData.timeAwarenessEnabled === false)}
                                            className={`w-12 h-7 rounded-full transition-colors relative shrink-0 ${formData.timeAwarenessEnabled !== false ? 'bg-primary' : 'bg-slate-200'}`}
                                        >
-                                           <div className={`absolute top-0.5 w-6 h-6 bg-white rounded-full shadow-md transition-transform ${formData.timeAwarenessEnabled !== false ? 'translate-x-5' : 'translate-x-0.5'}`}></div>
+                                           <div className={`absolute top-0.5 left-0.5 w-6 h-6 bg-white rounded-full shadow-md transition-transform ${formData.timeAwarenessEnabled !== false ? 'translate-x-5' : 'translate-x-0.5'}`}></div>
                                        </button>
                                    </div>
                                </div>
@@ -1414,7 +1414,7 @@ ${isInitialGeneration ? `
                                            onClick={() => handleChange('customTimezoneEnabled', !formData.customTimezoneEnabled)}
                                            className={`w-12 h-7 rounded-full transition-colors relative shrink-0 ${formData.customTimezoneEnabled ? 'bg-primary' : 'bg-slate-200'}`}
                                        >
-                                           <div className={`absolute top-0.5 w-6 h-6 bg-white rounded-full shadow-md transition-transform ${formData.customTimezoneEnabled ? 'translate-x-5' : 'translate-x-0.5'}`}></div>
+                                           <div className={`absolute top-0.5 left-0.5 w-6 h-6 bg-white rounded-full shadow-md transition-transform ${formData.customTimezoneEnabled ? 'translate-x-5' : 'translate-x-0.5'}`}></div>
                                        </button>
                                    </div>
                                    {formData.customTimezoneEnabled && (
@@ -1442,7 +1442,7 @@ ${isInitialGeneration ? `
                                            onClick={() => handleChange('dateTimeAwarenessEnabled', formData.dateTimeAwarenessEnabled === false ? undefined : false)}
                                            className={`w-12 h-7 rounded-full transition-colors relative shrink-0 ${formData.dateTimeAwarenessEnabled !== false ? 'bg-primary' : 'bg-slate-200'}`}
                                        >
-                                           <div className={`absolute top-0.5 w-6 h-6 bg-white rounded-full shadow-md transition-transform ${formData.dateTimeAwarenessEnabled !== false ? 'translate-x-5' : 'translate-x-0.5'}`}></div>
+                                           <div className={`absolute top-0.5 left-0.5 w-6 h-6 bg-white rounded-full shadow-md transition-transform ${formData.dateTimeAwarenessEnabled !== false ? 'translate-x-5' : 'translate-x-0.5'}`}></div>
                                        </button>
                                    </div>
                                </div>
@@ -1466,7 +1466,7 @@ ${isInitialGeneration ? `
                                            onClick={() => handleChange('lifeRecordEnabled', !formData.lifeRecordEnabled)}
                                            className={`w-12 h-7 rounded-full transition-colors relative shrink-0 ${formData.lifeRecordEnabled ? 'bg-primary' : 'bg-slate-200'}`}
                                        >
-                                           <div className={`absolute top-0.5 w-6 h-6 bg-white rounded-full shadow-md transition-transform ${formData.lifeRecordEnabled ? 'translate-x-5' : 'translate-x-0.5'}`}></div>
+                                           <div className={`absolute top-0.5 left-0.5 w-6 h-6 bg-white rounded-full shadow-md transition-transform ${formData.lifeRecordEnabled ? 'translate-x-5' : 'translate-x-0.5'}`}></div>
                                        </button>
                                    </div>
                                </div>
@@ -1488,7 +1488,7 @@ ${isInitialGeneration ? `
                                                onClick={() => handleChange(field, formData[field] === false)}
                                                className={`w-12 h-7 rounded-full transition-colors relative shrink-0 ${formData[field] !== false ? 'bg-primary' : 'bg-slate-200'}`}
                                            >
-                                               <div className={`absolute top-0.5 w-6 h-6 bg-white rounded-full shadow-md transition-transform ${formData[field] !== false ? 'translate-x-5' : 'translate-x-0.5'}`}></div>
+                                               <div className={`absolute top-0.5 left-0.5 w-6 h-6 bg-white rounded-full shadow-md transition-transform ${formData[field] !== false ? 'translate-x-5' : 'translate-x-0.5'}`}></div>
                                            </button>
                                        </div>
                                    ))}
