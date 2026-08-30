@@ -93,6 +93,45 @@ const sanitizeBuffs = (buffs?: CharacterBuff[]): CharacterBuff[] => {
         .filter((buff): buff is CharacterBuff => !!buff);
 };
 
+/**
+ * 新情绪置顶，旧情绪顺延。
+ *
+ * 模型维护 buffs 时通常会先复述旧数组，再把刚出现的情绪 append 到末尾；UI 如果原样渲染，
+ * 新情绪就永远躲在「+N」后面。这里用上一轮持久化快照判定新旧：
+ * - id 相同 = 同一条
+ * - name 相同 = 同一语义（兼容模型偶尔改 id）
+ * - label 相同 = 同一展示情绪（兼容 name 轻微漂移）
+ *
+ * 只把“本轮真正新增”的条目提到前面；已有情绪之间仍保持模型本轮给出的相对顺序，
+ * 因此强度变化不会让整排标签反复跳来跳去。
+ */
+export const prioritizeNewBuffs = (
+    nextBuffs: CharacterBuff[],
+    previousBuffs: CharacterBuff[],
+): CharacterBuff[] => {
+    if (nextBuffs.length <= 1 || previousBuffs.length === 0) return nextBuffs;
+
+    const previousIds = new Set(previousBuffs.map(buff => buff.id?.trim()).filter(Boolean));
+    const previousNames = new Set(previousBuffs.map(buff => buff.name?.trim().toLowerCase()).filter(Boolean));
+    const previousLabels = new Set(previousBuffs.map(buff => buff.label?.trim()).filter(Boolean));
+
+    const isExisting = (buff: CharacterBuff): boolean => {
+        const id = buff.id?.trim();
+        const name = buff.name?.trim().toLowerCase();
+        const label = buff.label?.trim();
+        return (id ? previousIds.has(id) : false)
+            || (name ? previousNames.has(name) : false)
+            || (label ? previousLabels.has(label) : false);
+    };
+
+    const newlyAdded: CharacterBuff[] = [];
+    const existing: CharacterBuff[] = [];
+    for (const buff of nextBuffs) {
+        (isExisting(buff) ? existing : newlyAdded).push(buff);
+    }
+    return newlyAdded.length > 0 ? [...newlyAdded, ...existing] : nextBuffs;
+};
+
 // ─── JSON 修复链 (全部 string-aware 逐字符扫描, 不用正则盲扫以免误伤字符串内容) ───
 
 // 修复 1: 把 JSON 字符串值里的裸换行/制表符转义, 兼容 LLM 偶尔吐未转义控制字符的情况.
@@ -454,10 +493,13 @@ export async function applyEmotionEvalRaw(
 
         // buffs 数组在场 → 完整更新 (数组为空 = 模型主动清空, 尊重).
         // buffs 缺失但 injection 在场 (抢救场景) → 保留旧 buffs, 只换 injection.
-        const sanitizedBuffs = (hasBuffArray ? sanitizeBuffs(result.buffs) : (latestChar.activeBuffs || []))
+        const sanitizedSnapshot = (hasBuffArray ? sanitizeBuffs(result.buffs) : (latestChar.activeBuffs || []))
             .map(buff => typeof buff.description === 'string'
                 ? { ...buff, description: replaceInternalUserLabel(buff.description, userName) }
                 : buff);
+        const sanitizedBuffs = hasBuffArray
+            ? prioritizeNewBuffs(sanitizedSnapshot, latestChar.activeBuffs || [])
+            : sanitizedSnapshot;
         const buffInjection = hasInjection
             ? replaceInternalUserLabel(result.injection!, userName)
             : (hasBuffArray ? '' : (latestChar.buffInjection || ''));

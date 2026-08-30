@@ -15,7 +15,7 @@ vi.mock('./db', () => ({ DB: {
     getAllCharacters: () => getAllCharacters(),
 } }));
 
-import { parseEmotionEvalOutput, applyEmotionEvalRaw, extractAssistantText } from './emotionApply';
+import { parseEmotionEvalOutput, applyEmotionEvalRaw, extractAssistantText, prioritizeNewBuffs } from './emotionApply';
 
 const makeChar = (extra: any = {}): any => ({
     id: 'char-1',
@@ -141,6 +141,31 @@ describe('parseEmotionEvalOutput — 格式劣化修复', () => {
     it('彻底没有 JSON → null', () => {
         expect(parseEmotionEvalOutput('抱歉，我无法完成这个分析。')).toBeNull();
         expect(parseEmotionEvalOutput('')).toBeNull();
+    });
+});
+
+describe('prioritizeNewBuffs — 新情绪置顶', () => {
+    const oldA = { id: 'a', name: 'old_a', label: '旧A', intensity: 2 } as any;
+    const oldB = { id: 'b', name: 'old_b', label: '旧B', intensity: 3 } as any;
+
+    it('模型把新情绪 append 到末尾时，落地前自动顶到最前', () => {
+        const fresh = { id: 'c', name: 'fresh_c', label: '新C', intensity: 4 } as any;
+        expect(prioritizeNewBuffs([oldA, oldB, fresh], [oldA, oldB]).map(buff => buff.id))
+            .toEqual(['c', 'a', 'b']);
+    });
+
+    it('已有情绪只改强度，不视为新条目，不改变顺序', () => {
+        const changedA = { ...oldA, intensity: 5 };
+        const changedB = { ...oldB, intensity: 1 };
+        expect(prioritizeNewBuffs([changedB, changedA], [oldA, oldB]).map(buff => buff.id))
+            .toEqual(['b', 'a']);
+    });
+
+    it('模型偶尔换 id 但 name/label 相同，仍认作旧情绪', () => {
+        const sameFeelingNewId = { id: 'new-id', name: 'old_a', label: '旧A', intensity: 4 } as any;
+        const fresh = { id: 'fresh', name: 'fresh', label: '全新', intensity: 3 } as any;
+        expect(prioritizeNewBuffs([sameFeelingNewId, fresh], [oldA]).map(buff => buff.id))
+            .toEqual(['fresh', 'new-id']);
     });
 });
 
