@@ -30,7 +30,7 @@ interface ChatInputAreaProps {
     onUpdateTheme?: (id: string) => void;
     onRemoveTheme?: (id: string) => void;
     activeThemeId?: string;
-    /** 提供时整体替换内置 actions 双页网格——群聊传自己的功能格。不传 = 原行为 */
+    /** 提供时整体替换内置 actions 分页网格——群聊传自己的功能格。不传 = 原行为 */
     actionsContent?: React.ReactNode;
     onPanelAction: (type: string, payload?: any) => void;
     onImageSelect: (file: File) => void;
@@ -668,13 +668,13 @@ const ChatInputArea: React.FC<ChatInputAreaProps> = ({
                         </>
                     )}
 
-                    {/* Actions Panel：外部提供 actionsContent 时整体替换内置双页网格 */}
+                    {/* Actions Panel：外部提供 actionsContent 时整体替换内置分页网格 */}
                     {showPanel === 'actions' && actionsContent && (
                         <div className="overflow-y-auto no-scrollbar">
                             {actionsContent}
                         </div>
                     )}
-                    {/* Actions Panel (paginated: page 0 = 内置功能, page 1 = 外部服务, page 2 = 记忆链接) */}
+                    {/* Actions Panel：固定 4 列，每页最多 8 个功能项；新增项向后顺延，最后一页兼容记忆链接。 */}
                     {showPanel === 'actions' && !actionsContent && (
                         <div
                             className="overflow-y-auto no-scrollbar"
@@ -749,6 +749,10 @@ const ChatInputArea: React.FC<ChatInputAreaProps> = ({
 
                             {/* 情绪按钮已并入日程 — 情绪/意识流与日程强制同步，配置面板在日程 Modal 下方 */}
 
+                          </div>
+
+                          {/* Page 1: 顺延后的第 9–16 个功能项，保持两行上限。 */}
+                          <div className={`p-6 grid grid-cols-4 gap-8 ${actionsPage === 1 ? '' : 'hidden'}`}>
                             {/* Schedule Button */}
                             <button onClick={() => onPanelAction('schedule')} className={`flex flex-col items-center gap-2 active:scale-95 transition-transform ${acnh ? 'text-[#725d42]' : isDiscordStyle ? 'text-slate-200' : 'text-slate-600'}`}>
                                 {acnh ? <AcnhActionTile kind="schedule" /> : (
@@ -758,10 +762,6 @@ const ChatInputArea: React.FC<ChatInputAreaProps> = ({
                                 <span className="text-xs font-bold">日程/情绪</span>
                             </button>
 
-                          </div>
-
-                          {/* Page 1: 外部服务 */}
-                          <div className={`p-6 grid grid-cols-4 gap-8 ${actionsPage === 1 ? '' : 'hidden'}`}>
                             {/* Proactive Message Button（从第一页移到第二页） */}
                             <button onClick={() => onPanelAction('proactive')} className={`flex flex-col items-center gap-2 active:scale-95 transition-transform relative ${acnh ? 'text-[#725d42]' : isDiscordStyle ? 'text-slate-200' : 'text-slate-600'}`}>
                                 {acnh ? <AcnhActionTile kind="proactive" /> : (
@@ -867,6 +867,11 @@ const ChatInputArea: React.FC<ChatInputAreaProps> = ({
                               <span className="text-xs font-bold">白框</span>
                             </button>
 
+                          </div>
+
+                          {/* Page 2: 承接前两页溢出的功能项，并保留本轮记忆修补入口。 */}
+                          <div className={`${actionsPage === 2 ? 'flex' : 'hidden'} min-h-[13rem] px-6 py-5 flex-col items-center justify-center text-center`}>
+                             <div className="w-full grid grid-cols-4 gap-8 mb-4">
                             {/* 提示音：打开该角色专属的「白框提示音」弹窗（挨着白框，独立于白框可绑定/解绑） */}
                             <button
                               onClick={() => onPanelAction('chrome-sound')}
@@ -877,10 +882,7 @@ const ChatInputArea: React.FC<ChatInputAreaProps> = ({
                               </div>
                               <span className="text-xs font-bold">提示音</span>
                             </button>
-                          </div>
-
-                          {/* Page 2: 本轮记忆修补。单独成页，避免挤压常用功能。 */}
-                          <div className={`${actionsPage === 2 ? 'flex' : 'hidden'} min-h-[13rem] px-6 py-5 flex-col items-center justify-center text-center`}>
+                             </div>
                             <div className={`mb-3 text-[9px] font-bold uppercase tracking-[.24em] ${isDiscordStyle ? 'text-purple-300/55' : acnh ? 'text-[#8f7658]/65' : 'text-purple-400/55'}`}>
                               memory repair
                             </div>
