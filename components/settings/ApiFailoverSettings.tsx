@@ -225,7 +225,7 @@ const ApiFailoverSettings: React.FC<Props> = ({ addToast }) => {
                         className="rounded-2xl border border-slate-100 bg-white/70 p-4 space-y-3"
                     >
                         <div className="flex items-center justify-between gap-3">
-                            <div>
+                            <div className="min-w-0">
                                 <div className="text-sm font-bold text-slate-700">
                                     {group.name}线路
                                 </div>
@@ -247,17 +247,21 @@ const ApiFailoverSettings: React.FC<Props> = ({ addToast }) => {
                                         !group.enabled,
                                     )
                                 }
-                                className={`relative h-6 w-11 rounded-full transition-colors ${
+                                className="shrink-0 appearance-none border-0 bg-transparent p-0"
+                                aria-label={`${effectiveEnabled ? '关闭' : '开启'}${group.name}线路故障转移`}
+                                aria-pressed={effectiveEnabled}
+                            >
+                                <span className={`flex h-6 w-10 items-center rounded-full p-1 transition-colors ${
                                     effectiveEnabled
                                         ? 'bg-emerald-500'
                                         : 'bg-slate-200'
-                                }`}
-                            >
-                                <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${
-                                    effectiveEnabled
-                                        ? 'translate-x-5'
-                                        : 'translate-x-0.5'
-                                }`} />
+                                }`}>
+                                    <span className={`h-4 w-4 rounded-full bg-white shadow-sm transition-transform ${
+                                        effectiveEnabled
+                                            ? 'translate-x-4'
+                                            : ''
+                                    }`} />
+                                </span>
                             </button>
                         </div>
 
@@ -288,40 +292,46 @@ const ApiFailoverSettings: React.FC<Props> = ({ addToast }) => {
                                         key={`${member.presetId}-${index}`}
                                         className="flex items-center gap-2 rounded-xl border border-slate-100 bg-slate-50/80 p-2"
                                     >
-                                        <div className="w-6 text-center text-[11px] font-bold text-slate-400">
+                                        <div className="w-6 shrink-0 text-center text-[11px] font-bold text-slate-400">
                                             {index + 1}
                                         </div>
 
-                                        <select
-                                            value={member.presetId}
-                                            onChange={event =>
-                                                replaceRoute(
-                                                    group.scope,
-                                                    index,
-                                                    event.target.value,
-                                                )
-                                            }
-                                            className={`min-w-0 flex-1 rounded-lg border px-2 py-2 text-xs ${
-                                                preset
-                                                    ? 'border-slate-200 bg-white text-slate-700'
-                                                    : 'border-rose-200 bg-rose-50 text-rose-600'
-                                            }`}
-                                        >
-                                            {!preset && (
-                                                <option value={member.presetId}>
-                                                    已缺失：{member.presetId}
-                                                </option>
+                                        <div className="min-w-0 flex-1">
+                                            <select
+                                                value={member.presetId}
+                                                onChange={event =>
+                                                    replaceRoute(
+                                                        group.scope,
+                                                        index,
+                                                        event.target.value,
+                                                    )
+                                                }
+                                                className={`w-full min-w-0 rounded-lg border px-2 py-2 text-xs ${
+                                                    preset
+                                                        ? 'border-slate-200 bg-white text-slate-700'
+                                                        : 'border-rose-200 bg-rose-50 text-rose-600'
+                                                }`}
+                                            >
+                                                {!preset && (
+                                                    <option value={member.presetId}>
+                                                        已缺失：{member.presetId}
+                                                    </option>
+                                                )}
+                                                {candidates.map(item => (
+                                                    <option
+                                                        key={item.id}
+                                                        value={item.id}
+                                                    >
+                                                        {item.name} · {item.config.model}
+                                                    </option>
+                                                ))}
+                                            </select>
+                                            {issueLabel && (
+                                                <div className="mt-1 break-words text-[9px] leading-tight text-rose-500">
+                                                    {issueLabel}
+                                                </div>
                                             )}
-                                            {candidates.map(item => (
-                                                <option
-                                                    key={item.id}
-                                                    value={item.id}
-                                                >
-                                                    {item.name} · {item.config.model}
-                                                </option>
-                                            ))}
-                                        </select>
-                                        {issueLabel && <div className="mt-1 text-[9px] text-rose-500">{issueLabel}</div>}
+                                        </div>
 
                                         <button
                                             type="button"
@@ -333,7 +343,7 @@ const ApiFailoverSettings: React.FC<Props> = ({ addToast }) => {
                                                     -1,
                                                 )
                                             }
-                                            className="rounded-lg px-2 py-1.5 text-xs text-slate-400 disabled:opacity-20"
+                                            className="shrink-0 rounded-lg px-2 py-1.5 text-xs text-slate-400 disabled:opacity-20"
                                             aria-label="上移"
                                         >
                                             ↑
@@ -351,7 +361,7 @@ const ApiFailoverSettings: React.FC<Props> = ({ addToast }) => {
                                                     1,
                                                 )
                                             }
-                                            className="rounded-lg px-2 py-1.5 text-xs text-slate-400 disabled:opacity-20"
+                                            className="shrink-0 rounded-lg px-2 py-1.5 text-xs text-slate-400 disabled:opacity-20"
                                             aria-label="下移"
                                         >
                                             ↓
@@ -364,7 +374,7 @@ const ApiFailoverSettings: React.FC<Props> = ({ addToast }) => {
                                                     index,
                                                 )
                                             }
-                                            className="rounded-lg px-2 py-1.5 text-xs text-rose-400"
+                                            className="shrink-0 rounded-lg px-2 py-1.5 text-xs text-rose-400"
                                             aria-label="删除线路"
                                         >
                                             ×
