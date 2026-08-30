@@ -20,6 +20,8 @@ import {
     DEFAULT_ELEVENLABS_MODEL,
     ELEVENLABS_MODEL_OPTIONS,
     getElevenLabsVoiceActingGuide,
+    normalizeElevenLabsVoiceId,
+    synthesizeSpeechElevenLabsDetailed,
 } from '../utils/elevenLabsTts';
 import { DATE_VOICE_GUIDE } from '../utils/datePrompts';
 import { Sun, Newspaper, NotePencil, Notebook, Book, ForkKnife, Coffee, PlugsConnected } from '@phosphor-icons/react';
@@ -525,6 +527,8 @@ const Settings: React.FC = () => {
   const [localElevenLabsSimilarityBoost, setLocalElevenLabsSimilarityBoost] = useState(apiConfig.elevenLabsSimilarityBoost ?? 0.8);
   const [localElevenLabsStyle, setLocalElevenLabsStyle] = useState(apiConfig.elevenLabsStyle ?? 0);
   const [localElevenLabsUseSpeakerBoost, setLocalElevenLabsUseSpeakerBoost] = useState(apiConfig.elevenLabsUseSpeakerBoost === true);
+  const [localElevenLabsTestVoiceId, setLocalElevenLabsTestVoiceId] = useState('');
+  const [testingElevenLabs, setTestingElevenLabs] = useState(false);
   // 自定义语音表演指南（留空 → 用内置默认）。按服务商分别保存。
   const [localVoicePromptMinimax, setLocalVoicePromptMinimax] = useState(apiConfig.voicePrompts?.minimax || '');
   const [localVoicePromptFish, setLocalVoicePromptFish] = useState(apiConfig.voicePrompts?.fishaudio || '');
@@ -1195,6 +1199,55 @@ const Settings: React.FC = () => {
   const selectElevenLabsModel = (model: string) => {
     setLocalElevenLabsModel(model);
     updateApiConfig(buildOtherApiConfig({ elevenLabsModel: model }));
+  };
+
+  const testElevenLabs = async () => {
+    const voiceId = normalizeElevenLabsVoiceId(localElevenLabsTestVoiceId);
+    if (!localElevenLabsKey.trim() || !voiceId) {
+      addToast('请先填写 ElevenLabs API Key 和测试 Voice ID', 'info');
+      return;
+    }
+    if (testingElevenLabs) return;
+
+    setTestingElevenLabs(true);
+    let previewUrl = '';
+    const releasePreviewUrl = () => {
+      if (previewUrl.startsWith('blob:')) URL.revokeObjectURL(previewUrl);
+      previewUrl = '';
+    };
+
+    try {
+      const sample = localElevenLabsModel === 'eleven_v3'
+        ? '[sighs] 好吧……我承认，我刚刚确实有一点点担心你。'
+        : '好吧……我承认，我刚刚确实有一点点担心你。';
+      const testChar = {
+        id: '__eleven_test__',
+        name: 'ElevenLabs 测试',
+        avatar: '',
+        systemPrompt: '',
+        voiceProfile: { elevenLabsVoiceId: voiceId, speed: 1 },
+      } as any;
+      const { url } = await synthesizeSpeechElevenLabsDetailed(sample, testChar, {
+        ...apiConfig,
+        elevenLabsApiKey: localElevenLabsKey.trim(),
+        elevenLabsModel: localElevenLabsModel,
+        elevenLabsStability: localElevenLabsStability,
+        elevenLabsSimilarityBoost: localElevenLabsSimilarityBoost,
+        elevenLabsStyle: localElevenLabsStyle,
+        elevenLabsUseSpeakerBoost: localElevenLabsUseSpeakerBoost,
+      } as APIConfig);
+      previewUrl = url;
+      const audio = new Audio(url);
+      audio.onended = releasePreviewUrl;
+      audio.onerror = releasePreviewUrl;
+      await audio.play();
+      addToast('ElevenLabs 测试语音已开始播放', 'success');
+    } catch (error) {
+      releasePreviewUrl();
+      addToast(error instanceof Error ? error.message : String(error), 'error');
+    } finally {
+      setTestingElevenLabs(false);
+    }
   };
 
   const fetchModels = async () => {
@@ -2567,7 +2620,90 @@ const Settings: React.FC = () => {
 
 
 
-                {/* 底部：当前语音引擎二选一 —— radio 样式（不是 tab 切换，配置都在上面，这里只挑用哪家） */}
+                                {/* ElevenLabs：全局账号 / 模型 / 通用声音参数；角色 Voice ID 在角色页独立保存。 */}
+                <div className="group">
+                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 block pl-1">ElevenLabs API Key</label>
+                    <SensitiveTextInput
+                        name="elevenlabs-api-key"
+                        autoComplete="new-password"
+                        spellCheck={false}
+                        value={localElevenLabsKey}
+                        onChange={(e) => setLocalElevenLabsKey(e.target.value)}
+                        placeholder="ElevenLabs API Key"
+                        className="w-full bg-white/50 border border-slate-200/60 rounded-xl px-4 py-2.5 text-sm font-mono focus:bg-white transition-all"
+                    />
+                    <p className="text-[11px] text-slate-400 mt-1 pl-1">
+                        在 <a href="https://elevenlabs.io/app/settings/api-keys" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline font-semibold">ElevenLabs API Keys</a> 创建。角色音色在「角色 → 语音」填写 Voice ID。
+                    </p>
+
+                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-3 mb-1.5 block pl-1">ElevenLabs 模型</label>
+                    <select
+                        value={localElevenLabsModel}
+                        onChange={(e) => selectElevenLabsModel(e.target.value)}
+                        className="w-full bg-white/50 border border-slate-200/60 rounded-xl px-3 py-2.5 text-sm focus:bg-white transition-all"
+                    >
+                        {ELEVENLABS_MODEL_OPTIONS.map((option) => (
+                            <option key={option.value} value={option.value}>{option.label}</option>
+                        ))}
+                    </select>
+                    <p className="text-[11px] text-slate-400 mt-1 pl-1">
+                        Flash v2.5 更适合实时聊天；v3 支持更丰富的方括号 Audio Tags。切换模型时内置语音提示规则也会同步切换。
+                    </p>
+
+                    <details className="mt-3 rounded-xl border border-slate-200/60 bg-white/35 px-3 py-2">
+                        <summary className="cursor-pointer text-[11px] font-semibold text-slate-500 select-none">声音参数（高级）</summary>
+                        <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                            {([
+                                ['稳定度', localElevenLabsStability, setLocalElevenLabsStability],
+                                ['相似度', localElevenLabsSimilarityBoost, setLocalElevenLabsSimilarityBoost],
+                                ['风格强度', localElevenLabsStyle, setLocalElevenLabsStyle],
+                            ] as const).map(([label, value, setter]) => (
+                                <label key={label} className="text-[11px] text-slate-500">
+                                    <span className="flex justify-between mb-1"><span>{label}</span><span className="font-mono">{value.toFixed(2)}</span></span>
+                                    <input
+                                        type="range"
+                                        min="0"
+                                        max="1"
+                                        step="0.05"
+                                        value={value}
+                                        onChange={(e) => setter(Number(e.target.value))}
+                                        className="w-full accent-primary"
+                                    />
+                                </label>
+                            ))}
+                            <label className="flex items-center justify-between gap-3 text-[11px] text-slate-500 sm:col-span-2">
+                                <span>Speaker Boost（更贴近原音色，可能增加少量延迟）</span>
+                                <input
+                                    type="checkbox"
+                                    checked={localElevenLabsUseSpeakerBoost}
+                                    onChange={(e) => setLocalElevenLabsUseSpeakerBoost(e.target.checked)}
+                                    className="w-4 h-4 accent-primary"
+                                />
+                            </label>
+                        </div>
+                    </details>
+
+                    <div className="mt-3 rounded-xl border border-violet-200/70 bg-violet-50/40 p-3">
+                        <div className="text-[10px] font-bold text-violet-600 uppercase tracking-widest mb-1">独立调试 / 试听</div>
+                        <p className="text-[10px] text-slate-400 mb-2">测试 Voice ID 只用于这次试听，不会保存到角色。</p>
+                        <input
+                            value={localElevenLabsTestVoiceId}
+                            onChange={(e) => setLocalElevenLabsTestVoiceId(e.target.value)}
+                            placeholder="测试 Voice ID 或 ElevenLabs 音色页面链接"
+                            className="w-full bg-white rounded-xl px-3 py-2 text-xs font-mono border border-violet-200"
+                        />
+                        <button
+                            type="button"
+                            onClick={() => void testElevenLabs()}
+                            disabled={testingElevenLabs}
+                            className="w-full mt-2 py-2 rounded-xl border border-violet-200 bg-white text-violet-700 text-xs font-bold disabled:opacity-50"
+                        >
+                            {testingElevenLabs ? '测试中…' : '测试 ElevenLabs'}
+                        </button>
+                    </div>
+                </div>
+
+                {/* 底部：当前语音引擎三选一 —— radio 样式（不是 tab 切换，配置都在上面，这里只挑用哪家） */}
                 <div className="group rounded-2xl border border-slate-200/70 bg-slate-50/60 p-3">
                     <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-0.5 block">当前语音引擎（三选一）</label>
                     <p className="text-[11px] text-slate-400 mb-2.5">聊天语音条 / 约会 / 电话用哪一家。上面三家的配置都会保留，这里只切换当前生效的。</p>
