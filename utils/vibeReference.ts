@@ -1,4 +1,3 @@
-import type { NovelAiPreciseReferenceConfig } from '../types';
 import {
     clampReferenceUnit,
     createReferenceConfigFromSource,
@@ -8,21 +7,30 @@ import {
 export const VIBE_REFERENCE_LIBRARY_KEY = 'aetheros.imageGeneration.vibeLibrary.v1';
 export const VIBE_REFERENCE_CHANGED_EVENT = 'sullyos:vibe-reference-changed';
 
-export interface VibeReferenceItem extends NovelAiPreciseReferenceConfig {
+export interface VibeReferenceItem {
     id: string;
     name: string;
-    type: 'style';
+    enabled: boolean;
+    imageRef: string;
+    imageSha256: string;
+    slotId: string;
+    sourceName?: string;
+    updatedAt: number;
+    /** Vibe Transfer Reference Strength. This does not affect the encoding cache key. */
+    strength: number;
+    /** Vibe Transfer Information Extracted. Changing it requires a new encoding. */
+    informationExtracted: number;
 }
 
 export interface VibeReferenceLibrary {
-    version: 1;
+    version: 2;
     enabled: boolean;
     activeId: string | null;
     items: VibeReferenceItem[];
 }
 
 const EMPTY_LIBRARY: VibeReferenceLibrary = {
-    version: 1,
+    version: 2,
     enabled: false,
     activeId: null,
     items: [],
@@ -40,15 +48,17 @@ function sanitizeItem(value: unknown): VibeReferenceItem | null {
         name: typeof raw.name === 'string' && raw.name.trim()
             ? raw.name.trim().slice(0, 80)
             : (typeof raw.sourceName === 'string' && raw.sourceName.trim() ? raw.sourceName.trim().slice(0, 80) : '未命名 Vibe'),
-        enabled: true,
+        enabled: raw.enabled !== false,
         imageRef: String(raw.imageRef),
         imageSha256: typeof raw.imageSha256 === 'string' ? raw.imageSha256 : '',
         slotId: String(raw.slotId),
-        type: 'style',
-        strength: clampReferenceUnit(Number.isFinite(raw.strength) ? raw.strength : 0.6),
-        fidelity: clampReferenceUnit(Number.isFinite(raw.fidelity) ? raw.fidelity : 0.85),
         sourceName: typeof raw.sourceName === 'string' ? raw.sourceName : undefined,
         updatedAt,
+        strength: clampReferenceUnit(Number.isFinite(raw.strength) ? raw.strength : 0.6),
+        // 旧版误把 Vibe 做成 Style Precise，fidelity 没有可迁移语义；迁移时回到官方默认 1.0。
+        informationExtracted: clampReferenceUnit(
+            Number.isFinite(raw.informationExtracted) ? raw.informationExtracted : 1,
+        ),
     };
 }
 
@@ -64,7 +74,7 @@ export function loadVibeReferenceLibrary(): VibeReferenceLibrary {
             ? parsed.activeId
             : (items[0]?.id || null);
         return {
-            version: 1,
+            version: 2,
             enabled: parsed?.enabled === true && Boolean(activeId),
             activeId,
             items,
@@ -80,7 +90,7 @@ export function saveVibeReferenceLibrary(library: VibeReferenceLibrary): void {
         ? library.activeId
         : (items[0]?.id || null);
     const normalized: VibeReferenceLibrary = {
-        version: 1,
+        version: 2,
         enabled: library.enabled === true && Boolean(activeId),
         activeId,
         items,
@@ -92,20 +102,25 @@ export function saveVibeReferenceLibrary(library: VibeReferenceLibrary): void {
 export function getActiveVibeReference(): VibeReferenceItem | null {
     const library = loadVibeReferenceLibrary();
     if (!library.enabled || !library.activeId) return null;
-    return library.items.find(item => item.id === library.activeId) || null;
+    const item = library.items.find(candidate => candidate.id === library.activeId) || null;
+    return item?.enabled ? item : null;
 }
 
 export async function addVibeReference(source: Blob, sourceName: string): Promise<VibeReferenceItem> {
-    const reference = await createReferenceConfigFromSource(source, sourceName);
+    // 复用现有“参考图缩放 + 本地 blob + 私有 slot”基础设施，但语义不再是 Precise Reference。
+    const prepared = await createReferenceConfigFromSource(source, sourceName);
     const now = Date.now();
     const item: VibeReferenceItem = {
-        ...reference,
         id: `vibe_${now}_${Math.random().toString(36).slice(2, 8)}`,
         name: sourceName.replace(/\.[^.]+$/, '').trim().slice(0, 80) || '未命名 Vibe',
-        type: 'style',
-        strength: 0.6,
-        fidelity: 0.85,
+        enabled: true,
+        imageRef: prepared.imageRef,
+        imageSha256: prepared.imageSha256,
+        slotId: prepared.slotId,
+        sourceName: prepared.sourceName,
         updatedAt: now,
+        strength: 0.6,
+        informationExtracted: 1,
     };
     const library = loadVibeReferenceLibrary();
     library.items.push(item);
@@ -115,13 +130,18 @@ export async function addVibeReference(source: Blob, sourceName: string): Promis
     return item;
 }
 
-export function updateVibeReference(id: string, patch: Partial<Pick<VibeReferenceItem, 'name' | 'strength' | 'fidelity'>>): void {
+export function updateVibeReference(
+    id: string,
+    patch: Partial<Pick<VibeReferenceItem, 'name' | 'strength' | 'informationExtracted'>>,
+): void {
     const library = loadVibeReferenceLibrary();
     library.items = library.items.map(item => item.id === id ? {
         ...item,
         ...(typeof patch.name === 'string' ? { name: patch.name.trim().slice(0, 80) || item.name } : {}),
         ...(patch.strength !== undefined ? { strength: clampReferenceUnit(patch.strength) } : {}),
-        ...(patch.fidelity !== undefined ? { fidelity: clampReferenceUnit(patch.fidelity) } : {}),
+        ...(patch.informationExtracted !== undefined
+            ? { informationExtracted: clampReferenceUnit(patch.informationExtracted) }
+            : {}),
         updatedAt: Date.now(),
     } : item);
     saveVibeReferenceLibrary(library);
@@ -147,7 +167,7 @@ export async function removeVibeReference(id: string): Promise<void> {
     if (library.activeId === id) library.activeId = library.items[0]?.id || null;
     if (!library.activeId) library.enabled = false;
     saveVibeReferenceLibrary(library);
-    if (removed) void deleteRemoteNovelAiReference(removed).catch(() => {});
+    if (removed) void deleteRemoteNovelAiReference(removed as any).catch(() => {});
 }
 
 export function clearVibeReferenceLibrary(): void {
@@ -163,7 +183,7 @@ export function importVibeReferenceLibrary(value: unknown): void {
     if (!value || typeof value !== 'object') return;
     const raw = value as any;
     saveVibeReferenceLibrary({
-        version: 1,
+        version: 2,
         enabled: raw.enabled === true,
         activeId: typeof raw.activeId === 'string' ? raw.activeId : null,
         items: Array.isArray(raw.items) ? raw.items : [],

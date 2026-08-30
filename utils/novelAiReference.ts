@@ -33,7 +33,7 @@ const REFERENCE_FIELDS = [
     'user_reference_fidelity',
     'vibe_reference_id',
     'vibe_reference_strength',
-    'vibe_reference_fidelity',
+    'vibe_reference_information_extracted',
     'use_character_reference',
     'use_user_reference',
     'use_vibe_reference',
@@ -362,7 +362,7 @@ export async function prepareBuiltinImageToolArguments({
         return args;
     }
 
-    const selection = {
+    const requestedSelection = {
         character: isCharacterReferenceAllowedForActivePreset()
             && args?.use_character_reference !== false,
         user: args?.use_user_reference !== false,
@@ -371,26 +371,46 @@ export async function prepareBuiltinImageToolArguments({
     const clean = sanitizeNovelAiReferenceToolArguments(args);
     const characterReference = character?.novelAiReference;
     const userReference = userProfile?.novelAiReference;
-    const vibeReference = selection.vibe ? getActiveVibeReference() : null;
+    const vibeReference = requestedSelection.vibe ? getActiveVibeReference() : null;
+    const vibeActive = Boolean(vibeReference?.enabled);
+
+    // NovelAI 官方当前不允许 Vibe Transfer 与 Precise Reference 同时使用。
+    // 用户明确打开 Vibe 时让 Vibe 优先，避免把两套互斥字段一起发给上游。
+    const preciseSelection = {
+        character: requestedSelection.character && !vibeActive,
+        user: requestedSelection.user && !vibeActive,
+    };
     const enabledReferences = [
-        { label: '当前角色', value: characterReference, selected: selection.character },
-        { label: '用户', value: userReference, selected: selection.user },
-        { label: 'Vibe', value: vibeReference, selected: selection.vibe },
+        { label: '当前角色', value: characterReference, selected: preciseSelection.character },
+        { label: '用户', value: userReference, selected: preciseSelection.user },
     ].filter(item => item.value?.enabled && item.selected) as Array<{ label: string; value: NovelAiPreciseReferenceConfig; selected: boolean }>;
-    if (!enabledReferences.length) return clean;
 
     for (const item of enabledReferences) {
         if (!item.value.imageRef) throw new Error(`${item.label}已开启精密参照，但没有参考图`);
         if (!SLOT_RE.test(item.value.slotId)) throw new Error(`${item.label}的精密参照槽位无效`);
     }
-    await Promise.all(enabledReferences.map(item => ensureNovelAiReferenceUploaded(item.value)));
+    if (vibeActive) {
+        if (!vibeReference?.imageRef) throw new Error('Vibe 已开启，但没有参考图');
+        if (!SLOT_RE.test(vibeReference.slotId)) throw new Error('Vibe 参考图槽位无效');
+    }
+    if (!enabledReferences.length && !vibeActive) return clean;
 
-    const result = applyManagedNovelAiReferenceArguments(clean, characterReference, userReference, selection);
-    if (vibeReference?.enabled && selection.vibe) {
+    await Promise.all([
+        ...enabledReferences.map(item => ensureNovelAiReferenceUploaded(item.value)),
+        ...(vibeActive ? [ensureNovelAiReferenceUploaded(vibeReference as any)] : []),
+    ]);
+
+    const result = applyManagedNovelAiReferenceArguments(
+        clean,
+        characterReference,
+        userReference,
+        preciseSelection,
+    );
+    if (vibeActive && vibeReference) {
         Object.assign(result, {
             vibe_reference_id: vibeReference.slotId,
             vibe_reference_strength: vibeReference.strength,
-            vibe_reference_fidelity: vibeReference.fidelity,
+            vibe_reference_information_extracted: vibeReference.informationExtracted,
         });
     }
     return result;

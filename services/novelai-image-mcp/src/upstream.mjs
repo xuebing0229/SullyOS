@@ -1,6 +1,7 @@
 import { randomBytes, randomInt } from "node:crypto";
 import { unzipSync } from "fflate";
 import { applyPreciseReference } from "./precise-reference.mjs";
+import { applyVibeTransfer, normalizeVibeUnit } from "./vibe-transfer.mjs";
 
 export const SIZE_PRESETS = Object.freeze({
   portrait: { width: 832, height: 1216 },
@@ -89,6 +90,7 @@ export function buildUpstreamRequest({
   ucPreset = "heavy",
   qualityTags = true,
   preciseReference = null,
+  vibeTransfer = null,
   config
 }) {
   assertPromptPolicy(prompt, config.promptLanguagePolicy);
@@ -150,6 +152,9 @@ export function buildUpstreamRequest({
   if (preciseReference) {
     parameters = applyPreciseReference(parameters, preciseReference);
   }
+  if (vibeTransfer) {
+    parameters = applyVibeTransfer(parameters, vibeTransfer);
+  }
 
   const basePayload = {
     action: "generate",
@@ -170,6 +175,45 @@ export function buildUpstreamRequest({
     negativePrompt,
     payload
   };
+}
+
+
+export async function encodeUpstreamVibe({
+  config,
+  imageBuffer,
+  modelId,
+  informationExtracted
+}) {
+  if (!Buffer.isBuffer(imageBuffer) || imageBuffer.length === 0) {
+    throw new Error("Vibe reference image is missing");
+  }
+  const requestId = `vibe-${correlationId()}`;
+  const headers = buildUpstreamHeaders(config, requestId);
+  headers.Accept = "application/octet-stream";
+  const info = normalizeVibeUnit(
+    informationExtracted,
+    "vibe_reference_information_extracted",
+    1
+  );
+  const response = await fetch(`${config.upstreamBaseUrl}/ai/encode-vibe`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      image: imageBuffer.toString("base64"),
+      information_extracted: info,
+      model: modelId
+    }),
+    signal: AbortSignal.timeout(config.upstreamTimeoutMs)
+  });
+  const body = Buffer.from(await response.arrayBuffer());
+  if (!response.ok) {
+    const message = body.toString("utf8").slice(0, 300);
+    throw new Error(
+      `Vibe encoding failed: HTTP ${response.status}${message ? ` - ${message}` : ""}. The current model or API route may not support Vibe Transfer.`
+    );
+  }
+  if (!body.length) throw new Error("Vibe encoding returned an empty response");
+  return body;
 }
 
 function detectImageFormat(buffer, hintedContentType = "") {

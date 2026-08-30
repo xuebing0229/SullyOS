@@ -412,3 +412,17 @@ test("custom requests without a reference remain byte-shape compatible", () => {
   assert.equal(Object.keys(result.payload.parameters).some(key => key.startsWith("director_reference")), false);
   assert.equal(result.payload.parameters.normalize_reference_strength_multiple, undefined);
 });
+
+
+test("encoded Vibe Transfer fields are applied independently from Precise Reference", () => {
+  const encodedBuffer = Buffer.from("encoded-vibe-token");
+  const result = buildUpstreamRequest({
+    prompt: "1girl",
+    config: { ...baseConfig, upstreamProfile: "custom" },
+    vibeTransfer: { encodedBuffer, strength: 0.6 }
+  });
+  assert.deepEqual(result.payload.parameters.reference_image_multiple, [encodedBuffer.toString("base64")]);
+  assert.deepEqual(result.payload.parameters.reference_strength_multiple, [0.6]);
+  assert.equal(result.payload.parameters.reference_information_extracted_multiple, undefined);
+  assert.equal(Object.keys(result.payload.parameters).some(key => key.startsWith("director_reference")), false);
+});

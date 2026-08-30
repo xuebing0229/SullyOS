@@ -8,13 +8,14 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 
 import { bootstrapRuntimeConfig, staticConfig } from "./config.mjs";
 import { createNovelRuntimeConfigStore, toUpstreamConfig } from "./runtime-config.mjs";
-import { buildUpstreamHeaders, buildUpstreamRequest, generateUpstreamImage } from "./upstream.mjs";
+import { buildUpstreamHeaders, buildUpstreamRequest, encodeUpstreamVibe, generateUpstreamImage } from "./upstream.mjs";
 import {
   backgroundJobOptionsFromEnv,
   createBackgroundJobService
 } from "./background-jobs.mjs";
 import { createReferenceStore } from "./reference-store.mjs";
 import { isNovelAiV45Model, preciseReferenceUnsupportedMessage } from "./precise-reference.mjs";
+import { createVibeEncodingCache } from "./vibe-transfer.mjs";
 import { normalizeNovelAiToolArguments } from "./tool-arguments.mjs";
 import {
   cleanupExpiredImages,
@@ -32,6 +33,9 @@ const runtimeStore = createNovelRuntimeConfigStore({
 });
 const referenceStore = createReferenceStore({
   directory: path.join(staticConfig.imageDir, "references")
+});
+const vibeEncodingCache = createVibeEncodingCache({
+  directory: path.join(staticConfig.imageDir, "vibe-cache")
 });
 
 function log(level, event, fields = {}) {
@@ -100,9 +104,9 @@ const novelAiInputShape = {
   user_reference_type: z.enum(["character", "style", "character&style"]).optional().default("character"),
   user_reference_strength: z.number().min(0).max(1).optional().default(0.75),
   user_reference_fidelity: z.number().min(0).max(1).optional().default(0.85),
-  vibe_reference_id: z.string().regex(/^[a-f0-9]{64}$/).optional().describe("SullyOS-managed active style reference slot. Never invent or expose it."),
+  vibe_reference_id: z.string().regex(/^[a-f0-9]{64}$/).optional().describe("SullyOS-managed Vibe Transfer source slot. Never invent or expose it."),
   vibe_reference_strength: z.number().min(0).max(1).optional().default(0.6),
-  vibe_reference_fidelity: z.number().min(0).max(1).optional().default(0.85)
+  vibe_reference_information_extracted: z.number().min(0).max(1).optional().default(1)
 };
 const novelAiArgumentsSchema = z.object(novelAiInputShape).strict();
 async function effectiveUpstreamConfig(runtimeOverride, { forcePersist = false } = {}) {
@@ -115,6 +119,9 @@ async function effectiveUpstreamConfig(runtimeOverride, { forcePersist = false }
 async function executeNovelAiGeneration(rawArgs, { runtimeOverride, forcePersist = false } = {}) {
   const args = novelAiArgumentsSchema.parse(normalizeNovelAiToolArguments(rawArgs));
   const { runtime, config } = await effectiveUpstreamConfig(runtimeOverride, { forcePersist });
+  const upstreamModel = args.model === "curated"
+    ? config.upstreamModelCurated
+    : config.upstreamModelFull;
   const referenceSpecs = [
     args.reference_id ? {
       id: args.reference_id,
@@ -129,18 +136,15 @@ async function executeNovelAiGeneration(rawArgs, { runtimeOverride, forcePersist
       type: args.user_reference_type,
       strength: args.user_reference_strength,
       fidelity: args.user_reference_fidelity
-    } : null,
-    args.vibe_reference_id ? {
-      id: args.vibe_reference_id,
-      label: "vibe",
-      type: "style",
-      strength: args.vibe_reference_strength,
-      fidelity: args.vibe_reference_fidelity
     } : null
   ].filter(Boolean);
+
+  if (args.vibe_reference_id && referenceSpecs.length) {
+    throw new Error("NovelAI Vibe Transfer cannot be combined with Precise Reference in the same generation");
+  }
+
   let preciseReference = null;
   if (referenceSpecs.length) {
-    const upstreamModel = args.model === "curated" ? config.upstreamModelCurated : config.upstreamModelFull;
     if (!isNovelAiV45Model(upstreamModel)) throw new Error("NovelAI Precise Reference is only supported by V4.5 Full/Curated models");
     preciseReference = await Promise.all(referenceSpecs.map(async reference => {
       const stored = await referenceStore.readImage(reference.id);
@@ -148,10 +152,34 @@ async function executeNovelAiGeneration(rawArgs, { runtimeOverride, forcePersist
       return { imageBuffer: stored.buffer, type: reference.type, strength: reference.strength, fidelity: reference.fidelity };
     }));
   }
+
+  let vibeTransfer = null;
+  let vibeEncodingCached = null;
+  if (args.vibe_reference_id) {
+    const stored = await referenceStore.readImage(args.vibe_reference_id);
+    if (!stored) throw new Error("The Vibe reference image is missing on the MCP server. Reopen Vibe library and sync it again.");
+    const encoded = await vibeEncodingCache.getOrCreate({
+      imageSha256: stored.metadata.sha256,
+      modelId: upstreamModel,
+      informationExtracted: args.vibe_reference_information_extracted,
+      encode: () => encodeUpstreamVibe({
+        config,
+        imageBuffer: stored.buffer,
+        modelId: upstreamModel,
+        informationExtracted: args.vibe_reference_information_extracted
+      })
+    });
+    vibeTransfer = {
+      encodedBuffer: encoded.buffer,
+      strength: args.vibe_reference_strength
+    };
+    vibeEncodingCached = encoded.cached;
+  }
+
   const request = buildUpstreamRequest({
     prompt: args.prompt, undesiredContent: args.undesired_content, model: args.model,
     size: args.size, seed: args.seed, steps: args.steps, guidance: args.guidance,
-    ucPreset: args.uc_preset, qualityTags: args.quality_tags, preciseReference, config
+    ucPreset: args.uc_preset, qualityTags: args.quality_tags, preciseReference, vibeTransfer, config
   });
   let generated;
   try { generated = await serializeGeneration(() => generateUpstreamImage({ config, request })); }
@@ -165,13 +193,15 @@ async function executeNovelAiGeneration(rawArgs, { runtimeOverride, forcePersist
     upstreamHost: new URL(runtime.baseUrl).host, modelPreset: args.model,
     upstreamModel: request.modelId, size: args.size, seed: generated.seed,
     delivery: forcePersist ? "background-proxy" : generated.imageUrl ? "direct" : "proxy",
-    referenceUsed: Boolean(preciseReference),
-    referenceCount: preciseReference?.length || 0,
+    referenceUsed: Boolean(preciseReference || vibeTransfer),
+    referenceCount: (preciseReference?.length || 0) + (vibeTransfer ? 1 : 0),
     ...(preciseReference ? { referenceTypes: preciseReference.map(reference => reference.type) } : {}),
+    vibeUsed: Boolean(vibeTransfer),
+    ...(vibeTransfer ? { vibeEncodingCached } : {}),
     ...(saved ? { fileName: saved.fileName } : {})
   });
   return {
-    structuredContent: { imageUrl, requestId: generated.requestId, seed: generated.seed, model: request.modelId, size: `${request.dimensions.width}x${request.dimensions.height}`, referenceUsed: Boolean(preciseReference), referenceCount: preciseReference?.length || 0, ...(saved ? { expiresAt: saved.expiresAt } : {}) },
+    structuredContent: { imageUrl, requestId: generated.requestId, seed: generated.seed, model: request.modelId, size: `${request.dimensions.width}x${request.dimensions.height}`, referenceUsed: Boolean(preciseReference || vibeTransfer), referenceCount: (preciseReference?.length || 0) + (vibeTransfer ? 1 : 0), vibeUsed: Boolean(vibeTransfer), ...(vibeTransfer ? { vibeEncodingCached } : {}), ...(saved ? { expiresAt: saved.expiresAt } : {}) },
     content: [{ type: "text", text: ["Image generated successfully.", `Image URL: ${imageUrl}`, `Seed: ${generated.seed}`, `Model: ${request.modelId}`, `Size: ${request.dimensions.width}x${request.dimensions.height}`, ...(saved ? [`Expires at: ${saved.expiresAt}`] : []), "Show the image to the user and continue speaking in character."].join("\n") }]
   };
 }
@@ -200,6 +230,7 @@ function createMcpServer() {
 }
 await initializeImageStorage(staticConfig.imageDir);
 await referenceStore.initialize();
+await vibeEncodingCache.initialize();
 await runtimeStore.load();
 const imageJobs = await createBackgroundJobService({
   ...backgroundJobOptionsFromEnv({

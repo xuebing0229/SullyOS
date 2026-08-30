@@ -70,7 +70,7 @@ const VibeReferenceLibraryModal: React.FC<Props> = ({ isOpen, onClose, onChanged
         refresh();
     };
 
-    const patchActive = (patch: { name?: string; strength?: number; fidelity?: number }) => {
+    const patchActive = (patch: { name?: string; strength?: number; informationExtracted?: number }) => {
         if (!library.activeId) return;
         updateVibeReference(library.activeId, patch);
         refresh();
@@ -160,21 +160,22 @@ const VibeReferenceLibraryModal: React.FC<Props> = ({ isOpen, onClose, onChanged
                             className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-bold text-slate-700 outline-none focus:border-violet-400"
                         />
                         <label className="block">
-                            <span className="flex justify-between text-[11px] text-slate-500"><b>Vibe 强度</b><span>{active.strength.toFixed(2)}</span></span>
+                            <span className="flex justify-between text-[11px] text-slate-500"><b>参考强度</b><span>{active.strength.toFixed(2)}</span></span>
                             <input type="range" min="0" max="1" step="0.05" value={active.strength} onChange={event => patchActive({ strength: Number(event.target.value) })} className="w-full accent-violet-500" />
                         </label>
                         <label className="block">
-                            <span className="flex justify-between text-[11px] text-slate-500"><b>风格保真</b><span>{active.fidelity.toFixed(2)}</span></span>
-                            <input type="range" min="0" max="1" step="0.05" value={active.fidelity} onChange={event => patchActive({ fidelity: Number(event.target.value) })} className="w-full accent-violet-500" />
+                            <span className="flex justify-between text-[11px] text-slate-500"><b>信息提取</b><span>{active.informationExtracted.toFixed(2)}</span></span>
+                            <input type="range" min="0" max="1" step="0.05" value={active.informationExtracted} onChange={event => patchActive({ informationExtracted: Number(event.target.value) })} className="w-full accent-violet-500" />
+                            <span className="mt-1 block text-[9px] leading-relaxed text-slate-400">改这个值会生成一份新的 Vibe 编码；同一张图 + 同一信息提取值命中缓存后不会重复编码。</span>
                         </label>
                         <button type="button" disabled={busy} onClick={() => void syncActive()} className="w-full rounded-xl bg-white border border-slate-200 py-2 text-xs font-bold text-slate-600 disabled:opacity-50">
-                            立即同步当前 Vibe
+                            同步参考图到服务器
                         </button>
                     </div>
                 )}
 
                 <p className="text-[10px] leading-relaxed text-slate-400">
-                    当前实现使用 NovelAI V4.5 的 Style Precise Reference，与角色 Character Reference 独立并存。GPT 生图接口暂不支持参考图，因此切到 GPT 时不会发送 Vibe。
+                    这里使用真正的 NovelAI Vibe Transfer，不再拿 Style Precise 代替。第一次按「图片 + 模型 + 信息提取」编码时可能产生额外费用，之后会复用服务器缓存；只改参考强度不会重新编码。Vibe Transfer 与 Precise Reference 不能同时发送，因此开启 Vibe 时本次生成会优先 Vibe、暂不带角色/用户精密参照。当前模型或线路若不支持 Vibe 会明确报错，不会偷偷退化。
                 </p>
             </div>
         </Modal>
