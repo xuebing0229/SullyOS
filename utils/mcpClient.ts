@@ -53,6 +53,11 @@ export interface McpServerConfig {
     updatedAt: number;
     /** 内置能力生成的隐藏服务器，不出现在通用 MCP 编辑列表。 */
     builtin?: boolean;
+    /** 角色自动选生图预设时，虚拟内置服务器携带的预设元数据。 */
+    imagePresetId?: string;
+    imagePresetPurpose?: string;
+    imagePresetEngineId?: 'gpt-image' | 'novelai';
+    imagePresetAllowCharacterReference?: boolean;
     /** 单次 HTTP/SSE 请求超时；未设置时使用通用 MCP 默认值。 */
     requestTimeoutMs?: number;
 }
