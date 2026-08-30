@@ -94,7 +94,9 @@ const ChatHeaderShell: React.FC<ChatHeaderShellProps> = ({
     acnh = false,
 }) => {
     const buffs: CharacterBuff[] = hideBuffs ? [] : (activeCharacter.activeBuffs || []);
-    const [openBuff, setOpenBuff] = useState<CharacterBuff | null>(null);
+    // 详情只记 buff id；情绪评估会异步替换 activeBuffs，缓存整份对象会把详情冻在旧值。
+    const [openBuffId, setOpenBuffId] = useState<string | null>(null);
+    const openBuff = openBuffId ? (buffs.find((buff) => buff.id === openBuffId) || null) : null;
     const [isBuffListExpanded, setIsBuffListExpanded] = useState(false);
     const [confirmDeleteBuff, setConfirmDeleteBuff] = useState<CharacterBuff | null>(null);
     const [collapsedVisibleCount, setCollapsedVisibleCount] = useState(() => Math.min(COLLAPSED_BUFF_MAX, buffs.length));
@@ -108,14 +110,14 @@ const ChatHeaderShell: React.FC<ChatHeaderShellProps> = ({
     const hiddenBuffCount = Math.max(0, buffs.length - collapsedVisibleCount);
 
     const toggleBuff = (buff: CharacterBuff) => {
-        setOpenBuff((prev) => (prev?.id === buff.id ? null : buff));
+        setOpenBuffId((prev) => (prev === buff.id ? null : buff.id));
     };
 
     const handleLongPressStart = (buff: CharacterBuff) => {
         longPressTimerRef.current = setTimeout(() => {
             longPressTimerRef.current = null;
             setConfirmDeleteBuff(buff);
-            setOpenBuff(null);
+            setOpenBuffId(null);
         }, 600);
     };
 
@@ -140,7 +142,7 @@ const ChatHeaderShell: React.FC<ChatHeaderShellProps> = ({
             const clickedInsideCard = !!cardRef.current?.contains(target);
             const clickedInsideBuffPanel = !!buffPanelRef.current?.contains(target);
             if (!clickedInsideCard && !clickedInsideBuffPanel) {
-                setOpenBuff(null);
+                setOpenBuffId(null);
                 setIsBuffListExpanded(false);
             }
         };
@@ -150,7 +152,7 @@ const ChatHeaderShell: React.FC<ChatHeaderShellProps> = ({
 
     useEffect(() => {
         setIsBuffListExpanded(false);
-        setOpenBuff(null);
+        setOpenBuffId(null);
         setCollapsedVisibleCount(Math.min(COLLAPSED_BUFF_MAX, buffs.length));
     }, [activeCharacter.id, buffs.length]);
 
@@ -291,10 +293,11 @@ const ChatHeaderShell: React.FC<ChatHeaderShellProps> = ({
                             onMouseLeave={handleLongPressEnd}
                             className="shrink-0 max-w-[8.75rem] truncate text-[8px] leading-none px-1 py-[3px] rounded-[10px] font-bold border cursor-pointer transition-colors select-none"
                             style={buffChipStyle(buff)}
-                            title={buff.label}
+                            title={`${buff.label} · 强度 ${normalizeIntensity(buff.intensity)}/5`}
                         >
                             {buff.emoji ? `${buff.emoji} ` : ''}
                             {buff.label}
+                            <span className="ml-0.5 opacity-70">·{normalizeIntensity(buff.intensity)}</span>
                         </button>
                     ))}
                     {hiddenBuffCount > 0 && (
@@ -319,6 +322,7 @@ const ChatHeaderShell: React.FC<ChatHeaderShellProps> = ({
                             >
                                 {buff.emoji ? `${buff.emoji} ` : ''}
                                 {buff.label}
+                                <span className="ml-0.5 opacity-70">·{normalizeIntensity(buff.intensity)}</span>
                             </span>
                         ))}
                     </div>
@@ -480,6 +484,7 @@ const ChatHeaderShell: React.FC<ChatHeaderShellProps> = ({
                                 >
                                     {buff.emoji ? `${buff.emoji} ` : ''}
                                     {buff.label}
+                                    <span className="ml-1 opacity-60">·{normalizeIntensity(buff.intensity)}</span>
                                 </button>
                             ))}
                         </div>
@@ -500,7 +505,7 @@ const ChatHeaderShell: React.FC<ChatHeaderShellProps> = ({
                                 {(['', '轻微', '较低', '中等', '较强', '强烈'] as const)[normalizeIntensity(openBuff.intensity)]}
                             </div>
                         </div>
-                        <button onClick={() => setOpenBuff(null)} className="text-slate-300 hover:text-slate-500 text-lg leading-none px-1">
+                        <button onClick={() => setOpenBuffId(null)} className="text-slate-300 hover:text-slate-500 text-lg leading-none px-1">
                             {'\u00d7'}
                         </button>
                     </div>

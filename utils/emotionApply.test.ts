@@ -145,6 +145,26 @@ describe('parseEmotionEvalOutput — 格式劣化修复', () => {
 });
 
 describe('applyEmotionEvalRaw — 落库语义', () => {
+    it('过期评估被 latest-write guard 拦截，不得落库覆盖新一轮', async () => {
+        const dispatched: any[] = [];
+        (globalThis as any).window = {
+            dispatchEvent: (e: any) => { dispatched.push(e); return true; },
+        };
+        try {
+            const inner = await applyEmotionEvalRaw(
+                JSON.stringify(VALID),
+                makeChar(),
+                undefined,
+                { shouldApply: () => false },
+            );
+            expect(inner).toBeNull();
+            expect(saveCharacter).not.toHaveBeenCalled();
+            expect(dispatched.some((e) => e.type === 'emotion-updated')).toBe(false);
+        } finally {
+            delete (globalThis as any).window;
+        }
+    });
+
     it('changed=true 完整结果 → 保存 + 返回 innerState', async () => {
         const char = makeChar();
         const inner = await applyEmotionEvalRaw(JSON.stringify(VALID), char);

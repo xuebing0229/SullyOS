@@ -383,10 +383,18 @@ export function extractAssistantText(message: any): string {
  * - changed=true 但 buffs / injection 双缺失 (格式烂到只抢救出 innerState) → 不清空已有
  *   buff 状态, 只返回 innerState —— 解析半残不该把角色现有情绪底色抹掉.
  */
+export interface ApplyEmotionEvalOptions {
+    /**
+     * 异步评估可能前后轮重叠。返回 false 时说明这份结果已经过期，必须放弃所有角色状态落地。
+     */
+    shouldApply?: () => boolean;
+}
+
 export async function applyEmotionEvalRaw(
     rawText: string,
     charData: CharacterProfile,
     userName?: string,
+    options?: ApplyEmotionEvalOptions,
 ): Promise<string | null> {
     try {
         const result = parseEmotionEvalOutput(rawText || '');
@@ -406,6 +414,11 @@ export async function applyEmotionEvalRaw(
         const innerStateOut = (typeof result.innerState === 'string' && result.innerState.trim())
             ? replaceInternalUserLabel(result.innerState.trim(), userName)
             : null;
+
+        if (options?.shouldApply && !options.shouldApply()) {
+            console.log('🎭 [Emotion] Dropped stale eval result before side effects:', charData.id);
+            return null;
+        }
 
         if (innerStateOut) {
             try { localStorage.setItem(lastInnerStateKey(charData.id), innerStateOut); } catch { /* ignore */ }
@@ -453,6 +466,13 @@ export async function applyEmotionEvalRaw(
             activeBuffs: sanitizedBuffs,
             buffInjection,
         };
+
+        // DB 读取/环境动态落地本身也会 await；期间如果更新一轮评估已经启动，
+        // 再检查一次，禁止旧轮在最后一刻把新轮的角色状态倒灌回去。
+        if (options?.shouldApply && !options.shouldApply()) {
+            console.log('🎭 [Emotion] Dropped stale eval result before save:', charData.id);
+            return null;
+        }
         await DB.saveCharacter(updated);
 
         // detail 直接带上 buffs + buffInjection: 监听方 (Chat) 可直接落 OSContext, 不必重读 DB

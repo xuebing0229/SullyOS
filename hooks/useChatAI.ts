@@ -376,6 +376,10 @@ injection是注入角色系统提示词的叙事型情绪指令，必须使用**
 }${ambientSection}`;
 }
 
+// 本地情绪评估是 fire-and-forget：用户可以在上一轮副 API 还没回完时继续聊天。
+// 每个角色用单调 epoch 做 latest-start-wins，旧轮即使晚回来也只能丢弃，不能覆盖更新的 buff。
+const emotionEvalEpochByChar = new Map<string, number>();
+
 export async function evaluateEmotionBackground(
     charData: CharacterProfile,
     userProfile: UserProfile,
@@ -384,6 +388,10 @@ export async function evaluateEmotionBackground(
     api: { baseUrl: string; apiKey: string; model: string; stream?: boolean },
     round?: { conversationId: string; userMessageId: string; assistantMessageId: string; forceRefresh?: boolean },
 ): Promise<string | null> {
+    const evalEpoch = (emotionEvalEpochByChar.get(charData.id) || 0) + 1;
+    emotionEvalEpochByChar.set(charData.id, evalEpoch);
+    const isLatestEval = () => emotionEvalEpochByChar.get(charData.id) === evalEpoch;
+
     // 全局横幅「xx 正在感受…」（ChatBroadcast）。这里是所有本地评估路径的汇聚点
     // （主链路 fire & forget / post-push 补跑 / OSContext 主动消息），在函数级
     // start/finally 派发一次即可全覆盖；instant 模式的 worker 评估另行点灯。
@@ -455,7 +463,9 @@ export async function evaluateEmotionBackground(
             });
             return null;
         }
-        return await applyEmotionEvalRaw(raw, charData, userProfile.name);
+        return await applyEmotionEvalRaw(raw, charData, userProfile.name, {
+            shouldApply: isLatestEval,
+        });
     } catch (e: any) {
         console.warn('🎭 [Emotion] Evaluation failed:', e.message);
         announceChatGen(CHAT_GEN_EVENTS.emotionFailed, {
