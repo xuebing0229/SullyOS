@@ -121,12 +121,20 @@ describe('error classification', () => {
         });
     });
 
-    it('does not fail over ordinary 400 or safety errors', () => {
+    it('fails over ordinary 400/422, but still stops on explicit safety blocks', () => {
         expect(classifyApiError(
             new Error('API Error 400: invalid parameter'),
         )).toMatchObject({
             kind: 'bad_request',
-            failoverEligible: false,
+            failoverEligible: true,
+            circuitFailure: true,
+        });
+        expect(classifyApiError(
+            new Error('API Error 422: invalid tools'),
+        )).toMatchObject({
+            kind: 'bad_request',
+            failoverEligible: true,
+            circuitFailure: true,
         });
 
         expect(classifyApiError(
@@ -145,6 +153,29 @@ describe('error classification', () => {
             kind: 'stream_committed',
             failoverEligible: false,
         });
+    });
+});
+
+describe('per-route first-byte preference', () => {
+    it('normalizes and carries each chat route first-byte wait into the execution plan', () => {
+        const group = {
+            ...createDefaultApiFailoverGroup('chat'),
+            enabled: true,
+            members: [
+                { presetId: 'a', enabled: true, firstByteTimeoutMs: 8_000 },
+                { presetId: 'b', enabled: true, firstByteTimeoutMs: 15_000 },
+            ],
+            updatedAt: 2,
+        };
+        const resolved = resolveApiExecutionPlanWithData(
+            'chat',
+            api('https://direct.example/v1'),
+            [group],
+            presets,
+            true,
+        );
+        expect(resolved.routes.map(route => route.firstByteTimeoutMs))
+            .toEqual([8_000, 15_000]);
     });
 });
 
@@ -249,27 +280,21 @@ describe('failover execution', () => {
         expect(result.route.presetId).toBe('b');
     });
 
-    it('does not hide an ordinary 400 by trying backup', async () => {
+    it('moves to backup after an ordinary 400', async () => {
         const calls: string[] = [];
-        await expect(runApiFailover({
+        const result = await runApiFailover({
             plan: plan(),
             execute: async route => {
                 calls.push(route.presetId);
-                throw new Error('API Error 400: invalid tools');
-            },
-        })).rejects.toBeInstanceOf(ApiRouteError);
-
-        expect(calls).toEqual(['a']);
-
-        const later: string[] = [];
-        await runApiFailover({
-            plan: plan(),
-            execute: async route => {
-                later.push(route.presetId);
+                if (route.presetId === 'a') {
+                    throw new Error('API Error 400: invalid tools');
+                }
                 return 'ok';
             },
         });
-        expect(later).toEqual(['a']);
+
+        expect(calls).toEqual(['a', 'b']);
+        expect(result.route.presetId).toBe('b');
     });
 
     it('does not fail over after stream started', async () => {

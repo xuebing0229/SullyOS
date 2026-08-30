@@ -27,6 +27,11 @@ export type ApiFailoverScope = 'chat' | 'emotion';
 export interface ApiFailoverMember {
     presetId: string;
     enabled: boolean;
+    /**
+     * 主聊天线路愿意等待“首次有效输出”的时间。0 / undefined = 不单独限制。
+     * 超时必须 abort 当前请求后才能切下一条，避免后台继续生成导致重复计费。
+     */
+    firstByteTimeoutMs?: number;
 }
 
 export interface ApiFailoverPolicy {
@@ -57,6 +62,7 @@ export interface ResolvedApiRoute {
     presetName: string;
     api: APIConfig;
     routeIndex: number;
+    firstByteTimeoutMs?: number;
 }
 
 export interface ApiExecutionPlan {
@@ -187,9 +193,20 @@ export function normalizeApiFailoverGroup(
         const presetId = String(item?.presetId || '').trim();
         if (!presetId || seen.has(presetId)) continue;
         seen.add(presetId);
+        const firstByteTimeoutMs = scope === 'chat'
+            ? finiteInt(
+                item?.firstByteTimeoutMs,
+                0,
+                0,
+                300_000,
+            )
+            : 0;
         members.push({
             presetId,
             enabled: item?.enabled !== false,
+            ...(firstByteTimeoutMs > 0
+                ? { firstByteTimeoutMs }
+                : {}),
         });
     }
 
@@ -546,24 +563,26 @@ export function classifyApiError(
         };
     }
 
-    if (status === 400 || status === 422) {
+    if (status != null && status >= 400) {
         return {
             kind: 'bad_request',
             message,
             status,
             retrySameRoute: false,
-            failoverEligible: false,
-            circuitFailure: false,
+            failoverEligible: true,
+            circuitFailure: true,
         };
     }
 
+    // 故障转移的语义就是“这条没拿到可用结果就试下一条”。
+    // 只有用户主动取消、内容安全拦截、或流已经真正开始输出时才不能切。
     return {
         kind: 'unknown',
         message,
         status,
         retrySameRoute: false,
-        failoverEligible: false,
-        circuitFailure: false,
+        failoverEligible: true,
+        circuitFailure: true,
     };
 }
 
@@ -924,21 +943,29 @@ function bodyForRoute(
 function wrapStreamHooks(
     hooks: StreamHooks | undefined,
     markStreamStarted: () => void,
-): StreamHooks | undefined {
-    if (!hooks) return undefined;
-
+    markFirstResponse: () => void,
+    streamExpected: boolean,
+): StreamHooks {
     return {
-        onFirstDelta: () => {
+        // 非流式接口没有 token delta；首个响应体字节就是它能提供的最早响应信号。
+        // 流式接口不能用这个（SSE heartbeat 也会有字节），要等真正模型 activity。
+        onFirstBodyByte: () => {
+            if (!streamExpected) markFirstResponse();
+            hooks?.onFirstBodyByte?.();
+        },
+        onFirstActivity: () => {
+            markFirstResponse();
             markStreamStarted();
-            hooks.onFirstDelta?.();
+            hooks?.onFirstActivity?.();
+        },
+        onFirstDelta: () => {
+            hooks?.onFirstDelta?.();
         },
         onDelta: (delta, fullText) => {
-            if (delta || fullText) markStreamStarted();
-            hooks.onDelta?.(delta, fullText);
+            hooks?.onDelta?.(delta, fullText);
         },
         onReasoningDelta: (delta, fullReasoning) => {
-            if (delta || fullReasoning) markStreamStarted();
-            hooks.onReasoningDelta?.(
+            hooks?.onReasoningDelta?.(
                 delta,
                 fullReasoning,
             );
@@ -1043,27 +1070,72 @@ export async function executeOpenAiChatPlan(
                 failoverPresetId: route.presetId,
             } as ApiCallMeta;
 
-            return safeFetchJson(
-                `${baseUrl}/chat/completions`,
-                {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        Authorization:
-                            `Bearer ${route.api.apiKey || 'sk-none'}`,
+            const routeAbort = new AbortController();
+            const forwardAbort = () => {
+                if (!routeAbort.signal.aborted) {
+                    routeAbort.abort((context.signal as any).reason);
+                }
+            };
+            if (context.signal.aborted) forwardAbort();
+            else context.signal.addEventListener('abort', forwardAbort, { once: true });
+
+            const firstByteTimeoutMs = Math.max(0, route.firstByteTimeoutMs || 0);
+            let firstResponseTimer: ReturnType<typeof setTimeout> | null = null;
+            let firstResponseTimedOut = false;
+            const markFirstResponse = () => {
+                if (firstResponseTimer) {
+                    clearTimeout(firstResponseTimer);
+                    firstResponseTimer = null;
+                }
+            };
+            if (firstByteTimeoutMs > 0) {
+                firstResponseTimer = setTimeout(() => {
+                    firstResponseTimedOut = true;
+                    // 关键：先真正取消当前 fetch/reader，再让 runApiFailover 进入下一条。
+                    // 不能只 Promise.race，否则旧请求会在后台继续生成并可能重复扣费。
+                    if (!routeAbort.signal.aborted) {
+                        routeAbort.abort(
+                            new Error(`first byte timeout ${firstByteTimeoutMs}ms`),
+                        );
+                    }
+                }, firstByteTimeoutMs);
+            }
+
+            try {
+                return await safeFetchJson(
+                    `${baseUrl}/chat/completions`,
+                    {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            Authorization:
+                                `Bearer ${route.api.apiKey || 'sk-none'}`,
+                        },
+                        body: JSON.stringify(body),
+                        signal: routeAbort.signal,
                     },
-                    body: JSON.stringify(body),
-                    signal: context.signal,
-                },
-                0,
-                options.plan.group?.policy.timeoutMs
-                    ?? DEFAULT_API_FAILOVER_POLICY.timeoutMs,
-                meta,
-                wrapStreamHooks(
-                    options.streamHooks,
-                    context.markStreamStarted,
-                ),
-            );
+                    0,
+                    options.plan.group?.policy.timeoutMs
+                        ?? DEFAULT_API_FAILOVER_POLICY.timeoutMs,
+                    meta,
+                    wrapStreamHooks(
+                        options.streamHooks,
+                        context.markStreamStarted,
+                        markFirstResponse,
+                        Boolean(body.stream),
+                    ),
+                );
+            } catch (error) {
+                if (firstResponseTimedOut) {
+                    throw new Error(
+                        `首字等待超时（${Math.round(firstByteTimeoutMs / 1000)} 秒），已停止当前线路`,
+                    );
+                }
+                throw error;
+            } finally {
+                markFirstResponse();
+                context.signal.removeEventListener('abort', forwardAbort);
+            }
         },
     });
 }

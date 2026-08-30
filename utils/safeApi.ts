@@ -109,6 +109,8 @@ export function parseSseToCompletion(raw: string): any | null {
 interface SseFeedDelta {
     content: string;
     reasoning: string;
+    /** 正文 / 思考 / tool_calls 任一已经出现，表示模型真正开始工作。 */
+    activity: boolean;
     /** The provider has explicitly finished this completion. */
     done: boolean;
 }
@@ -135,12 +137,12 @@ class SseAssembler {
 
     /** 喂一行 SSE 文本，分别返回正文与思考增量（没有则为空串）。 */
     feedLine(line: string): SseFeedDelta {
-        if (!line.startsWith('data:')) return { content: '', reasoning: '', done: false };
+        if (!line.startsWith('data:')) return { content: '', reasoning: '', activity: false, done: false };
         const payload = line.slice(5).trim();
-        if (!payload) return { content: '', reasoning: '', done: false };
-        if (payload === '[DONE]') return { content: '', reasoning: '', done: true };
+        if (!payload) return { content: '', reasoning: '', activity: false, done: false };
+        if (payload === '[DONE]') return { content: '', reasoning: '', activity: false, done: true };
         let chunk: any;
-        try { chunk = JSON.parse(payload); } catch { return { content: '', reasoning: '', done: false }; }
+        try { chunk = JSON.parse(payload); } catch { return { content: '', reasoning: '', activity: false, done: false }; }
         return this.feedChunk(chunk);
     }
 
@@ -151,15 +153,17 @@ class SseAssembler {
         // 始终取最后一个非空的 usage，兼容各家代理。
         if (chunk.usage) this.usage = chunk.usage;
         const choice = chunk.choices?.[0];
-        if (!choice) return { content: '', reasoning: '', done: false };
+        if (!choice) return { content: '', reasoning: '', activity: false, done: false };
         let delta = '';
         let reasoningDelta = '';
+        let activity = false;
         // delta 路径（OpenAI 流式常见）
         if (choice.delta) {
             for (const k of Object.keys(choice.delta)) this.deltaKeys.add(k);
             if (typeof choice.delta.content === 'string') {
                 delta = choice.delta.content;
                 this.content += delta;
+                if (delta) activity = true;
             }
             // Anthropic 透传形态: delta.content 是分块数组 [{type:'text',text}|{type:'thinking',thinking}]
             else if (Array.isArray(choice.delta.content)) {
@@ -167,9 +171,11 @@ class SseAssembler {
                     if (block?.type === 'text' && typeof block.text === 'string') {
                         delta += block.text;
                         this.content += block.text;
+                        if (block.text) activity = true;
                     } else if (block?.type === 'thinking' && typeof block.thinking === 'string') {
                         this.reasoning += block.thinking;
                         reasoningDelta += block.thinking;
+                        if (block.thinking) activity = true;
                     }
                 }
             }
@@ -177,9 +183,11 @@ class SseAssembler {
             if (typeof dr === 'string') {
                 this.reasoning += dr;
                 reasoningDelta += dr;
+                if (dr) activity = true;
             }
             if (choice.delta.role) this.role = choice.delta.role;
             if (Array.isArray(choice.delta.tool_calls)) {
+                if (choice.delta.tool_calls.length > 0) activity = true;
                 for (const frag of choice.delta.tool_calls) {
                     const idx = frag.index ?? 0;
                     if (!this.toolCalls[idx]) this.toolCalls[idx] = { id: '', type: 'function', function: { name: '', arguments: '' } };
@@ -195,17 +203,22 @@ class SseAssembler {
             if (typeof choice.message.content === 'string') {
                 delta = choice.message.content;
                 this.content += delta;
+                if (delta) activity = true;
             }
             const mr = choice.message.reasoning_content ?? choice.message.reasoning ?? choice.message.thinking;
             if (typeof mr === 'string') {
                 this.reasoning += mr;
                 reasoningDelta += mr;
+                if (mr) activity = true;
             }
             if (choice.message.role) this.role = choice.message.role;
-            if (Array.isArray(choice.message.tool_calls)) this.toolCalls.push(...choice.message.tool_calls);
+            if (Array.isArray(choice.message.tool_calls)) {
+                if (choice.message.tool_calls.length > 0) activity = true;
+                this.toolCalls.push(...choice.message.tool_calls);
+            }
         }
         if (choice.finish_reason) this.finishReason = choice.finish_reason;
-        return { content: delta, reasoning: reasoningDelta, done: Boolean(choice.finish_reason) };
+        return { content: delta, reasoning: reasoningDelta, activity, done: Boolean(choice.finish_reason) };
     }
 
     get reasoningContent(): string {
@@ -254,6 +267,10 @@ export interface StreamHooks {
     onReasoningDelta?: (delta: string, fullReasoning: string) => void;
     /** 收到第一个正文增量时回调一次（TTFT 参考点） */
     onFirstDelta?: () => void;
+    /** 收到第一个响应体字节；非流式接口用它作为最早响应信号。 */
+    onFirstBodyByte?: () => void;
+    /** 正文 / 思考 / tool_calls 任一第一次开始返回。SSE heartbeat 不算。 */
+    onFirstActivity?: () => void;
 }
 
 /**
@@ -275,11 +292,17 @@ async function readBodyWithStreaming(
     let pending = '';       // SSE 模式下未消费完的半行缓冲
     let mode: 'undecided' | 'sse' | 'raw' = 'undecided';
     let sawFirstDelta = false;
+    let sawFirstBodyByte = false;
+    let sawFirstActivity = false;
     let sawTerminalEvent = false;
     const contentType = response.headers.get('content-type');
 
     const emit = (delta: SseFeedDelta) => {
         if (delta.done) sawTerminalEvent = true;
+        if (delta.activity && !sawFirstActivity) {
+            sawFirstActivity = true;
+            try { hooks.onFirstActivity?.(); } catch { /* 监控回调异常不拦截流 */ }
+        }
         if (delta.content) {
             if (!sawFirstDelta) {
                 sawFirstDelta = true;
@@ -304,6 +327,10 @@ async function readBodyWithStreaming(
     while (true) {
         const { done, value } = await reader.read();
         if (done) break;
+        if (!sawFirstBodyByte && value && value.byteLength > 0) {
+            sawFirstBodyByte = true;
+            try { hooks.onFirstBodyByte?.(); } catch { /* 监控回调异常不拦截流 */ }
+        }
         const textChunk = decoder.decode(value, { stream: true });
         raw += textChunk;
         if (mode === 'undecided') {
@@ -412,7 +439,6 @@ export async function safeFetchJson(
         const attemptStartedAt = Date.now();
         try {
             const response = await fetch(url, attemptOptions);
-            if (timeoutHandle) clearTimeout(timeoutHandle);
             lastStatus = response.status;
             const headersMs = Date.now() - attemptStartedAt;
 
@@ -464,6 +490,7 @@ export async function safeFetchJson(
                     durationMs: totalMs,
                 });
             }
+            if (timeoutHandle) clearTimeout(timeoutHandle);
             return data;
         } catch (e: any) {
             if (timeoutHandle) clearTimeout(timeoutHandle);

@@ -115,6 +115,9 @@ export function analyzeApiFailoverGroup(
                 entry.preset.name || '未命名预设',
             api: entry.preset.config,
             routeIndex: routes.length,
+            ...(entry.member.firstByteTimeoutMs
+                ? { firstByteTimeoutMs: entry.member.firstByteTimeoutMs }
+                : {}),
         };
         entry.route = route;
         routes.push(route);

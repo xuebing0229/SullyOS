@@ -193,7 +193,7 @@ const ApiFailoverSettings: React.FC<Props> = ({ addToast }) => {
             </div>
 
             <div className="rounded-xl border border-sky-100 bg-sky-50 p-2 text-[10px] text-sky-700">
-                每条线路只真实请求一次。出现网络、超时、限流、服务器、鉴权、模型不存在或网关解析故障后，该线路固定冷却 3 分钟，本次立即尝试下一条。
+                每条线路只真实请求一次。请求失败就立即停止当前线路并尝试下一条；失败线路固定冷却 3 分钟。主聊天还可为每条线路单独设置“首字等待”，超时会先取消旧请求再切线，避免后台继续生成造成重复计费。
             </div>
 
             {cooldowns.length > 0 && (
@@ -330,6 +330,47 @@ const ApiFailoverSettings: React.FC<Props> = ({ addToast }) => {
                                                 <div className="mt-1 break-words text-[9px] leading-tight text-rose-500">
                                                     {issueLabel}
                                                 </div>
+                                            )}
+                                            {group.scope === 'chat' && (
+                                                <label className="mt-1.5 flex items-center gap-1.5 text-[9px] text-slate-400">
+                                                    <span className="shrink-0">首字最多等</span>
+                                                    <input
+                                                        type="number"
+                                                        min={0}
+                                                        max={300}
+                                                        step={1}
+                                                        value={Math.round((member.firstByteTimeoutMs || 0) / 1000)}
+                                                        onChange={event => {
+                                                            const seconds = Math.max(
+                                                                0,
+                                                                Math.min(
+                                                                    300,
+                                                                    Math.round(Number(event.target.value) || 0),
+                                                                ),
+                                                            );
+                                                            updateGroup(
+                                                                group.scope,
+                                                                current => ({
+                                                                    ...current,
+                                                                    members: current.members.map((item, currentIndex) =>
+                                                                        currentIndex === index
+                                                                            ? {
+                                                                                ...item,
+                                                                                ...(seconds > 0
+                                                                                    ? { firstByteTimeoutMs: seconds * 1000 }
+                                                                                    : { firstByteTimeoutMs: undefined }),
+                                                                            }
+                                                                            : item
+                                                                    ),
+                                                                }),
+                                                            );
+                                                        }}
+                                                        className="w-14 rounded-md border border-slate-200 bg-white px-1.5 py-1 text-center text-[10px] text-slate-600"
+                                                        aria-label={`${preset?.name || '线路'}首字等待秒数`}
+                                                    />
+                                                    <span className="shrink-0">秒</span>
+                                                    <span className="text-[8px] text-slate-300">0=不限</span>
+                                                </label>
                                             )}
                                         </div>
 
