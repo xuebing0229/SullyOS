@@ -5,6 +5,7 @@ import {
     exportImageGenerationLocalForMode,
     getActiveImageGenerationPreset,
     importImageGenerationLocal,
+    isCharacterReferenceAllowedForActivePreset,
     loadImageGenerationPresetState,
     updateImageGenerationPreset,
 } from './imageGenerationPresets';
@@ -139,6 +140,27 @@ describe('image generation presets', () => {
         expect(exportImageGenerationLocalForMode('full')?.presetState.presets[0].apiKey).toBe('mode-api-secret');
         expect(exportImageGenerationLocalForMode('text_only')?.presetState.presets[0].binding.token).toBe('mode-mcp-secret');
         expect(exportImageGenerationLocalForMode('media_only')).toBeUndefined();
+    });
+    it('persists the character-reference permission and defaults old presets to allowed', () => {
+        const settings = loadBuiltinImageSettings();
+        const preset = createImageGenerationPreset({
+            name: '不允许角色参考', engineId: 'novelai', binding: settings.engines.novelai, apiKey: 'secret',
+            allowCharacterReference: false,
+            remoteConfig: {
+                version: 1, revision: 1, profile: 'custom', baseUrl: 'https://example.test/v1', generatePath: '/generate',
+                authHeader: 'Authorization', authPrefix: 'Bearer', modelFull: 'full-id', modelCurated: 'curated-id',
+                responseMode: 'json', imageDelivery: 'auto', promptLanguagePolicy: 'allow', apiKeyConfigured: true, apiKeyHint: '***',
+            },
+        });
+        expect(isCharacterReferenceAllowedForActivePreset()).toBe(false);
+        expect(exportImageGenerationLocalForMode('text_only')?.presetState.presets[0].allowCharacterReference).toBe(false);
+
+        const exported = exportImageGenerationLocal();
+        delete (exported.presetState.presets[0] as any).allowCharacterReference;
+        localStorage.clear();
+        importImageGenerationLocal(exported);
+        expect(getActiveImageGenerationPreset('novelai')).toMatchObject({ id: preset.id, allowCharacterReference: true });
+        expect(isCharacterReferenceAllowedForActivePreset()).toBe(true);
     });
 
     it('round trips the Vibe library in full backups without leaving dead image refs in text-only backups', () => {

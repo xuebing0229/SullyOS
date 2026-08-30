@@ -42,7 +42,10 @@ const serverSlug = (server: McpServerConfig): string => sanitizeToolName(server.
  * 保证前台聊天和 amsg worker 后台 fire 看到的是同一套工具名。
  * charId：只聚合对该角色可见的服务器（通用 + 绑定了该角色的）。
  */
-export const buildMcpOpenAITools = (charId?: string): { tools: OpenAIMcpTool[]; resolve: Map<string, ResolvedMcpTool> } => {
+export const buildMcpOpenAITools = (
+    charId?: string,
+    options: { allowCharacterReference?: boolean } = {},
+): { tools: OpenAIMcpTool[]; resolve: Map<string, ResolvedMcpTool> } => {
     const servers = getEnabledMcpServers(charId);
     const tools: OpenAIMcpTool[] = [];
     const resolve = new Map<string, ResolvedMcpTool>();
@@ -65,7 +68,7 @@ export const buildMcpOpenAITools = (charId?: string): { tools: OpenAIMcpTool[]; 
                     name: exposed,
                     description: buildToolDescription(server, t, servers.length > 1),
                     parameters: resolveMcpExecutionPolicy(server, t) === 'single-shot'
-                    ? augmentImageToolSchema(t.inputSchema || { type: 'object', properties: {} }, t.name)
+                    ? augmentImageToolSchema(t.inputSchema || { type: 'object', properties: {} }, t.name, options)
                     : (t.inputSchema || { type: 'object', properties: {} }),
                 },
             });
@@ -217,6 +220,7 @@ export function extractMcpImageUrls(data: any): string[] {
 export interface NovelAiReferenceAvailability {
     character?: { enabled: boolean; sourceName?: string; type?: string };
     user?: { enabled: boolean; sourceName?: string; type?: string };
+    allowCharacterReference?: boolean;
 }
 
 export const buildMcpSystemBlock = (
@@ -235,11 +239,18 @@ export const buildMcpSystemBlock = (
     const refLine = (label: string, value?: { enabled: boolean; sourceName?: string; type?: string }) => value?.enabled
         ? `- ${label}：已开启，可选${value.sourceName ? `（${value.sourceName}）` : ''}${value.type ? `，参照类型 ${value.type}` : ''}`
         : `- ${label}：未开启，不可用`;
+    const characterReferenceAllowed = referenceAvailability?.allowCharacterReference !== false;
+    const availableReferenceLines = [
+        characterReferenceAllowed ? refLine('当前角色参考图', referenceAvailability?.character) : '',
+        refLine(`${userName}的用户参考图`, referenceAvailability?.user),
+    ].filter(Boolean).join('\n');
+    const selectionRule = characterReferenceAllowed
+        ? '- “已开启”仅表示可选，不代表必须发送。每次调用都根据画面中实际出现的人物决定：用 `use_character_reference` 和 `use_user_reference` 分别选择，可两张都不用、任选一张或两张都用。'
+        : '- 用户参考图“已开启”仅表示可选，不代表必须发送。用 `use_user_reference` 决定本次是否选择；不要因为参考图可用就强行让用户入镜。';
     const referenceRules = hasNovelAi ? `
 **NovelAI 本轮可选精密参照**:
-${refLine('当前角色参考图', referenceAvailability?.character)}
-${refLine(`${userName}的用户参考图`, referenceAvailability?.user)}
-- “已开启”仅表示可选，不代表必须发送。每次调用都根据画面中实际出现的人物决定：用 \`use_character_reference\` 和 \`use_user_reference\` 分别选择，可两张都不用、任选一张或两张都用。
+${availableReferenceLines}
+${selectionRule}
 - 只为画面里需要保持外观的人选择参考图；不要因为参考图可用就强行让对应人物入镜。
 ` : '';
     const imageRules = hasGptImage || hasNovelAi ? `

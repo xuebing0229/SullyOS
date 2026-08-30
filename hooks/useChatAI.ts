@@ -36,6 +36,7 @@ import { toolCallFingerprint } from '../utils/agenticToolFeedback';
 import { buildChatRequestPayload } from '../utils/chatRequestPayload';
 import { persistMcpGeneratedImages } from '../utils/mcpImagePersistence';
 import { prepareBuiltinImageToolArguments } from '../utils/novelAiReference';
+import { isCharacterReferenceAllowedForActivePreset } from '../utils/imageGenerationPresets';
 import {
     isInstantConfigReady,
     sendInstantPushAndAwaitReply,
@@ -1324,7 +1325,9 @@ export const useChatAI = ({
             // 工具清单读的是设置里持久化的发现结果, 不发网络请求。
             let mcpToolResolve: ReturnType<typeof buildMcpOpenAITools>['resolve'] | null = null;
             if (payload.flags.mcpChatActive) {
-                const { tools: mcpTools, resolve } = buildMcpOpenAITools(char.id);
+                const { tools: mcpTools, resolve } = buildMcpOpenAITools(char.id, {
+                    allowCharacterReference: isCharacterReferenceAllowedForActivePreset(),
+                });
                 if (mcpTools.length) {
                     mcpToolResolve = resolve;
                     const mcpOnly = !payload.flags.luckinChatActive && !payload.flags.mcdActive && !payload.flags.luckinActive;

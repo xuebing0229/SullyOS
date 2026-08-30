@@ -67,6 +67,8 @@ export interface ImageGenerationPreset {
     remoteConfig: StoredImageRemoteConfig;
     apiKey: string;
     pricing: ImageGenerationPricing;
+    /** Whether main chat may choose the character reference for a NovelAI request. */
+    allowCharacterReference: boolean;
     createdAt: number;
     updatedAt: number;
 }
@@ -159,6 +161,8 @@ const sanitizePreset = (value: unknown): ImageGenerationPreset | null => {
         remoteConfig: clone(raw.remoteConfig),
         apiKey: String(raw.apiKey || ''),
         pricing: normalizeImageGenerationPricing(raw.pricing),
+        // Missing means an old preset. Preserve the behavior those presets had.
+        allowCharacterReference: raw.allowCharacterReference !== false,
         createdAt: Number.isFinite(raw.createdAt) ? raw.createdAt : now,
         updatedAt: Number.isFinite(raw.updatedAt) ? raw.updatedAt : now,
     };
@@ -206,6 +210,11 @@ export function getActiveImageGenerationPreset(engineId: BuiltinImageEngineId): 
     return id ? state.presets.find(item => item.id === id && item.engineId === engineId) || null : null;
 }
 
+/** No active/legacy preset keeps the pre-existing opt-in-per-request behavior. */
+export function isCharacterReferenceAllowedForActivePreset(): boolean {
+    return getActiveImageGenerationPreset('novelai')?.allowCharacterReference !== false;
+}
+
 export function createImageGenerationPreset(input: {
     name: string;
     engineId: BuiltinImageEngineId;
@@ -213,6 +222,7 @@ export function createImageGenerationPreset(input: {
     remoteConfig: ImageRemoteConfig;
     apiKey: string;
     pricing?: ImageGenerationPricing;
+    allowCharacterReference?: boolean;
 }): ImageGenerationPreset {
     const apiKey = input.apiKey.trim();
     if (!apiKey) throw new Error('请先输入 API Key，再保存生图预设');
@@ -227,6 +237,7 @@ export function createImageGenerationPreset(input: {
         remoteConfig: stripImageRemoteRuntimeFields(input.remoteConfig),
         apiKey,
         pricing,
+        allowCharacterReference: input.allowCharacterReference !== false,
         createdAt: now,
         updatedAt: now,
     };
@@ -242,6 +253,7 @@ export function updateImageGenerationPreset(id: string, input: {
     remoteConfig: ImageRemoteConfig;
     apiKey: string;
     pricing?: ImageGenerationPricing;
+    allowCharacterReference?: boolean;
 }): ImageGenerationPreset {
     const state = loadImageGenerationPresetState();
     const index = state.presets.findIndex(item => item.id === id);
@@ -257,6 +269,7 @@ export function updateImageGenerationPreset(id: string, input: {
         remoteConfig: stripImageRemoteRuntimeFields(input.remoteConfig),
         apiKey: nextKey,
         pricing,
+        allowCharacterReference: input.allowCharacterReference ?? previous.allowCharacterReference,
         updatedAt: Date.now(),
     };
     state.presets[index] = updated;

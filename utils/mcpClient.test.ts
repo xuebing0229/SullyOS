@@ -32,6 +32,7 @@ beforeEach(() => {
     localStorage.removeItem('aetheros.mcp.servers');
     localStorage.removeItem('aetheros.mcp.useNativeTools');
     localStorage.removeItem('aetheros.imageGeneration.builtin.v1');
+    localStorage.removeItem('aetheros.imageGeneration.presets.v1');
 });
 
 afterEach(() => {
@@ -214,6 +215,27 @@ describe('服务器配置持久化', () => {
         expect(block).toContain('use_character_reference');
         expect(block).toContain('use_user_reference');
         expect(block).not.toContain('reference_id');
+    });
+
+    it('does not expose the character reference choice when the preset disallows it', () => {
+        const settings = loadBuiltinImageSettings();
+        settings.engines.novelai.enabled = true;
+        settings.engines.novelai.tools = [{ name: 'novelai_generate_image' }];
+        saveBuiltinImageSettings(settings);
+
+        const tools = buildMcpOpenAITools('char-1', { allowCharacterReference: false }).tools;
+        const novel = tools.find(tool => tool.function.name === 'novelai_generate_image');
+        expect(novel?.function.parameters.properties).not.toHaveProperty('use_character_reference');
+        expect(novel?.function.parameters.properties).toHaveProperty('use_user_reference');
+
+        const block = buildMcpSystemBlock('小明', 'char-1', {
+            allowCharacterReference: false,
+            character: { enabled: true, sourceName: '角色正面.png', type: 'character' },
+            user: { enabled: true, sourceName: '用户正面.png', type: 'character' },
+        });
+        expect(block).not.toContain('当前角色参考图');
+        expect(block).not.toContain('use_character_reference');
+        expect(block).toContain('use_user_reference');
     });
 
     it('isMcpChatAvailable: 必须启用且已发现工具', () => {

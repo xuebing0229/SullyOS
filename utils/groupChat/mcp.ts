@@ -12,6 +12,7 @@ import {
 } from '../mcpToolBridge';
 import { buildToolResultMessage, normalizeToolCallsForCompat } from '../toolCallCompat';
 import type { CharacterProfile, UserProfile } from '../../types';
+import { isCharacterReferenceAllowedForActivePreset } from '../imageGenerationPresets';
 
 interface GroupMcpCompletionOptions {
     url: string;
@@ -37,7 +38,8 @@ const mergeUsage = (total: Record<string, number>, usage: any) => {
  * tools/call 循环和正文兼容兜底，最终仍返回标准 chat/completions 响应。
  */
 export async function completeGroupChatWithMcp(options: GroupMcpCompletionOptions): Promise<any> {
-    const { tools, resolve } = buildMcpOpenAITools(options.groupId);
+    const allowCharacterReference = isCharacterReferenceAllowedForActivePreset();
+    const { tools, resolve } = buildMcpOpenAITools(options.groupId, { allowCharacterReference });
     const usageTotal: Record<string, number> = {};
 
     const request = async (body: Record<string, any>): Promise<any> => {
@@ -60,8 +62,9 @@ export async function completeGroupChatWithMcp(options: GroupMcpCompletionOption
     if (!tools.length) return request(options.body);
 
     const systemBlock = buildMcpSystemBlock(options.userName, options.groupId, {
+        allowCharacterReference,
         character: {
-            enabled: options.character?.novelAiReference?.enabled === true,
+            enabled: allowCharacterReference && options.character?.novelAiReference?.enabled === true,
             sourceName: options.character?.novelAiReference?.sourceName,
             type: options.character?.novelAiReference?.type,
         },

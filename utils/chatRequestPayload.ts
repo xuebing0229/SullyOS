@@ -30,6 +30,7 @@ import { buildLuckinMiniAppContextBlock, buildLuckinChatSystemBlock } from './lu
 import type { LuckinMiniAppSnapshot, LuckinChatState } from './luckinToolBridge';
 import { isMcpChatAvailable } from './mcpClient';
 import { buildMcpSystemBlock, MCP_TAIL_REMINDER } from './mcpToolBridge';
+import { isCharacterReferenceAllowedForActivePreset } from './imageGenerationPresets';
 import type { MusicCfg, Song, LyricLine, MusicPlaybackSnapshot, RecentTrackChange } from '../context/MusicContext';
 import { isPromptBuildSkipped, isSystemMessageMergeEnabled } from './devDebug';
 import { mergeSystemMessages } from './systemMessageMerge';
@@ -450,9 +451,11 @@ export async function buildChatRequestPayload(input: BuildChatPayloadInput): Pro
     // mcpChatActive 的取值不受影响：它还要告诉上层「这一轮算不算 MCP 模式」。
     const mcpChatActive = input.allowMcpChat !== false && isMcpChatAvailable(char.id);
     if (mcpChatActive && !input.timelyByWorker) {
+        const allowCharacterReference = isCharacterReferenceAllowedForActivePreset();
         const block = buildMcpSystemBlock(userProfile?.name || '用户', char.id, {
+            allowCharacterReference,
             character: {
-                enabled: char.novelAiReference?.enabled === true,
+                enabled: allowCharacterReference && char.novelAiReference?.enabled === true,
                 sourceName: char.novelAiReference?.sourceName,
                 type: char.novelAiReference?.type,
             },

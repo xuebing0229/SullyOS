@@ -17,6 +17,7 @@ import {
 } from './builtinImageMcp';
 import type { McpServerConfig } from './mcpClient';
 import { getActiveVibeReference } from './vibeReference';
+import { isCharacterReferenceAllowedForActivePreset } from './imageGenerationPresets';
 
 const SLOT_RE = /^[a-f0-9]{64}$/;
 const SHA_RE = /^[a-f0-9]{64}$/;
@@ -362,7 +363,8 @@ export async function prepareBuiltinImageToolArguments({
     }
 
     const selection = {
-        character: args?.use_character_reference !== false,
+        character: isCharacterReferenceAllowedForActivePreset()
+            && args?.use_character_reference !== false,
         user: args?.use_user_reference !== false,
         vibe: args?.use_vibe_reference !== false,
     };

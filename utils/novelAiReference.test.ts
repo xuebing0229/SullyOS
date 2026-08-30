@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import type { NovelAiPreciseReferenceConfig } from '../types';
 import {
     applyManagedNovelAiReferenceArguments,
@@ -24,6 +24,7 @@ const reference: NovelAiPreciseReferenceConfig = {
 };
 
 describe('NovelAI 精密参照工具参数', () => {
+    beforeEach(() => localStorage.clear());
     it('删除模型伪造的 reference 字段', () => {
         expect(sanitizeNovelAiReferenceToolArguments({
             prompt: 'hello',
@@ -117,6 +118,24 @@ describe('NovelAI 精密参照工具参数', () => {
             args,
             character: null,
         })).resolves.toBe(args);
+    });
+
+    it('预设关闭角色参考时，请求层忽略选择并清掉伪造槽位', async () => {
+        localStorage.setItem('aetheros.imageGeneration.presets.v1', JSON.stringify({
+            version: 1,
+            presets: [{
+                id: 'preset-off', name: '关闭角色参考', engineId: 'novelai',
+                binding: {}, remoteConfig: {}, apiKey: '', pricing: {},
+                allowCharacterReference: false, createdAt: 1, updatedAt: 1,
+            }],
+            activePresetIds: { novelai: 'preset-off' },
+        }));
+        await expect(prepareBuiltinImageToolArguments({
+            server: { id: 'builtin_image_novelai', name: 'NovelAI', url: 'https://example.test/mcp', enabled: true } as any,
+            toolName: 'novelai_generate_image',
+            args: { prompt: 'hello', use_character_reference: true, reference_id: 'forged' },
+            character: { id: 'char-a', name: 'A', novelAiReference: reference } as any,
+        })).resolves.toEqual({ prompt: 'hello' });
     });
 
     it('纯文字备份会删除整项锁脸配置且不修改原角色', () => {

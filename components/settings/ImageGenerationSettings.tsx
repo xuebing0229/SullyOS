@@ -276,6 +276,7 @@ const EngineCard: React.FC<{
     const activePreset = useMemo(() => getActiveImageGenerationPreset(id), [id, presetRevision]);
     const [apiKey, setApiKey] = useState(() => getActiveImageGenerationPreset(id)?.apiKey || '');
     const [pricing, setPricing] = useState<ImageGenerationPricing>(() => normalizeImageGenerationPricing(getActiveImageGenerationPreset(id)?.pricing || EMPTY_IMAGE_GENERATION_PRICING));
+    const [allowCharacterReference, setAllowCharacterReference] = useState(() => getActiveImageGenerationPreset(id)?.allowCharacterReference ?? true);
     const [models, setModels] = useState<string[]>([]);
     const [status, setStatus] = useState('');
 
@@ -298,7 +299,7 @@ const EngineCard: React.FC<{
     };
 
     useEffect(() => {
-        const refresh = () => { setPresetRevision(value => value + 1); const active = getActiveImageGenerationPreset(id); if (active) { setApiKey(active.apiKey); setPricing(normalizeImageGenerationPricing(active.pricing)); } };
+        const refresh = () => { setPresetRevision(value => value + 1); const active = getActiveImageGenerationPreset(id); if (active) { setApiKey(active.apiKey); setPricing(normalizeImageGenerationPricing(active.pricing)); } setAllowCharacterReference(active?.allowCharacterReference ?? true); };
         window.addEventListener('sullyos:image-generation-presets-changed', refresh);
         return () => window.removeEventListener('sullyos:image-generation-presets-changed', refresh);
     }, [id]);
@@ -325,6 +326,7 @@ const EngineCard: React.FC<{
                     remoteConfig: updated,
                     apiKey,
                     pricing,
+                    allowCharacterReference,
                 });
                 setPresetRevision(value => value + 1);
                 setStatus(`✅ 已保存，并已覆盖预设「${activePreset.name}」`);
@@ -354,11 +356,11 @@ const EngineCard: React.FC<{
     };
 
     const ensureRemote = (): ImageRemoteConfig => { if (!remote) throw new Error('请先读取服务器配置'); return remote; };
-    const createPreset = () => { try { const name = window.prompt(`给这个${title}配置起个名字`, `${title}预设`); if (name === null) return; createImageGenerationPreset({ name, engineId: id, binding, remoteConfig: ensureRemote(), apiKey, pricing }); setPresetRevision(v => v + 1); addToast('生图预设已保存', 'success'); } catch (e: any) { addToast(e?.message || '保存预设失败', 'error'); } };
-    const updatePreset = () => { try { if (!activePreset) throw new Error('当前没有选中的预设'); updateImageGenerationPreset(activePreset.id, { binding, remoteConfig: ensureRemote(), apiKey, pricing }); setPresetRevision(v => v + 1); addToast('生图预设已更新', 'success'); } catch (e: any) { addToast(e?.message || '更新预设失败', 'error'); } };
+    const createPreset = () => { try { const name = window.prompt(`给这个${title}配置起个名字`, `${title}预设`); if (name === null) return; createImageGenerationPreset({ name, engineId: id, binding, remoteConfig: ensureRemote(), apiKey, pricing, allowCharacterReference }); setPresetRevision(v => v + 1); addToast('生图预设已保存', 'success'); } catch (e: any) { addToast(e?.message || '保存预设失败', 'error'); } };
+    const updatePreset = () => { try { if (!activePreset) throw new Error('当前没有选中的预设'); updateImageGenerationPreset(activePreset.id, { binding, remoteConfig: ensureRemote(), apiKey, pricing, allowCharacterReference }); setPresetRevision(v => v + 1); addToast('生图预设已更新', 'success'); } catch (e: any) { addToast(e?.message || '更新预设失败', 'error'); } };
     const renamePreset = () => { if (!activePreset) return; const name = window.prompt('重命名生图预设', activePreset.name); if (name === null) return; try { renameImageGenerationPreset(activePreset.id, name); setPresetRevision(v => v + 1); } catch (e: any) { addToast(e?.message || '重命名失败', 'error'); } };
     const removePreset = () => { if (!activePreset) return; deleteImageGenerationPreset(activePreset.id); setPresetRevision(v => v + 1); addToast('生图预设已删除', 'info'); };
-    const applyPreset = async (preset: ImageGenerationPreset) => { setBusy(true); setStatus(`正在应用预设「${preset.name}」…`); try { const result = await applyImageGenerationPreset(preset); setSettings(result.settings); setRemote(result.remote); setApiKey(preset.apiKey); setPricing(normalizeImageGenerationPricing(preset.pricing)); setModels([]); setPresetRevision(v => v + 1); setStatus(`✅ 已应用预设「${preset.name}」`); addToast(`已应用${title}预设`, 'success'); } catch (e: any) { setStatus(`❌ ${e?.message || String(e)}`); } finally { setBusy(false); } };
+    const applyPreset = async (preset: ImageGenerationPreset) => { setBusy(true); setStatus(`正在应用预设「${preset.name}」…`); try { const result = await applyImageGenerationPreset(preset); setSettings(result.settings); setRemote(result.remote); setApiKey(preset.apiKey); setPricing(normalizeImageGenerationPricing(preset.pricing)); setAllowCharacterReference(preset.allowCharacterReference); setModels([]); setPresetRevision(v => v + 1); setStatus(`✅ 已应用预设「${preset.name}」`); addToast(`已应用${title}预设`, 'success'); } catch (e: any) { setStatus(`❌ ${e?.message || String(e)}`); } finally { setBusy(false); } };
 
     const loadModels = async () => {
         if (!remote || !isNovelConfig(remote)) return;
@@ -422,6 +424,15 @@ const EngineCard: React.FC<{
                         <>
                             {id === 'gpt-image' && isGptConfig(remote) && <GptForm config={remote} onChange={setRemote} />}
                             {id === 'novelai' && isNovelConfig(remote) && <NovelForm config={remote} onChange={setRemote} models={models} busy={busy} onLoadModels={() => void loadModels()} />}
+                            {id === 'novelai' && (
+                                <div className="flex items-center justify-between gap-3 rounded-xl border border-violet-100 bg-violet-50/40 p-3">
+                                    <div>
+                                        <p className="text-xs font-bold text-slate-700">允许主聊天使用角色参考</p>
+                                        <p className="mt-1 text-[10px] leading-relaxed text-slate-400">开启后，主聊天可按每次画面需要自行决定是否发送角色参考图；关闭后不向主聊天提供该能力。</p>
+                                    </div>
+                                    <Toggle checked={allowCharacterReference} onChange={setAllowCharacterReference} />
+                                </div>
+                            )}
                             <Input
                                 label="API 密钥"
                                 sensitive
