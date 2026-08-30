@@ -310,8 +310,7 @@ ${selectionRule}
 ${hasGptImage ? '- `generate_image`：自然语言、写实、海报、物品、风景、通用图片。' : ''}
 ${hasNovelAi ? '- `novelai_generate_image`：二次元、标签提示词、负面提示词、Seed/Steps/Guidance、NovelAI 风格控制。' : ''}
 ${autoPresetRules}
-- 用户明确说“用 GPT 画/生图”时必须用 GPT 工具；明确说“用 NovelAI 画/生图”时必须用 NovelAI 工具。
-- 用户未指定时再按画面类型判断；不要为了展示能力同时调用两套引擎。
+- 生图引擎由用户在设置中固定选择；只使用本轮实际提供给你的生图工具，不要自行在 GPT 与 NovelAI 之间切换。
 - 生图工具同一轮只能调用一次。可选参数 after_generate_action：none 表示图片完成后直接结束；inspect 表示系统在最终图片真正完成后再把图片交给你看，并让你自然回应一小句。
 - 默认使用 none。仅当用户明确要求看图后评价，或当前语境确实需要亲自看最终成图时才使用 inspect；不要为了显得更有互动感默认使用 inspect。
 ${referenceRules}
