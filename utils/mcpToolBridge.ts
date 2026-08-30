@@ -14,7 +14,6 @@ import { resolveMcpExecutionPolicy, type McpExecutionPolicy } from './mcpExecuti
 import { augmentImageToolSchema } from './imageToolPostAction';
 import {
     getCharacterAutoImageMcpServers,
-    getImageGenerationSelectionMode,
 } from './imageGenerationPresets';
 
 export interface OpenAIMcpTool {
@@ -47,9 +46,13 @@ const isBuiltinImageServer = (server: McpServerConfig): boolean =>
 
 export const getMcpServersForChat = (charId?: string): McpServerConfig[] => {
     const regular = getEnabledMcpServers(charId);
-    if (getImageGenerationSelectionMode() !== 'character-auto') return regular;
+    const autoPresetServers = getCharacterAutoImageMcpServers();
+    if (!autoPresetServers.length) return regular;
+    // 只有“当前手动选中的引擎 = NovelAI 且 NovelAI 预设 = 角色决定”时，
+    // 才用多个 NovelAI 预设工具替换那一个固定 NovelAI 内置工具。
+    // GPT 永远由 preferredEngine 决定，不进入角色预设选择。
     const nonBuiltinImages = regular.filter(server => !isBuiltinImageServer(server));
-    return [...getCharacterAutoImageMcpServers(), ...nonBuiltinImages];
+    return [...autoPresetServers, ...nonBuiltinImages];
 };
 
 export const hasMcpToolsForChat = (charId?: string): boolean =>
@@ -290,10 +293,11 @@ export const buildMcpSystemBlock = (
         : '- 用户参考图“已开启”仅表示可选，不代表必须发送。用 `use_user_reference` 决定本次是否选择；不要因为参考图可用就强行让用户入镜。';
     const autoPresetServers = servers.filter(server => Boolean(server.imagePresetId));
     const autoPresetRules = autoPresetServers.length ? `
-**当前生图预设模式：角色决定**:
-- 上面每个“生图预设”工具都对应用户真实保存的一套预设；“用途”是用户亲手填写给你看的选择说明。
-- 当你已经决定这轮要生图时，直接在**这一次主聊天的 function calling** 里选择最适合当前画面用途的那个预设工具；不要先做一次额外判断请求，也不要先调用别的工具来问该选哪个。
-- 一次只选一个生图预设。用户明确点名某个预设或 GPT / NovelAI 引擎时优先遵从；未点名时再按用途自行判断。
+**当前 NovelAI 预设模式：角色决定**:
+- 生图引擎已经由用户在设置中手动选定为 NovelAI；你**不要在 GPT 与 NovelAI 之间做选择**。
+- 上面每个“生图预设”工具都只是同一个 NovelAI 引擎下的不同保存预设；“用途”是用户亲手填写给你看的选择说明。
+- 当你已经决定这轮要生图时，直接在**这一次主聊天的 function calling** 里选择最适合当前画面用途的那个 NovelAI 预设工具；不要先做一次额外判断请求。
+- 一次只选一个 NovelAI 预设。用户明确点名某个预设时优先遵从；未点名时再按用途自行判断。
 ` : '';
     const referenceRules = hasNovelAi ? `
 **NovelAI 本轮可选精密参照**:
