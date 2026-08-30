@@ -450,7 +450,18 @@ export async function buildChatRequestPayload(input: BuildChatPayloadInput): Pro
     // mcpChatActive 的取值不受影响：它还要告诉上层「这一轮算不算 MCP 模式」。
     const mcpChatActive = input.allowMcpChat !== false && isMcpChatAvailable(char.id);
     if (mcpChatActive && !input.timelyByWorker) {
-        const block = buildMcpSystemBlock(userProfile?.name || '用户', char.id);
+        const block = buildMcpSystemBlock(userProfile?.name || '用户', char.id, {
+            character: {
+                enabled: char.novelAiReference?.enabled === true,
+                sourceName: char.novelAiReference?.sourceName,
+                type: char.novelAiReference?.type,
+            },
+            user: {
+                enabled: userProfile?.novelAiReference?.enabled === true,
+                sourceName: userProfile?.novelAiReference?.sourceName,
+                type: userProfile?.novelAiReference?.type,
+            },
+        });
         if (block) {
             systemPrompt += block;
         }

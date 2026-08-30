@@ -9,13 +9,19 @@ describe('image generation billing', () => {
         await DB.deleteDB().catch(() => undefined);
     });
 
-    it('charges base plus each used add-on once regardless of reference count', async () => {
+    it('charges each add-on once per actually sent reference image', async () => {
         const usage = detectImageGenerationFeatureUsage({
-            reference_id: 'one-slot',
+            reference_id: 'character-slot',
             reference_type: 'character&style',
-            reference_images: ['a', 'b', 'c'],
+            user_reference_id: 'user-slot',
+            user_reference_type: 'character&style',
         });
-        expect(usage).toEqual({ characterReference: true, vibeReference: true });
+        expect(usage).toEqual({
+            characterReference: true,
+            vibeReference: false,
+            characterReferenceCount: 2,
+            vibeReferenceCount: 0,
+        });
         const capture = {
             engineId: 'novelai' as const,
             presetId: 'preset-1', presetName: 'NAI 线路', baseUrl: 'https://example.test',
@@ -31,9 +37,12 @@ describe('image generation billing', () => {
         expect(await recordSuccessfulImageGeneration({ capture, requestId: 'req-1', model: 'nai-full', featureUsage: usage })).toBe(false);
         const entries = await DB.getApiCallLog();
         expect(entries).toHaveLength(1);
-        expect(entries[0]).toMatchObject({ presetId: 'preset-1', model: 'nai-full', costStatus: 'priced', costMicros: '400000' });
-        expect(entries[0].imageBilling.addons).toHaveLength(2);
-        expect((await DB.getApiCostOverview()).totalCostMicros).toBe('400000');
+        expect(entries[0]).toMatchObject({ presetId: 'preset-1', model: 'nai-full', costStatus: 'priced', costMicros: '450000' });
+        expect(entries[0].imageBilling.addons).toHaveLength(1);
+        expect(entries[0].imageBilling.addons).toEqual(expect.arrayContaining([
+            expect.objectContaining({ key: 'character_reference', quantity: 2, priceMicros: '200000' }),
+        ]));
+        expect((await DB.getApiCostOverview()).totalCostMicros).toBe('450000');
     });
 
     it('does not turn disabled pricing into token billing', async () => {
@@ -50,16 +59,19 @@ describe('image generation billing', () => {
         expect(entry.billingUsage.usageAvailable).toBe(false);
     });
 
-    it('counts character and user references as one add-on per feature', () => {
+    it('counts character and user references separately', () => {
         expect(detectImageGenerationFeatureUsage({
             reference_id: 'character-slot',
             reference_type: 'character',
             user_reference_id: 'user-slot',
             user_reference_type: 'character&style',
-        })).toEqual({ characterReference: true, vibeReference: true });
+        })).toEqual({ characterReference: true, vibeReference: false, characterReferenceCount: 2, vibeReferenceCount: 0 });
         expect(detectImageGenerationFeatureUsage({
             user_reference_id: 'user-slot',
             user_reference_type: 'character',
-        })).toEqual({ characterReference: true, vibeReference: false });
+        })).toEqual({ characterReference: true, vibeReference: false, characterReferenceCount: 1, vibeReferenceCount: 0 });
+        expect(detectImageGenerationFeatureUsage({
+            vibe_reference_id: 'vibe-slot',
+        })).toEqual({ characterReference: false, vibeReference: true, characterReferenceCount: 0, vibeReferenceCount: 1 });
     });
 });

@@ -19,6 +19,8 @@ export interface ImageGenerationBillingCapture {
 export interface ImageGenerationFeatureUsage {
     characterReference: boolean;
     vibeReference: boolean;
+    characterReferenceCount?: number;
+    vibeReferenceCount?: number;
 }
 
 const clone = <T,>(value: T): T => JSON.parse(JSON.stringify(value));
@@ -47,7 +49,7 @@ export function captureImageGenerationBilling(
 export function detectImageGenerationFeatureUsage(args?: Record<string, any>): ImageGenerationFeatureUsage {
     const references = [
         {
-            id: args?.reference_id || args?.referenceId || args?.character_reference_id || args?.characterReferenceId,
+            id: args?.reference_id || args?.referenceId,
             type: args?.reference_type || args?.referenceType || 'character',
         },
         {
@@ -55,14 +57,13 @@ export function detectImageGenerationFeatureUsage(args?: Record<string, any>): I
             type: args?.user_reference_type || args?.userReferenceType || 'character',
         },
     ].filter(reference => Boolean(reference.id));
+    const explicitCharacterReferenceCount = args?.character_reference_id || args?.characterReferenceId ? 1 : 0;
+    const explicitVibeReferenceCount = args?.vibe_reference_id || args?.vibeReferenceId || args?.style_reference_id || args?.styleReferenceId ? 1 : 0;
     return {
-        characterReference: Boolean(args?.character_reference_id || args?.characterReferenceId)
-            || references.some(reference => String(reference.type).toLowerCase().includes('character')),
-        vibeReference: Boolean(args?.vibe_reference_id || args?.vibeReferenceId || args?.style_reference_id || args?.styleReferenceId)
-            || references.some(reference => {
-                const type = String(reference.type).toLowerCase();
-                return type.includes('style') || type.includes('vibe');
-            }),
+        characterReference: references.length > 0 || explicitCharacterReferenceCount > 0,
+        vibeReference: explicitVibeReferenceCount > 0,
+        characterReferenceCount: references.length + explicitCharacterReferenceCount,
+        vibeReferenceCount: explicitVibeReferenceCount,
     };
 }
 
@@ -88,18 +89,24 @@ export async function recordSuccessfulImageGeneration(input: {
     let invalidPrice = pricing.enabled && basePrice === null;
 
     const add = (
-        used: boolean,
+        count: number,
         key: 'character_reference' | 'vibe_reference',
         label: string,
         config: ImageGenerationPricing['addons']['characterReference'],
     ) => {
-        if (!used || !config.enabled) return;
+        if (count <= 0 || !config.enabled) return;
         const price = yuanStringToMicros(config.pricePerRequestYuan);
         if (price === null) { invalidPrice = true; return; }
-        addons.push({ key, label, priceMicros: price.toString() });
+        addons.push({
+            key,
+            label: count > 1 ? `${label} ×${count}` : label,
+            priceMicros: (price * BigInt(count)).toString(),
+            quantity: count,
+            unitPriceMicros: price.toString(),
+        });
     };
-    add(input.featureUsage.characterReference, 'character_reference', '角色参考图', pricing.addons.characterReference);
-    add(input.featureUsage.vibeReference, 'vibe_reference', 'Vibe 参考', pricing.addons.vibeReference);
+    add(input.featureUsage.characterReferenceCount ?? (input.featureUsage.characterReference ? 1 : 0), 'character_reference', '精密参考图', pricing.addons.characterReference);
+    add(input.featureUsage.vibeReferenceCount ?? (input.featureUsage.vibeReference ? 1 : 0), 'vibe_reference', 'Vibe 参考', pricing.addons.vibeReference);
 
     const total = (basePrice ?? 0n) + addons.reduce((sum, item) => sum + BigInt(item.priceMicros), 0n);
     const priced = pricing.enabled && !invalidPrice;

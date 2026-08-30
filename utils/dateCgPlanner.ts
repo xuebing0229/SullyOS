@@ -115,7 +115,7 @@ export async function generateMeetingCgViaChatPlanner(input: GenerateMeetingCgIn
         function: {
             name: exposedName,
             description: toolDef.description || 'Generate the planned story CG image.',
-            parameters: augmentImageToolSchema(toolDef.inputSchema || { type: 'object', properties: {} }),
+            parameters: augmentImageToolSchema(toolDef.inputSchema || { type: 'object', properties: {} }, selected.toolName),
         },
     };
     const body: Record<string, any> = {

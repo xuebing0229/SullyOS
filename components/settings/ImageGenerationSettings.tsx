@@ -232,10 +232,10 @@ const ImagePricingEditor: React.FC<{ value: ImageGenerationPricing; onChange: (n
             {value.enabled && <>
                 <Input label="基础单次价格（人民币）" inputMode="decimal" value={value.basePricePerRequestYuan} onChange={event => onChange({ ...value, basePricePerRequestYuan: event.target.value })} hint={priceHint(value.basePricePerRequestYuan)} />
                 {([
-                    ['characterReference', '角色参考图附加价'],
+                    ['characterReference', '每张精密参考图附加价'],
                     ['vibeReference', 'Vibe 参考附加价'],
                 ] as const).map(([key, label]) => <div key={key} className="grid grid-cols-[auto_1fr] items-end gap-2"><div className="pb-2"><Toggle checked={value.addons[key].enabled} onChange={enabled => patchAddon(key, { enabled })} /></div><Input label={`${label}（每次）`} inputMode="decimal" disabled={!value.addons[key].enabled} value={value.addons[key].pricePerRequestYuan} onChange={event => patchAddon(key, { pricePerRequestYuan: event.target.value })} hint={priceHint(value.addons[key].pricePerRequestYuan)} /></div>)}
-                <p className="text-[10px] leading-relaxed text-slate-400">同一次请求无论带几张参考图，每种附加功能最多加价一次。</p>
+                <p className="text-[10px] leading-relaxed text-slate-400">附加价按本次实际发送的参考图张数累加；AI 没有选择的参考图不计费。</p>
             </>}
         </div>
     );
@@ -318,7 +318,21 @@ const EngineCard: React.FC<{
                 patch,
                 ...(apiKey.trim() ? { apiKey: apiKey.trim() } : {}),
             });
-            setRemote(updated); setStatus('✅ 已保存'); addToast(`${title}配置已保存`, 'success');
+            setRemote(updated);
+            if (activePreset) {
+                updateImageGenerationPreset(activePreset.id, {
+                    binding,
+                    remoteConfig: updated,
+                    apiKey,
+                    pricing,
+                });
+                setPresetRevision(value => value + 1);
+                setStatus(`✅ 已保存，并已覆盖预设「${activePreset.name}」`);
+                addToast(`${title}配置及计价已保存到当前预设`, 'success');
+            } else {
+                setStatus('✅ 线路配置已保存；如需保存计价，请另存为生图预设');
+                addToast(`${title}线路配置已保存`, 'success');
+            }
         } catch (error: any) {
             setStatus(`❌ ${error?.message || String(error)}`);
         } finally { setBusy(false); }

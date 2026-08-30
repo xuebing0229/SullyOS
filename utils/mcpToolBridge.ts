@@ -65,7 +65,7 @@ export const buildMcpOpenAITools = (charId?: string): { tools: OpenAIMcpTool[]; 
                     name: exposed,
                     description: buildToolDescription(server, t, servers.length > 1),
                     parameters: resolveMcpExecutionPolicy(server, t) === 'single-shot'
-                    ? augmentImageToolSchema(t.inputSchema || { type: 'object', properties: {} })
+                    ? augmentImageToolSchema(t.inputSchema || { type: 'object', properties: {} }, t.name)
                     : (t.inputSchema || { type: 'object', properties: {} }),
                 },
             });
@@ -214,7 +214,16 @@ export function extractMcpImageUrls(data: any): string[] {
  * 与瑞幸不同：这里的工具是用户自配的、内容未知，所以只讲纪律，不讲业务流程。
  * charId：只列对该角色可见的服务器，与 buildMcpOpenAITools 的过滤保持一致。
  */
-export const buildMcpSystemBlock = (userName: string = '用户', charId?: string): string => {
+export interface NovelAiReferenceAvailability {
+    character?: { enabled: boolean; sourceName?: string; type?: string };
+    user?: { enabled: boolean; sourceName?: string; type?: string };
+}
+
+export const buildMcpSystemBlock = (
+    userName: string = '用户',
+    charId?: string,
+    referenceAvailability?: NovelAiReferenceAvailability,
+): string => {
     const servers = getEnabledMcpServers(charId);
     if (!servers.length) return '';
     const lines = servers.map(s => {
@@ -223,6 +232,16 @@ export const buildMcpSystemBlock = (userName: string = '用户', charId?: string
     });
     const hasGptImage = servers.some(s => (s.tools || []).some(t => t.name === 'generate_image'));
     const hasNovelAi = servers.some(s => (s.tools || []).some(t => t.name === 'novelai_generate_image'));
+    const refLine = (label: string, value?: { enabled: boolean; sourceName?: string; type?: string }) => value?.enabled
+        ? `- ${label}：已开启，可选${value.sourceName ? `（${value.sourceName}）` : ''}${value.type ? `，参照类型 ${value.type}` : ''}`
+        : `- ${label}：未开启，不可用`;
+    const referenceRules = hasNovelAi ? `
+**NovelAI 本轮可选精密参照**:
+${refLine('当前角色参考图', referenceAvailability?.character)}
+${refLine(`${userName}的用户参考图`, referenceAvailability?.user)}
+- “已开启”仅表示可选，不代表必须发送。每次调用都根据画面中实际出现的人物决定：用 \`use_character_reference\` 和 \`use_user_reference\` 分别选择，可两张都不用、任选一张或两张都用。
+- 只为画面里需要保持外观的人选择参考图；不要因为参考图可用就强行让对应人物入镜。
+` : '';
     const imageRules = hasGptImage || hasNovelAi ? `
 **生图工具选择**:
 ${hasGptImage ? '- `generate_image`：自然语言、写实、海报、物品、风景、通用图片。' : ''}
@@ -231,6 +250,7 @@ ${hasNovelAi ? '- `novelai_generate_image`：二次元、标签提示词、负�
 - 用户未指定时再按画面类型判断；不要为了展示能力同时调用两套引擎。
 - 生图工具同一轮只能调用一次。可选参数 after_generate_action：none 表示图片完成后直接结束；inspect 表示系统在最终图片真正完成后再把图片交给你看，并让你自然回应一小句。
 - 默认使用 none。仅当用户明确要求看图后评价，或当前语境确实需要亲自看最终成图时才使用 inspect；不要为了显得更有互动感默认使用 inspect。
+${referenceRules}
 ` : '';
     return `
 

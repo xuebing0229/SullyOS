@@ -17,7 +17,7 @@ import {
     getMcpRequestTimeoutMs,
     type McpServerConfig,
 } from './mcpClient';
-import { buildMcpOpenAITools, buildMcpRejectedToolsFallbackBody, buildMcpTextFallbackBody, extractMcpImageUrls, formatMcpToolResult, MCP_RESULT_MAX_CHARS, sanitizeMcpLeadInText, shouldRetryMcpWithoutTools, stripTextFakedMcpCalls } from './mcpToolBridge';
+import { buildMcpOpenAITools, buildMcpRejectedToolsFallbackBody, buildMcpSystemBlock, buildMcpTextFallbackBody, extractMcpImageUrls, formatMcpToolResult, MCP_RESULT_MAX_CHARS, sanitizeMcpLeadInText, shouldRetryMcpWithoutTools, stripTextFakedMcpCalls } from './mcpToolBridge';
 import { completeGroupChatWithMcp } from './groupChat/mcp';
 import { BUILTIN_IMAGE_MCP_REQUEST_TIMEOUT_MS, BUILTIN_IMAGE_SETTINGS_KEY, getBuiltinImageMcpServers, loadBuiltinImageSettings, saveBuiltinImageSettings } from './builtinImageMcp';
 
@@ -198,6 +198,22 @@ describe('服务器配置持久化', () => {
                 .map(tool => tool.name),
         ).toContain('generate_image');
         expect(isMcpChatAvailable('char-1')).toBe(true);
+    });
+
+    it('tells chat AI which managed NovelAI references are available without exposing slots', () => {
+        const settings = loadBuiltinImageSettings();
+        settings.engines.novelai.enabled = true;
+        settings.engines.novelai.tools = [{ name: 'novelai_generate_image' }];
+        saveBuiltinImageSettings(settings);
+        const block = buildMcpSystemBlock('小明', 'char-1', {
+            character: { enabled: true, sourceName: '角色正面.png', type: 'character' },
+            user: { enabled: false },
+        });
+        expect(block).toContain('当前角色参考图：已开启，可选（角色正面.png）');
+        expect(block).toContain('小明的用户参考图：未开启，不可用');
+        expect(block).toContain('use_character_reference');
+        expect(block).toContain('use_user_reference');
+        expect(block).not.toContain('reference_id');
     });
 
     it('isMcpChatAvailable: 必须启用且已发现工具', () => {

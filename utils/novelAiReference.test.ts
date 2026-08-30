@@ -35,6 +35,8 @@ describe('NovelAI 精密参照工具参数', () => {
             user_reference_type: 'character',
             user_reference_strength: 1,
             user_reference_fidelity: 0,
+            use_character_reference: false,
+            use_user_reference: true,
         })).toEqual({ prompt: 'hello' });
     });
 
@@ -58,6 +60,21 @@ describe('NovelAI 精密参照工具参数', () => {
             reference_id: 'a'.repeat(64),
             user_reference_id: 'c'.repeat(64),
         });
+        expect(applyManagedNovelAiReferenceArguments(prompt, reference, userReference, { character: true, user: false })).toEqual({
+            prompt: 'hello',
+            reference_id: 'a'.repeat(64),
+            reference_type: 'character',
+            reference_strength: 0.75,
+            reference_fidelity: 0.85,
+        });
+        expect(applyManagedNovelAiReferenceArguments(prompt, reference, userReference, { character: false, user: true })).toEqual({
+            prompt: 'hello',
+            user_reference_id: 'c'.repeat(64),
+            user_reference_type: 'character',
+            user_reference_strength: 0.6,
+            user_reference_fidelity: 0.85,
+        });
+        expect(applyManagedNovelAiReferenceArguments(prompt, reference, userReference, { character: false, user: false })).toEqual({ prompt: 'hello' });
     });
 
     it('由客户端配置覆盖并注入受管字段', () => {

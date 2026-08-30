@@ -139,6 +139,8 @@ export interface ApiCallLogEntry extends ApiCallMeta {
             key: 'character_reference' | 'vibe_reference';
             label: string;
             priceMicros: string;
+            quantity?: number;
+            unitPriceMicros?: string;
         }>;
         totalPriceMicros: string;
     };

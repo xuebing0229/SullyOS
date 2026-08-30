@@ -59,7 +59,18 @@ export async function completeGroupChatWithMcp(options: GroupMcpCompletionOption
     // 没有对本群可见的服务器时完全沿用群聊原请求。
     if (!tools.length) return request(options.body);
 
-    const systemBlock = buildMcpSystemBlock(options.userName, options.groupId);
+    const systemBlock = buildMcpSystemBlock(options.userName, options.groupId, {
+        character: {
+            enabled: options.character?.novelAiReference?.enabled === true,
+            sourceName: options.character?.novelAiReference?.sourceName,
+            type: options.character?.novelAiReference?.type,
+        },
+        user: {
+            enabled: options.userProfile?.novelAiReference?.enabled === true,
+            sourceName: options.userProfile?.novelAiReference?.sourceName,
+            type: options.userProfile?.novelAiReference?.type,
+        },
+    });
     const baseBody: Record<string, any> = {
         ...options.body,
         messages: [

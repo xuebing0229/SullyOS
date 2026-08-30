@@ -29,6 +29,8 @@ const REFERENCE_FIELDS = [
     'user_reference_type',
     'user_reference_strength',
     'user_reference_fidelity',
+    'use_character_reference',
+    'use_user_reference',
 ] as const;
 
 export interface PreparedReferenceImage {
@@ -311,10 +313,11 @@ export function applyManagedNovelAiReferenceArguments(
     args: Record<string, any>,
     characterReference?: NovelAiPreciseReferenceConfig,
     userReference?: NovelAiPreciseReferenceConfig,
+    selection: { character?: boolean; user?: boolean } = {},
 ): Record<string, any> {
     const clean = sanitizeNovelAiReferenceToolArguments(args);
     const result = { ...clean };
-    if (characterReference?.enabled) {
+    if (characterReference?.enabled && selection.character !== false) {
         Object.assign(result, {
             reference_id: characterReference.slotId,
             reference_type: characterReference.type,
@@ -322,7 +325,7 @@ export function applyManagedNovelAiReferenceArguments(
             reference_fidelity: characterReference.fidelity,
         });
     }
-    if (userReference?.enabled) {
+    if (userReference?.enabled && selection.user !== false) {
         Object.assign(result, {
             user_reference_id: userReference.slotId,
             user_reference_type: userReference.type,
@@ -353,13 +356,17 @@ export async function prepareBuiltinImageToolArguments({
         return args;
     }
 
+    const selection = {
+        character: args?.use_character_reference !== false,
+        user: args?.use_user_reference !== false,
+    };
     const clean = sanitizeNovelAiReferenceToolArguments(args);
     const characterReference = character?.novelAiReference;
     const userReference = userProfile?.novelAiReference;
     const enabledReferences = [
-        { label: '当前角色', value: characterReference },
-        { label: '用户', value: userReference },
-    ].filter(item => item.value?.enabled) as Array<{ label: string; value: NovelAiPreciseReferenceConfig }>;
+        { label: '当前角色', value: characterReference, selected: selection.character },
+        { label: '用户', value: userReference, selected: selection.user },
+    ].filter(item => item.value?.enabled && item.selected) as Array<{ label: string; value: NovelAiPreciseReferenceConfig; selected: boolean }>;
     if (!enabledReferences.length) return clean;
 
     for (const item of enabledReferences) {
@@ -368,7 +375,7 @@ export async function prepareBuiltinImageToolArguments({
     }
     await Promise.all(enabledReferences.map(item => ensureNovelAiReferenceUploaded(item.value)));
 
-    return applyManagedNovelAiReferenceArguments(clean, characterReference, userReference);
+    return applyManagedNovelAiReferenceArguments(clean, characterReference, userReference, selection);
 }
 
 export function stripNovelAiReferenceForTextOnlyBackup(character: CharacterProfile): CharacterProfile {

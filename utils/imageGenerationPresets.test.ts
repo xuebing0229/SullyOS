@@ -6,6 +6,7 @@ import {
     getActiveImageGenerationPreset,
     importImageGenerationLocal,
     loadImageGenerationPresetState,
+    updateImageGenerationPreset,
 } from './imageGenerationPresets';
 import { loadBuiltinImageSettings } from './builtinImageMcp';
 
@@ -89,6 +90,30 @@ describe('image generation presets', () => {
             enabled: true, basePricePerRequestYuan: '0.25',
             addons: { characterReference: { pricePerRequestYuan: '0.10' }, vibeReference: { pricePerRequestYuan: '0.05' } },
         });
+    });
+    it('keeps each preset pricing independent when the active preset is overwritten', () => {
+        const settings = loadBuiltinImageSettings();
+        const remoteConfig = {
+            version: 1 as const, revision: 1, profile: 'custom' as const, baseUrl: 'https://example.test/v1', generatePath: '/generate', modelsPath: '/models',
+            authHeader: 'Authorization', authPrefix: 'Bearer', modelFull: 'full-id', modelCurated: 'curated-id', responseMode: 'json' as const, imageDelivery: 'auto' as const, promptLanguagePolicy: 'allow' as const, apiKeyConfigured: true, apiKeyHint: '***',
+        };
+        const first = createImageGenerationPreset({ name: '线路一', engineId: 'novelai', binding: settings.engines.novelai, apiKey: 'secret-1', remoteConfig });
+        const second = createImageGenerationPreset({ name: '线路二', engineId: 'novelai', binding: settings.engines.novelai, apiKey: 'secret-2', remoteConfig });
+        updateImageGenerationPreset(first.id, {
+            binding: settings.engines.novelai,
+            apiKey: 'secret-1',
+            remoteConfig,
+            pricing: {
+                enabled: true, basePricePerRequestYuan: '0.25',
+                addons: {
+                    characterReference: { enabled: true, pricePerRequestYuan: '0.10' },
+                    vibeReference: { enabled: false, pricePerRequestYuan: '' },
+                },
+            },
+        });
+        const state = loadImageGenerationPresetState();
+        expect(state.presets.find(item => item.id === first.id)?.pricing).toMatchObject({ enabled: true, basePricePerRequestYuan: '0.25' });
+        expect(state.presets.find(item => item.id === second.id)?.pricing.enabled).toBe(false);
     });
     it('rejects an enabled pricing preset with a missing price', () => {
         const settings = loadBuiltinImageSettings();
