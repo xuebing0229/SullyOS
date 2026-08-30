@@ -12,6 +12,10 @@
 import { getEnabledMcpServers, type McpServerConfig, type McpToolDef, type McpToolResult } from './mcpClient';
 import { resolveMcpExecutionPolicy, type McpExecutionPolicy } from './mcpExecutionPolicy';
 import { augmentImageToolSchema } from './imageToolPostAction';
+import {
+    getCharacterAutoImageMcpServers,
+    getImageGenerationSelectionMode,
+} from './imageGenerationPresets';
 
 export interface OpenAIMcpTool {
     type: 'function';
@@ -34,7 +38,22 @@ export const MCP_CHAT_MAX_STALLED_ROUNDS = 2;
 
 const sanitizeToolName = (name: string): string =>
     (name || 'tool').replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 64) || 'tool';
-const serverSlug = (server: McpServerConfig): string => sanitizeToolName(server.name).slice(0, 20) || 'srv';
+const serverSlug = (server: McpServerConfig): string => server.imagePresetId
+    ? sanitizeToolName(`preset_${server.imagePresetId.slice(-10)}`).slice(0, 20)
+    : sanitizeToolName(server.name).slice(0, 20) || 'srv';
+
+const isBuiltinImageServer = (server: McpServerConfig): boolean =>
+    server.builtin === true && server.id.startsWith('builtin_image_');
+
+export const getMcpServersForChat = (charId?: string): McpServerConfig[] => {
+    const regular = getEnabledMcpServers(charId);
+    if (getImageGenerationSelectionMode() !== 'character-auto') return regular;
+    const nonBuiltinImages = regular.filter(server => !isBuiltinImageServer(server));
+    return [...getCharacterAutoImageMcpServers(), ...nonBuiltinImages];
+};
+
+export const hasMcpToolsForChat = (charId?: string): boolean =>
+    getMcpServersForChat(charId).length > 0;
 
 /**
  * 聚合启用服务器的工具，返回 OpenAI 工具数组 + 暴露名→真实工具 的映射。
@@ -46,12 +65,14 @@ export const buildMcpOpenAITools = (
     charId?: string,
     options: { allowCharacterReference?: boolean } = {},
 ): { tools: OpenAIMcpTool[]; resolve: Map<string, ResolvedMcpTool> } => {
-    const servers = getEnabledMcpServers(charId);
+    const servers = getMcpServersForChat(charId);
     const tools: OpenAIMcpTool[] = [];
     const resolve = new Map<string, ResolvedMcpTool>();
     for (const server of servers) {
         for (const t of server.tools || []) {
-            let exposed = sanitizeToolName(t.name);
+            let exposed = server.imagePresetId
+                ? sanitizeToolName(`image_${server.imagePresetId.slice(-10)}_${t.name}`)
+                : sanitizeToolName(t.name);
             if (resolve.has(exposed)) {
                 exposed = sanitizeToolName(`${serverSlug(server)}_${t.name}`);
                 let i = 2;
@@ -68,7 +89,16 @@ export const buildMcpOpenAITools = (
                     name: exposed,
                     description: buildToolDescription(server, t, servers.length > 1),
                     parameters: resolveMcpExecutionPolicy(server, t) === 'single-shot'
-                    ? augmentImageToolSchema(t.inputSchema || { type: 'object', properties: {} }, t.name, options)
+                    ? augmentImageToolSchema(
+                        t.inputSchema || { type: 'object', properties: {} },
+                        t.name,
+                        {
+                            ...options,
+                            allowCharacterReference: server.imagePresetId
+                                ? server.imagePresetAllowCharacterReference !== false
+                                : options.allowCharacterReference,
+                        },
+                    )
                     : (t.inputSchema || { type: 'object', properties: {} }),
                 },
             });
@@ -79,6 +109,14 @@ export const buildMcpOpenAITools = (
 
 const buildToolDescription = (server: McpServerConfig, t: McpToolDef, multi: boolean): string => {
     const desc = (t.description || '').trim();
+    if (server.imagePresetId) {
+        const purpose = (server.imagePresetPurpose || '').trim();
+        return [
+            `[${server.name}]`,
+            purpose ? `用途：${purpose}。` : '用途：用户尚未填写；请根据该预设名称与工具能力判断。',
+            desc,
+        ].filter(Boolean).join(' ');
+    }
     // 多服务器时在描述里带上来源，帮模型区分同类工具
     return multi ? `[${server.name}] ${desc}` : desc;
 };
@@ -228,11 +266,14 @@ export const buildMcpSystemBlock = (
     charId?: string,
     referenceAvailability?: NovelAiReferenceAvailability,
 ): string => {
-    const servers = getEnabledMcpServers(charId);
+    const servers = getMcpServersForChat(charId);
     if (!servers.length) return '';
     const lines = servers.map(s => {
         const names = (s.tools || []).map(t => t.name).join('、');
-        return `- ${s.name}: ${names}`;
+        const purpose = s.imagePresetId && s.imagePresetPurpose?.trim()
+            ? `（用途：${s.imagePresetPurpose.trim()}）`
+            : '';
+        return `- ${s.name}${purpose}: ${names}`;
     });
     const hasGptImage = servers.some(s => (s.tools || []).some(t => t.name === 'generate_image'));
     const hasNovelAi = servers.some(s => (s.tools || []).some(t => t.name === 'novelai_generate_image'));
@@ -247,6 +288,13 @@ export const buildMcpSystemBlock = (
     const selectionRule = characterReferenceAllowed
         ? '- “已开启”仅表示可选，不代表必须发送。每次调用都根据画面中实际出现的人物决定：用 `use_character_reference` 和 `use_user_reference` 分别选择，可两张都不用、任选一张或两张都用。'
         : '- 用户参考图“已开启”仅表示可选，不代表必须发送。用 `use_user_reference` 决定本次是否选择；不要因为参考图可用就强行让用户入镜。';
+    const autoPresetServers = servers.filter(server => Boolean(server.imagePresetId));
+    const autoPresetRules = autoPresetServers.length ? `
+**当前生图预设模式：角色决定**:
+- 上面每个“生图预设”工具都对应用户真实保存的一套预设；“用途”是用户亲手填写给你看的选择说明。
+- 当你已经决定这轮要生图时，直接在**这一次主聊天的 function calling** 里选择最适合当前画面用途的那个预设工具；不要先做一次额外判断请求，也不要先调用别的工具来问该选哪个。
+- 一次只选一个生图预设。用户明确点名某个预设或 GPT / NovelAI 引擎时优先遵从；未点名时再按用途自行判断。
+` : '';
     const referenceRules = hasNovelAi ? `
 **NovelAI 本轮可选精密参照**:
 ${availableReferenceLines}
@@ -257,6 +305,7 @@ ${selectionRule}
 **生图工具选择**:
 ${hasGptImage ? '- `generate_image`：自然语言、写实、海报、物品、风景、通用图片。' : ''}
 ${hasNovelAi ? '- `novelai_generate_image`：二次元、标签提示词、负面提示词、Seed/Steps/Guidance、NovelAI 风格控制。' : ''}
+${autoPresetRules}
 - 用户明确说“用 GPT 画/生图”时必须用 GPT 工具；明确说“用 NovelAI 画/生图”时必须用 NovelAI 工具。
 - 用户未指定时再按画面类型判断；不要为了展示能力同时调用两套引擎。
 - 生图工具同一轮只能调用一次。可选参数 after_generate_action：none 表示图片完成后直接结束；inspect 表示系统在最终图片真正完成后再把图片交给你看，并让你自然回应一小句。
