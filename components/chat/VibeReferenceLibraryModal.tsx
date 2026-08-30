@@ -104,10 +104,12 @@ const VibeReferenceLibraryModal: React.FC<Props> = ({ isOpen, onClose, onChanged
                         type="button"
                         onClick={toggle}
                         disabled={!library.items.length}
-                        className={`relative h-7 w-12 rounded-full transition-colors disabled:opacity-40 ${library.enabled ? 'bg-violet-500' : 'bg-slate-300'}`}
+                        className={`shrink-0 appearance-none border-0 bg-transparent p-0 ${!library.items.length ? 'opacity-40' : ''}`}
                         aria-label="Vibe 总开关"
                     >
-                        <span className={`absolute top-1 h-5 w-5 rounded-full bg-white shadow transition-transform ${library.enabled ? 'translate-x-6' : 'translate-x-1'}`} />
+                        <span className={`flex h-6 w-10 items-center rounded-full p-1 transition-colors ${library.enabled ? 'bg-violet-500' : 'bg-slate-200'}`}>
+                            <span className={`h-4 w-4 rounded-full bg-white shadow-sm transition-transform ${library.enabled ? 'translate-x-4' : ''}`} />
+                        </span>
                     </button>
                 </div>
 
