@@ -77,6 +77,7 @@ export interface ImageGenerationPreset {
     updatedAt: number;
 }
 
+/** NovelAI 预设选择方式；生图引擎仍始终由 preferredEngine 手动选择。 */
 export type ImageGenerationPresetSelectionMode = 'manual' | 'character-auto';
 
 export interface ImageGenerationPresetState {
@@ -253,16 +254,20 @@ const isCharacterAutoPresetRuntimeReady = (
 );
 
 export function getCharacterAutoImageGenerationPresets(): ImageGenerationPreset[] {
-    return loadImageGenerationPresetState().presets.filter(isCharacterAutoPresetRuntimeReady);
+    return loadImageGenerationPresetState().presets.filter(preset =>
+        preset.engineId === 'novelai'
+        && isCharacterAutoPresetRuntimeReady(preset),
+    );
 }
 
 export function isCharacterAutoImagePresetSelectionEnabled(): boolean {
-    return getImageGenerationSelectionMode() === 'character-auto'
+    return loadBuiltinImageSettings().preferredEngine === 'novelai'
+        && getImageGenerationSelectionMode() === 'character-auto'
         && getCharacterAutoImageGenerationPresets().length > 0;
 }
 
 export function getCharacterAutoImageMcpServers(): McpServerConfig[] {
-    if (getImageGenerationSelectionMode() !== 'character-auto') return [];
+    if (!isCharacterAutoImagePresetSelectionEnabled()) return [];
     return getCharacterAutoImageGenerationPresets().map(preset => ({
         id: `builtin_image_preset_${preset.id}`,
         name: `生图预设「${preset.name}」`,
@@ -283,9 +288,8 @@ export function getCharacterAutoImageMcpServers(): McpServerConfig[] {
 
 /** No active/legacy preset keeps the pre-existing opt-in-per-request behavior. */
 export function isCharacterReferenceAllowedForActivePreset(): boolean {
-    if (getImageGenerationSelectionMode() === 'character-auto') {
+    if (isCharacterAutoImagePresetSelectionEnabled()) {
         return getCharacterAutoImageGenerationPresets()
-            .filter(item => item.engineId === 'novelai')
             .some(item => item.allowCharacterReference !== false);
     }
     return getActiveImageGenerationPreset('novelai')?.allowCharacterReference !== false;
@@ -431,6 +435,7 @@ export async function applyImageGenerationPresetById(id: string): Promise<{
 }> {
     const preset = loadImageGenerationPresetState().presets.find(item => item.id === id);
     if (!preset) throw new Error('角色选择的生图预设不存在');
+    if (preset.engineId !== 'novelai') throw new Error('角色自动选预设仅用于 NovelAI');
     if (!isCharacterAutoPresetRuntimeReady(preset)) throw new Error(`生图预设「${preset.name}」当前配置不完整`);
     return applyImageGenerationPreset(preset);
 }

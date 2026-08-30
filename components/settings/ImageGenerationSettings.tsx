@@ -431,7 +431,7 @@ const EngineCard: React.FC<{
             {open && (
                 <div className="space-y-3 border-t border-violet-50 p-4">
                     <ImagePresetBar activePreset={activePreset} presets={presets} busy={busy} onApply={preset => void applyPreset(preset)} onCreate={createPreset} onUpdate={updatePreset} onRename={renamePreset} onDelete={removePreset} />
-                    {activePreset && (
+                    {id === 'novelai' && activePreset && (
                         <div className="rounded-xl border border-violet-100 bg-violet-50/40 p-3">
                             <label className="block text-[10px] font-bold text-slate-500">预设用途 / 功能</label>
                             <textarea
@@ -499,22 +499,16 @@ export const ImageGenerationSettings: React.FC<Props> = ({ addToast }) => {
     return (
         <div className="space-y-3">
             <div className="rounded-2xl border border-violet-100 bg-violet-50/60 p-3">
-                <p className="text-xs font-bold text-slate-700">默认生图模式</p>
-                <p className="mt-1 text-[10px] leading-relaxed text-slate-400">{selectionMode === 'character-auto'
-                    ? '角色会在决定调用生图工具的同一次主聊天请求里，从所有已保存且配置完整的预设中直接选择；不会额外请求一次主 API。'
-                    : '固定模式会一直使用你选中的默认引擎与当前预设，直到你在这里更换。'}</p>
+                <p className="text-xs font-bold text-slate-700">默认生图引擎</p>
+                <p className="mt-1 text-[10px] leading-relaxed text-slate-400">先由你固定选择 GPT 或 NovelAI；角色不会替你在这两个引擎之间切换。</p>
                 <div className="mt-2 grid grid-cols-2 gap-2">
                     {(['gpt-image', 'novelai'] as const).map(id => {
-                        const selected = selectionMode === 'manual' && settings.preferredEngine === id;
+                        const selected = settings.preferredEngine === id;
                         return (
                             <button
                                 key={id}
                                 type="button"
-                                onClick={() => {
-                                    setImageGenerationSelectionMode('manual');
-                                    setSelectionMode('manual');
-                                    setSettings(setPreferredBuiltinImageEngine(id));
-                                }}
+                                onClick={() => setSettings(setPreferredBuiltinImageEngine(id))}
                                 className={`rounded-xl px-3 py-2.5 text-xs font-bold transition-all ${selected ? 'bg-violet-500 text-white shadow-sm' : 'bg-white text-slate-500 border border-violet-100'}`}
                             >
                                 {id === 'gpt-image' ? 'GPT 生图' : 'NovelAI 生图'}
@@ -523,17 +517,36 @@ export const ImageGenerationSettings: React.FC<Props> = ({ addToast }) => {
                         );
                     })}
                 </div>
-                <button
-                    type="button"
-                    onClick={() => {
-                        setImageGenerationSelectionMode('character-auto');
-                        setSelectionMode('character-auto');
-                    }}
-                    className={`mt-2 w-full rounded-xl px-3 py-2.5 text-xs font-bold transition-all ${selectionMode === 'character-auto' ? 'bg-violet-500 text-white shadow-sm' : 'bg-white text-violet-600 border border-violet-100'}`}
-                >
-                    角色决定预设{selectionMode === 'character-auto' ? ' · 当前' : ''}
-                </button>
-                <p className="mt-2 text-[10px] leading-relaxed text-slate-400">自动模式只会候选“已启用、已有工具、Token/API Key 完整”的保存预设；每个预设可在下方填写“用途 / 功能”帮助角色判断。</p>
+                {settings.preferredEngine === 'novelai' ? (
+                    <div className="mt-3 rounded-xl border border-violet-100 bg-white/70 p-3">
+                        <p className="text-[10px] font-bold text-slate-600">NovelAI 预设选择</p>
+                        <div className="mt-2 grid grid-cols-2 gap-2">
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    setImageGenerationSelectionMode('manual');
+                                    setSelectionMode('manual');
+                                }}
+                                className={`rounded-lg px-3 py-2 text-[10px] font-bold ${selectionMode === 'manual' ? 'bg-violet-500 text-white' : 'border border-violet-100 bg-white text-slate-500'}`}
+                            >
+                                固定当前预设{selectionMode === 'manual' ? ' · 当前' : ''}
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    setImageGenerationSelectionMode('character-auto');
+                                    setSelectionMode('character-auto');
+                                }}
+                                className={`rounded-lg px-3 py-2 text-[10px] font-bold ${selectionMode === 'character-auto' ? 'bg-violet-500 text-white' : 'border border-violet-100 bg-white text-violet-600'}`}
+                            >
+                                角色决定预设{selectionMode === 'character-auto' ? ' · 当前' : ''}
+                            </button>
+                        </div>
+                        <p className="mt-2 text-[10px] leading-relaxed text-slate-400">“角色决定预设”只在 NovelAI 内部生效：角色根据各 NovelAI 预设的“用途 / 功能”选择其中一个，不会改成 GPT，也不会额外请求一次主 API。</p>
+                    </div>
+                ) : (
+                    <p className="mt-2 text-[10px] leading-relaxed text-slate-400">GPT 直接使用当前 GPT 配置，不参与“角色决定预设”。</p>
+                )}
             </div>
             <div className="flex items-center justify-between">
                 <div>
