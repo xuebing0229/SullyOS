@@ -307,6 +307,23 @@ export async function deleteRemoteNovelAiReference(
     }
 }
 
+export async function deleteRemoteNovelAiVibeReference(
+    config: { slotId: string } | undefined,
+): Promise<void> {
+    if (!config || !SLOT_RE.test(config.slotId)) return;
+    const binding = loadBuiltinImageSettings().engines.novelai;
+    if (!binding.token.trim() || !binding.controlBaseUrl.trim()) return;
+    const url = `${referenceUrl(binding, config.slotId)}?purgeVibeCache=1`;
+    const response = await fetch(url, {
+        method: 'DELETE',
+        headers: authHeaders(binding),
+        signal: AbortSignal.timeout(30_000),
+    }).catch(() => null);
+    if (response && !response.ok && response.status !== 404) {
+        throw new Error(`服务器 Vibe 参考图删除失败：${await readError(response)}`);
+    }
+}
+
 export function sanitizeNovelAiReferenceToolArguments(
     args: Record<string, any>,
 ): Record<string, any> {

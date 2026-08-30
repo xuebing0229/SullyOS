@@ -1,7 +1,7 @@
 import {
     clampReferenceUnit,
     createReferenceConfigFromSource,
-    deleteRemoteNovelAiReference,
+    deleteRemoteNovelAiVibeReference,
 } from './novelAiReference';
 
 export const VIBE_REFERENCE_LIBRARY_KEY = 'aetheros.imageGeneration.vibeLibrary.v1';
@@ -167,7 +167,7 @@ export async function removeVibeReference(id: string): Promise<void> {
     if (library.activeId === id) library.activeId = library.items[0]?.id || null;
     if (!library.activeId) library.enabled = false;
     saveVibeReferenceLibrary(library);
-    if (removed) void deleteRemoteNovelAiReference(removed as any).catch(() => {});
+    if (removed) void deleteRemoteNovelAiVibeReference(removed).catch(() => {});
 }
 
 export function clearVibeReferenceLibrary(): void {

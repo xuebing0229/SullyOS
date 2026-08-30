@@ -159,6 +159,7 @@ async function executeNovelAiGeneration(rawArgs, { runtimeOverride, forcePersist
     const stored = await referenceStore.readImage(args.vibe_reference_id);
     if (!stored) throw new Error("The Vibe reference image is missing on the MCP server. Reopen Vibe library and sync it again.");
     const encoded = await vibeEncodingCache.getOrCreate({
+      slotId: args.vibe_reference_id,
       imageSha256: stored.metadata.sha256,
       modelId: upstreamModel,
       informationExtracted: args.vibe_reference_information_extracted,
@@ -287,13 +288,23 @@ app.get("/references/:slotId", requireBearer, async (req, res, next) => {
 app.put("/references/:slotId", requireBearer, express.raw({ type: "image/png", limit: "20mb" }), async (req, res, next) => {
   try {
     if (!Buffer.isBuffer(req.body)) return res.status(415).json({ error: "unsupported_media_type", message: "Content-Type must be image/png" });
+    const before = await referenceStore.getMetadata(req.params.slotId);
     const result = await referenceStore.put(req.params.slotId, req.body, req.get("X-Reference-Sha256") || "");
+    if (before?.sha256 && before.sha256 !== result.metadata.sha256) {
+      await vibeEncodingCache.removeBySlotId(req.params.slotId);
+    }
     setReferenceHeaders(res, result.metadata);
     return res.status(result.existed ? 200 : 201).json(result.metadata);
   } catch (error) { next(error); }
 });
 app.delete("/references/:slotId", requireBearer, async (req, res, next) => {
-  try { await referenceStore.remove(req.params.slotId); return res.sendStatus(204); } catch (error) { next(error); }
+  try {
+    if (req.query.purgeVibeCache === "1") {
+      await vibeEncodingCache.removeBySlotId(req.params.slotId);
+    }
+    await referenceStore.remove(req.params.slotId);
+    return res.sendStatus(204);
+  } catch (error) { next(error); }
 });
 
 
