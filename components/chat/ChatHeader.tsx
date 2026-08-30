@@ -69,7 +69,11 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
     chromeStyle = 'soft',
 }) => {
     const buffs: CharacterBuff[] = activeCharacter.activeBuffs || [];
-    const [openBuff, setOpenBuff] = useState<CharacterBuff | null>(null);
+    // 只保存当前展开的 buff id，不缓存整份对象。情绪评估会异步替换 activeBuffs；
+    // 若把旧 buff 对象塞进 state，详情卡会一直显示评估前的 intensity/description，
+    // 直到用户手动关掉再打开。由 id 每次从最新 buffs 派生，打开中的分数也能实时刷新。
+    const [openBuffId, setOpenBuffId] = useState<string | null>(null);
+    const openBuff = openBuffId ? (buffs.find(buff => buff.id === openBuffId) || null) : null;
     const [isBuffListExpanded, setIsBuffListExpanded] = useState(false);
     const [confirmDeleteBuff, setConfirmDeleteBuff] = useState<CharacterBuff | null>(null);
     const cardRef = useRef<HTMLDivElement>(null);
@@ -80,14 +84,14 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
     const hiddenBuffCount = Math.max(0, buffs.length - collapsedBuffCount);
 
     const toggleBuff = (buff: CharacterBuff) => {
-        setOpenBuff(prev => prev?.id === buff.id ? null : buff);
+        setOpenBuffId(prev => prev === buff.id ? null : buff.id);
     };
 
     const handleLongPressStart = (buff: CharacterBuff) => {
         longPressTimerRef.current = setTimeout(() => {
             longPressTimerRef.current = null;
             setConfirmDeleteBuff(buff);
-            setOpenBuff(null);
+            setOpenBuffId(null);
         }, 600);
     };
 
@@ -113,7 +117,7 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
             const clickedInsideCard = !!cardRef.current?.contains(target);
             const clickedInsideBuffPanel = !!buffPanelRef.current?.contains(target);
             if (!clickedInsideCard && !clickedInsideBuffPanel) {
-                setOpenBuff(null);
+                setOpenBuffId(null);
                 setIsBuffListExpanded(false);
             }
         };
@@ -123,7 +127,7 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
 
     useEffect(() => {
         setIsBuffListExpanded(false);
-        setOpenBuff(null);
+        setOpenBuffId(null);
     }, [activeCharacter.id]);
 
     const isDarkHeader = headerStyle === 'discord';
@@ -288,7 +292,7 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
                                 {(['', '轻微', '较低', '中等', '较强', '强烈'] as const)[normalizeIntensity(openBuff.intensity)]}
                             </div>
                         </div>
-                        <button onClick={() => setOpenBuff(null)} className="text-slate-300 hover:text-slate-500 text-lg leading-none px-1">{'\u00d7'}</button>
+                        <button onClick={() => setOpenBuffId(null)} className="text-slate-300 hover:text-slate-500 text-lg leading-none px-1">{'\u00d7'}</button>
                     </div>
                     {openBuff.description ? (
                         <p className="text-sm text-slate-600 leading-relaxed">{openBuff.description}</p>
