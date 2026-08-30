@@ -36,7 +36,11 @@ import { toolCallFingerprint } from '../utils/agenticToolFeedback';
 import { buildChatRequestPayload } from '../utils/chatRequestPayload';
 import { persistMcpGeneratedImages } from '../utils/mcpImagePersistence';
 import { prepareBuiltinImageToolArguments } from '../utils/novelAiReference';
-import { isCharacterReferenceAllowedForActivePreset } from '../utils/imageGenerationPresets';
+import {
+    applyImageGenerationPresetById,
+    isCharacterAutoImagePresetSelectionEnabled,
+    isCharacterReferenceAllowedForActivePreset,
+} from '../utils/imageGenerationPresets';
 import {
     isInstantConfigReady,
     sendInstantPushAndAwaitReply,
@@ -958,10 +962,14 @@ export const useChatAI = ({
             // 判据就一句话：这一轮上云会让角色掉能力，那就别上云。留在本地跑，工具照常用。
             // （地址够得着的服务器不受影响，照常上云，worker 自己跑后台 MCP。）
             const mcpWorkerUnreachable = hasWorkerUnreachableMcpServer(char.id);
+            // 自动选预设需要前端在同一次工具调用落地前切换真实预设配置；
+            // 当前 worker 不携带这些私人预设/API Key，因此该轮留在本地。
+            const characterAutoImagePresetMode = isCharacterAutoImagePresetSelectionEnabled();
             const instantChatVeto: string | null = luckinChatOn ? 'luckin-chat'
                 : mcdMiniOpen ? 'mcd'
                     : luckinMiniOpen ? 'luckin'
-                        : mcpWorkerUnreachable ? 'mcp-worker-unreachable' : null;
+                        : characterAutoImagePresetMode ? 'image-preset-auto'
+                            : mcpWorkerUnreachable ? 'mcp-worker-unreachable' : null;
             // 带上 char：角色单独关了即时对话（reason char-disabled）时 ready 直接为
             // false，和「全局没开」同一待遇——下面那条 veto trace 的条件够不到它，
             // 静默走本地。那是用户的主动选择，每条消息刷一遍 warn 就成骚扰了。
@@ -982,9 +990,11 @@ export const useChatAI = ({
                 console.warn(
                     skipReason === 'mcp-worker-unreachable'
                         ? '[AmsgInstantChat] 这一轮没上云（有 MCP 服务器填的是本机/内网地址，worker 够不着），本地生成，工具照常可用'
-                        : instantChatVeto
-                            ? `[AmsgInstantChat] 这一轮没上云（${instantChatVeto} 点单流程需要客户端交互），本地生成`
-                            : '[AmsgInstantChat] 这一轮没走即时对话（Instant Push 配置仍在，脏配置）：交给 Instant Push，它也不接就落回本地',
+                        : skipReason === 'image-preset-auto'
+                            ? '[AmsgInstantChat] 这一轮没上云（角色自动选生图预设需要客户端同轮切换并执行真实预设），本地生成'
+                            : instantChatVeto
+                                ? `[AmsgInstantChat] 这一轮没上云（${instantChatVeto} 点单流程需要客户端交互），本地生成`
+                                : '[AmsgInstantChat] 这一轮没走即时对话（Instant Push 配置仍在，脏配置）：交给 Instant Push，它也不接就落回本地',
                 );
                 appendInstantTraceEntry({
                     ts: new Date().toISOString(),
@@ -2131,6 +2141,9 @@ export const useChatAI = ({
                             let mcpResult: any;
                             let preparedArgs = cleanedArgs;
                             try {
+                                if (mcpHit.server.imagePresetId) {
+                                    await applyImageGenerationPresetById(mcpHit.server.imagePresetId);
+                                }
                                 preparedArgs = await prepareBuiltinImageToolArguments({ server: mcpHit.server, toolName: mcpHit.toolName, args: cleanedArgs, character: char, userProfile });
                                 mcpResult = await callMcpToolWithBackgroundImage(mcpHit.server, mcpHit.toolName, {
                                     ...preparedArgs, after_generate_action: afterGenerateAction,
@@ -2333,6 +2346,9 @@ export const useChatAI = ({
                         let r: any;
                         let preparedArgs = cleanedArgs;
                         try {
+                            if (call.server.imagePresetId) {
+                                await applyImageGenerationPresetById(call.server.imagePresetId);
+                            }
                             preparedArgs = await prepareBuiltinImageToolArguments({ server: call.server, toolName: call.toolName, args: cleanedArgs, character: char, userProfile });
                             r = await callMcpToolWithBackgroundImage(call.server, call.toolName, {
                                 ...preparedArgs, after_generate_action: afterGenerateAction,
