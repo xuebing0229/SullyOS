@@ -189,7 +189,7 @@ const ApiFailoverSettings: React.FC<Props> = ({ addToast }) => {
         <div className="space-y-4">
             <div className="rounded-2xl border border-amber-100 bg-amber-50/70 p-3 text-[10px] leading-relaxed text-amber-700">
                 第一版只作用于本地模式的主聊天和情绪评估。
-                Instant Push 仍只使用第一线路；同组最好放同一个模型的不同 API 站。
+                Instant Push 仍只使用第一线路；情绪评估线路可混用不同模型，按顺序尝试。
             </div>
 
             <div className="rounded-xl border border-sky-100 bg-sky-50 p-2 text-[10px] text-sky-700">
@@ -437,31 +437,33 @@ const ApiFailoverSettings: React.FC<Props> = ({ addToast }) => {
                                     />
                                 </label>
 
-                                <label className="col-span-2 flex items-center justify-between gap-3 text-[10px] text-slate-500">
-                                    <span>
-                                        只允许同模型家族
-                                        <span className="block text-[9px] text-slate-400">
-                                            推荐保持开启，避免工具/思考参数不兼容
+                                {group.scope === 'chat' && (
+                                    <label className="col-span-2 flex items-center justify-between gap-3 text-[10px] text-slate-500">
+                                        <span>
+                                            只允许同模型家族
+                                            <span className="block text-[9px] text-slate-400">
+                                                推荐保持开启，避免工具/思考参数不兼容
+                                            </span>
                                         </span>
-                                    </span>
-                                    <input
-                                        type="checkbox"
-                                        checked={group.policy.strictSameModel}
-                                        onChange={event =>
-                                            updateGroup(
-                                                group.scope,
-                                                current => ({
-                                                    ...current,
-                                                    policy: {
-                                                        ...current.policy,
-                                                        strictSameModel:
-                                                            event.target.checked,
-                                                    },
-                                                }),
-                                            )
-                                        }
-                                    />
-                                </label>
+                                        <input
+                                            type="checkbox"
+                                            checked={group.policy.strictSameModel}
+                                            onChange={event =>
+                                                updateGroup(
+                                                    group.scope,
+                                                    current => ({
+                                                        ...current,
+                                                        policy: {
+                                                            ...current.policy,
+                                                            strictSameModel:
+                                                                event.target.checked,
+                                                        },
+                                                    }),
+                                                )
+                                            }
+                                        />
+                                    </label>
+                                )}
                             </div>
                         )}
                     </section>

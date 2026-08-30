@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { APIConfig, ApiPreset } from '../types';
-import { createDefaultApiFailoverGroup } from './apiFailover';
+import { createDefaultApiFailoverGroup, normalizeApiFailoverGroup } from './apiFailover';
 import { analyzeApiFailoverGroup } from './apiFailoverGroupAnalysis';
 
 const config = (model: string): APIConfig => ({
@@ -41,6 +41,29 @@ describe('api failover group analysis', () => {
         expect(result.routes.map(route => route.presetId)).toEqual(['a']);
         expect(result.members[1].issue).toBe('incompatible_model');
         expect(result.canEnable).toBe(false);
+    });
+
+    it('情绪评估线路允许不同模型按顺序回退', () => {
+        const emotionGroup = {
+            ...createDefaultApiFailoverGroup('emotion'),
+            enabled: true,
+            members: ['a', 'c'].map(presetId => ({ presetId, enabled: true })),
+        };
+        const result = analyzeApiFailoverGroup(emotionGroup, presets);
+        expect(result.routes.map(route => route.presetId)).toEqual(['a', 'c']);
+        expect(result.canEnable).toBe(true);
+        expect(result.members[1].issue).toBeUndefined();
+    });
+
+    it('读取旧情绪配置时自动移除误留的同模型限制', () => {
+        const oldGroup = {
+            ...createDefaultApiFailoverGroup('emotion'),
+            policy: {
+                ...createDefaultApiFailoverGroup('emotion').policy,
+                strictSameModel: true,
+            },
+        };
+        expect(normalizeApiFailoverGroup(oldGroup, 'emotion').policy.strictSameModel).toBe(false);
     });
 
     it('marks a deleted preset as missing', () => {
