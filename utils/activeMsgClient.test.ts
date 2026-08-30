@@ -23,6 +23,7 @@ const { reiClient } = vi.hoisted(() => ({
     putPushSubscription: vi.fn(),
     getPushSubscription: vi.fn(),
     deletePushSubscription: vi.fn(),
+    getOutbox: vi.fn(),
     // 加密信封的封包 / 解包（库的私有方法，客户端通过桥接类型调）。
     _encrypt: vi.fn(),
     _decrypt: vi.fn(),
@@ -181,6 +182,24 @@ describe('ActiveMsgClient.cancelTask', () => {
       error: { code: 'INVALID_CLIENT_TOKEN', message: '客户端令牌无效' },
     });
     await expect(ActiveMsgClient.cancelTask('task-1')).rejects.toThrow(/客户端令牌无效/);
+  });
+});
+
+describe('ActiveMsgClient.listOutboxEntries', () => {
+  beforeEach(() => {
+    reiClient.init.mockReset().mockResolvedValue(undefined);
+    reiClient.getOutbox.mockReset();
+  });
+
+  it('补拉请求 20 秒没响应就结束本次读取，账本留到下次再拉', async () => {
+    reiClient.getOutbox.mockImplementation(() => new Promise(() => {}));
+    const pending = ActiveMsgClient.listOutboxEntries();
+    const rejected = expect(pending).rejects.toThrow(/消息账本超时/);
+
+    await vi.advanceTimersByTimeAsync(20_000);
+
+    await rejected;
+    expect(reiClient.getOutbox).toHaveBeenCalledTimes(1);
   });
 });
 

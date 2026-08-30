@@ -41,7 +41,10 @@ const HEALTH_PATH = '/__proxy-health';
  * 「Playground 里跑的到底是哪一版」的办法 —— 版本号不动的话，
  * 贴没贴成功、部署有没有生效，全靠猜。
  */
-const PROXY_REVISION = 'amsg-deno-proxy-v2';
+const PROXY_REVISION = 'amsg-deno-proxy-v3';
+
+/** GET /outbox 只是补拉账本，卡住时让客户端稍后重试比占着连接几分钟更合适。 */
+const OUTBOX_UPSTREAM_TIMEOUT_MS = 20_000;
 
 declare const Deno: {
   env: { get(name: string): string | undefined };
@@ -166,9 +169,28 @@ export const handleRequest = async (request: Request): Promise<Response> => {
     return json({ error: `代理没配上游地址，打开 ${HEALTH_PATH} 看说明。` }, 503);
   }
 
+  const outboxController = request.method === 'GET' && pathname === '/outbox'
+    ? new AbortController()
+    : null;
+  const timeout = outboxController
+    ? setTimeout(() => outboxController.abort(), OUTBOX_UPSTREAM_TIMEOUT_MS)
+    : null;
+
   try {
-    return relayResponse(await fetch(buildUpstreamRequest(request, upstream)));
+    return relayResponse(await fetch(
+      buildUpstreamRequest(request, upstream),
+      outboxController ? { signal: outboxController.signal } : undefined,
+    ));
   } catch (error) {
+    if (outboxController?.signal.aborted) {
+      return json(
+        {
+          error: '读取 Cloudflare 消息账本超时，请稍后重试',
+          upstream,
+        },
+        504,
+      );
+    }
     // 上游连不上（地址填错、Cloudflare 那边挂了）时给个能看懂的回执，
     // 别让前端只拿到一个没有上下文的 500。
     return json(
@@ -179,6 +201,8 @@ export const handleRequest = async (request: Request): Promise<Response> => {
       },
       502,
     );
+  } finally {
+    if (timeout !== null) clearTimeout(timeout);
   }
 };
 

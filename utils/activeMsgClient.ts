@@ -1514,6 +1514,29 @@ const OUTBOX_PAGE_SIZE = 100;
  */
 const OUTBOX_MAX_PAGES = 20;
 
+/**
+ * 补拉账本是启动/回前台时的兜底读，不该因为一条黑洞连接把界面吊住几分钟。
+ * 超时不销账、不改本地状态；下一次启动或回前台会原样再拉。
+ */
+const OUTBOX_READ_TIMEOUT_MS = 20_000;
+
+const readOutboxPageWithTimeout = async <T>(request: Promise<T>): Promise<T> => {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      request,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error('读取云端消息账本超时，请稍后重试。')),
+          OUTBOX_READ_TIMEOUT_MS,
+        );
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+};
+
 /** 单次 ack 的条数上限（服务端 200，超了自己分批）。 */
 const OUTBOX_ACK_BATCH_SIZE = 200;
 
@@ -2113,10 +2136,12 @@ export const ActiveMsgClient = {
     let since: number | undefined;
 
     for (let page = 0; page < OUTBOX_MAX_PAGES; page += 1) {
-      const response = await client.getOutbox({
-        limit: OUTBOX_PAGE_SIZE,
-        ...(since == null ? {} : { since }),
-      });
+      const response = await readOutboxPageWithTimeout(
+        client.getOutbox({
+          limit: OUTBOX_PAGE_SIZE,
+          ...(since == null ? {} : { since }),
+        }),
+      );
       if (!response?.success) {
         throw new Error(response?.error?.message || '读取云端消息账本失败。');
       }

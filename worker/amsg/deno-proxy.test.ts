@@ -174,6 +174,29 @@ describe('代理自造的响应必须带 CORS 头', () => {
     expect(response.status).toBe(503);
     expect(response.headers.get('access-control-allow-origin')).toBe('*');
   });
+
+  it('只有 GET /outbox 的上游连接会在 20 秒后中止并返回 504', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('Deno', {
+      env: { get: (name: string) => (name === 'AMSG_UPSTREAM' ? 'https://amsg.example.workers.dev' : undefined) },
+      serve: (): void => undefined,
+    });
+    vi.stubGlobal('fetch', vi.fn((_request: Request, init?: RequestInit) => new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+    })));
+    try {
+      const pending = handleRequest(new Request('https://proxy.deno.net/outbox?limit=100'));
+      await vi.advanceTimersByTimeAsync(20_000);
+      const response = await pending;
+      expect(response.status).toBe(504);
+      expect(response.headers.get('access-control-allow-origin')).toBe('*');
+      expect(await response.text()).toContain('消息账本超时');
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+      vi.stubGlobal('Deno', { env: { get: (): undefined => undefined }, serve: (): void => undefined });
+    }
+  });
 });
 
 describe('isConfigured - 上游地址有没有填', () => {
