@@ -9,7 +9,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const saveCharacter = vi.fn(async (_char: any) => {});
-vi.mock('./db', () => ({ DB: { saveCharacter: (c: any) => saveCharacter(c) } }));
+const getAllCharacters = vi.fn(async () => [] as any[]);
+vi.mock('./db', () => ({ DB: {
+    saveCharacter: (c: any) => saveCharacter(c),
+    getAllCharacters: () => getAllCharacters(),
+} }));
 
 import { parseEmotionEvalOutput, applyEmotionEvalRaw, extractAssistantText } from './emotionApply';
 
@@ -32,6 +36,8 @@ const VALID = {
 
 beforeEach(() => {
     saveCharacter.mockClear();
+    getAllCharacters.mockReset();
+    getAllCharacters.mockResolvedValue([]);
 });
 
 describe('parseEmotionEvalOutput — 正常形态', () => {
@@ -164,6 +170,23 @@ describe('applyEmotionEvalRaw — 落库语义', () => {
         );
         expect(inner).toBe('平稳的独白');
         expect(saveCharacter).not.toHaveBeenCalled();
+    });
+
+    it('changed=false 但返回空 buffs 快照 → 清掉已消退的旧情绪', async () => {
+        await applyEmotionEvalRaw(
+            JSON.stringify({ changed: false, buffs: [], injection: '', innerState: '已经平静下来' }),
+            makeChar(),
+        );
+        expect(saveCharacter).toHaveBeenCalledTimes(1);
+        const saved = saveCharacter.mock.calls[0][0];
+        expect(saved.activeBuffs).toEqual([]);
+        expect(saved.buffInjection).toBe('');
+    });
+
+    it('落情绪时保留 DB 中请求期间新保存的其他角色字段', async () => {
+        getAllCharacters.mockResolvedValue([{ ...makeChar(), description: '请求期间修改的新设定' }]);
+        await applyEmotionEvalRaw(JSON.stringify(VALID), makeChar({ description: '旧设定' }));
+        expect(saveCharacter.mock.calls[0][0].description).toBe('请求期间修改的新设定');
     });
 
     it('changed=true 但 buffs/injection 全缺 → 不清空已有情绪状态', async () => {

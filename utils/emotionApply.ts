@@ -416,14 +416,18 @@ export async function applyEmotionEvalRaw(
         // 与情绪主链路完全解耦——失败只丢这条动态，不影响 buff。
         await landAmbientEventFromEval(result, charData);
 
-        if (!result.changed) {
+        const hasBuffArray = Array.isArray(result.buffs);
+        const hasInjection = typeof result.injection === 'string' && !!result.injection.trim();
+
+        // changed 只能表示模型自己的判断，不能覆盖它同时返回的权威快照。
+        // 一些模型会输出 changed:false，却仍然给出已演化的 buffs（尤其是 []，
+        // 表示旧情绪已消退）。旧逻辑在这里直接 return，导致旧情绪卡永远清不掉。
+        if (!result.changed && !hasBuffArray && !hasInjection) {
             console.log('🎭 [Emotion] No change detected, skipping buff update');
             if (innerStateOut) console.log(`🌊 [InnerState] ${charData.name}: ${innerStateOut}`);
             return innerStateOut;
         }
 
-        const hasBuffArray = Array.isArray(result.buffs);
-        const hasInjection = typeof result.injection === 'string' && !!result.injection.trim();
         if (!hasBuffArray && !hasInjection) {
             // changed=true 但两个载荷都没拿到 — 保留现状比清空安全
             console.warn('🎭 [Emotion] changed=true but no buffs/injection parsed, keeping existing state');
@@ -431,17 +435,21 @@ export async function applyEmotionEvalRaw(
             return innerStateOut;
         }
 
+        // 评估请求可能跑几十秒，期间角色的其他设置也可能已保存。
+        // 落情绪时以 DB 里最新角色为底，避免被请求启动时捕获的旧 charData 整体盖回。
+        const latestChar = (await DB.getAllCharacters()).find(character => character.id === charData.id) || charData;
+
         // buffs 数组在场 → 完整更新 (数组为空 = 模型主动清空, 尊重).
         // buffs 缺失但 injection 在场 (抢救场景) → 保留旧 buffs, 只换 injection.
-        const sanitizedBuffs = (hasBuffArray ? sanitizeBuffs(result.buffs) : (charData.activeBuffs || []))
+        const sanitizedBuffs = (hasBuffArray ? sanitizeBuffs(result.buffs) : (latestChar.activeBuffs || []))
             .map(buff => typeof buff.description === 'string'
                 ? { ...buff, description: replaceInternalUserLabel(buff.description, userName) }
                 : buff);
         const buffInjection = hasInjection
             ? replaceInternalUserLabel(result.injection!, userName)
-            : (hasBuffArray ? '' : (charData.buffInjection || ''));
+            : (hasBuffArray ? '' : (latestChar.buffInjection || ''));
         const updated: CharacterProfile = {
-            ...charData,
+            ...latestChar,
             activeBuffs: sanitizedBuffs,
             buffInjection,
         };
