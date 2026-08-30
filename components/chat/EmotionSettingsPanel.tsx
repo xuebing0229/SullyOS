@@ -12,16 +12,16 @@ interface EmotionSettingsPanelProps {
     onClearBuffs: () => void;
 }
 
-const normalizeIntensity = (n: number | undefined | null): 1 | 2 | 3 => {
+const normalizeIntensity = (n: number | undefined | null): 1 | 2 | 3 | 4 | 5 => {
     const parsed = Number.isFinite(n) ? Math.round(Number(n)) : 2;
     if (parsed <= 1) return 1;
-    if (parsed >= 3) return 3;
-    return 2;
+    if (parsed >= 5) return 5;
+    return parsed as 2 | 3 | 4;
 };
 
 const INTENSITY_DOTS = (n: number | undefined | null) => {
     const safe = normalizeIntensity(n);
-    return '●'.repeat(safe) + '○'.repeat(3 - safe);
+    return '●'.repeat(safe) + '○'.repeat(5 - safe);
 };
 
 const EmotionSettingsPanel: React.FC<EmotionSettingsPanelProps> = ({

@@ -35,16 +35,16 @@ interface ChatHeaderProps {
     chromeStyle?: 'soft' | 'flat' | 'floating' | 'pixel';
 }
 
-const normalizeIntensity = (n: number | undefined | null): 1 | 2 | 3 => {
+const normalizeIntensity = (n: number | undefined | null): 1 | 2 | 3 | 4 | 5 => {
     const parsed = Number.isFinite(n) ? Math.round(Number(n)) : 2;
     if (parsed <= 1) return 1;
-    if (parsed >= 3) return 3;
-    return 2;
+    if (parsed >= 5) return 5;
+    return parsed as 2 | 3 | 4;
 };
 
 const INTENSITY_DOTS = (n: number | undefined | null) => {
     const safe = normalizeIntensity(n);
-    return '●'.repeat(safe) + '○'.repeat(3 - safe);
+    return '●'.repeat(safe) + '○'.repeat(5 - safe);
 };
 
 const ChatHeader: React.FC<ChatHeaderProps> = ({
@@ -285,7 +285,7 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
                             </span>
                             <div className="text-xs font-bold tracking-wide" style={{ color: openBuff.color || '#db2777' }}>
                                 {INTENSITY_DOTS(openBuff.intensity)}{' '}
-                                {normalizeIntensity(openBuff.intensity) === 1 ? '轻微' : normalizeIntensity(openBuff.intensity) === 2 ? '中等' : '强烈'}
+                                {(['', '轻微', '较低', '中等', '较强', '强烈'] as const)[normalizeIntensity(openBuff.intensity)]}
                             </div>
                         </div>
                         <button onClick={() => setOpenBuff(null)} className="text-slate-300 hover:text-slate-500 text-lg leading-none px-1">{'\u00d7'}</button>

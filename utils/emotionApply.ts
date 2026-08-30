@@ -71,13 +71,13 @@ const sanitizeBuffs = (buffs?: CharacterBuff[]): CharacterBuff[] => {
             if (!label) label = name;
 
             const rawIntensity = Number((buff as any)?.intensity);
-            const intensity: 1 | 2 | 3 = !Number.isFinite(rawIntensity)
+            const intensity: CharacterBuff['intensity'] = !Number.isFinite(rawIntensity)
                 ? 2
                 : rawIntensity <= 1
                     ? 1
-                    : rawIntensity >= 3
-                        ? 3
-                        : 2;
+                    : rawIntensity >= 5
+                        ? 5
+                        : Math.round(rawIntensity) as CharacterBuff['intensity'];
 
             const out: CharacterBuff = {
                 id: typeof buff?.id === 'string' && buff.id.trim() ? buff.id.trim() : `buff_${Date.now()}_${index}`,

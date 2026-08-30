@@ -20,11 +20,21 @@ describe.sequential('api unresolved migration',()=>{
    expect(pending.find(x=>x.id===`legacy:${key}`)?.callCount).toBe(4);
    expect((await DB.getApiCostDailySummaries())[0]).toMatchObject({unpricedCallCount:5,freeCallCount:1});
  });
- it('does not revive resolved entries after migration marker is written',async()=>{
+ it('repairs a missing unresolved index even after the migration marker is written',async()=>{
    const now=Date.now(), key=dateKey(now);
    await DB.replaceApiCallLog([legacy('success',true,now)]);
    await DB.importFullData({timestamp:now,version:3,apiCostDailySummaries:[summary(key,1)],apiCostUnresolvedEntries:[]} as any);
    localStorage.removeItem(API_COST_UNRESOLVED_MIGRATION_KEY);
+   await migrateApiCostUnresolvedV1();
+   await DB.replaceApiCostUnresolvedEntries([]);
+   expect(await DB.getApiCostUnresolvedEntries()).toEqual([]);
+   await migrateApiCostUnresolvedV1();
+   expect(await DB.getApiCostUnresolvedEntries()).toMatchObject([{id:'call:success',callCount:1}]);
+ });
+ it('does not revive an entry that was already resolved',async()=>{
+   const now=Date.now(), key=dateKey(now);
+   await DB.replaceApiCallLog([legacy('success',true,now)]);
+   await DB.importFullData({timestamp:now,version:3,apiCostDailySummaries:[summary(key,1)],apiCostUnresolvedEntries:[]} as any);
    await migrateApiCostUnresolvedV1();
    await DB.resolveApiCostUnpriced('call:success',{kind:'ignore_zero'});
    await migrateApiCostUnresolvedV1();

@@ -576,7 +576,7 @@ export interface CharacterBuff {
   id: string;
   name: string;      // internal key, e.g. 'reconciliation_fragile'
   label: string;     // display text, e.g. '脆弱的和好'
-  intensity: 1 | 2 | 3;
+  intensity: 1 | 2 | 3 | 4 | 5;
   emoji?: string;
   color?: string;    // hex, e.g. '#f87171'
   description?: string;  // 用户可读的简短说明（给用户看的，不是给AI的）
@@ -1043,7 +1043,7 @@ export interface SimScript {
     ending?: string;
     beats: SimBeat[];
     summary: string;
-    buff?: { name?: string; label: string; emoji?: string; color?: string; intensity?: 1 | 2 | 3; description?: string };
+    buff?: { name?: string; label: string; emoji?: string; color?: string; intensity?: 1 | 2 | 3 | 4 | 5; description?: string };
 }
 
 // 「人格模拟」演出结束后写入「生活记录」的一条留存（角色不记得，仅作为用户的体验档案）
@@ -1113,7 +1113,7 @@ export interface DreamScript {
     title?: string;         // 梦的标题（可以晦涩、诗意）
     fragments: DreamFragment[];
     afterglow?: string;     // 醒来时残留的感觉（留白，不解释）
-    buff?: { name?: string; label: string; emoji?: string; color?: string; intensity?: 1 | 2 | 3; description?: string };
+    buff?: { name?: string; label: string; emoji?: string; color?: string; intensity?: 1 | 2 | 3 | 4 | 5; description?: string };
 }
 
 // 一场梦的留存（角色不记得，仅作为用户偷看到的档案 · 「梦的残页」）

@@ -477,7 +477,7 @@ React.FC = () => {
           </div>
         )}
 
-        {showResolver && unresolved.length > 0 && (
+        {showResolver && (
           <UnpricedCostResolver
             entries={unresolved}
             onUpdated={() => emitApiCostUpdated()}

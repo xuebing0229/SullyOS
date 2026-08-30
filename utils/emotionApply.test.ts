@@ -146,7 +146,7 @@ describe('applyEmotionEvalRaw — 落库语义', () => {
         expect(saveCharacter).toHaveBeenCalledTimes(1);
         const saved = saveCharacter.mock.calls[0][0];
         expect(saved.activeBuffs[0].label).toBe('焦虑');
-        expect(saved.activeBuffs[0].intensity).toBe(3); // 4 被钳到上限 3
+        expect(saved.activeBuffs[0].intensity).toBe(4); // 评估提示词使用的 1–5 级强度原样保留
         expect(saved.buffInjection).toContain('当前情绪底色');
     });
 
