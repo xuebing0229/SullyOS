@@ -1706,18 +1706,25 @@ export const useChatAI = ({
                 startAmsgChatPresence(char.id, getLastRealUserMessageAt(contextMsgs));
             }
 
+            const attemptedBody = {
+                ...baseReqBody,
+                messages: withAmsg2TaskContext(baseReqBody.messages),
+            };
             let data: any;
             try {
-                data = await safeFetchJson(`${baseUrl}/chat/completions`, {
-                    method: 'POST', headers,
-                    body: JSON.stringify({ ...baseReqBody, messages: withAmsg2TaskContext(baseReqBody.messages) })
-                }, 2, 0, { appName: '消息', charId: char.id, charName: char.name, purpose: '聊天回复' }, streamHooks);
+                // 首轮必须真正走 apiPlan。旧代码这里残留了一条 safeFetchJson 直连，
+                // 导致故障转移 UI/plan 虽然生效，实际聊天却永远只请求第 1 条线路。
+                // 成功后 executeChatBody 会把 activeApiForTurn 锁到真实成功线路，
+                // 本轮后续工具续写/二次生成继续沿用它，不中途换站。
+                data = await executeChatBody(
+                    attemptedBody,
+                    '聊天回复',
+                    streamHooks,
+                    true,
+                    2,
+                );
             } catch (e) {
                 let requestError: unknown = e;
-                const attemptedBody = {
-                    ...baseReqBody,
-                    messages: withAmsg2TaskContext(baseReqBody.messages),
-                };
                 // 部分第三方 OpenAI→Claude 中转会把请求形状不兼容包装成 502
                 // bad_response_status_code：thinking 三种方言、tools、尾部 system 单独都能收，
                 // 组合在一起却在上游适配层失败。只对这一条高度特征化的 502 降级一次：
@@ -1726,10 +1733,13 @@ export const useChatAI = ({
                 if (shouldRetryClaudeProxyCompatibility(requestError, attemptedBody)) {
                     console.warn('🧩 [Claude compat] 中转拒绝 thinking + tools 组合，使用兼容请求体重试一次');
                     try {
-                        data = await safeFetchJson(`${baseUrl}/chat/completions`, {
-                            method: 'POST', headers,
-                            body: JSON.stringify(buildClaudeProxyCompatibilityBody(attemptedBody)),
-                        }, 0, 0, { appName: '消息', charId: char.id, charName: char.name, purpose: 'Claude 中转兼容重试' }, streamHooks);
+                        data = await executeChatBody(
+                            buildClaudeProxyCompatibilityBody(attemptedBody),
+                            'Claude 中转兼容重试',
+                            streamHooks,
+                            false,
+                            0,
+                        );
                         requestError = null;
                     } catch (compatError) {
                         requestError = compatError;
@@ -1752,10 +1762,13 @@ export const useChatAI = ({
                     ...baseReqBody,
                     messages: withAmsg2TaskContext(baseReqBody.messages),
                 });
-                data = await safeFetchJson(`${baseUrl}/chat/completions`, {
-                    method: 'POST', headers,
-                    body: JSON.stringify(fallbackBody)
-                }, 0, 0, { appName: '消息', charId: char.id, charName: char.name, purpose: 'MCP tools 兼容重试' });
+                data = await executeChatBody(
+                    fallbackBody,
+                    'MCP tools 兼容重试',
+                    undefined,
+                    false,
+                    0,
+                );
                 // 后续正文工具循环必须继续带着兼容协议；只把它放在这次重试请求里，下一跳
                 // 又退回原 messages，会让模型忘掉工具签名和「每步只输出一行」的约定。
                 baseReqBody.messages = fallbackBody.messages;
@@ -2539,9 +2552,14 @@ export const useChatAI = ({
                 mcdInheritMeta,
                 xhsCaches,
                 api: {
-                    baseUrl,
-                    headers,
-                    effectiveApi,
+                    // 首轮若已故障转移到备用站，后处理的调阅/搜索/XHS 二次生成也必须
+                    // 锁在那条真实成功线路；不能继续拿初始第 1 路的 baseUrl/key/model。
+                    baseUrl: activeApiForTurn.baseUrl.trim().replace(/\/+$/, ''),
+                    headers: {
+                        'Content-Type': 'application/json',
+                        Authorization: `Bearer ${activeApiForTurn.apiKey || 'sk-none'}`,
+                    },
+                    effectiveApi: activeApiForTurn,
                 },
                 hooks: {
                     setMessages: setMessagesWithPreviewHandover,
