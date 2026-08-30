@@ -4,12 +4,18 @@ import {
     exportImageGenerationLocal,
     exportImageGenerationLocalForMode,
     getActiveImageGenerationPreset,
+    getCharacterAutoImageMcpServers,
+    getImageGenerationSelectionMode,
     importImageGenerationLocal,
+    isCharacterAutoImagePresetSelectionEnabled,
     isCharacterReferenceAllowedForActivePreset,
     loadImageGenerationPresetState,
+    setImageGenerationSelectionMode,
     updateImageGenerationPreset,
+    updateImageGenerationPresetPurpose,
 } from './imageGenerationPresets';
 import { loadBuiltinImageSettings } from './builtinImageMcp';
+import { buildMcpOpenAITools } from './mcpToolBridge';
 import { loadVibeReferenceLibrary, saveVibeReferenceLibrary } from './vibeReference';
 
 describe('image generation presets', () => {
@@ -161,6 +167,65 @@ describe('image generation presets', () => {
         importImageGenerationLocal(exported);
         expect(getActiveImageGenerationPreset('novelai')).toMatchObject({ id: preset.id, allowCharacterReference: true });
         expect(isCharacterReferenceAllowedForActivePreset()).toBe(true);
+    });
+
+    it('lets the character choose among saved presets in the same tool-call schema', () => {
+        const settings = loadBuiltinImageSettings();
+        const gpt = createImageGenerationPreset({
+            name: '写实场景',
+            engineId: 'gpt-image',
+            purpose: '写实人物、电影感场景和自然光照片',
+            binding: {
+                ...settings.engines['gpt-image'],
+                enabled: true,
+                token: 'gpt-mcp-token',
+                tools: [{ name: 'generate_image', description: 'Generate image', inputSchema: { type: 'object', properties: { prompt: { type: 'string' } }, required: ['prompt'] } }],
+            },
+            apiKey: 'gpt-api-key',
+            remoteConfig: {
+                version: 1, revision: 1, mode: 'compatible', baseUrl: 'https://example.test/v1', model: 'gpt-image-2', imageDelivery: 'auto',
+                custom: { generatePath: '/images/generations', authHeader: 'Authorization', authPrefix: 'Bearer ', responseMode: 'auto', requestFields: { prompt: 'prompt', model: 'model', size: 'size', quality: 'quality', background: 'background', outputFormat: 'output_format' }, responseUrlPaths: [], responseBase64Paths: [], extraHeaders: {}, extraBody: {} }, apiKeyConfigured: true, apiKeyHint: '***',
+            },
+        });
+        const nai = createImageGenerationPreset({
+            name: '动漫立绘',
+            engineId: 'novelai',
+            purpose: '二次元角色立绘、精致线稿和动漫上色',
+            binding: {
+                ...settings.engines.novelai,
+                enabled: true,
+                token: 'nai-mcp-token',
+                tools: [{ name: 'novelai_generate_image', description: 'Generate anime image', inputSchema: { type: 'object', properties: { prompt: { type: 'string' } }, required: ['prompt'] } }],
+            },
+            apiKey: 'nai-api-key',
+            remoteConfig: {
+                version: 1, revision: 1, profile: 'custom', baseUrl: 'https://example.test/v1', generatePath: '/generate', modelsPath: '/models',
+                authHeader: 'Authorization', authPrefix: 'Bearer ', modelFull: 'full-id', modelCurated: 'curated-id',
+                responseMode: 'json', imageDelivery: 'auto', promptLanguagePolicy: 'allow', apiKeyConfigured: true, apiKeyHint: '***',
+            },
+        });
+
+        updateImageGenerationPresetPurpose(gpt.id, '写实照片、电影感场景');
+        setImageGenerationSelectionMode('character-auto');
+
+        expect(getImageGenerationSelectionMode()).toBe('character-auto');
+        expect(isCharacterAutoImagePresetSelectionEnabled()).toBe(true);
+        const servers = getCharacterAutoImageMcpServers();
+        expect(servers).toHaveLength(2);
+        expect(servers.map(server => server.imagePresetId)).toEqual(expect.arrayContaining([gpt.id, nai.id]));
+        expect(servers.find(server => server.imagePresetId === gpt.id)?.imagePresetPurpose).toBe('写实照片、电影感场景');
+
+        const built = buildMcpOpenAITools('char-any');
+        expect(built.tools).toHaveLength(2);
+        expect(new Set(built.tools.map(tool => tool.function.name)).size).toBe(2);
+        expect(built.tools.some(tool => tool.function.description?.includes('写实照片、电影感场景'))).toBe(true);
+        expect(built.tools.some(tool => tool.function.description?.includes('二次元角色立绘'))).toBe(true);
+
+        const backup = exportImageGenerationLocal();
+        localStorage.clear();
+        importImageGenerationLocal(backup);
+        expect(getImageGenerationSelectionMode()).toBe('character-auto');
+        expect(loadImageGenerationPresetState().presets.find(item => item.id === nai.id)?.purpose).toContain('二次元角色立绘');
     });
 
     it('round trips the Vibe library in full backups without leaving dead image refs in text-only backups', () => {
