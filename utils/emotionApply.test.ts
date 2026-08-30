@@ -6,7 +6,13 @@
  * 旧实现任一环节失败就整体返回 null → buff/意识流静默蒸发 (「情绪 buff 不输出内容」)。
  * 这里锁住修复链 + 字段级抢救的行为。
  */
+import { readFileSync } from 'node:fs';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+const useChatAISource = readFileSync(
+    new URL('../hooks/useChatAI.ts', import.meta.url),
+    'utf8',
+);
 
 const saveCharacter = vi.fn(async (_char: any) => {});
 const getAllCharacters = vi.fn(async () => [] as any[]);
@@ -38,6 +44,14 @@ beforeEach(() => {
     saveCharacter.mockClear();
     getAllCharacters.mockReset();
     getAllCharacters.mockResolvedValue([]);
+});
+
+describe('情绪评估提示词 — buff 标题随语义演化', () => {
+    it('明确要求核心情绪质变时同步改 name / label / description，而不是只改内容', () => {
+        expect(useChatAISource).toContain('标题不是固定标识符');
+        expect(useChatAISource).toContain('这个 label 现在还能准确概括 description 吗？不能就改标题。');
+        expect(useChatAISource).toContain('不代表旧 buff 的 name / label / description 必须照抄');
+    });
 });
 
 describe('parseEmotionEvalOutput — 正常形态', () => {
