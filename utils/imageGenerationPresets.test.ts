@@ -14,7 +14,7 @@ import {
     updateImageGenerationPreset,
     updateImageGenerationPresetPurpose,
 } from './imageGenerationPresets';
-import { loadBuiltinImageSettings } from './builtinImageMcp';
+import { loadBuiltinImageSettings, setPreferredBuiltinImageEngine } from './builtinImageMcp';
 import { buildMcpOpenAITools } from './mcpToolBridge';
 import { loadVibeReferenceLibrary, saveVibeReferenceLibrary } from './vibeReference';
 
@@ -169,12 +169,12 @@ describe('image generation presets', () => {
         expect(isCharacterReferenceAllowedForActivePreset()).toBe(true);
     });
 
-    it('lets the character choose among saved presets in the same tool-call schema', () => {
+    it('keeps engine choice manual and lets the character choose only among NovelAI presets', () => {
         const settings = loadBuiltinImageSettings();
         const gpt = createImageGenerationPreset({
-            name: '写实场景',
+            name: 'GPT 配置',
             engineId: 'gpt-image',
-            purpose: '写实人物、电影感场景和自然光照片',
+            purpose: 'GPT 不应该进入角色预设候选',
             binding: {
                 ...settings.engines['gpt-image'],
                 enabled: true,
@@ -187,45 +187,72 @@ describe('image generation presets', () => {
                 custom: { generatePath: '/images/generations', authHeader: 'Authorization', authPrefix: 'Bearer ', responseMode: 'auto', requestFields: { prompt: 'prompt', model: 'model', size: 'size', quality: 'quality', background: 'background', outputFormat: 'output_format' }, responseUrlPaths: [], responseBase64Paths: [], extraHeaders: {}, extraBody: {} }, apiKeyConfigured: true, apiKeyHint: '***',
             },
         });
-        const nai = createImageGenerationPreset({
+        const naiCharacter = createImageGenerationPreset({
             name: '动漫立绘',
             engineId: 'novelai',
             purpose: '二次元角色立绘、精致线稿和动漫上色',
             binding: {
                 ...settings.engines.novelai,
                 enabled: true,
-                token: 'nai-mcp-token',
+                token: 'nai-mcp-token-1',
                 tools: [{ name: 'novelai_generate_image', description: 'Generate anime image', inputSchema: { type: 'object', properties: { prompt: { type: 'string' } }, required: ['prompt'] } }],
             },
-            apiKey: 'nai-api-key',
+            apiKey: 'nai-api-key-1',
             remoteConfig: {
                 version: 1, revision: 1, profile: 'custom', baseUrl: 'https://example.test/v1', generatePath: '/generate', modelsPath: '/models',
                 authHeader: 'Authorization', authPrefix: 'Bearer ', modelFull: 'full-id', modelCurated: 'curated-id',
                 responseMode: 'json', imageDelivery: 'auto', promptLanguagePolicy: 'allow', apiKeyConfigured: true, apiKeyHint: '***',
             },
         });
+        const naiScene = createImageGenerationPreset({
+            name: '氛围场景',
+            engineId: 'novelai',
+            purpose: '环境、建筑、氛围背景和大场景',
+            binding: {
+                ...settings.engines.novelai,
+                enabled: true,
+                token: 'nai-mcp-token-2',
+                tools: [{ name: 'novelai_generate_image', description: 'Generate anime scene', inputSchema: { type: 'object', properties: { prompt: { type: 'string' } }, required: ['prompt'] } }],
+            },
+            apiKey: 'nai-api-key-2',
+            remoteConfig: {
+                version: 1, revision: 1, profile: 'custom', baseUrl: 'https://example.test/v1', generatePath: '/generate', modelsPath: '/models',
+                authHeader: 'Authorization', authPrefix: 'Bearer ', modelFull: 'full-id-2', modelCurated: 'curated-id-2',
+                responseMode: 'json', imageDelivery: 'auto', promptLanguagePolicy: 'allow', apiKeyConfigured: true, apiKeyHint: '***',
+            },
+        });
 
-        updateImageGenerationPresetPurpose(gpt.id, '写实照片、电影感场景');
+        updateImageGenerationPresetPurpose(naiCharacter.id, '人物立绘和角色特写');
         setImageGenerationSelectionMode('character-auto');
 
+        // 选 GPT 时，引擎选择优先；NovelAI 的“角色决定预设”保持为潜在设置但不生效。
+        setPreferredBuiltinImageEngine('gpt-image');
         expect(getImageGenerationSelectionMode()).toBe('character-auto');
+        expect(isCharacterAutoImagePresetSelectionEnabled()).toBe(false);
+        expect(getCharacterAutoImageMcpServers()).toHaveLength(0);
+
+        // 用户手动切到 NovelAI 后，角色只在 NovelAI 预设内部选择。
+        setPreferredBuiltinImageEngine('novelai');
         expect(isCharacterAutoImagePresetSelectionEnabled()).toBe(true);
         const servers = getCharacterAutoImageMcpServers();
         expect(servers).toHaveLength(2);
-        expect(servers.map(server => server.imagePresetId)).toEqual(expect.arrayContaining([gpt.id, nai.id]));
-        expect(servers.find(server => server.imagePresetId === gpt.id)?.imagePresetPurpose).toBe('写实照片、电影感场景');
+        expect(servers.map(server => server.imagePresetId)).toEqual(expect.arrayContaining([naiCharacter.id, naiScene.id]));
+        expect(servers.some(server => server.imagePresetId === gpt.id)).toBe(false);
+        expect(servers.find(server => server.imagePresetId === naiCharacter.id)?.imagePresetPurpose).toBe('人物立绘和角色特写');
 
         const built = buildMcpOpenAITools('char-any');
         expect(built.tools).toHaveLength(2);
         expect(new Set(built.tools.map(tool => tool.function.name)).size).toBe(2);
-        expect(built.tools.some(tool => tool.function.description?.includes('写实照片、电影感场景'))).toBe(true);
-        expect(built.tools.some(tool => tool.function.description?.includes('二次元角色立绘'))).toBe(true);
+        expect(built.tools.every(tool => tool.function.name.includes('novelai_generate_image'))).toBe(true);
+        expect(built.tools.some(tool => tool.function.description?.includes('人物立绘和角色特写'))).toBe(true);
+        expect(built.tools.some(tool => tool.function.description?.includes('环境、建筑、氛围背景'))).toBe(true);
+        expect(built.tools.some(tool => tool.function.description?.includes('GPT 不应该进入角色预设候选'))).toBe(false);
 
         const backup = exportImageGenerationLocal();
         localStorage.clear();
         importImageGenerationLocal(backup);
         expect(getImageGenerationSelectionMode()).toBe('character-auto');
-        expect(loadImageGenerationPresetState().presets.find(item => item.id === nai.id)?.purpose).toContain('二次元角色立绘');
+        expect(loadImageGenerationPresetState().presets.find(item => item.id === naiScene.id)?.purpose).toContain('环境、建筑');
     });
 
     it('round trips the Vibe library in full backups without leaving dead image refs in text-only backups', () => {
