@@ -172,6 +172,11 @@ const engineIdFromServer = (
     server: McpServerConfig,
 ): BuiltinImageEngineId | null => {
     if (
+        server.imagePresetEngineId === 'gpt-image'
+        || server.imagePresetEngineId === 'novelai'
+    ) return server.imagePresetEngineId;
+
+    if (
         server.id ===
         'builtin_image_gpt-image'
     ) return 'gpt-image';
