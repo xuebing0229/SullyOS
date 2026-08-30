@@ -18,8 +18,8 @@ import SensitiveTextInput from '../SensitiveTextInput';
 import { resetMcpSession, testMcpConnection } from '../../utils/mcpClient';
 import {
     applyImageGenerationPreset, createImageGenerationPreset, deleteImageGenerationPreset,
-    getActiveImageGenerationPreset, getImageGenerationPresets, renameImageGenerationPreset,
-    updateImageGenerationPreset, type ImageGenerationPreset,
+    getActiveImageGenerationPreset, getImageGenerationPresets, getImageGenerationSelectionMode, renameImageGenerationPreset,
+    setImageGenerationSelectionMode, updateImageGenerationPreset, updateImageGenerationPresetPurpose, type ImageGenerationPreset,
     EMPTY_IMAGE_GENERATION_PRICING, normalizeImageGenerationPricing, type ImageGenerationPricing,
 } from '../../utils/imageGenerationPresets';
 import { yuanStringToMicros } from '../../utils/apiPricing';
@@ -275,6 +275,7 @@ const EngineCard: React.FC<{
     const presets = useMemo(() => getImageGenerationPresets(id), [id, presetRevision]);
     const activePreset = useMemo(() => getActiveImageGenerationPreset(id), [id, presetRevision]);
     const [apiKey, setApiKey] = useState(() => getActiveImageGenerationPreset(id)?.apiKey || '');
+    const [presetPurpose, setPresetPurpose] = useState(() => getActiveImageGenerationPreset(id)?.purpose || '');
     const [pricing, setPricing] = useState<ImageGenerationPricing>(() => normalizeImageGenerationPricing(getActiveImageGenerationPreset(id)?.pricing || EMPTY_IMAGE_GENERATION_PRICING));
     const [allowCharacterReference, setAllowCharacterReference] = useState(() => getActiveImageGenerationPreset(id)?.allowCharacterReference ?? true);
     const [models, setModels] = useState<string[]>([]);
@@ -299,7 +300,18 @@ const EngineCard: React.FC<{
     };
 
     useEffect(() => {
-        const refresh = () => { setPresetRevision(value => value + 1); const active = getActiveImageGenerationPreset(id); if (active) { setApiKey(active.apiKey); setPricing(normalizeImageGenerationPricing(active.pricing)); } setAllowCharacterReference(active?.allowCharacterReference ?? true); };
+        const refresh = () => {
+            setPresetRevision(value => value + 1);
+            const active = getActiveImageGenerationPreset(id);
+            if (active) {
+                setApiKey(active.apiKey);
+                setPresetPurpose(active.purpose || '');
+                setPricing(normalizeImageGenerationPricing(active.pricing));
+            } else {
+                setPresetPurpose('');
+            }
+            setAllowCharacterReference(active?.allowCharacterReference ?? true);
+        };
         window.addEventListener('sullyos:image-generation-presets-changed', refresh);
         return () => window.removeEventListener('sullyos:image-generation-presets-changed', refresh);
     }, [id]);
@@ -325,6 +337,7 @@ const EngineCard: React.FC<{
                     binding,
                     remoteConfig: updated,
                     apiKey,
+                    purpose: presetPurpose,
                     pricing,
                     allowCharacterReference,
                 });
@@ -356,11 +369,12 @@ const EngineCard: React.FC<{
     };
 
     const ensureRemote = (): ImageRemoteConfig => { if (!remote) throw new Error('请先读取服务器配置'); return remote; };
-    const createPreset = () => { try { const name = window.prompt(`给这个${title}配置起个名字`, `${title}预设`); if (name === null) return; createImageGenerationPreset({ name, engineId: id, binding, remoteConfig: ensureRemote(), apiKey, pricing, allowCharacterReference }); setPresetRevision(v => v + 1); addToast('生图预设已保存', 'success'); } catch (e: any) { addToast(e?.message || '保存预设失败', 'error'); } };
-    const updatePreset = () => { try { if (!activePreset) throw new Error('当前没有选中的预设'); updateImageGenerationPreset(activePreset.id, { binding, remoteConfig: ensureRemote(), apiKey, pricing, allowCharacterReference }); setPresetRevision(v => v + 1); addToast('生图预设已更新', 'success'); } catch (e: any) { addToast(e?.message || '更新预设失败', 'error'); } };
+    const createPreset = () => { try { const name = window.prompt(`给这个${title}配置起个名字`, `${title}预设`); if (name === null) return; createImageGenerationPreset({ name, engineId: id, binding, remoteConfig: ensureRemote(), apiKey, purpose: presetPurpose, pricing, allowCharacterReference }); setPresetRevision(v => v + 1); addToast('生图预设已保存', 'success'); } catch (e: any) { addToast(e?.message || '保存预设失败', 'error'); } };
+    const updatePreset = () => { try { if (!activePreset) throw new Error('当前没有选中的预设'); updateImageGenerationPreset(activePreset.id, { binding, remoteConfig: ensureRemote(), apiKey, purpose: presetPurpose, pricing, allowCharacterReference }); setPresetRevision(v => v + 1); addToast('生图预设已更新', 'success'); } catch (e: any) { addToast(e?.message || '更新预设失败', 'error'); } };
     const renamePreset = () => { if (!activePreset) return; const name = window.prompt('重命名生图预设', activePreset.name); if (name === null) return; try { renameImageGenerationPreset(activePreset.id, name); setPresetRevision(v => v + 1); } catch (e: any) { addToast(e?.message || '重命名失败', 'error'); } };
     const removePreset = () => { if (!activePreset) return; deleteImageGenerationPreset(activePreset.id); setPresetRevision(v => v + 1); addToast('生图预设已删除', 'info'); };
-    const applyPreset = async (preset: ImageGenerationPreset) => { setBusy(true); setStatus(`正在应用预设「${preset.name}」…`); try { const result = await applyImageGenerationPreset(preset); setSettings(result.settings); setRemote(result.remote); setApiKey(preset.apiKey); setPricing(normalizeImageGenerationPricing(preset.pricing)); setAllowCharacterReference(preset.allowCharacterReference); setModels([]); setPresetRevision(v => v + 1); setStatus(`✅ 已应用预设「${preset.name}」`); addToast(`已应用${title}预设`, 'success'); } catch (e: any) { setStatus(`❌ ${e?.message || String(e)}`); } finally { setBusy(false); } };
+    const savePresetPurpose = () => { if (!activePreset) return; try { updateImageGenerationPresetPurpose(activePreset.id, presetPurpose); addToast('预设用途已保存', 'success'); } catch (e: any) { addToast(e?.message || '保存用途失败', 'error'); } };
+    const applyPreset = async (preset: ImageGenerationPreset) => { setBusy(true); setStatus(`正在应用预设「${preset.name}」…`); try { const result = await applyImageGenerationPreset(preset); setSettings(result.settings); setRemote(result.remote); setApiKey(preset.apiKey); setPresetPurpose(preset.purpose || ''); setPricing(normalizeImageGenerationPricing(preset.pricing)); setAllowCharacterReference(preset.allowCharacterReference); setModels([]); setPresetRevision(v => v + 1); setStatus(`✅ 已应用预设「${preset.name}」`); addToast(`已应用${title}预设`, 'success'); } catch (e: any) { setStatus(`❌ ${e?.message || String(e)}`); } finally { setBusy(false); } };
 
     const loadModels = async () => {
         if (!remote || !isNovelConfig(remote)) return;
@@ -417,6 +431,22 @@ const EngineCard: React.FC<{
             {open && (
                 <div className="space-y-3 border-t border-violet-50 p-4">
                     <ImagePresetBar activePreset={activePreset} presets={presets} busy={busy} onApply={preset => void applyPreset(preset)} onCreate={createPreset} onUpdate={updatePreset} onRename={renamePreset} onDelete={removePreset} />
+                    {activePreset && (
+                        <div className="rounded-xl border border-violet-100 bg-violet-50/40 p-3">
+                            <label className="block text-[10px] font-bold text-slate-500">预设用途 / 功能</label>
+                            <textarea
+                                rows={3}
+                                value={presetPurpose}
+                                onChange={event => setPresetPurpose(event.target.value)}
+                                placeholder="例如：二次元角色立绘、写实场景、海报排版、强风格氛围图……"
+                                className="mt-2 w-full resize-y rounded-xl border border-violet-100 bg-white px-3 py-2 text-xs leading-relaxed text-slate-700 outline-none focus:border-violet-300"
+                            />
+                            <div className="mt-2 flex items-center justify-between gap-3">
+                                <p className="text-[10px] leading-relaxed text-slate-400">开启“角色决定预设”后，主聊天角色会在同一次生图工具调用里参考这段说明来选预设。</p>
+                                <button type="button" disabled={busy} onClick={savePresetPurpose} className="shrink-0 rounded-lg bg-violet-500 px-3 py-2 text-[10px] font-bold text-white disabled:opacity-40">保存用途</button>
+                            </div>
+                        </div>
+                    )}
                     <BindingAdvanced binding={binding} onChange={updateBinding} />
                     {!remote ? (
                         <button disabled={busy || !binding.token} onClick={() => void loadRemote()} className="w-full rounded-xl bg-violet-500 py-2.5 text-xs font-bold text-white disabled:opacity-40">读取服务器配置</button>
@@ -459,20 +489,32 @@ const EngineCard: React.FC<{
 
 export const ImageGenerationSettings: React.FC<Props> = ({ addToast }) => {
     const [settings, setSettings] = useState<BuiltinImageSettings>(() => loadBuiltinImageSettings());
+    const [selectionMode, setSelectionMode] = useState(() => getImageGenerationSelectionMode());
     const enabledCount = useMemo(() => Object.values(settings.engines).filter(engine => engine.enabled).length, [settings]);
+    useEffect(() => {
+        const syncMode = () => setSelectionMode(getImageGenerationSelectionMode());
+        window.addEventListener('sullyos:image-generation-presets-changed', syncMode);
+        return () => window.removeEventListener('sullyos:image-generation-presets-changed', syncMode);
+    }, []);
     return (
         <div className="space-y-3">
             <div className="rounded-2xl border border-violet-100 bg-violet-50/60 p-3">
                 <p className="text-xs font-bold text-slate-700">默认生图模式</p>
-                <p className="mt-1 text-[10px] leading-relaxed text-slate-400">选择后会一直使用，直到你在这里更换；生成时不再临时询问，也不会自动切换到另一引擎。</p>
+                <p className="mt-1 text-[10px] leading-relaxed text-slate-400">{selectionMode === 'character-auto'
+                    ? '角色会在决定调用生图工具的同一次主聊天请求里，从所有已保存且配置完整的预设中直接选择；不会额外请求一次主 API。'
+                    : '固定模式会一直使用你选中的默认引擎与当前预设，直到你在这里更换。'}</p>
                 <div className="mt-2 grid grid-cols-2 gap-2">
                     {(['gpt-image', 'novelai'] as const).map(id => {
-                        const selected = settings.preferredEngine === id;
+                        const selected = selectionMode === 'manual' && settings.preferredEngine === id;
                         return (
                             <button
                                 key={id}
                                 type="button"
-                                onClick={() => setSettings(setPreferredBuiltinImageEngine(id))}
+                                onClick={() => {
+                                    setImageGenerationSelectionMode('manual');
+                                    setSelectionMode('manual');
+                                    setSettings(setPreferredBuiltinImageEngine(id));
+                                }}
                                 className={`rounded-xl px-3 py-2.5 text-xs font-bold transition-all ${selected ? 'bg-violet-500 text-white shadow-sm' : 'bg-white text-slate-500 border border-violet-100'}`}
                             >
                                 {id === 'gpt-image' ? 'GPT 生图' : 'NovelAI 生图'}
@@ -481,6 +523,17 @@ export const ImageGenerationSettings: React.FC<Props> = ({ addToast }) => {
                         );
                     })}
                 </div>
+                <button
+                    type="button"
+                    onClick={() => {
+                        setImageGenerationSelectionMode('character-auto');
+                        setSelectionMode('character-auto');
+                    }}
+                    className={`mt-2 w-full rounded-xl px-3 py-2.5 text-xs font-bold transition-all ${selectionMode === 'character-auto' ? 'bg-violet-500 text-white shadow-sm' : 'bg-white text-violet-600 border border-violet-100'}`}
+                >
+                    角色决定预设{selectionMode === 'character-auto' ? ' · 当前' : ''}
+                </button>
+                <p className="mt-2 text-[10px] leading-relaxed text-slate-400">自动模式只会候选“已启用、已有工具、Token/API Key 完整”的保存预设；每个预设可在下方填写“用途 / 功能”帮助角色判断。</p>
             </div>
             <div className="flex items-center justify-between">
                 <div>

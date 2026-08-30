@@ -1,4 +1,5 @@
 import {
+    BUILTIN_IMAGE_MCP_REQUEST_TIMEOUT_MS,
     fetchBuiltinImageRemoteConfig,
     loadBuiltinImageSettings,
     saveBuiltinImageSettings,
@@ -14,6 +15,7 @@ import {
     importMcpLocal,
     exportMcpLocal,
     resetMcpSession,
+    type McpServerConfig,
     type McpToolDef,
 } from './mcpClient';
 import {
@@ -66,6 +68,8 @@ export interface ImageGenerationPreset {
     binding: ImagePresetBinding;
     remoteConfig: StoredImageRemoteConfig;
     apiKey: string;
+    /** 用户手填：这个预设适合画什么，供角色在同一次工具调用里自主选择。 */
+    purpose: string;
     pricing: ImageGenerationPricing;
     /** Whether main chat may choose the character reference for a NovelAI request. */
     allowCharacterReference: boolean;
@@ -73,10 +77,13 @@ export interface ImageGenerationPreset {
     updatedAt: number;
 }
 
+export type ImageGenerationPresetSelectionMode = 'manual' | 'character-auto';
+
 export interface ImageGenerationPresetState {
     version: 1;
     presets: ImageGenerationPreset[];
     activePresetIds: Partial<Record<BuiltinImageEngineId, string>>;
+    selectionMode: ImageGenerationPresetSelectionMode;
 }
 
 export interface ImageGenerationBackupLocal {
@@ -88,7 +95,7 @@ export interface ImageGenerationBackupLocal {
     vibeLibrary?: VibeReferenceLibrary;
 }
 
-const EMPTY_STATE: ImageGenerationPresetState = { version: 1, presets: [], activePresetIds: {} };
+const EMPTY_STATE: ImageGenerationPresetState = { version: 1, presets: [], activePresetIds: {}, selectionMode: 'manual' };
 const clone = <T,>(value: T): T => JSON.parse(JSON.stringify(value));
 
 export const normalizeImageGenerationPricing = (value: unknown): ImageGenerationPricing => {
@@ -126,6 +133,11 @@ const normalizeName = (name: string): string => {
     return value.slice(0, 80);
 };
 
+const normalizePurpose = (purpose: unknown): string =>
+    typeof purpose === 'string'
+        ? purpose.trim().slice(0, 600)
+        : '';
+
 const normalizeBinding = (binding: BuiltinImageBinding): ImagePresetBinding => ({
     mcpUrl: String(binding.mcpUrl || '').trim(),
     controlBaseUrl: String(binding.controlBaseUrl || '').trim(),
@@ -160,6 +172,7 @@ const sanitizePreset = (value: unknown): ImageGenerationPreset | null => {
         },
         remoteConfig: clone(raw.remoteConfig),
         apiKey: String(raw.apiKey || ''),
+        purpose: normalizePurpose(raw.purpose),
         pricing: normalizeImageGenerationPricing(raw.pricing),
         // Missing means an old preset. Preserve the behavior those presets had.
         allowCharacterReference: raw.allowCharacterReference !== false,
@@ -184,7 +197,11 @@ export function loadImageGenerationPresetState(): ImageGenerationPresetState {
                 activePresetIds[engineId] = id;
             }
         }
-        return { version: 1, presets, activePresetIds };
+        const selectionMode: ImageGenerationPresetSelectionMode =
+            parsed?.selectionMode === 'character-auto'
+                ? 'character-auto'
+                : 'manual';
+        return { version: 1, presets, activePresetIds, selectionMode };
     } catch {
         return clone(EMPTY_STATE);
     }
@@ -195,6 +212,7 @@ export function saveImageGenerationPresetState(state: ImageGenerationPresetState
         version: 1,
         presets: state.presets,
         activePresetIds: state.activePresetIds,
+        selectionMode: state.selectionMode,
     }));
     if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('sullyos:image-generation-presets-changed'));
 }
@@ -210,8 +228,66 @@ export function getActiveImageGenerationPreset(engineId: BuiltinImageEngineId): 
     return id ? state.presets.find(item => item.id === id && item.engineId === engineId) || null : null;
 }
 
+export function getImageGenerationSelectionMode(): ImageGenerationPresetSelectionMode {
+    return loadImageGenerationPresetState().selectionMode;
+}
+
+export function setImageGenerationSelectionMode(
+    selectionMode: ImageGenerationPresetSelectionMode,
+): ImageGenerationPresetState {
+    const state = loadImageGenerationPresetState();
+    state.selectionMode = selectionMode;
+    saveImageGenerationPresetState(state);
+    return state;
+}
+
+const isCharacterAutoPresetRuntimeReady = (
+    preset: ImageGenerationPreset,
+): boolean => Boolean(
+    preset.binding.enabled
+    && preset.binding.mcpUrl.trim()
+    && preset.binding.controlBaseUrl.trim()
+    && preset.binding.token.trim()
+    && preset.binding.tools.length > 0
+    && preset.apiKey.trim()
+);
+
+export function getCharacterAutoImageGenerationPresets(): ImageGenerationPreset[] {
+    return loadImageGenerationPresetState().presets.filter(isCharacterAutoPresetRuntimeReady);
+}
+
+export function isCharacterAutoImagePresetSelectionEnabled(): boolean {
+    return getImageGenerationSelectionMode() === 'character-auto'
+        && getCharacterAutoImageGenerationPresets().length > 0;
+}
+
+export function getCharacterAutoImageMcpServers(): McpServerConfig[] {
+    if (getImageGenerationSelectionMode() !== 'character-auto') return [];
+    return getCharacterAutoImageGenerationPresets().map(preset => ({
+        id: `builtin_image_preset_${preset.id}`,
+        name: `生图预设「${preset.name}」`,
+        url: preset.binding.mcpUrl,
+        controlBaseUrl: preset.binding.controlBaseUrl,
+        token: preset.binding.token,
+        enabled: true,
+        tools: clone(preset.binding.tools),
+        updatedAt: preset.updatedAt,
+        builtin: true,
+        requestTimeoutMs: BUILTIN_IMAGE_MCP_REQUEST_TIMEOUT_MS,
+        imagePresetId: preset.id,
+        imagePresetPurpose: preset.purpose,
+        imagePresetEngineId: preset.engineId,
+        imagePresetAllowCharacterReference: preset.allowCharacterReference,
+    }));
+}
+
 /** No active/legacy preset keeps the pre-existing opt-in-per-request behavior. */
 export function isCharacterReferenceAllowedForActivePreset(): boolean {
+    if (getImageGenerationSelectionMode() === 'character-auto') {
+        return getCharacterAutoImageGenerationPresets()
+            .filter(item => item.engineId === 'novelai')
+            .some(item => item.allowCharacterReference !== false);
+    }
     return getActiveImageGenerationPreset('novelai')?.allowCharacterReference !== false;
 }
 
@@ -221,6 +297,7 @@ export function createImageGenerationPreset(input: {
     binding: BuiltinImageBinding;
     remoteConfig: ImageRemoteConfig;
     apiKey: string;
+    purpose?: string;
     pricing?: ImageGenerationPricing;
     allowCharacterReference?: boolean;
 }): ImageGenerationPreset {
@@ -236,6 +313,7 @@ export function createImageGenerationPreset(input: {
         binding: normalizeBinding(input.binding),
         remoteConfig: stripImageRemoteRuntimeFields(input.remoteConfig),
         apiKey,
+        purpose: normalizePurpose(input.purpose),
         pricing,
         allowCharacterReference: input.allowCharacterReference !== false,
         createdAt: now,
@@ -252,6 +330,7 @@ export function updateImageGenerationPreset(id: string, input: {
     binding: BuiltinImageBinding;
     remoteConfig: ImageRemoteConfig;
     apiKey: string;
+    purpose?: string;
     pricing?: ImageGenerationPricing;
     allowCharacterReference?: boolean;
 }): ImageGenerationPreset {
@@ -268,8 +347,23 @@ export function updateImageGenerationPreset(id: string, input: {
         binding: normalizeBinding(input.binding),
         remoteConfig: stripImageRemoteRuntimeFields(input.remoteConfig),
         apiKey: nextKey,
+        purpose: input.purpose === undefined ? previous.purpose : normalizePurpose(input.purpose),
         pricing,
         allowCharacterReference: input.allowCharacterReference ?? previous.allowCharacterReference,
+        updatedAt: Date.now(),
+    };
+    state.presets[index] = updated;
+    saveImageGenerationPresetState(state);
+    return updated;
+}
+
+export function updateImageGenerationPresetPurpose(id: string, purpose: string): ImageGenerationPreset {
+    const state = loadImageGenerationPresetState();
+    const index = state.presets.findIndex(item => item.id === id);
+    if (index < 0) throw new Error('生图预设不存在');
+    const updated = {
+        ...state.presets[index],
+        purpose: normalizePurpose(purpose),
         updatedAt: Date.now(),
     };
     state.presets[index] = updated;
@@ -331,6 +425,16 @@ export async function applyImageGenerationPreset(preset: ImageGenerationPreset):
     return { settings: temporarySettings, remote };
 }
 
+export async function applyImageGenerationPresetById(id: string): Promise<{
+    settings: BuiltinImageSettings;
+    remote: ImageRemoteConfig;
+}> {
+    const preset = loadImageGenerationPresetState().presets.find(item => item.id === id);
+    if (!preset) throw new Error('角色选择的生图预设不存在');
+    if (!isCharacterAutoPresetRuntimeReady(preset)) throw new Error(`生图预设「${preset.name}」当前配置不完整`);
+    return applyImageGenerationPreset(preset);
+}
+
 export function exportImageGenerationLocal(includeVibeLibrary = true): ImageGenerationBackupLocal {
     return {
         version: 1,
@@ -368,7 +472,11 @@ export function importImageGenerationLocal(data: ImageGenerationBackupLocal | nu
                 activePresetIds[engineId] = id;
             }
         }
-        saveImageGenerationPresetState({ version: 1, presets, activePresetIds });
+        const selectionMode: ImageGenerationPresetSelectionMode =
+            data.presetState.selectionMode === 'character-auto'
+                ? 'character-auto'
+                : 'manual';
+        saveImageGenerationPresetState({ version: 1, presets, activePresetIds, selectionMode });
     }
     if (data.mcpLocal) importMcpLocal(data.mcpLocal);
     if (data.vibeLibrary) importVibeReferenceLibrary(data.vibeLibrary);

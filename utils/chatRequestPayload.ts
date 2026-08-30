@@ -28,8 +28,7 @@ import { buildMcdMiniAppContextBlock } from './mcdToolBridge';
 import type { McdMiniAppSnapshot } from './mcdToolBridge';
 import { buildLuckinMiniAppContextBlock, buildLuckinChatSystemBlock } from './luckinToolBridge';
 import type { LuckinMiniAppSnapshot, LuckinChatState } from './luckinToolBridge';
-import { isMcpChatAvailable } from './mcpClient';
-import { buildMcpSystemBlock, MCP_TAIL_REMINDER } from './mcpToolBridge';
+import { buildMcpSystemBlock, hasMcpToolsForChat, MCP_TAIL_REMINDER } from './mcpToolBridge';
 import { isCharacterReferenceAllowedForActivePreset } from './imageGenerationPresets';
 import type { MusicCfg, Song, LyricLine, MusicPlaybackSnapshot, RecentTrackChange } from '../context/MusicContext';
 import { isPromptBuildSkipped, isSystemMessageMergeEnabled } from './devDebug';
@@ -449,7 +448,7 @@ export async function buildChatRequestPayload(input: BuildChatPayloadInput): Pro
     // 即时对话路径：MCP 说明由 worker 的 buildMcpFireBlock 独家供给（与凭据同源同拍），
     // 前端这份不注入——两份工具说明两套工具名，模型会两种都写一遍。
     // mcpChatActive 的取值不受影响：它还要告诉上层「这一轮算不算 MCP 模式」。
-    const mcpChatActive = input.allowMcpChat !== false && isMcpChatAvailable(char.id);
+    const mcpChatActive = input.allowMcpChat !== false && hasMcpToolsForChat(char.id);
     if (mcpChatActive && !input.timelyByWorker) {
         const allowCharacterReference = isCharacterReferenceAllowedForActivePreset();
         const block = buildMcpSystemBlock(userProfile?.name || '用户', char.id, {

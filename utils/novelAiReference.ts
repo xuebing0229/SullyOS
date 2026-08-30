@@ -355,15 +355,24 @@ export async function prepareBuiltinImageToolArguments({
     character?: CharacterProfile | null;
     userProfile?: UserProfile | null;
 }): Promise<Record<string, any>> {
+    const isBuiltinNovelAi =
+        server.id === 'builtin_image_novelai'
+        || (
+            server.builtin === true
+            && server.imagePresetEngineId === 'novelai'
+        );
     if (
-        server.id !== 'builtin_image_novelai'
+        !isBuiltinNovelAi
         || toolName !== 'novelai_generate_image'
     ) {
         return args;
     }
 
+    const characterReferenceAllowed = server.imagePresetId
+        ? server.imagePresetAllowCharacterReference !== false
+        : isCharacterReferenceAllowedForActivePreset();
     const requestedSelection = {
-        character: isCharacterReferenceAllowedForActivePreset()
+        character: characterReferenceAllowed
             && args?.use_character_reference !== false,
         user: args?.use_user_reference !== false,
         vibe: args?.use_vibe_reference !== false,
