@@ -22,6 +22,7 @@ import { characterLaunch } from '../utils/characterLaunch';
 import { safeFetchJson, extractContent } from '../utils/safeApi';
 import { fetchMiniMaxVoices, MiniMaxVoiceItem } from '../utils/minimaxVoice';
 import { resolveMiniMaxApiKey } from '../utils/minimaxApiKey';
+import { normalizeElevenLabsVoiceId, synthesizeSpeechElevenLabsDetailed } from '../utils/elevenLabsTts';
 import { normalizeUserImpression } from '../utils/impression';
 import { injectMemoryPalace } from '../utils/memoryPalace/pipeline';
 import { COMMON_TIMEZONES } from '../utils/timezone';
@@ -174,6 +175,7 @@ const Character: React.FC = () => {
   // Impression State
   const [isGeneratingImpression, setIsGeneratingImpression] = useState(false);
   const [isLoadingVoices, setIsLoadingVoices] = useState(false);
+  const [isTestingElevenLabsVoice, setIsTestingElevenLabsVoice] = useState(false);
   const [voiceOptions, setVoiceOptions] = useState<Record<'system' | 'voice_cloning' | 'voice_generation', MiniMaxVoiceItem[]>>({
       system: [],
       voice_cloning: [],
@@ -215,6 +217,47 @@ const Character: React.FC = () => {
           notes: formData.voiceProfile?.notes || '',
       });
       addToast(`已应用音色：${voice.voice_name || voice.voice_id}`, 'success');
+  };
+
+  const handleTestElevenLabsVoice = async () => {
+      if (!formData || isTestingElevenLabsVoice) return;
+      const voiceId = normalizeElevenLabsVoiceId(formData.voiceProfile?.elevenLabsVoiceId);
+      if (!voiceId) {
+          addToast('请先填写 ElevenLabs Voice ID', 'info');
+          return;
+      }
+      if (!apiConfig.elevenLabsApiKey?.trim()) {
+          addToast('请先在设置 → 其他 API 保存 ElevenLabs Key', 'info');
+          return;
+      }
+      setIsTestingElevenLabsVoice(true);
+      let previewUrl = '';
+      const releasePreviewUrl = () => {
+          if (previewUrl.startsWith('blob:')) URL.revokeObjectURL(previewUrl);
+          previewUrl = '';
+      };
+      try {
+          const previewChar: CharacterProfile = {
+              ...formData,
+              voiceProfile: { ...(formData.voiceProfile || {}), elevenLabsVoiceId: voiceId },
+          };
+          const { url } = await synthesizeSpeechElevenLabsDetailed(
+              `你好，我是${formData.name || '你的角色'}。现在能听见我的声音吗？`,
+              previewChar,
+              apiConfig,
+          );
+          previewUrl = url;
+          const audio = new Audio(url);
+          audio.onended = releasePreviewUrl;
+          audio.onerror = releasePreviewUrl;
+          await audio.play();
+          addToast('ElevenLabs 试听已开始', 'success');
+      } catch (error: any) {
+          releasePreviewUrl();
+          addToast(error?.message || 'ElevenLabs 试听失败', 'error');
+      } finally {
+          setIsTestingElevenLabsVoice(false);
+      }
   };
 
   // Load archive prompts from localStorage (shared with ChatApp)
@@ -1517,7 +1560,32 @@ ${isInitialGeneration ? `
                                    <p className="text-[10px] text-slate-400">从 fish.audio 选好音色后，把那一页的链接（含 ?modelId=…）或 32 位 id 直接贴进来都行，会自动识别。设置里语音选「鱼声 Fish」后该角色就用它合成；与上面的 MiniMax voice_id 各存各的。</p>
                                </div>
 
-                               {/* 语速：MiniMax 与鱼声共用 voiceProfile.speed */}
+                               {/* ElevenLabs 音色：角色独立保存，设置页负责 Key / 模型 / 通用声音参数。 */}
+                                <div className="rounded-2xl border border-violet-200/60 bg-violet-50/40 p-2.5 space-y-1.5">
+                                    <div className="flex items-center justify-between gap-2">
+                                        <div className="text-[10px] font-bold text-violet-600 uppercase tracking-widest">ElevenLabs 音色</div>
+                                        <button
+                                            type="button"
+                                            onClick={() => void handleTestElevenLabsVoice()}
+                                            disabled={isTestingElevenLabsVoice}
+                                            className="text-[10px] rounded-lg border border-violet-200 bg-white px-2 py-1 font-bold text-violet-600 disabled:opacity-50"
+                                        >
+                                            {isTestingElevenLabsVoice ? '试听中…' : '试听'}
+                                        </button>
+                                    </div>
+                                    <input
+                                        value={formData.voiceProfile?.elevenLabsVoiceId || ''}
+                                        onChange={(e) => handleChange('voiceProfile', {
+                                            ...(formData.voiceProfile || {}),
+                                            elevenLabsVoiceId: e.target.value,
+                                        })}
+                                        className="w-full bg-white rounded-2xl px-3 py-2 text-xs border border-slate-200"
+                                        placeholder="粘贴 Voice ID 或 ElevenLabs 音色页面链接"
+                                    />
+                                    <p className="text-[10px] text-slate-400">从 ElevenLabs Voices / Voice Library 复制 Voice ID；也可直接粘贴含 Voice ID 的页面链接。设置里语音选 ElevenLabs 后使用，与 MiniMax、鱼声音色分别保存。</p>
+                                </div>
+
+                                {/* 语速：三家 TTS 共用 voiceProfile.speed */}
                                <div className="space-y-1 pt-1">
                                    <div className="flex items-center justify-between">
                                        <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">语速</label>
@@ -1535,7 +1603,7 @@ ${isInitialGeneration ? `
                                        })}
                                        className="w-full accent-primary"
                                    />
-                                   <p className="text-[10px] text-slate-400">越小越慢、越像娓娓道来。1.0 正常；觉得"赶"就拉到 0.85–0.95。MiniMax 与鱼声共用这个语速（鱼声没单独配时默认略慢 0.9）。</p>
+                                   <p className="text-[10px] text-slate-400">越小越慢、越像娓娓道来。1.0 正常；觉得"赶"就拉到 0.85–0.95。MiniMax、鱼声与 ElevenLabs 共用该角色的语速（鱼声没单独配时默认略慢 0.9）。</p>
                                </div>
 
                                {(voiceOptions.system.length + voiceOptions.voice_cloning.length + voiceOptions.voice_generation.length) > 0 && (
