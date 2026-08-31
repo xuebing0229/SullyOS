@@ -18,6 +18,7 @@ export const SELF_SAFE_AREA_APPS: ReadonlySet<AppID> = new Set<AppID>([
     AppID.ThemeMaker,
     AppID.Appearance,
     AppID.Gallery,
+    AppID.VoiceLibrary,
     AppID.Date,
     AppID.User,
     AppID.Journal,
