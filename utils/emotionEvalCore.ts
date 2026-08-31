@@ -87,10 +87,16 @@ export const buildEmotionEvalRequestMessages = (
     '不得因为引用、复述、第一人称或最后一条消息的位置而交换说话人。）',
   ].join('');
 
-  const evaluatorSystem = String(promptTemplate)
+  const templateText = String(promptTemplate);
+  let evaluatorSystem = templateText
     .replace(EMOTION_EVAL_SYSTEM_SLOT, () => systemContext)
-    .replace(EMOTION_EVAL_HISTORY_SLOT, () => structuredHistoryNote)
-    + '\n\n## 说话人边界（硬规则）'
+    .replace(EMOTION_EVAL_HISTORY_SLOT, () => structuredHistoryNote);
+  // 本地路径的模板已经内嵌 mainSystemPrompt，不含 SYSTEM_SLOT；若历史里还有额外 system
+  // （例如世界书深度注入），也不能因为改成结构化对话就丢掉。
+  if (!templateText.includes(EMOTION_EVAL_SYSTEM_SLOT) && systemContext) {
+    evaluatorSystem += '\n\n## 对话历史中的附加 system 上下文\n' + systemContext;
+  }
+  evaluatorSystem += '\n\n## 说话人边界（硬规则）'
     + '\n- role=user：只代表用户说的话。'
     + `\n- role=assistant：只代表目标角色「${charName || '角色'}」说的话。`
     + '\n- 引号、转述、引用回复只属于所在消息的说话人，不得据内容猜测后改 role。'
