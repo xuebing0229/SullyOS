@@ -212,6 +212,32 @@ export const setVoiceLibraryStarredForSource = async (
     return changed;
 });
 
+const normalizeComparableText = (value: string): string => value.replace(/\s+/g, ' ').trim();
+
+/** Fallback for call audio synthesized during prefetch, before a bubble/sourceKey exists. */
+export const setLatestVoiceLibraryStarredByText = async (
+    source: VoiceLibrarySource,
+    charId: string,
+    text: string,
+    starred: boolean,
+): Promise<boolean> => withWriteLock(async () => {
+    const needle = normalizeComparableText(text);
+    if (!needle) return false;
+    const current = sortVoiceLibrary(await loadIndex());
+    const target = current.find(item => (
+        item.source === source
+        && item.charId === charId
+        && (
+            normalizeComparableText(item.originalText) === needle
+            || normalizeComparableText(item.spokenText || '') === needle
+        )
+    ));
+    if (!target || target.starred === starred) return !!target;
+    await saveIndex(current.map(item => item.id === target.id ? { ...item, starred } : item));
+    notifyChanged();
+    return true;
+});
+
 export const removeVoiceLibraryItem = async (itemId: string): Promise<boolean> => withWriteLock(async () => {
     const current = await loadIndex();
     if (!current.some(item => item.id === itemId)) return false;
@@ -269,7 +295,7 @@ export const migrateExistingVoiceHistoryToLibrary = async (
 
         await saveVoiceLibraryItem({
             source: 'chat',
-            sourceKey: String(msgId),
+            sourceKey: `${message.charId}:${msgId}`,
             charId: message.charId,
             charName: charNames.get(message.charId) || '未知角色',
             sourceTimestamp: message.timestamp || Date.now(),
