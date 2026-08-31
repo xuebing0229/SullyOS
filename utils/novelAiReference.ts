@@ -385,13 +385,16 @@ export async function prepareBuiltinImageToolArguments({
         return args;
     }
 
-    const characterReferenceAllowed = server.imagePresetId
+    // 预设里的“允许角色参考”其实控制的是整类 Precise Reference 能力。
+    // 当前角色参考与用户参考只是同一种 Precise Reference 的两个来源，必须同开同关。
+    const preciseReferenceAllowed = server.imagePresetId
         ? server.imagePresetAllowCharacterReference !== false
         : isCharacterReferenceAllowedForActivePreset();
     const requestedSelection = {
-        character: characterReferenceAllowed
+        character: preciseReferenceAllowed
             && args?.use_character_reference !== false,
-        user: args?.use_user_reference !== false,
+        user: preciseReferenceAllowed
+            && args?.use_user_reference !== false,
         vibe: args?.use_vibe_reference !== false,
     };
     const clean = sanitizeNovelAiReferenceToolArguments(args);
