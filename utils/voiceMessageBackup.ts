@@ -1,19 +1,21 @@
 /**
- * Voice favorites and saved Live2D companion-preset voices live in IndexedDB's
+ * Voice Library, voice favorites, and saved Live2D companion-preset voices live in IndexedDB's
  * generic `assets` store as metadata plus raw Blob assets.
  * JSON.stringify(Blob) produces `{}`, so the normal JSON backup shards cannot
  * carry the audio bytes by themselves. Full/media backups externalize those
  * Blobs into ZIP entries and leave a small, JSON-safe marker in the asset row.
- * Ordinary speech keeps the existing local behavior and is not copied into
- * portable backups. Only explicit favorites and voice files referenced by a
- * saved Live2D preset are treated as archive items.
+ * Ordinary transient speech/cache rows keep the existing local behavior and are
+ * not copied into portable backups. Voice Library entries, explicit favorites,
+ * and voice files referenced by a saved Live2D preset are archive items.
  */
 
 import { VOICE_FAVORITE_AUDIO_PREFIX, VOICE_FAVORITES_INDEX_ASSET_ID } from './voiceFavorites';
+import { VOICE_LIBRARY_AUDIO_PREFIX, VOICE_LIBRARY_INDEX_ASSET_ID, VOICE_LIBRARY_MIGRATION_ASSET_ID } from './voiceLibrary';
 import { isCompanionVoiceAssetId } from './companionVoiceAssets';
 
 export const VOICE_MESSAGE_ASSET_PREFIX = 'voice_msg_';
 export const VOICE_BACKUP_DIR = 'assets/voice-favorites';
+export const VOICE_LIBRARY_BACKUP_DIR = 'assets/voice-library';
 export const COMPANION_VOICE_BACKUP_DIR = 'assets/companion-voices';
 const LEGACY_VOICE_BACKUP_DIR = 'assets/chat-voices';
 export const VOICE_BACKUP_MARKER = '__sullyChatVoiceBlobV1';
@@ -41,12 +43,16 @@ const isVoiceAsset = (asset: AssetRecord): asset is AssetRecord & { id: string }
     if (typeof asset?.id !== 'string') return false;
     if (isCompanionVoiceAssetId(asset.id)) return true;
     if (asset.id.startsWith(VOICE_FAVORITE_AUDIO_PREFIX)) return true;
+    if (asset.id.startsWith(VOICE_LIBRARY_AUDIO_PREFIX)) return true;
     return asset.id.startsWith(VOICE_MESSAGE_ASSET_PREFIX) && asset.data?.favorite === true;
 };
 
 const isRestorableVoiceAsset = (asset: AssetRecord): asset is AssetRecord & { id: string } => (
     typeof asset?.id === 'string'
-    && (isCompanionVoiceAssetId(asset.id) || asset.id.startsWith(VOICE_FAVORITE_AUDIO_PREFIX) || asset.id.startsWith(VOICE_MESSAGE_ASSET_PREFIX))
+    && (isCompanionVoiceAssetId(asset.id)
+        || asset.id.startsWith(VOICE_LIBRARY_AUDIO_PREFIX)
+        || asset.id.startsWith(VOICE_FAVORITE_AUDIO_PREFIX)
+        || asset.id.startsWith(VOICE_MESSAGE_ASSET_PREFIX))
 );
 
 /**
@@ -59,6 +65,11 @@ export const shouldIncludeVoiceRelatedAssetInBackup = (value: unknown, includeFa
     if (!asset || typeof asset.id !== 'string') return true;
     if (asset.id.startsWith('tts_')) return false;
     if (isCompanionVoiceAssetId(asset.id)) return includeFavorites;
+    if (
+        asset.id === VOICE_LIBRARY_INDEX_ASSET_ID
+        || asset.id === VOICE_LIBRARY_MIGRATION_ASSET_ID
+        || asset.id.startsWith(VOICE_LIBRARY_AUDIO_PREFIX)
+    ) return includeFavorites;
     if (asset.id === VOICE_FAVORITES_INDEX_ASSET_ID || asset.id.startsWith(VOICE_FAVORITE_AUDIO_PREFIX)) return includeFavorites;
     if (asset.id.startsWith(VOICE_MESSAGE_ASSET_PREFIX)) return includeFavorites && asset.data?.favorite === true;
     return true;
@@ -70,6 +81,7 @@ export const isVoiceBackupBlobMarker = (value: unknown): value is VoiceBackupBlo
     return marker[VOICE_BACKUP_MARKER] === true
         && typeof marker.path === 'string'
         && (marker.path.startsWith(`${VOICE_BACKUP_DIR}/`)
+            || marker.path.startsWith(`${VOICE_LIBRARY_BACKUP_DIR}/`)
             || marker.path.startsWith(`${COMPANION_VOICE_BACKUP_DIR}/`)
             || marker.path.startsWith(`${LEGACY_VOICE_BACKUP_DIR}/`))
         && typeof marker.mimeType === 'string'
@@ -99,7 +111,11 @@ export async function externalizeVoiceMessageBlobs(
         if (!isVoiceAsset(asset) || !asset.data || !(asset.data.blob instanceof Blob)) continue;
 
         const blob = asset.data.blob;
-        const backupDir = isCompanionVoiceAssetId(asset.id) ? COMPANION_VOICE_BACKUP_DIR : VOICE_BACKUP_DIR;
+        const backupDir = isCompanionVoiceAssetId(asset.id)
+            ? COMPANION_VOICE_BACKUP_DIR
+            : asset.id.startsWith(VOICE_LIBRARY_AUDIO_PREFIX)
+                ? VOICE_LIBRARY_BACKUP_DIR
+                : VOICE_BACKUP_DIR;
         const path = `${backupDir}/${safeVoiceFilename(asset.id, index)}`;
         await writeFile(path, new Uint8Array(await blob.arrayBuffer()));
         asset.data.blob = {

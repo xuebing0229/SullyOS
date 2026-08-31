@@ -102,6 +102,7 @@ import {
     removeVoiceFavorite,
     saveVoiceFavorite,
 } from '../utils/voiceFavorites';
+import { saveVoiceLibraryItem, setVoiceLibraryStarredForSource } from '../utils/voiceLibrary';
 import {
     CONTENT_FAVORITES_CHANGED_EVENT,
     contentFavoriteIdForMessage,
@@ -722,6 +723,37 @@ const Chat: React.FC = () => {
             setVoiceDataMap(prev => ({ ...prev, [msg.id]: { url: blobUrl, originalText, spokenText: storedSpokenText, lang: storedLang } }));
             // Persist so the voice bar survives leaving and re-entering the chat.
             persistVoice(msg.id, blobUrl, blob, originalText, storedSpokenText, storedLang);
+
+            // 语音库是独立留档：聊天语音生成成功后复制一份真实音频 Blob。
+            // 留档失败绝不能反过来打断本次播放 / TTS 主流程。
+            void (async () => {
+                let archiveBlob: Blob | null = blob instanceof Blob ? blob : null;
+                if (!archiveBlob) {
+                    try { archiveBlob = await fetchBlobForShare(blobUrl, 'audio/mpeg'); } catch { /* remote URL/CORS: skip archive only */ }
+                }
+                if (!archiveBlob || archiveBlob.size <= 0) return;
+                const profile = char.voiceProfile;
+                const archiveVoiceId = ttsProvider === 'elevenlabs'
+                    ? profile?.elevenLabsVoiceId
+                    : ttsProvider === 'fishaudio'
+                        ? profile?.fishReferenceId
+                        : profile?.voiceId;
+                await saveVoiceLibraryItem({
+                    source: 'chat',
+                    sourceKey: chatFavoriteSourceKey(msg),
+                    charId: msg.charId,
+                    charName: char?.name || '未知角色',
+                    sourceTimestamp: msg.timestamp,
+                    originalText,
+                    spokenText: storedSpokenText,
+                    language: storedLang,
+                    provider: ttsProvider,
+                    voiceId: archiveVoiceId,
+                    model: profile?.model,
+                    blob: archiveBlob,
+                });
+            })().catch(error => console.warn('[VoiceLibrary] chat archive failed', error));
+
             // 合成完是否立刻播（规则和来由见 shouldAutoPlayGeneratedVoice）：
             // AI 自动发来的默认不响、等用户点；用户自己点着要的一定响。
             if (shouldAutoPlayGeneratedVoice({ autoTriggered, autoPlayEnabled: char.chatVoiceAutoPlay })) {
@@ -771,6 +803,7 @@ const Chat: React.FC = () => {
             const sourceKey = chatFavoriteSourceKey(msg);
             if (await getVoiceFavorite('chat', sourceKey)) {
                 await removeVoiceFavorite('chat', sourceKey);
+                await setVoiceLibraryStarredForSource('chat', sourceKey, false).catch(() => 0);
                 setChatFavoriteKeys(prev => { const next = new Set(prev); next.delete(sourceKey); return next; });
                 setVoiceDataMap(prev => prev[msg.id] ? ({ ...prev, [msg.id]: { ...prev[msg.id], favorite: false } }) : prev);
                 addToast('已取消收藏语音', 'info');
@@ -802,6 +835,7 @@ const Chat: React.FC = () => {
                 language: current.lang,
                 blob,
             });
+            await setVoiceLibraryStarredForSource('chat', sourceKey, true).catch(() => 0);
             setChatFavoriteKeys(prev => new Set(prev).add(sourceKey));
             setVoiceDataMap(prev => ({ ...prev, [msg.id]: { ...prev[msg.id], favorite: true } }));
             addToast('已收藏语音，可在“收藏”里查看', 'success');

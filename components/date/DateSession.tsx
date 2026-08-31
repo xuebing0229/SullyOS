@@ -17,13 +17,15 @@ import {
     characterHasVoice,
     cleanTextForTtsProvider,
     stripTtsMarkupForDisplay,
-    synthesizeSpeech,
+    synthesizeSpeechDetailed,
 } from '../../utils/ttsRouter';
 import { planNovelLoadMore } from '../../utils/dateSessionHistory';
 import { getPendingReplyText } from '../../utils/pendingReply';
 import { fetchBlobForShare } from '../../utils/shareExport';
 import VoiceFavoriteActionSheet from '../voice/VoiceFavoriteActionSheet';
 import { getVoiceFavorite, makeVoiceFavoriteId, removeVoiceFavorite, saveVoiceFavorite } from '../../utils/voiceFavorites';
+import { saveVoiceLibraryItem, setVoiceLibraryStarredForSource } from '../../utils/voiceLibrary';
+import { resolveTtsProvider } from '../../utils/ttsProvider';
 import { MEETING_CONTINUE_DISPLAY_TEXT } from '../../utils/meetingContinue';
 import TokenImg from '../os/TokenImg';
 
@@ -136,7 +138,7 @@ const NOVEL_HISTORY_FETCH_STEP = 220;
 const NOVEL_MESSAGE_LOAD_STEP = 40;
 const REQUIRED_EMOTIONS_SET = ['normal', 'happy', 'angry', 'sad', 'shy'];
 
-type DateSpeechResult = { url: string; spokenText: string };
+type DateSpeechResult = { url: string; blob?: Blob | null; spokenText: string };
 type DateVoiceFavoriteTarget = {
     sourceKey: string;
     originalText: string;
@@ -255,7 +257,11 @@ const DateSession: React.FC<DateSessionProps> = ({
     const VOICE_LANG_LABELS: Record<string, string> = { en: 'English', ja: '日本語', ko: '한국어', fr: 'Français', es: 'Español' };
     const VOICE_LANG_OPTIONS = [{v:'',l:'默认'},{v:'en',l:'EN'},{v:'ja',l:'JP'},{v:'ko',l:'KR'},{v:'fr',l:'FR'},{v:'es',l:'ES'}];
 
-    const translateAndSpeak = async (text: string, emotion?: string): Promise<DateSpeechResult | null> => {
+    const translateAndSpeak = async (
+        text: string,
+        emotion?: string,
+        archive?: { sourceKey?: string; sourceTimestamp?: number },
+    ): Promise<DateSpeechResult | null> => {
         if (!canSynthesizeSpeech(char, apiConfig)) return null;
         try {
             let ttsText = cleanTextForTtsProvider(text, apiConfig);
@@ -277,15 +283,43 @@ const DateSession: React.FC<DateSessionProps> = ({
                     if (translated) ttsText = translated;
                 } catch { /* use original */ }
             }
-            const url = await synthesizeSpeech(ttsText, char, apiConfig, {
+            const { url, blob } = await synthesizeSpeechDetailed(ttsText, char, apiConfig, {
                 languageBoost: voiceLang || undefined,
                 groupId: apiConfig.minimaxGroupId || undefined,
                 emotion,
             });
-            return {
-                url,
-                spokenText: stripTtsMarkupForDisplay(ttsText, apiConfig),
-            };
+            const spokenText = stripTtsMarkupForDisplay(ttsText, apiConfig);
+
+            void (async () => {
+                let archiveBlob: Blob | null = blob instanceof Blob ? blob : null;
+                if (!archiveBlob) {
+                    try { archiveBlob = await fetchBlobForShare(url, 'audio/mpeg'); } catch { /* archive only */ }
+                }
+                if (!archiveBlob || archiveBlob.size <= 0) return;
+                const provider = resolveTtsProvider(apiConfig);
+                const profile = char.voiceProfile;
+                const voiceId = provider === 'elevenlabs'
+                    ? profile?.elevenLabsVoiceId
+                    : provider === 'fishaudio'
+                        ? profile?.fishReferenceId
+                        : profile?.voiceId;
+                await saveVoiceLibraryItem({
+                    source: 'date',
+                    sourceKey: archive?.sourceKey,
+                    charId: char.id,
+                    charName: char.name,
+                    sourceTimestamp: archive?.sourceTimestamp || Date.now(),
+                    originalText: text,
+                    spokenText: spokenText !== text ? spokenText : undefined,
+                    language: voiceLang || undefined,
+                    provider,
+                    voiceId,
+                    model: profile?.model,
+                    blob: archiveBlob,
+                });
+            })().catch(error => console.warn('[VoiceLibrary] date archive failed', error));
+
+            return { url, blob, spokenText };
         } catch (err: any) {
             console.warn('Date TTS failed:', err?.message);
             return null;
@@ -314,7 +348,8 @@ const DateSession: React.FC<DateSessionProps> = ({
             let speech: DateSpeechResult | undefined = voiceCacheRef.current[cacheKey];
             if (!speech) {
                 setGalVoiceLoading(true);
-                speech = await translateAndSpeak(dialogueText, currentLineEmotionRef.current) || undefined;
+                const archiveTarget = resolveCurrentDateVoiceTarget();
+                speech = await translateAndSpeak(dialogueText, currentLineEmotionRef.current, archiveTarget ? { sourceKey: archiveTarget.sourceKey, sourceTimestamp: archiveTarget.sourceTimestamp } : undefined) || undefined;
                 if (cancelled) return;
                 setGalVoiceLoading(false);
                 if (!speech) return;
@@ -345,7 +380,8 @@ const DateSession: React.FC<DateSessionProps> = ({
         let speech: DateSpeechResult | undefined = voiceCacheRef.current[cacheKey];
         if (!speech) {
             setGalVoiceLoading(true);
-            speech = await translateAndSpeak(dialogueText, currentLineEmotionRef.current) || undefined;
+            const archiveTarget = resolveCurrentDateVoiceTarget();
+            speech = await translateAndSpeak(dialogueText, currentLineEmotionRef.current, archiveTarget ? { sourceKey: archiveTarget.sourceKey, sourceTimestamp: archiveTarget.sourceTimestamp } : undefined) || undefined;
             setGalVoiceLoading(false);
             if (!speech) { addToast('语音合成失败，请稍后重试', 'error'); return; }
             voiceCacheRef.current[cacheKey] = speech;
@@ -378,7 +414,7 @@ const DateSession: React.FC<DateSessionProps> = ({
             return;
         }
         setNovelVoiceLoading(prev => new Set(prev).add(lineKey));
-        const speech = await translateAndSpeak(dialogueText, voiceEmotion);
+        const speech = await translateAndSpeak(dialogueText, voiceEmotion, { sourceKey: `${char.id}:novel:${lineKey}`, sourceTimestamp: Date.now() });
         setNovelVoiceLoading(prev => { const n = new Set(prev); n.delete(lineKey); return n; });
         if (!speech) { addToast('语音合成失败，请稍后重试', 'error'); return; }
         voiceCacheRef.current[dialogueText] = speech;
@@ -448,13 +484,14 @@ const DateSession: React.FC<DateSessionProps> = ({
         try {
             if (voiceFavoriteSaved) {
                 await removeVoiceFavorite('date', target.sourceKey);
+                await setVoiceLibraryStarredForSource('date', target.sourceKey, false).catch(() => 0);
                 setVoiceFavoriteSaved(false);
                 addToast('已取消收藏语音', 'info');
                 return;
             }
             let speech: DateSpeechResult | undefined = voiceCacheRef.current[target.originalText];
             if (!speech) {
-                speech = await translateAndSpeak(target.originalText, target.voiceEmotion) || undefined;
+                speech = await translateAndSpeak(target.originalText, target.voiceEmotion, { sourceKey: target.sourceKey, sourceTimestamp: target.sourceTimestamp }) || undefined;
                 if (speech) voiceCacheRef.current[target.originalText] = speech;
             }
             if (!speech) throw new Error('语音合成失败，请稍后重试');
@@ -470,6 +507,7 @@ const DateSession: React.FC<DateSessionProps> = ({
                 language: voiceLang || undefined,
                 blob,
             });
+            await setVoiceLibraryStarredForSource('date', target.sourceKey, true).catch(() => 0);
             setVoiceFavoriteSaved(true);
             addToast('已收藏见面语音', 'success');
         } catch (error: any) {
