@@ -46,6 +46,16 @@ beforeEach(() => {
     getAllCharacters.mockResolvedValue([]);
 });
 
+describe('情绪评估提示词 — 新情绪不被旧快照锚死', () => {
+    it('要求先独立判断当前情绪，再与旧 buff 对照，并允许不同情绪轴自然新增', () => {
+        expect(useChatAISource).toContain('先判断此刻，再对照旧状态');
+        expect(useChatAISource).toContain('它不需要是“重大事件”或“高冲击事件”');
+        expect(useChatAISource).toContain('不要因为当前已有 3～4 个 buff 就默认不再新增');
+        expect(useChatAISource).toContain('旧情绪仍然存在，而另一种不同核心的情绪同时新出现');
+        expect(useChatAISource).not.toContain('只有对话中出现了明确的、足够冲击力的情绪触发事件，才值得新增一个buff');
+    });
+});
+
 describe('情绪评估提示词 — buff 标题随语义演化', () => {
     it('明确要求核心情绪质变时同步改 name / label / description，而不是只改内容', () => {
         expect(useChatAISource).toContain('标题不是固定标识符');
