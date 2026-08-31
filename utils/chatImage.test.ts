@@ -15,12 +15,12 @@ describe('chatImage helpers', () => {
         expect(isGifFile({ name: 'photo.png', type: '' } as File)).toBe(false);
     });
 
-    it('横图按最长边 600 等比缩放', () => {
-        expect(fitChatImageSize(1200, 600)).toEqual({ width: 600, height: 300 });
+    it('横图按最长边 1600 等比缩放', () => {
+        expect(fitChatImageSize(3200, 1600)).toEqual({ width: 1600, height: 800 });
     });
 
-    it('竖图按最长边 600 等比缩放', () => {
-        expect(fitChatImageSize(500, 1000)).toEqual({ width: 300, height: 600 });
+    it('竖图按最长边 1600 等比缩放', () => {
+        expect(fitChatImageSize(1000, 2000)).toEqual({ width: 800, height: 1600 });
     });
 
     it('小图不放大', () => {
