@@ -94,6 +94,58 @@ describe('restoreEvalPrompt', () => {
   });
 });
 
+
+describe('结构化说话人 role', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('副 API 真正收到 user / assistant 分开的消息，不再把双方对话拍成一条 user 文本', async () => {
+    const fetchMock = vi.fn(async (_url: unknown, init: any) => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        choices: [{ message: { content: '{"changed":false,"buffs":[],"injection":"","innerState":"ok"}' } }],
+      }),
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await runAmsgEmotionEval(
+      { prompt: TEMPLATE },
+      { baseUrl: 'https://eval.example.com/v1', apiKey: 'sk-eval', model: 'eval-mini' },
+      [
+        { role: 'system', content: '你是 Nyah。' },
+        { role: 'user', content: '你刚才明明说「我可以不去」。' },
+        { role: 'assistant', content: '我说的是「你不用勉强」，不是那句话。' },
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: '你看，我截图了' },
+            { type: 'image_url', image_url: { url: 'data:image/png;base64,AAAA' } },
+          ],
+        },
+        { role: 'system', content: '现在是 08:00。' },
+      ],
+      'Nyah',
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const init = fetchMock.mock.calls[0][1] as any;
+    const body = JSON.parse(String(init.body));
+    const messages = body.messages as Array<{ role: string; content: string }>;
+
+    expect(messages.map((m) => m.role)).toEqual(['system', 'user', 'assistant', 'user', 'user']);
+    expect(messages[1].content).toBe('你刚才明明说「我可以不去」。');
+    expect(messages[2].content).toBe('我说的是「你不用勉强」，不是那句话。');
+    expect(messages[3].content).toBe('你看，我截图了 [图片]');
+    expect(messages[0].content).toContain('role=user 永远是用户本人');
+    expect(messages[0].content).toContain('role=assistant 永远是目标角色「Nyah」');
+    expect(messages[0].content).toContain('现在是 08:00。');
+    expect(messages[0].content).not.toContain('[用户]: 你刚才明明说');
+    expect(JSON.stringify(body)).not.toContain('base64');
+  });
+});
+
 // 失败原因这句话最终要走 push 出门（评估失败信号带给客户端），里头绝不能有 apiKey。
 // 个别中转会把整个请求（含 Authorization 头）回显在错误页里，所以打码必须先于截断：
 // 先截的话，切口正好落在 key 中间时整串里查不到完整 key，半截凭据就原样带出去了。
