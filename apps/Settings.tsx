@@ -1124,6 +1124,24 @@ const Settings: React.FC = () => {
     setTimeout(() => setStatusMsg(''), 2000);
   };
 
+  const buildVisionApiConfig = (): NonNullable<APIConfig['visionApi']> => ({
+    enabled: localVisionEnabled,
+    baseUrl: normalizeApiBaseUrl(localVisionUrl),
+    apiKey: normalizeApiCredential(localVisionKey),
+    model: normalizeApiModel(localVisionModel),
+  });
+
+  const handleSaveVisionApi = () => {
+    const next = buildVisionApiConfig();
+    if (next.enabled && (!next.baseUrl || !next.apiKey || !next.model)) {
+      addToast('请先填写完整的识图 API 配置', 'error');
+      return;
+    }
+    updateApiConfig({ visionApi: next });
+    setVisionStatusMsg('已保存');
+    setTimeout(() => setVisionStatusMsg(''), 2000);
+  };
+
   const handleTestVisionApi = async () => {
     const config = {
       enabled: true,
@@ -1247,6 +1265,42 @@ const Settings: React.FC = () => {
       addToast(error instanceof Error ? error.message : String(error), 'error');
     } finally {
       setTestingElevenLabs(false);
+    }
+  };
+
+  const fetchVisionModels = async () => {
+    const baseUrl = normalizeApiBaseUrl(localVisionUrl);
+    const apiKey = normalizeApiCredential(localVisionKey);
+    if (!baseUrl) {
+      setVisionStatusMsg('请先填写识图 URL');
+      return;
+    }
+    setIsLoadingVisionModels(true);
+    setVisionStatusMsg('正在连接...');
+    try {
+      const response = await fetch(`${baseUrl}/models`, {
+        method: 'GET',
+        headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const data = await safeResponseJson(response);
+      const models = extractModelIds(data);
+      if (models.length > 0) {
+        setAvailableVisionModels(models);
+        try {
+          localStorage.setItem(VISION_MODEL_LIST_STORAGE_KEY, JSON.stringify(models));
+        } catch {}
+        if (!models.includes(localVisionModel)) setLocalVisionModel(models[0]);
+        setVisionStatusMsg(`获取到 ${models.length} 个识图模型`);
+        setShowVisionModelModal(true);
+      } else {
+        setVisionStatusMsg('模型列表为空或格式不兼容');
+      }
+    } catch (error: any) {
+      console.error(error);
+      setVisionStatusMsg(`连接失败${error?.message ? `：${error.message}` : ''}`);
+    } finally {
+      setIsLoadingVisionModels(false);
     }
   };
 
@@ -2507,6 +2561,174 @@ const Settings: React.FC = () => {
                         {testApiResult}
                     </div>
                 )}
+            </div>
+        </SettingsSection>
+
+        <SettingsSection
+            title="识图 API"
+            icon={
+                <div className="p-2 bg-violet-100/60 rounded-xl text-violet-600">
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-4 h-4">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 12s3.75-6.75 9.75-6.75S21.75 12 21.75 12 18 18.75 12 18.75 2.25 12 2.25 12Z" />
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z" />
+                    </svg>
+                </div>
+            }
+        >
+            <div className="space-y-4">
+                <div className="flex items-center justify-between gap-4">
+                    <div className="min-w-0">
+                        <p className="text-sm font-semibold text-slate-600">独立识图中转</p>
+                        <p className="text-[10px] text-slate-400 mt-1 leading-relaxed">
+                            开启后，聊天图片先由这里的视觉模型识别成文字，再交给主聊天模型；同一张图的描述会写回消息并持续复用，不会每轮重新识图。
+                        </p>
+                    </div>
+                    <label className="relative inline-flex items-center cursor-pointer shrink-0">
+                        <input
+                            type="checkbox"
+                            checked={localVisionEnabled}
+                            onChange={e => {
+                                setLocalVisionEnabled(e.target.checked);
+                                setVisionTestResult(null);
+                                setVisionStatusMsg('');
+                            }}
+                            className="sr-only peer"
+                        />
+                        <div className="w-11 h-6 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-violet-500"></div>
+                    </label>
+                </div>
+
+                {localVisionEnabled && (
+                    <div className="space-y-3">
+                        {apiPresets.length > 0 && (
+                            <div>
+                                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1.5 pl-1">从已有预设填入</label>
+                                <div className="flex flex-wrap gap-1.5">
+                                    {apiPresets.map(preset => {
+                                        const selected = selectedVisionPresetId === preset.id;
+                                        return (
+                                            <button
+                                                key={preset.id}
+                                                type="button"
+                                                onClick={() => {
+                                                    setSelectedVisionPresetId(preset.id);
+                                                    setLocalVisionUrl(preset.config.baseUrl || '');
+                                                    setLocalVisionKey(preset.config.apiKey || '');
+                                                    setLocalVisionModel(preset.config.model || '');
+                                                    setVisionTestResult(null);
+                                                    setVisionStatusMsg('');
+                                                }}
+                                                className={`px-2.5 py-1.5 rounded-lg text-[10px] font-bold transition-colors ${selected ? 'bg-violet-500 text-white' : 'bg-violet-50 text-violet-600 border border-violet-100'}`}
+                                            >
+                                                {preset.name}
+                                            </button>
+                                        );
+                                    })}
+                                </div>
+                            </div>
+                        )}
+
+                        <div>
+                            <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1.5 pl-1">URL</label>
+                            <input
+                                type="text"
+                                value={localVisionUrl}
+                                onChange={e => {
+                                    setLocalVisionUrl(e.target.value);
+                                    setSelectedVisionPresetId(null);
+                                    setVisionTestResult(null);
+                                }}
+                                className="w-full bg-white/50 border border-slate-200/60 rounded-xl px-4 py-3 text-sm font-mono focus:outline-violet-500 focus:bg-white transition-all"
+                                placeholder="https://api.example.com/v1"
+                            />
+                        </div>
+
+                        <div>
+                            <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1.5 pl-1">API Key</label>
+                            <SensitiveTextInput
+                                value={localVisionKey}
+                                onChange={e => {
+                                    setLocalVisionKey(e.target.value);
+                                    setSelectedVisionPresetId(null);
+                                    setVisionTestResult(null);
+                                }}
+                                className="w-full bg-white/50 border border-slate-200/60 rounded-xl px-4 py-3 text-sm font-mono focus:outline-violet-500 focus:bg-white transition-all"
+                                placeholder="sk-..."
+                            />
+                        </div>
+
+                        <div>
+                            <div className="flex justify-between items-center mb-1.5 pl-1">
+                                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Model</label>
+                                <button
+                                    type="button"
+                                    onClick={fetchVisionModels}
+                                    disabled={isLoadingVisionModels}
+                                    className="text-[10px] text-violet-600 font-bold disabled:opacity-50"
+                                >
+                                    {isLoadingVisionModels ? 'Fetching...' : '刷新模型列表'}
+                                </button>
+                            </div>
+                            <button
+                                type="button"
+                                onClick={() => setShowVisionModelModal(true)}
+                                title={localVisionModel || 'Select Model...'}
+                                className="w-full bg-white/50 border border-slate-200/60 rounded-xl px-4 py-3 text-sm text-slate-700 flex justify-between items-center gap-2 active:bg-white transition-all shadow-sm"
+                            >
+                                <span
+                                    className="font-mono overflow-hidden whitespace-nowrap min-w-0 flex-1 text-left"
+                                    style={{ direction: 'rtl', textOverflow: 'ellipsis' }}
+                                >
+                                    <bdi style={{ direction: 'ltr' }}>{localVisionModel || 'Select Model...'}</bdi>
+                                </span>
+                                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4 text-slate-400 flex-shrink-0"><path fillRule="evenodd" d="M5.22 8.22a.75.75 0 0 1 1.06 0L10 11.94l3.72-3.72a.75.75 0 1 1 1.06 1.06l-4.25 4.25a.75.75 0 0 1-1.06 0L5.22 9.28a.75.75 0 0 1 0-1.06Z" clipRule="evenodd" /></svg>
+                            </button>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-2">
+                            <button
+                                type="button"
+                                onClick={handleTestVisionApi}
+                                disabled={testingVisionApi || !localVisionUrl.trim() || !localVisionKey.trim() || !localVisionModel.trim()}
+                                className={`py-2.5 rounded-2xl font-bold text-xs border active:scale-95 transition-all ${testingVisionApi || !localVisionUrl.trim() || !localVisionKey.trim() || !localVisionModel.trim() ? 'border-slate-200 text-slate-400 bg-slate-50' : 'border-violet-200 text-violet-600 bg-violet-50'}`}
+                            >
+                                {testingVisionApi ? '测试中…' : '🧪 测试识图'}
+                            </button>
+                            <button
+                                type="button"
+                                onClick={handleSaveVisionApi}
+                                className="py-2.5 rounded-2xl font-bold text-xs text-white bg-violet-500 active:scale-95 transition-all shadow-sm"
+                            >
+                                {visionStatusMsg === '已保存' ? '已保存' : '保存识图配置'}
+                            </button>
+                        </div>
+
+                        {visionStatusMsg && visionStatusMsg !== '已保存' && (
+                            <div className="text-xs px-3 py-2 rounded-xl bg-slate-50 text-slate-600">
+                                {visionStatusMsg}
+                            </div>
+                        )}
+                        {visionTestResult && (
+                            <div className={`text-xs px-3 py-2 rounded-xl ${visionTestResult.startsWith('✅') ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-600'}`}>
+                                {visionTestResult}
+                            </div>
+                        )}
+                    </div>
+                )}
+
+                {!localVisionEnabled && (
+                    <button
+                        type="button"
+                        onClick={handleSaveVisionApi}
+                        className="w-full py-2.5 rounded-2xl font-bold text-xs text-slate-500 bg-slate-100 active:scale-95 transition-all"
+                    >
+                        {visionStatusMsg === '已保存' ? '已关闭并保存' : '保存关闭状态'}
+                    </button>
+                )}
+
+                <p className="text-[9px] text-slate-300 px-1 leading-relaxed">
+                    关闭不会删除已经缓存到历史消息里的识图描述。重新开启后，旧图片仍会直接复用已有描述。
+                </p>
             </div>
         </SettingsSection>
 
