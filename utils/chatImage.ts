@@ -1,8 +1,8 @@
 import { processImage } from './file';
 
 export const MAX_CHAT_GIF_BYTES = 50 * 1024 * 1024;
-export const CHAT_IMAGE_MAX_EDGE = 600;
-export const CHAT_IMAGE_JPEG_QUALITY = 0.6;
+export const CHAT_IMAGE_MAX_EDGE = 1600;
+export const CHAT_IMAGE_JPEG_QUALITY = 0.85;
 
 export interface PreparedChatImage {
     /** 聊天气泡和相册里显示的图片。GIF 保留原动画。 */
