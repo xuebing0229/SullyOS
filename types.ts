@@ -18,6 +18,7 @@ export enum AppID {
   Chat = 'chat',
   GroupChat = 'group_chat',
   Gallery = 'gallery',
+  VoiceLibrary = 'voice_library',
   Music = 'music',
   Browser = 'browser',
   ThemeMaker = 'thememaker',
