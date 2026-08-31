@@ -458,7 +458,7 @@ const EngineCard: React.FC<{
                                 <div className="flex items-center justify-between gap-3 rounded-xl border border-violet-100 bg-violet-50/40 p-3">
                                     <div>
                                         <p className="text-xs font-bold text-slate-700">允许主聊天使用角色参考</p>
-                                        <p className="mt-1 text-[10px] leading-relaxed text-slate-400">开启后，主聊天可按每次画面需要自行决定是否发送角色参考图；关闭后不向主聊天提供该能力。</p>
+                                        <p className="mt-1 text-[10px] leading-relaxed text-slate-400">当前角色参考图和用户参考图都属于同一类 Precise Reference。开启后主聊天可按画面需要选择任一来源；关闭后两种参考图都会一起禁用。</p>
                                     </div>
                                     <Toggle checked={allowCharacterReference} onChange={setAllowCharacterReference} />
                                 </div>
