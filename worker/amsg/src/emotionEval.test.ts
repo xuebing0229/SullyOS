@@ -134,7 +134,7 @@ describe('结构化说话人 role', () => {
     const body = JSON.parse(String(init.body));
     const messages = body.messages as Array<{ role: string; content: string }>;
 
-    expect(messages.map((m) => m.role)).toEqual(['system', 'user', 'assistant', 'user', 'user']);
+    expect(messages.map((m) => m.role)).toEqual(['system', 'user', 'assistant', 'user']);
     expect(messages[1].content).toBe('你刚才明明说「我可以不去」。');
     expect(messages[2].content).toBe('我说的是「你不用勉强」，不是那句话。');
     expect(messages[3].content).toBe('你看，我截图了 [图片]');
