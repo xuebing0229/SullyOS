@@ -247,21 +247,38 @@ export function captureApiBillingContext(
 ): ApiBillingCapture {
     const baseUrl = deriveBaseUrl(url);
     const model = extractModel(body);
-    let activePresetId: string | null = null;
+    const presets = loadApiPresets();
+    const explicitPresetId = String(preferredPresetId || '').trim();
 
+    // 调用链已经知道“这次实际走的是哪个预设”时，presetId 就是计费身份本身。
+    // 不再拿发送后的 URL / model 二次反查，否则兼容层改写模型名、同线路多预设等情况
+    // 会把一个明明有价格的请求误判成“未匹配到预设”。
+    if (explicitPresetId) {
+        const explicitPreset = presets.find(
+            preset => preset.id === explicitPresetId,
+        );
+        if (explicitPreset) {
+            return {
+                presetId: explicitPreset.id,
+                presetName: explicitPreset.name,
+                pricingSnapshot:
+                    snapshotPricing(explicitPreset),
+            };
+        }
+    }
+
+    let activePresetId: string | null = null;
     try {
         activePresetId =
             localStorage.getItem(ACTIVE_PRESET_KEY);
     } catch {}
 
     const matched = matchApiPresetForBilling(
-        loadApiPresets(),
+        presets,
         {
             baseUrl,
             model,
-            activePresetId:
-                preferredPresetId
-                || activePresetId,
+            activePresetId,
             apiKey:
                 extractBearerCredential(headers),
         },
@@ -1105,9 +1122,13 @@ export function recordApiCall(input: {
     try {
         const baseUrl = input.baseUrlOverride ?? deriveBaseUrl(input.url);
         const model = input.modelOverride ?? extractModel(input.body);
-        const capture = input.billingCapture ?? captureApiBillingContext(input.url, input.body);
         // 显式 meta 优先（safeFetchJson 各调用点传的精确信息）；没有就用环境兜底（裸 fetch）。
         const meta = hasMeta(input.meta) ? input.meta! : ambientMeta;
+        const capture = input.billingCapture ?? captureApiBillingContext(
+            input.url,
+            input.body,
+            meta.apiPresetId || meta.failoverPresetId,
+        );
         // 整包 JSON 直接读；流式响应（response 为空但有原始文本）走 SSE 兜底扫描
         let responseForExtract: unknown = input.response;
         let backendModel: string | undefined =

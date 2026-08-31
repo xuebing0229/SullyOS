@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { ApiCostDailySummary, ApiCostUnresolvedEntry, ApiPreset } from '../types';
-import { backfillUnpricedCallsForPreset } from './apiCostBackfill';
+import { backfillUnpricedCallsByPresetIdentity, backfillUnpricedCallsForPreset } from './apiCostBackfill';
 import { DB } from './db';
 
 const oldTimestamp = Date.now() - 10 * 24 * 60 * 60 * 1000;
@@ -50,6 +50,35 @@ describe.sequential('API unresolved cost pricing backfill', () => {
     expect((await DB.getApiCostDailySummaries())[0]).toMatchObject({
       totalCostMicros: '250000', pricedCallCount: 1, unpricedCallCount: 0,
     });
+  });
+
+  it('uses saved presetId even if the route model has changed', async () => {
+    await DB.importFullData({
+      timestamp: Date.now(), version: 3, apiCostDailySummaries: [summary()],
+      apiCostUnresolvedEntries: [{ ...unresolved(), model: 'model-a-high' }],
+    });
+
+    await expect(backfillUnpricedCallsForPreset(preset({
+      mode: 'per_request', pricePerRequestYuan: '0.25',
+    }))).resolves.toBe(1);
+
+    expect(await DB.getApiCostUnresolvedEntries()).toEqual([]);
+    expect((await DB.getApiCostDailySummaries())[0]).toMatchObject({
+      totalCostMicros: '250000', pricedCallCount: 1, unpricedCallCount: 0,
+    });
+  });
+
+  it('repairs existing pending items by preset identity only', async () => {
+    await DB.importFullData({
+      timestamp: Date.now(), version: 3, apiCostDailySummaries: [summary()],
+      apiCostUnresolvedEntries: [{ ...unresolved(), model: 'model-a-high' }],
+    });
+
+    await expect(backfillUnpricedCallsByPresetIdentity([
+      preset({ mode: 'per_request', pricePerRequestYuan: '0.25' }),
+    ])).resolves.toBe(1);
+
+    expect(await DB.getApiCostUnresolvedEntries()).toEqual([]);
   });
 
   it('keeps usage-missing per-token items unresolved', async () => {

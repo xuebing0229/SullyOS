@@ -33,6 +33,8 @@ import UnpricedCostResolver
   from '../components/apiCost/UnpricedCostResolver';
 import { migrateApiCostUnresolvedV1 }
   from '../utils/apiCostUnresolvedMigration';
+import { backfillUnpricedCallsByPresetIdentity }
+  from '../utils/apiCostBackfill';
 
 import ApiCallLogModal
   from '../components/settings/ApiCallLogModal';
@@ -107,6 +109,7 @@ const ApiCost:
 React.FC = () => {
   const {
     closeApp,
+    apiPresets,
   } = useOS();
 
   const [
@@ -178,6 +181,8 @@ React.FC = () => {
   useEffect(() => {
     void migrateApiCostUnresolvedV1()
       .catch(error => console.warn('[API Cost] unresolved migration failed', error))
+      .then(() => backfillUnpricedCallsByPresetIdentity(apiPresets))
+      .catch(error => console.warn('[API Cost] preset identity backfill failed', error))
       .finally(() => void load());
 
     const refresh = () => {
@@ -195,7 +200,7 @@ React.FC = () => {
         refresh,
       );
     };
-  }, [load]);
+  }, [apiPresets, load]);
 
   const selectedSummary =
     useMemo(

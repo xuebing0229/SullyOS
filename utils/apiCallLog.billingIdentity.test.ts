@@ -71,4 +71,41 @@ describe('API billing capture route identity', () => {
         });
         expect(capture.missingPresetReason).toBeUndefined();
     });
+
+    it('trusts the explicit routed preset id for billing', () => {
+        const presets: ApiPreset[] = [
+            {
+                id: 'route-a',
+                name: '转转',
+                config: {
+                    baseUrl: 'https://relay.example/v1',
+                    apiKey: 'key-a',
+                    model: 'gemini-3.7-flash',
+                },
+                pricing: {
+                    mode: 'per_request',
+                    pricePerRequestYuan: '0.08',
+                },
+            },
+        ];
+        localStorage.setItem(
+            'os_api_presets',
+            JSON.stringify(presets),
+        );
+
+        const capture = captureApiBillingContext(
+            'https://relay.example/v1/chat/completions',
+            JSON.stringify({ model: 'gemini-3.7-flash-high' }),
+            'route-a',
+            { Authorization: 'Bearer key-a' },
+        );
+
+        expect(capture.presetId).toBe('route-a');
+        expect(capture.presetName).toBe('转转');
+        expect(capture.pricingSnapshot?.pricing).toEqual({
+            mode: 'per_request',
+            pricePerRequestYuan: '0.08',
+        });
+        expect(capture.missingPresetReason).toBeUndefined();
+    });
 });
