@@ -47,14 +47,14 @@ export const augmentImageToolSchema = (
         default: 'none',
         description: '客户端专用可选字段。none：最终图片生成后直接结束；inspect：最终图片生成后，客户端会再把真实图片交给你看，让你用角色语气自然回应一句。普通生图应优先选择 none。',
     };
-    if (toolName === 'novelai_generate_image') {
-        if (options.allowCharacterReference !== false) {
-            output.properties.use_character_reference = {
-                type: 'boolean',
-                default: true,
-                description: '本次是否使用当前角色已开启的精密参考图。角色不在画面、只画用户或参考图会妨碍当前构图时设为 false。',
-            };
-        }
+    if (toolName === 'novelai_generate_image' && options.allowCharacterReference !== false) {
+        // “角色参考”预设开关控制的是整类 NovelAI Precise Reference 能力：
+        // 当前角色参考图和用户参考图只是两个来源，必须一起显示/一起禁用。
+        output.properties.use_character_reference = {
+            type: 'boolean',
+            default: true,
+            description: '本次是否使用当前角色已开启的精密参考图。角色不在画面、只画用户或参考图会妨碍当前构图时设为 false。',
+        };
         output.properties.use_user_reference = {
             type: 'boolean',
             default: true,
