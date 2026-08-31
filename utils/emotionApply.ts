@@ -132,6 +132,43 @@ export const prioritizeNewBuffs = (
     return newlyAdded.length > 0 ? [...newlyAdded, ...existing] : nextBuffs;
 };
 
+export const reconcileEmotionBuffs = (
+    previousBuffs: CharacterBuff[],
+    incomingBuffs: CharacterBuff[],
+    removedBuffIds: string[] = [],
+): CharacterBuff[] => {
+    const removed = new Set(
+        removedBuffIds.map(id => String(id || '').trim()).filter(Boolean),
+    );
+    const remainingPrevious = previousBuffs.filter(buff => !removed.has(buff.id));
+
+    const incomingById = new Map<string, CharacterBuff>();
+    const incomingByName = new Map<string, CharacterBuff>();
+    const incomingByLabel = new Map<string, CharacterBuff>();
+    for (const buff of incomingBuffs) {
+        if (buff.id) incomingById.set(buff.id.trim(), buff);
+        if (buff.name) incomingByName.set(buff.name.trim().toLowerCase(), buff);
+        if (buff.label) incomingByLabel.set(buff.label.trim(), buff);
+    }
+
+    const consumed = new Set<CharacterBuff>();
+    const preservedOrUpdated = remainingPrevious.map(previous => {
+        const replacement =
+            (previous.id ? incomingById.get(previous.id.trim()) : undefined)
+            || (previous.name ? incomingByName.get(previous.name.trim().toLowerCase()) : undefined)
+            || (previous.label ? incomingByLabel.get(previous.label.trim()) : undefined);
+        if (!replacement) return previous;
+        consumed.add(replacement);
+        return replacement;
+    });
+
+    const genuinelyNew = incomingBuffs.filter(buff => !consumed.has(buff));
+    return prioritizeNewBuffs(
+        [...genuinelyNew, ...preservedOrUpdated],
+        remainingPrevious,
+    );
+};
+
 // ─── JSON 修复链 (全部 string-aware 逐字符扫描, 不用正则盲扫以免误伤字符串内容) ───
 
 // 修复 1: 把 JSON 字符串值里的裸换行/制表符转义, 兼容 LLM 偶尔吐未转义控制字符的情况.
@@ -255,6 +292,8 @@ const extractBalancedObject = (raw: string): string | undefined => {
 export interface EmotionEvalResult {
     changed: boolean;
     buffs?: CharacterBuff[];
+    /** Explicit removals. Omitting an old buff from buffs no longer deletes it. */
+    removedBuffIds?: string[];
     injection?: string;
     innerState?: string;
     /** true = 整体 JSON.parse 全失败, 靠字段级正则抢救出来的部分结果 */
@@ -263,7 +302,7 @@ export interface EmotionEvalResult {
 
 const looksLikeEvalResult = (v: any): boolean =>
     !!v && typeof v === 'object' && !Array.isArray(v)
-    && ('changed' in v || 'buffs' in v || 'injection' in v || 'innerState' in v);
+    && ('changed' in v || 'buffs' in v || 'removedBuffIds' in v || 'injection' in v || 'innerState' in v);
 
 const tryParseObject = (s: string): any | null => {
     try {
@@ -315,15 +354,48 @@ const salvageFields = (repairedRaw: string): EmotionEvalResult | null => {
         }
     }
 
+    const pickStringArray = (key: string): string[] | undefined => {
+        const idx = repairedRaw.search(new RegExp(`"${key}"\\s*:\\s*\\[`));
+        if (idx < 0) return undefined;
+        const arrStart = repairedRaw.indexOf('[', idx);
+        if (arrStart < 0) return undefined;
+        let inStr = false, esc = false, depth = 0;
+        for (let i = arrStart; i < repairedRaw.length; i++) {
+            const ch = repairedRaw[i];
+            if (esc) { esc = false; continue; }
+            if (inStr) {
+                if (ch === '\\') esc = true;
+                else if (ch === '"') inStr = false;
+                continue;
+            }
+            if (ch === '"') inStr = true;
+            else if (ch === '[') depth++;
+            else if (ch === ']') {
+                depth--;
+                if (depth === 0) {
+                    try {
+                        const arr = JSON.parse(stripTrailingCommas(repairedRaw.slice(arrStart, i + 1)));
+                        if (Array.isArray(arr)) {
+                            return arr.map(value => String(value || '').trim()).filter(Boolean);
+                        }
+                    } catch { /* ignore */ }
+                    return undefined;
+                }
+            }
+        }
+        return undefined;
+    };
+
+    const removedBuffIds = pickStringArray('removedBuffIds');
     const injection = pickString('injection');
     const innerState = pickString('innerState');
     const changedMatch = repairedRaw.match(/"changed"\s*:\s*"?(true|false)"?/i);
 
-    if (!injection && !innerState && !buffs) return null;
+    if (!injection && !innerState && !buffs && !removedBuffIds) return null;
     const changed = changedMatch
         ? changedMatch[1].toLowerCase() === 'true'
         : !!(injection || buffs); // 抢救出了 injection/buffs 就当有变化, 只有 innerState 则不动 buff
-    return { changed, buffs, injection, innerState, salvaged: true };
+    return { changed, buffs, removedBuffIds, injection, innerState, salvaged: true };
 };
 
 /**
@@ -382,6 +454,9 @@ export function parseEmotionEvalOutput(rawText: string): EmotionEvalResult | nul
                 return {
                     changed,
                     buffs: Array.isArray(v.buffs) ? v.buffs : undefined,
+                    removedBuffIds: Array.isArray(v.removedBuffIds)
+                        ? v.removedBuffIds.map((value: unknown) => String(value || '').trim()).filter(Boolean)
+                        : undefined,
                     injection: typeof v.injection === 'string' ? v.injection : undefined,
                     innerState: typeof v.innerState === 'string' ? v.innerState : undefined,
                 };
@@ -469,18 +544,19 @@ export async function applyEmotionEvalRaw(
         await landAmbientEventFromEval(result, charData);
 
         const hasBuffArray = Array.isArray(result.buffs);
+        const hasRemovedBuffIds = Array.isArray(result.removedBuffIds);
         const hasInjection = typeof result.injection === 'string' && !!result.injection.trim();
 
         // changed 只能表示模型自己的判断，不能覆盖它同时返回的权威快照。
         // 一些模型会输出 changed:false，却仍然给出已演化的 buffs（尤其是 []，
         // 表示旧情绪已消退）。旧逻辑在这里直接 return，导致旧情绪卡永远清不掉。
-        if (!result.changed && !hasBuffArray && !hasInjection) {
+        if (!result.changed && !hasBuffArray && !hasRemovedBuffIds && !hasInjection) {
             console.log('🎭 [Emotion] No change detected, skipping buff update');
             if (innerStateOut) console.log(`🌊 [InnerState] ${charData.name}: ${innerStateOut}`);
             return innerStateOut;
         }
 
-        if (!hasBuffArray && !hasInjection) {
+        if (!hasBuffArray && !hasRemovedBuffIds && !hasInjection) {
             // changed=true 但两个载荷都没拿到 — 保留现状比清空安全
             console.warn('🎭 [Emotion] changed=true but no buffs/injection parsed, keeping existing state');
             if (innerStateOut) console.log(`🌊 [InnerState] ${charData.name}: ${innerStateOut}`);
@@ -491,18 +567,20 @@ export async function applyEmotionEvalRaw(
         // 落情绪时以 DB 里最新角色为底，避免被请求启动时捕获的旧 charData 整体盖回。
         const latestChar = (await DB.getAllCharacters()).find(character => character.id === charData.id) || charData;
 
-        // buffs 数组在场 → 完整更新 (数组为空 = 模型主动清空, 尊重).
-        // buffs 缺失但 injection 在场 (抢救场景) → 保留旧 buffs, 只换 injection.
-        const sanitizedSnapshot = (hasBuffArray ? sanitizeBuffs(result.buffs) : (latestChar.activeBuffs || []))
+        const previousBuffs = latestChar.activeBuffs || [];
+        const sanitizedIncoming = (hasBuffArray ? sanitizeBuffs(result.buffs) : [])
             .map(buff => typeof buff.description === 'string'
                 ? { ...buff, description: replaceInternalUserLabel(buff.description, userName) }
                 : buff);
-        const sanitizedBuffs = hasBuffArray
-            ? prioritizeNewBuffs(sanitizedSnapshot, latestChar.activeBuffs || [])
-            : sanitizedSnapshot;
+        const removedBuffIds = hasRemovedBuffIds
+            ? result.removedBuffIds!.map(id => String(id || '').trim()).filter(Boolean)
+            : [];
+        const sanitizedBuffs = (hasBuffArray || hasRemovedBuffIds)
+            ? reconcileEmotionBuffs(previousBuffs, sanitizedIncoming, removedBuffIds)
+            : previousBuffs;
         const buffInjection = hasInjection
             ? replaceInternalUserLabel(result.injection!, userName)
-            : (hasBuffArray ? '' : (latestChar.buffInjection || ''));
+            : (latestChar.buffInjection || '');
         const updated: CharacterProfile = {
             ...latestChar,
             activeBuffs: sanitizedBuffs,
