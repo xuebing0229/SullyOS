@@ -81,6 +81,52 @@ describe.sequential('API unresolved cost pricing backfill', () => {
     expect(await DB.getApiCostUnresolvedEntries()).toEqual([]);
   });
 
+  it('repairs old preset-not-found items when the priced endpoint is unique', async () => {
+    await DB.importFullData({
+      timestamp: Date.now(), version: 3, apiCostDailySummaries: [summary()],
+      apiCostUnresolvedEntries: [{
+        ...unresolved(),
+        presetId: undefined,
+        model: 'model-a-high',
+        reason: 'preset_not_found',
+      }],
+    });
+
+    await expect(backfillUnpricedCallsByPresetIdentity([
+      preset({ mode: 'per_request', pricePerRequestYuan: '0.25' }),
+    ])).resolves.toBe(1);
+
+    expect(await DB.getApiCostUnresolvedEntries()).toEqual([]);
+  });
+
+  it('does not guess old items when multiple priced presets share one endpoint', async () => {
+    await DB.importFullData({
+      timestamp: Date.now(), version: 3, apiCostDailySummaries: [summary()],
+      apiCostUnresolvedEntries: [{
+        ...unresolved(),
+        presetId: undefined,
+        model: 'model-a-high',
+        reason: 'preset_not_found',
+      }],
+    });
+
+    const first = preset({ mode: 'per_request', pricePerRequestYuan: '0.25' });
+    const second: ApiPreset = {
+      ...first,
+      id: 'preset-2',
+      name: '备用 API',
+      config: { ...first.config, model: 'model-b' },
+    };
+
+    await expect(backfillUnpricedCallsByPresetIdentity([
+      first,
+      second,
+    ])).resolves.toBe(0);
+
+    expect((await DB.getApiCostUnresolvedEntries()).map(entry => entry.id))
+      .toEqual(['call:expired-detail']);
+  });
+
   it('keeps usage-missing per-token items unresolved', async () => {
     await DB.importFullData({
       timestamp: Date.now(), version: 3, apiCostDailySummaries: [summary()],

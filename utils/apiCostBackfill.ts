@@ -43,10 +43,9 @@ export async function backfillUnpricedCallsForPreset(preset: ApiPreset): Promise
 export async function backfillUnpricedCallsByPresetIdentity(
   presets: ApiPreset[],
 ): Promise<number> {
+  const pricedPresets = presets.filter(preset => preset.pricing);
   const pricedById = new Map(
-    presets
-      .filter(preset => preset.pricing)
-      .map(preset => [preset.id, preset] as const),
+    pricedPresets.map(preset => [preset.id, preset] as const),
   );
   if (pricedById.size === 0) return 0;
 
@@ -54,8 +53,25 @@ export async function backfillUnpricedCallsByPresetIdentity(
   let changed = 0;
 
   for (const entry of entries) {
-    if (entry.kind !== 'call' || !entry.presetId) continue;
-    const preset = pricedById.get(entry.presetId);
+    if (entry.kind !== 'call') continue;
+    let preset = entry.presetId
+      ? pricedById.get(entry.presetId)
+      : undefined;
+
+    // 第一版只能修“已经保存 presetId”的新记录；旧记录正因为匹配失败所以根本没有 id。
+    // 对这类历史项只做一个保守兜底：若这个 Base URL 在当前所有“已配置价格”的预设里
+    // 只有唯一归属，就可以确定应套哪个价格；同线路存在多个预设时绝不猜，继续留待处理。
+    if (!preset && !entry.presetId) {
+      const normBase = stripTrailingSlash(entry.baseUrl || '');
+      const endpointCandidates = pricedPresets.filter(
+        candidate =>
+          stripTrailingSlash(candidate.config.baseUrl || '') === normBase,
+      );
+      if (endpointCandidates.length === 1) {
+        preset = endpointCandidates[0];
+      }
+    }
+
     if (!preset) continue;
     const pricingSnapshot = snapshotPricing(preset);
     if (!pricingSnapshot) continue;

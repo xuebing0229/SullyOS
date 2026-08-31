@@ -72,6 +72,47 @@ describe('API billing capture route identity', () => {
         expect(capture.missingPresetReason).toBeUndefined();
     });
 
+    it('recovers the active preset when the relay rewrites the model alias', () => {
+        const presets: ApiPreset[] = [
+            {
+                id: 'zhuanzhuan',
+                name: '转转',
+                config: {
+                    baseUrl: 'https://relay.example/v1',
+                    apiKey: 'key-z',
+                    model: 'gemini-3.7-flash',
+                },
+                pricing: {
+                    mode: 'per_request',
+                    pricePerRequestYuan: '0.08',
+                },
+            },
+        ];
+        localStorage.setItem(
+            'os_api_presets',
+            JSON.stringify(presets),
+        );
+        localStorage.setItem(
+            'os_active_api_preset_id',
+            'zhuanzhuan',
+        );
+
+        const capture = captureApiBillingContext(
+            'https://relay.example/v1/chat/completions',
+            JSON.stringify({ model: 'gemini-3.7-flash-high' }),
+            undefined,
+            { Authorization: 'Bearer key-z' },
+        );
+
+        expect(capture.presetId).toBe('zhuanzhuan');
+        expect(capture.presetName).toBe('转转');
+        expect(capture.pricingSnapshot?.pricing).toEqual({
+            mode: 'per_request',
+            pricePerRequestYuan: '0.08',
+        });
+        expect(capture.missingPresetReason).toBeUndefined();
+    });
+
     it('trusts the explicit routed preset id for billing', () => {
         const presets: ApiPreset[] = [
             {

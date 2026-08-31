@@ -273,18 +273,49 @@ export function captureApiBillingContext(
             localStorage.getItem(ACTIVE_PRESET_KEY);
     } catch {}
 
+    const apiKey = extractBearerCredential(headers);
     const matched = matchApiPresetForBilling(
         presets,
         {
             baseUrl,
             model,
             activePresetId,
-            apiKey:
-                extractBearerCredential(headers),
+            apiKey,
         },
     );
 
     if (!matched.preset) {
+        // 有些中转会在请求真正发出前把 model 换成线路别名（例如 xxx -> xxx-high）。
+        // 这时严格的 baseUrl + model 匹配必然失败，但请求的真实 Base URL / Bearer Key
+        // 仍然能唯一指向用户保存的预设。计费按“实际线路身份”认，不把模型别名当成新 API。
+        const normBase = stripTrailingSlash(baseUrl);
+        const sameEndpoint = presets.filter(
+            preset =>
+                stripTrailingSlash(preset.config?.baseUrl || '') === normBase
+                && (
+                    !apiKey
+                    || String(preset.config?.apiKey || '').trim() === apiKey
+                ),
+        );
+        const activeRoutePreset = activePresetId
+            ? sameEndpoint.find(preset => preset.id === activePresetId)
+            : undefined;
+        const credentialRoutePreset = apiKey && sameEndpoint.length === 1
+            ? sameEndpoint[0]
+            : undefined;
+        const recoveredPreset =
+            activeRoutePreset
+            || credentialRoutePreset;
+
+        if (recoveredPreset) {
+            return {
+                presetId: recoveredPreset.id,
+                presetName: recoveredPreset.name,
+                pricingSnapshot:
+                    snapshotPricing(recoveredPreset),
+            };
+        }
+
         return {
             presetName:
                 resolvePresetName(baseUrl, model),
