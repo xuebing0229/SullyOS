@@ -283,14 +283,17 @@ export const buildMcpSystemBlock = (
     const refLine = (label: string, value?: { enabled: boolean; sourceName?: string; type?: string }) => value?.enabled
         ? `- ${label}：已开启，可选${value.sourceName ? `（${value.sourceName}）` : ''}${value.type ? `，参照类型 ${value.type}` : ''}`
         : `- ${label}：未开启，不可用`;
-    const characterReferenceAllowed = referenceAvailability?.allowCharacterReference !== false;
-    const availableReferenceLines = [
-        characterReferenceAllowed ? refLine('当前角色参考图', referenceAvailability?.character) : '',
-        refLine(`${userName}的用户参考图`, referenceAvailability?.user),
-    ].filter(Boolean).join('\n');
-    const selectionRule = characterReferenceAllowed
+    // 这个开关控制整类 Precise Reference；当前角色和用户参考图必须同开同关。
+    const preciseReferenceAllowed = referenceAvailability?.allowCharacterReference !== false;
+    const availableReferenceLines = preciseReferenceAllowed
+        ? [
+            refLine('当前角色参考图', referenceAvailability?.character),
+            refLine(`${userName}的用户参考图`, referenceAvailability?.user),
+        ].filter(Boolean).join('\n')
+        : '- 当前预设已关闭 Precise Reference：当前角色参考图和用户参考图均不可用';
+    const selectionRule = preciseReferenceAllowed
         ? '- “已开启”仅表示可选，不代表必须发送。每次调用都根据画面中实际出现的人物决定：用 `use_character_reference` 和 `use_user_reference` 分别选择，可两张都不用、任选一张或两张都用。'
-        : '- 用户参考图“已开启”仅表示可选，不代表必须发送。用 `use_user_reference` 决定本次是否选择；不要因为参考图可用就强行让用户入镜。';
+        : '- 当前预设已关闭整类 Precise Reference。不要尝试发送 `use_character_reference` 或 `use_user_reference`。';
     const autoPresetServers = servers.filter(server => Boolean(server.imagePresetId));
     const autoPresetRules = autoPresetServers.length ? `
 **当前 NovelAI 预设模式：角色决定**:

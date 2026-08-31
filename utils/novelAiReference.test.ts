@@ -120,7 +120,7 @@ describe('NovelAI 精密参照工具参数', () => {
         })).resolves.toBe(args);
     });
 
-    it('预设关闭角色参考时，请求层忽略选择并清掉伪造槽位', async () => {
+    it('预设关闭角色参考时，角色/用户两种 Precise Reference 都强制禁用', async () => {
         localStorage.setItem('aetheros.imageGeneration.presets.v1', JSON.stringify({
             version: 1,
             presets: [{
@@ -130,11 +130,19 @@ describe('NovelAI 精密参照工具参数', () => {
             }],
             activePresetIds: { novelai: 'preset-off' },
         }));
+        const userReference = { ...reference, slotId: 'c'.repeat(64) };
         await expect(prepareBuiltinImageToolArguments({
             server: { id: 'builtin_image_novelai', name: 'NovelAI', url: 'https://example.test/mcp', enabled: true } as any,
             toolName: 'novelai_generate_image',
-            args: { prompt: 'hello', use_character_reference: true, reference_id: 'forged' },
+            args: {
+                prompt: 'hello',
+                use_character_reference: true,
+                use_user_reference: true,
+                reference_id: 'forged',
+                user_reference_id: 'forged-user',
+            },
             character: { id: 'char-a', name: 'A', novelAiReference: reference } as any,
+            userProfile: { name: 'Me', avatar: '', bio: '', novelAiReference: userReference } as any,
         })).resolves.toEqual({ prompt: 'hello' });
     });
 
