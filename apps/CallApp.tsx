@@ -119,6 +119,7 @@ import {
 import { addCompanionModelOutfit, addUploadedCompanionOutfit } from '../utils/companionWardrobe';
 import VoiceFavoriteActionSheet from '../components/voice/VoiceFavoriteActionSheet';
 import { getVoiceFavorite, removeVoiceFavorite, saveVoiceFavorite } from '../utils/voiceFavorites';
+import { saveVoiceLibraryItem, setLatestVoiceLibraryStarredByText, setVoiceLibraryStarredForSource } from '../utils/voiceLibrary';
 type CallState = 'idle' | 'connecting' | 'listening' | 'thinking' | 'speaking' | 'ended' | 'error';
 type CallMode = 'voice' | 'video';
 type VideoCallLayout = 'stage' | 'story' | 'mini';
@@ -1250,16 +1251,60 @@ const CallApp: React.FC = () => {
     return !!selectedChar && canSynthesizeSpeech(selectedChar, apiConfig);
   };
   const canSpeakVoice = (): boolean => isSpeakerOn && hasConfiguredVoice();
+
+  const normalizeCallVoiceArchiveText = (rawText: string) => {
+    const parsed = extractVoiceTag(rawText);
+    const originalText = stripCallTextFormatting(parsed.display).trim()
+      || stripTtsMarkupForDisplay(parsed.voiceText, apiConfig)
+      || stripCallTextFormatting(rawText).trim();
+    const spokenText = stripTtsMarkupForDisplay(parsed.voiceText, apiConfig) || originalText;
+    return { originalText, spokenText };
+  };
+
+  const archiveGeneratedCallVoice = (rawText: string, url: string, readyBlob?: Blob | null) => {
+    if (!selectedChar || !url) return;
+    const char = selectedChar;
+    const provider = activeTtsProvider;
+    const { originalText, spokenText } = normalizeCallVoiceArchiveText(rawText);
+    void (async () => {
+      let blob: Blob | null = readyBlob instanceof Blob ? readyBlob : null;
+      if (!blob) {
+        try { blob = await fetchBlobForShare(url, 'audio/mpeg'); } catch { /* archive only */ }
+      }
+      if (!blob || blob.size <= 0) return;
+      const profile = char.voiceProfile;
+      const voiceId = provider === 'elevenlabs'
+        ? profile?.elevenLabsVoiceId
+        : provider === 'fishaudio'
+          ? profile?.fishReferenceId
+          : profile?.voiceId;
+      await saveVoiceLibraryItem({
+        source: 'call',
+        charId: char.id,
+        charName: char.name,
+        sourceTimestamp: Date.now(),
+        originalText,
+        spokenText: spokenText !== originalText ? spokenText : undefined,
+        language: voiceLang || undefined,
+        provider,
+        voiceId,
+        model: profile?.model,
+        blob,
+      });
+    })().catch(error => console.warn('[VoiceLibrary] call archive failed', error));
+  };
+
   // ── 通话语音合成统一入口：开场白 / 正常回合 / 重roll / 主动开口共用 ──
   // MiniMax：缓存命中 → 单发合成 → 失败再分段兜底；Fish / ElevenLabs：共享 router 直接合成。
   // 抛错或返回空 url 都表示没有可播放音频，由调用方降级为纯文字。
   const synthesizeCallAudioUrl = async (rawText: string, emotion?: string): Promise<{ url: string; traceIds: string[] }> => {
     if (activeTtsProvider !== 'minimax') {
       if (!selectedChar) throw new Error('未选择角色');
-      const { url } = await synthesizeSpeechRoutedDetailed(rawText, selectedChar, apiConfig, {
+      const { url, blob } = await synthesizeSpeechRoutedDetailed(rawText, selectedChar, apiConfig, {
         languageBoost: voiceLang || undefined,
         emotion,
       });
+      if (url) archiveGeneratedCallVoice(rawText, url, blob);
       return { url: url || '', traceIds: [] };
     }
     const minimaxApiKey = resolveMiniMaxApiKey(apiConfig);
@@ -1385,6 +1430,7 @@ const CallApp: React.FC = () => {
       trace_ids: traceIds,
       playback_url_type: finalUrl.startsWith('blob:') ? 'blob' : 'remote',
     });
+    if (finalUrl) archiveGeneratedCallVoice(rawText, finalUrl);
     return { url: finalUrl, traceIds };
   };
   const callAudioPrefetchKey = (rawText: string, emotion?: string) => `${emotion || ''}\u0000${rawText}`;
@@ -2254,10 +2300,15 @@ ${sentencePlan}`;
     const target = voiceFavoriteTarget;
     if (!target || voiceFavoriteBusy) return;
     const sourceKey = callFavoriteSourceKey(target.charId, target.bubble);
+    const favoriteText = normalizeCallVoiceArchiveText(target.bubble.text);
     setVoiceFavoriteBusy(true);
     try {
       if (voiceFavoriteSaved) {
         await removeVoiceFavorite('call', sourceKey);
+        const sourceMatches = await setVoiceLibraryStarredForSource('call', sourceKey, false).catch(() => 0);
+        if (!sourceMatches) {
+          await setLatestVoiceLibraryStarredByText('call', target.charId, favoriteText.originalText, false).catch(() => false);
+        }
         setVoiceFavoriteSaved(false);
         addToast('已取消收藏语音', 'info');
         return;
@@ -2276,11 +2327,7 @@ ${sentencePlan}`;
       }
       if (!blob) throw new Error('暂时拿不到这条语音的音频文件');
 
-      const parsed = extractVoiceTag(target.bubble.text);
-      const originalText = stripCallTextFormatting(parsed.display).trim()
-        || stripTtsMarkupForDisplay(parsed.voiceText, apiConfig)
-        || stripCallTextFormatting(target.bubble.text).trim();
-      const spokenText = stripTtsMarkupForDisplay(parsed.voiceText, apiConfig) || originalText;
+      const { originalText, spokenText } = favoriteText;
       await saveVoiceFavorite({
         source: 'call',
         sourceKey,
@@ -2292,6 +2339,10 @@ ${sentencePlan}`;
         language: voiceLang || undefined,
         blob,
       });
+      const sourceMatches = await setVoiceLibraryStarredForSource('call', sourceKey, true).catch(() => 0);
+      if (!sourceMatches) {
+        await setLatestVoiceLibraryStarredByText('call', target.charId, originalText, true).catch(() => false);
+      }
       setVoiceFavoriteSaved(true);
       addToast('已收藏通话语音', 'success');
       trackEvent('收藏通话语音');
