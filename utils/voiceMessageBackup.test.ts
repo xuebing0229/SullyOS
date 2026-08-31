@@ -8,7 +8,7 @@ import {
     shouldIncludeVoiceRelatedAssetInBackup,
 } from './voiceMessageBackup';
 import { VOICE_FAVORITE_AUDIO_PREFIX, VOICE_FAVORITES_INDEX_ASSET_ID } from './voiceFavorites';
-import { VOICE_LIBRARY_AUDIO_PREFIX, VOICE_LIBRARY_INDEX_ASSET_ID } from './voiceLibrary';
+import { VOICE_LIBRARY_AUDIO_PREFIX, VOICE_LIBRARY_INDEX_ASSET_ID, VOICE_LIBRARY_MIGRATION_ASSET_ID } from './voiceLibrary';
 import {
     COMPANION_STARTUP_VOICE_ASSET_PREFIX,
     COMPANION_TOUCH_VOICE_ASSET_PREFIX,
@@ -112,6 +112,8 @@ describe('chat voice backup binary lane', () => {
         expect(shouldIncludeVoiceRelatedAssetInBackup({ id: `${VOICE_LIBRARY_AUDIO_PREFIX}voice_1`, data: {} }, false)).toBe(false);
         expect(shouldIncludeVoiceRelatedAssetInBackup({ id: VOICE_LIBRARY_INDEX_ASSET_ID, data: {} })).toBe(true);
         expect(shouldIncludeVoiceRelatedAssetInBackup({ id: VOICE_LIBRARY_INDEX_ASSET_ID, data: {} }, false)).toBe(false);
+        expect(shouldIncludeVoiceRelatedAssetInBackup({ id: VOICE_LIBRARY_MIGRATION_ASSET_ID, data: {} })).toBe(true);
+        expect(shouldIncludeVoiceRelatedAssetInBackup({ id: VOICE_LIBRARY_MIGRATION_ASSET_ID, data: {} }, false)).toBe(false);
         expect(shouldIncludeVoiceRelatedAssetInBackup({ id: `${COMPANION_TOUCH_VOICE_ASSET_PREFIX}char:pack`, data: {} })).toBe(true);
         expect(shouldIncludeVoiceRelatedAssetInBackup({ id: `${COMPANION_TOUCH_VOICE_ASSET_PREFIX}char:pack`, data: {} }, false)).toBe(false);
         expect(shouldIncludeVoiceRelatedAssetInBackup({ id: VOICE_FAVORITES_INDEX_ASSET_ID, data: {} }, false)).toBe(false);
