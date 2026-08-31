@@ -33,13 +33,13 @@ describe('imageToolPostAction', () => {
         expect(gpt.properties).not.toHaveProperty('use_character_reference');
         expect(gpt.properties).not.toHaveProperty('use_user_reference');
     });
-    it('omits only the character choice when the active preset disallows it', () => {
+    it('omits both Precise Reference choices when the active preset disallows character reference', () => {
         const novel = augmentImageToolSchema(
             { type: 'object', properties: { prompt: { type: 'string' } } },
             'novelai_generate_image',
             { allowCharacterReference: false },
         );
         expect(novel.properties).not.toHaveProperty('use_character_reference');
-        expect(novel.properties.use_user_reference).toMatchObject({ type: 'boolean', default: true });
+        expect(novel.properties).not.toHaveProperty('use_user_reference');
     });
 });
