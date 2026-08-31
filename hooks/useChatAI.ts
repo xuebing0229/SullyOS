@@ -70,7 +70,7 @@ import { buildClaudeProxyCompatibilityBody, shouldRetryClaudeProxyCompatibility 
 import { routeMiniAppToolCall } from '../utils/miniAppToolRoute';
 import { applyEmotionEvalRaw, extractAssistantText } from '../utils/emotionApply';
 import { buildEmotionUserReferenceSection } from '../utils/emotionUserReference';
-import { buildEmotionEvalRequestMessages } from '../utils/emotionEvalCore';
+import { buildEmotionEvalRequestMessages, EMOTION_EVAL_JSON_RESPONSE_FORMAT, EMOTION_EVAL_TEMPERATURE } from '../utils/emotionEvalCore';
 import { announceChatGen, CHAT_GEN_EVENTS } from '../utils/chatGenEvents';
 import { shouldRequestAmbient, buildAmbientEvalSection } from '../utils/roomAmbient';
 import { isEmotionEvalSkipped } from '../utils/devDebug';
@@ -410,37 +410,61 @@ export async function evaluateEmotionBackground(
         const evalBody = {
             model: effectiveApi.model,
             messages: evalMessages,
-            temperature: 0.85,
+            temperature: EMOTION_EVAL_TEMPERATURE,
             // 显式给足输出额度: 部分代理不传 max_tokens 时默认很小 (1k~2k), eval 的
             // injection+innerState 很长, 会被截断成半截 JSON → buff 静默丢失.
             max_tokens: 8000,
         };
         const evalMeta = { appName: '消息', charId: charData.id, charName: charData.name, purpose: '情绪评估' };
-        let data: any;
-        try {
-            const result = await executeCachedEmotionCompletion({
+        const roundIdentity = round
+            ? { conversationId: round.conversationId, userMessageId: round.userMessageId, assistantMessageId: round.assistantMessageId }
+            : undefined;
+        const runEvalRequest = async (jsonMode: boolean, streamMode: boolean, retries: number) =>
+            executeCachedEmotionCompletion({
                 plan: apiPlan,
-                body: { ...evalBody, stream: !!effectiveApi.stream, ...(effectiveApi.stream ? { stream_options: { include_usage: true } } : {}) },
+                body: {
+                    ...evalBody,
+                    ...(jsonMode ? { response_format: EMOTION_EVAL_JSON_RESPONSE_FORMAT } : {}),
+                    stream: streamMode,
+                    ...(streamMode ? { stream_options: { include_usage: true } } : {}),
+                },
                 meta: evalMeta,
-                round: round ? { conversationId: round.conversationId, userMessageId: round.userMessageId, assistantMessageId: round.assistantMessageId } : undefined,
+                round: roundIdentity,
                 forceRefresh: Boolean(round?.forceRefresh),
-                directMaxRetries: 2,
+                directMaxRetries: retries,
             });
-            data = result.value;
-        } catch (e: any) {
-            if (!effectiveApi.stream) throw e;
-            // 流式自愈: 个别中转/模型对 stream / stream_options 直接 4xx。主聊天的透明流式
-            // 升级层有「用升级前原 body 重发」的回退 (OSContext), 但评估请求自带 stream:true
-            // 不经过升级层, 没有这层兜底 —— 这里补上同等待遇: 非流式重发一次, 行为退回
-            // 「评估跟随流式开关」(32c7be7) 之前。评估失败过去被静默吞掉, 用户只看到
-            // 情绪徽章闪一下就灭、情绪永不更新 (真实反馈), 这类形状问题必须能自愈。
-            console.warn('🎭 [Emotion] streamed eval failed, retrying non-stream:', e?.message);
-            const retryResult = await executeCachedEmotionCompletion({
-                plan: apiPlan, body: { ...evalBody, stream: false }, meta: evalMeta,
-                round: round ? { conversationId: round.conversationId, userMessageId: round.userMessageId, assistantMessageId: round.assistantMessageId } : undefined,
-                forceRefresh: Boolean(round?.forceRefresh), directMaxRetries: 1,
-            });
-            data = retryResult.value;
+        const isJsonModeCompatibilityError = (error: any) => {
+            const message = String(error?.message || error || '');
+            return /\b(?:400|422)\b/.test(message)
+                && /response[_ -]?format|json[_ -]?object|json mode|unsupported[^\n]*(?:parameter|field)|unknown[^\n]*(?:parameter|field)/i.test(message);
+        };
+
+        let data: any;
+        let jsonMode = true;
+        let streamMode = !!effectiveApi.stream;
+        let attempt = 0;
+        while (true) {
+            try {
+                const result = await runEvalRequest(jsonMode, streamMode, attempt === 0 ? 2 : 1);
+                data = result.value;
+                break;
+            } catch (e: any) {
+                // JSON mode 只是一层格式保险：站子明确不支持就去掉，不改变模型/线路。
+                if (jsonMode && isJsonModeCompatibilityError(e)) {
+                    jsonMode = false;
+                    attempt += 1;
+                    console.warn('🎭 [Emotion] JSON mode unsupported, retrying without response_format:', e?.message);
+                    continue;
+                }
+                // 流式同样是兼容增强：若渠道拒绝 stream / stream_options，退回非流式。
+                if (streamMode) {
+                    streamMode = false;
+                    attempt += 1;
+                    console.warn('🎭 [Emotion] streamed eval failed, retrying non-stream:', e?.message);
+                    continue;
+                }
+                throw e;
+            }
         }
 
         // 排查贩子降级路由用：把评估实际落到的后端和 token 计数打出来，

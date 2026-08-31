@@ -134,15 +134,58 @@ describe('结构化说话人 role', () => {
     const body = JSON.parse(String(init.body));
     const messages = body.messages as Array<{ role: string; content: string }>;
 
-    expect(messages.map((m) => m.role)).toEqual(['system', 'user', 'assistant', 'user']);
+    expect(messages.map((m) => m.role)).toEqual(['system', 'user', 'assistant', 'user', 'user']);
     expect(messages[1].content).toBe('你刚才明明说「我可以不去」。');
     expect(messages[2].content).toBe('我说的是「你不用勉强」，不是那句话。');
     expect(messages[3].content).toBe('你看，我截图了 [图片]');
+    expect(messages[4].content).toContain('评估控制指令，不属于真实对话');
+    expect(messages[4].content).toContain('最后一条真实对话的 role=user');
+    expect(messages[4].content).toContain('只输出一个合法 JSON 对象');
     expect(messages[0].content).toContain('role=user 永远是用户本人');
     expect(messages[0].content).toContain('role=assistant 永远是目标角色「Nyah」');
     expect(messages[0].content).toContain('现在是 08:00。');
     expect(messages[0].content).not.toContain('[用户]: 你刚才明明说');
+    expect(body.temperature).toBe(0.2);
+    expect(body.response_format).toEqual({ type: 'json_object' });
     expect(JSON.stringify(body)).not.toContain('base64');
+  });
+
+  it('站子明确拒绝 response_format 时自动去掉 JSON mode 重试一次', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 400,
+        text: async () => 'Unsupported parameter: response_format',
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          choices: [{ message: { content: '{"changed":false,"buffs":[],"injection":"","innerState":"ok"}' } }],
+        }),
+      });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const outcome = await runAmsgEmotionEval(
+      { prompt: TEMPLATE },
+      { baseUrl: 'https://eval.example.com/v1', apiKey: 'sk-eval', model: 'eval-mini' },
+      [
+        { role: 'user', content: '在吗' },
+        { role: 'assistant', content: '在。' },
+      ],
+      'Nyah',
+    );
+
+    expect(outcome.raw).toContain('"innerState":"ok"');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const firstBody = JSON.parse(String(fetchMock.mock.calls[0][1].body));
+    const secondBody = JSON.parse(String(fetchMock.mock.calls[1][1].body));
+    expect(firstBody.response_format).toEqual({ type: 'json_object' });
+    expect(secondBody).not.toHaveProperty('response_format');
+    expect(firstBody.temperature).toBe(0.2);
+    expect(secondBody.temperature).toBe(0.2);
+    const secondMessages = secondBody.messages as Array<{ role: string; content: string }>;
+    expect(secondMessages.at(-1)?.content).toContain('最后一条真实对话的 role=assistant');
   });
 });
 

@@ -27,6 +27,12 @@ export const EMOTION_EVAL_HISTORY_SLOT = '__EMOTION_EVAL_HISTORY__';
  */
 export const EMOTION_EVAL_DIALOGUE_WINDOW = 6;
 
+/** 情绪评估是结构化抽取任务，不需要主聊天那种高随机性。 */
+export const EMOTION_EVAL_TEMPERATURE = 0.2;
+
+/** OpenAI 兼容 JSON mode；不支持的中转会在请求层自动去掉后重试。 */
+export const EMOTION_EVAL_JSON_RESPONSE_FORMAT = { type: 'json_object' } as const;
+
 /** 单次评估请求的上限；副 API 卡住的话，主流程不该跟着一起被扣在这儿。 */
 export const EMOTION_EVAL_TIMEOUT_MS = 120_000;
 
@@ -111,9 +117,23 @@ export const buildEmotionEvalRequestMessages = (
     .filter((message) => !!message.content)
     .slice(-Math.max(1, Math.floor(dialogueWindow || EMOTION_EVAL_DIALOGUE_WINDOW)));
 
+  const lastDialogueRole = dialogue.length > 0
+    ? dialogue[dialogue.length - 1].role
+    : 'none';
+  const outputControl: EmotionEvalRequestMessage = {
+    role: 'user',
+    content: [
+      '【评估控制指令，不属于真实对话】',
+      `以上真实对话到此结束；最后一条真实对话的 role=${lastDialogueRole}。`,
+      '现在执行 system 中定义的情绪评估任务。不要继续对话，不要扮演角色，不要解释分析过程。',
+      '只输出一个合法 JSON 对象；JSON 前后禁止添加 Markdown、代码围栏、寒暄或任何说明文字。',
+    ].join('\n'),
+  };
+
   return [
     { role: 'system', content: evaluatorSystem },
     ...dialogue,
+    outputControl,
   ];
 };
 
@@ -188,7 +208,11 @@ export const requestEmotionEval = async (
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const baseUrl = String(api.baseUrl).replace(/\/+$/, '');
-    const res = await fetch(`${baseUrl}/chat/completions`, {
+    const messages = Array.isArray(promptContent)
+      ? promptContent
+      : [{ role: 'user' as const, content: promptContent }];
+
+    const send = (jsonMode: boolean) => fetch(`${baseUrl}/chat/completions`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -196,19 +220,48 @@ export const requestEmotionEval = async (
       },
       body: JSON.stringify({
         model: api.model,
-        messages: Array.isArray(promptContent)
-          ? promptContent
-          : [{ role: 'user', content: promptContent }],
-        temperature: 0.85,
+        messages,
+        temperature: EMOTION_EVAL_TEMPERATURE,
         // 显式给足输出额度：部分中转不传 max_tokens 时默认很小，评估输出很长，
         // 会被截成半截 JSON。
         max_tokens: 8000,
         stream: false,
+        ...(jsonMode ? { response_format: EMOTION_EVAL_JSON_RESPONSE_FORMAT } : {}),
       }),
       signal: controller.signal,
     });
+
+    let res = await send(true);
     if (!res.ok) {
-      // 正文可能是 HTML 错误页，截一小段够定位即可。
+      // JSON mode 是兼容增强，不是硬依赖。只有对方明确说不认识 response_format /
+      // json_object 时才去掉重发；普通 400 仍保持原逻辑，不把坏请求白烧两遍。
+      let body = '';
+      try { body = await res.text(); } catch { /* 读不出正文就只报状态码 */ }
+      const jsonModeRejected = (res.status === 400 || res.status === 422)
+        && /response[_ -]?format|json[_ -]?object|json mode|unsupported[^\n]*(?:parameter|field)|unknown[^\n]*(?:parameter|field)/i.test(body);
+      if (jsonModeRejected) {
+        console.warn('[emotion-eval] 副 API 不支持 JSON mode，去掉 response_format 后重试');
+        res = await send(false);
+      } else {
+        console.warn('[emotion-eval] 副 API 拒了这次评估（主流程不受影响）', res.status);
+        const snippet = maskAndSnip(body, api.apiKey);
+        const failoverEligible = res.status === 401
+          || res.status === 403
+          || res.status === 404
+          || res.status === 408
+          || res.status === 425
+          || res.status === 429
+          || res.status >= 500;
+        return {
+          raw: null,
+          error: `副 API HTTP ${res.status}${snippet ? `：${snippet}` : ''}`,
+          status: res.status,
+          failoverEligible,
+        };
+      }
+    }
+
+    if (!res.ok) {
       let body = '';
       try { body = await res.text(); } catch { /* 读不出正文就只报状态码 */ }
       console.warn('[emotion-eval] 副 API 拒了这次评估（主流程不受影响）', res.status);
@@ -227,6 +280,7 @@ export const requestEmotionEval = async (
         failoverEligible,
       };
     }
+
     const data = await res.json() as any;
     // 个别中转把全部输出塞进 reasoning_content 而 content 留空——与客户端
     // utils/emotionApply.ts 的 extractAssistantText 同一套兜底。
