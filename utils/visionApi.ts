@@ -25,6 +25,9 @@ const canDescribeImage = (value: unknown): value is string =>
   typeof value === 'string' && (/^(data:image\/|https?:\/\/)/i.test(value) || isBlobRef(value));
 
 const inFlightDescriptions = new Map<string, Promise<string>>();
+const VISION_REQUEST_TIMEOUT_MS = 12_000;
+const VISION_FAILURE_COOLDOWN_MS = 3 * 60_000;
+let visionFailureCooldownUntil = 0;
 
 /** 把一份通用模型预设填入独立识图配置，不改变主 API 当前选择。 */
 export const visionApiConfigFromPreset = (preset: ApiPreset, enabled = true): VisionApiConfig => ({
@@ -88,7 +91,7 @@ export async function describeImageWithVisionApi(
         max_tokens: 1200,
         stream: false,
       }),
-    }, 1, 60_000, { appName: '消息', purpose: '识图' });
+    }, 1, VISION_REQUEST_TIMEOUT_MS, { appName: '消息', purpose: '识图' });
 
     const description = cleanDescription(extractContent(data));
     if (!description) throw new Error('识图 API 没有返回图片描述');
@@ -141,6 +144,21 @@ export async function materializeVisionDescriptions(
       prepared.push(message);
       continue;
     }
+
+    // 识图端点刚失败过时，短时间内不要让每一轮正常聊天都重新卡在同一个坏接口上。
+    // 冷却只存在内存里，不写消息、不写配置；用户在设置页点“测试识图”仍会真实发请求。
+    if (Date.now() < visionFailureCooldownUntil) {
+      prepared.push({
+        ...message,
+        metadata: {
+          ...(message.metadata || {}),
+          [VISION_DESCRIPTION_METADATA_KEY]: '图片识别服务暂时不可用，本轮无法读取图片内容。',
+          visionRecognitionTransientFailure: true,
+        },
+      });
+      continue;
+    }
+
     try {
       const description = descriptionByImage.get(imageUrl)
         || await describeImageWithVisionApi(imageUrl, config);
@@ -158,8 +176,9 @@ export async function materializeVisionDescriptions(
     } catch (error) {
       // 识图只是可选增强，绝不能因为识图端点超时/CORS/限流把整轮主聊天一起掐掉。
       // 本轮临时塞一条不可见占位描述，让 buildMessageHistory 走纯文字分支、不把原图
-      // 再交给可能不支持视觉的主模型；失败结果不写 DB，下一轮仍可重新尝试识图。
-      console.warn('[VisionAPI] 识图失败，本轮降级为文字占位，主聊天继续', error);
+      // 再交给可能不支持视觉的主模型；失败结果不写 DB，冷却结束后仍可重新尝试识图。
+      visionFailureCooldownUntil = Date.now() + VISION_FAILURE_COOLDOWN_MS;
+      console.warn('[VisionAPI] 识图失败，进入 3 分钟冷却；本轮降级为文字占位，主聊天继续', error);
       prepared.push({
         ...message,
         metadata: {
