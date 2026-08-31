@@ -10,7 +10,7 @@
  */
 
 import { VOICE_FAVORITE_AUDIO_PREFIX, VOICE_FAVORITES_INDEX_ASSET_ID } from './voiceFavorites';
-import { VOICE_LIBRARY_AUDIO_PREFIX, VOICE_LIBRARY_INDEX_ASSET_ID } from './voiceLibrary';
+import { VOICE_LIBRARY_AUDIO_PREFIX, VOICE_LIBRARY_INDEX_ASSET_ID, VOICE_LIBRARY_MIGRATION_ASSET_ID } from './voiceLibrary';
 import { isCompanionVoiceAssetId } from './companionVoiceAssets';
 
 export const VOICE_MESSAGE_ASSET_PREFIX = 'voice_msg_';
@@ -65,7 +65,11 @@ export const shouldIncludeVoiceRelatedAssetInBackup = (value: unknown, includeFa
     if (!asset || typeof asset.id !== 'string') return true;
     if (asset.id.startsWith('tts_')) return false;
     if (isCompanionVoiceAssetId(asset.id)) return includeFavorites;
-    if (asset.id === VOICE_LIBRARY_INDEX_ASSET_ID || asset.id.startsWith(VOICE_LIBRARY_AUDIO_PREFIX)) return includeFavorites;
+    if (
+        asset.id === VOICE_LIBRARY_INDEX_ASSET_ID
+        || asset.id === VOICE_LIBRARY_MIGRATION_ASSET_ID
+        || asset.id.startsWith(VOICE_LIBRARY_AUDIO_PREFIX)
+    ) return includeFavorites;
     if (asset.id === VOICE_FAVORITES_INDEX_ASSET_ID || asset.id.startsWith(VOICE_FAVORITE_AUDIO_PREFIX)) return includeFavorites;
     if (asset.id.startsWith(VOICE_MESSAGE_ASSET_PREFIX)) return includeFavorites && asset.data?.favorite === true;
     return true;
