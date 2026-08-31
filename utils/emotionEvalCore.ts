@@ -12,8 +12,20 @@
 /** 副 API 凭据（没单独配就是主 API 那一份）。 */
 export interface EmotionEvalApi { baseUrl: string; apiKey: string; model: string }
 
+export type EmotionEvalRequestMessage = {
+  role: 'system' | 'user' | 'assistant';
+  content: string;
+};
+
 export const EMOTION_EVAL_SYSTEM_SLOT = '__EMOTION_EVAL_SYSTEM_PROMPT__';
 export const EMOTION_EVAL_HISTORY_SLOT = '__EMOTION_EVAL_HISTORY__';
+
+/**
+ * 情绪评估只看最近 6 条真实对话消息；上一轮结构化 buffs 已单独放在评估规则里，
+ * 没必要把整段聊天再塞一遍。更重要的是：user / assistant 必须保留成真正的 API role，
+ * 不能再拍平成一坨 `[用户]: ... / [角色]: ...` 文本让小模型自己猜说话人。
+ */
+export const EMOTION_EVAL_DIALOGUE_WINDOW = 6;
 
 /** 单次评估请求的上限；副 API 卡住的话，主流程不该跟着一起被扣在这儿。 */
 export const EMOTION_EVAL_TIMEOUT_MS = 120_000;
@@ -33,6 +45,76 @@ export const flattenEvalContent = (content: unknown): string => {
       .join(' ');
   }
   return '';
+};
+
+
+/**
+ * 把评估规则 + 主聊天上下文组装成真正的 Chat Completions role 消息。
+ *
+ * - system：评估规则 + 角色这轮真正看到的所有 system 上下文。
+ * - user：用户说的话。
+ * - assistant：目标角色说的话。
+ *
+ * 这样“谁说了哪句”由 API 协议本身钉死，而不是靠模型读文本标签猜。
+ * systemPromptOverride 给浏览器本地路径用：本地已经拿到了 stable+volatile 合并后的
+ * mainSystemPrompt；worker 路径则直接从 chatMessages 里的 system 消息收集。
+ */
+export const buildEmotionEvalRequestMessages = (
+  promptTemplate: string,
+  chatMessages: Array<{ role: string; content: unknown }>,
+  charName: string,
+  systemPromptOverride?: string,
+  dialogueWindow: number = EMOTION_EVAL_DIALOGUE_WINDOW,
+): EmotionEvalRequestMessage[] => {
+  const source = Array.isArray(chatMessages) ? chatMessages : [];
+  const systemParts: string[] = [];
+
+  const override = typeof systemPromptOverride === 'string' ? systemPromptOverride.trim() : '';
+  if (override) systemParts.push(override);
+
+  // worker 路径的主请求可能有不止一条 system（稳定前缀 / 时效尾段 / MCP reminder 等）。
+  // 本地路径传了 override 也仍保留 apiMessages 里额外的 system 深度注入，避免丢世界书时效块。
+  for (const message of source) {
+    if (message?.role !== 'system') continue;
+    const text = flattenEvalContent(message.content).trim();
+    if (text && !systemParts.includes(text)) systemParts.push(text);
+  }
+
+  const systemContext = systemParts.join('\n\n---\n\n');
+  const structuredHistoryNote = [
+    '（对话历史没有拍平成文本；紧随本 system 消息之后的 API role 就是真实说话人：',
+    'role=user 永远是用户本人，role=assistant 永远是目标角色「' + (charName || '角色') + '」。',
+    '不得因为引用、复述、第一人称或最后一条消息的位置而交换说话人。）',
+  ].join('');
+
+  const templateText = String(promptTemplate);
+  let evaluatorSystem = templateText
+    .replace(EMOTION_EVAL_SYSTEM_SLOT, () => systemContext)
+    .replace(EMOTION_EVAL_HISTORY_SLOT, () => structuredHistoryNote);
+  // 本地路径的模板已经内嵌 mainSystemPrompt，不含 SYSTEM_SLOT；若历史里还有额外 system
+  // （例如世界书深度注入），也不能因为改成结构化对话就丢掉。
+  if (!templateText.includes(EMOTION_EVAL_SYSTEM_SLOT) && systemContext) {
+    evaluatorSystem += '\n\n## 对话历史中的附加 system 上下文\n' + systemContext;
+  }
+  evaluatorSystem += '\n\n## 说话人边界（硬规则）'
+    + '\n- role=user：只代表用户说的话。'
+    + `\n- role=assistant：只代表目标角色「${charName || '角色'}」说的话。`
+    + '\n- 引号、转述、引用回复只属于所在消息的说话人，不得据内容猜测后改 role。'
+    + '\n- 你的任务是分析这段对话，不是继续扮演聊天。';
+
+  const dialogue = source
+    .filter((message) => message?.role === 'user' || message?.role === 'assistant')
+    .map((message) => ({
+      role: message.role as 'user' | 'assistant',
+      content: flattenEvalContent(message.content).trim(),
+    }))
+    .filter((message) => !!message.content)
+    .slice(-Math.max(1, Math.floor(dialogueWindow || EMOTION_EVAL_DIALOGUE_WINDOW)));
+
+  return [
+    { role: 'system', content: evaluatorSystem },
+    ...dialogue,
+  ];
 };
 
 /**
@@ -99,7 +181,7 @@ export interface EmotionEvalOutcome {
  */
 export const requestEmotionEval = async (
   api: EmotionEvalApi,
-  promptContent: string,
+  promptContent: string | EmotionEvalRequestMessage[],
   timeoutMs: number = EMOTION_EVAL_TIMEOUT_MS,
 ): Promise<EmotionEvalOutcome> => {
   const controller = new AbortController();
@@ -114,7 +196,9 @@ export const requestEmotionEval = async (
       },
       body: JSON.stringify({
         model: api.model,
-        messages: [{ role: 'user', content: promptContent }],
+        messages: Array.isArray(promptContent)
+          ? promptContent
+          : [{ role: 'user', content: promptContent }],
         temperature: 0.85,
         // 显式给足输出额度：部分中转不传 max_tokens 时默认很小，评估输出很长，
         // 会被截成半截 JSON。
@@ -179,7 +263,7 @@ export const requestEmotionEval = async (
  */
 export const requestEmotionEvalWithFailover = async (
   apis: EmotionEvalApi[],
-  promptContent: string,
+  promptContent: string | EmotionEvalRequestMessage[],
   timeoutMs: number = EMOTION_EVAL_TIMEOUT_MS,
 ): Promise<EmotionEvalOutcome> => {
   const routes = (Array.isArray(apis) ? apis : []).filter((api) =>

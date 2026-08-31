@@ -5,9 +5,9 @@
  * 主回复在 worker 里生成，情绪评估也在这里跑完，结果随最后一条推送回去。发完就能关
  * 页面——过去评估是在浏览器里 fire-and-forget 跑的，页面一关情绪底色就停更了。
  *
- * 模板是前端用 `buildEmotionEvalPrompt(..., includeContext=false, ...)` 生成的：两段
- * 大文本（角色的 system prompt、完整对话历史）留成占位符，由本次请求已有的 chat 段
- * 还原回原位。这样上下文不必在请求体里重复发一份，输出又与本地逐字对齐。
+ * 模板是前端用 `buildEmotionEvalPrompt(..., includeContext=false, ...)` 生成的：大体积
+ * system prompt 留成占位符，由本次请求已有的 system 消息恢复；真实对话则保持原本的
+ * user / assistant API role 直接交给评估模型，不再拍平成带姓名标签的一大段文本。
  *
  * 还原规则与 instant push worker 的 `runEmotionEval`（worker/instant-push/src/index.ts）
  * **逐字同款**——两边吃的是同一个模板，格式一漂输出就变味。所以内核收敛在
@@ -22,8 +22,8 @@
 
 import {
   EMOTION_EVAL_TIMEOUT_MS,
+  buildEmotionEvalRequestMessages,
   requestEmotionEvalWithFailover,
-  restoreEvalPrompt as coreRestoreEvalPrompt,
   type EmotionEvalOutcome,
 } from '../../../utils/emotionEvalCore';
 
@@ -163,8 +163,8 @@ export const takeEmotionEvalSpec = (
   return isUsableEvalSpec(spec) ? spec : null;
 };
 
-// 占位符还原 / 打码 / 请求内核在 utils/emotionEvalCore.ts（与 instant-push 共用）。
-// re-export 保住既有导入点（本文件历史上就是它们的家）。
+// 结构化 role 组装 / 旧占位符还原 / 打码 / 请求内核都在 utils/emotionEvalCore.ts
+// （与 instant-push 共用）。restoreEvalPrompt 继续 re-export 只为旧测试/存量调用兼容。
 export { restoreEvalPrompt } from '../../../utils/emotionEvalCore';
 
 /** 一次评估的结局：拿到原文，或者一句能给用户看的短失败原因。 */
@@ -210,6 +210,6 @@ export const runAmsgEmotionEval = async (
 ): Promise<AmsgEmotionEvalOutcome> =>
   requestEmotionEvalWithFailover(
     [api, ...(Array.isArray(spec.fallbackApis) ? spec.fallbackApis : [])],
-    coreRestoreEvalPrompt(spec.prompt, chatMessages, charName),
+    buildEmotionEvalRequestMessages(spec.prompt, chatMessages, charName),
     timeoutMs,
   );

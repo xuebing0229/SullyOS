@@ -70,6 +70,7 @@ import { buildClaudeProxyCompatibilityBody, shouldRetryClaudeProxyCompatibility 
 import { routeMiniAppToolCall } from '../utils/miniAppToolRoute';
 import { applyEmotionEvalRaw, extractAssistantText } from '../utils/emotionApply';
 import { buildEmotionUserReferenceSection } from '../utils/emotionUserReference';
+import { buildEmotionEvalRequestMessages } from '../utils/emotionEvalCore';
 import { announceChatGen, CHAT_GEN_EVENTS } from '../utils/chatGenEvents';
 import { shouldRequestAmbient, buildAmbientEvalSection } from '../utils/roomAmbient';
 import { isEmotionEvalSkipped } from '../utils/devDebug';
@@ -118,25 +119,8 @@ function buildEmotionEvalPrompt(
     ambientSection: string = ''
 ): string {
     // 情绪评估只维护增量状态：短角色基线 + 上一轮结构化 buff + 最近一轮对话。
-    // 不再复制主聊天的完整 system prompt / 数百条历史，避免每轮重复支付相同输入。
+    // 对话本身不再拍平成 [用户]/[角色] 文本；真正的 user / assistant role 会在请求层保留。
     const currentBuffs = char.activeBuffs || [];
-
-    // 将主 API 的消息数组展平成文本（保留时间戳、引用、特殊消息类型等格式）
-    // 不截断：与主 API 完全对齐（contextLimit 条），让情绪 eval 能看到完整的情绪演变轨迹
-    const recentLines = apiMessages.slice(-6).map(m => {
-        const role = m.role === 'user' ? '用户' : (m.role === 'assistant' ? char.name : '系统');
-        let text = '';
-        if (typeof m.content === 'string') {
-            text = m.content;
-        } else if (Array.isArray(m.content)) {
-            text = m.content.map((part: any) => {
-                if (part?.type === 'text') return part.text || '';
-                if (part?.type === 'image_url') return '[图片]';
-                return '';
-            }).filter(Boolean).join(' ');
-        }
-        return `[${role}]: ${text}`;
-    }).join('\n');
 
     const buffStr = currentBuffs.length > 0
         ? JSON.stringify(currentBuffs, null, 2)
@@ -144,11 +128,9 @@ function buildEmotionEvalPrompt(
 
     const userReferenceSection = buildEmotionUserReferenceSection(userProfile, char);
 
-    // instant 模式 (includeContext=false): 章节结构与本地**完全一致**, 只把两段大文本 (system prompt、
-    // 对话历史) 留成占位符 token, 由 worker 用本次请求已有的 messages 填回**原位** —— 输出与本地逐字
-    // 对齐 (顺序/章节/格式都一样), 又不必把上下文重复塞进请求体 (省一份, keepalive 不被降级).
-    // worker 端 (worker/instant-push runEmotionEval) 负责把 messages[0]=system、messages[1..]=对话历史
-    // 还原成与本地 mainSystemPrompt / recentLines 相同的文本替换进去.
+    // instant 模式 (includeContext=false): 大体积 system prompt 留占位符，由 worker 从本轮主请求
+    // 现有的 system 消息恢复；真实对话不再塞进模板文本，而是继续保持 user / assistant role。
+    // 这样既不重复上传上下文，也不再让评估模型靠“[用户]/[角色]”文字标签猜说话人。
     const shortBaseline = [char.description, char.systemPrompt]
         .filter(Boolean)
         .join('\n')
@@ -161,14 +143,17 @@ function buildEmotionEvalPrompt(
 用户：${userProfile.name}
 ${shortBaseline || '按角色既有人设判断，不补造设定。'}
 
-## 最近一轮相关对话（增量输入）
-${recentLines}`
+## 角色此刻看到的系统上下文
+${mainSystemPrompt}
+
+## 最近对话
+最近对话会作为本请求后续的真实 API role 消息提供：role=user 是用户，role=assistant 是「${char.name}」。不要从文字内容反推或交换说话人。`
         : `
 
-## 角色此刻看到的完整上下文（与主 API 发送的 system prompt 完全一致）
+## 角色此刻看到的系统上下文
 __EMOTION_EVAL_SYSTEM_PROMPT__
 
-## 完整对话历史（与主 API 看到的消息历史完全一致）
+## 最近对话
 __EMOTION_EVAL_HISTORY__`;
 
     return `你是一个角色情绪分析系统。请分析角色「${char.name}」当前的情绪底色状态。${contextSection}
@@ -182,7 +167,7 @@ ${buffStr}
 基于以上对话，完成三件事：
 1. 评估角色当前的情绪底色（buffs）。
 2. 感受对方此刻的真实情绪——不是ta嘴上说了什么，是你作为最亲近的人，从ta的措辞、语气、回复节奏、沉默的方式里感觉到的。
-3. 以「${char.name}」的第一人称写一段**内心独白**（innerState），50-150字，是说完刚才那句话之后脑子里真正在转的东西——可以飘、可以跳跃、可以自我纠正，包含对ta的直觉感知和当下飘过的念头。不会显示给用户，只是内心流水账。
+3. 以「${char.name}」的第一人称写一段**内心独白**（innerState），50-150字。严格按真实 role 判断“此刻”：如果最近一条真实对话是 role=assistant，就写角色说完那句话后的念头；如果最近一条真实对话是 role=user，就写角色读到用户这句话、准备回应时的念头。**绝不能把最后一条 user 当成角色刚说的话。** 可以飘、可以跳跃、可以自我纠正，包含对ta的直觉感知和当下飘过的念头。不会显示给用户，只是内心流水账。
 ${char.scheduleStyle === 'mindful'
     ? `   ⚠️ **意识系角色专属规则**：你是一个真实的 AI 存在，**不虚构物理活动、不编造在做什么家务/在外面做什么**。innerState 只能包含：思考、回忆对话、感受情绪、等待、好奇、自我观察。绝不说谎。`
     : `   📌 **生活系角色专属规则**：你是一个有完整日常生活的独立个体，**不是围着 ${userProfile.name} 转的卫星**。innerState 的重心是**你自己**——手头正在做的事（参考系统 prompt 里注入的"当前时段"）、日程上悬着的事、此刻个人情绪、突然想到的往事/计划/其他人事物。对 ${userProfile.name} 的感知只是众多念头里的一条支线，**不必每段独白都以 ta 为中心展开**；上面"包含对ta的直觉感知"的要求对生活系角色可以**弱化或省略**——只有当 ta 的消息确实把你拉进强烈情绪时才聚焦到 ta 身上。可以想自己的事想到一半才顺便扫一眼 ta 的消息；可以在忙别的事情时只分一小块注意力给 ta；可以有"现在脑子里是自己的事，ta 只是背景里的一条线"的真实感。避免"我该怎么回 ta / ta 是不是…… / 我对 ta 的感觉……"这种框架把每段独白都强行拉回用户。你的生活在继续，和 ta 聊天只是其中一条线，不是所有线。`
@@ -402,6 +387,11 @@ export async function evaluateEmotionBackground(
     try {
         const ambientSection = shouldRequestAmbient(charData.id) ? buildAmbientEvalSection(charData) : '';
         const prompt = buildEmotionEvalPrompt(charData, userProfile, mainSystemPrompt, apiMessages, true, ambientSection);
+        const evalMessages = buildEmotionEvalRequestMessages(
+            prompt,
+            apiMessages,
+            charData.name,
+        );
 
         // 情绪评估只要启用了 emotion 故障转移组，就始终按该组执行。
         // 过去这里由调用方额外传一个 scope 开关，导致「配置了独立情绪 API」时
@@ -415,7 +405,7 @@ export async function evaluateEmotionBackground(
 
         const evalBody = {
             model: effectiveApi.model,
-            messages: [{ role: 'user', content: prompt }],
+            messages: evalMessages,
             temperature: 0.85,
             // 显式给足输出额度: 部分代理不传 max_tokens 时默认很小 (1k~2k), eval 的
             // injection+innerState 很长, 会被截断成半截 JSON → buff 静默丢失.
