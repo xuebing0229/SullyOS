@@ -108,10 +108,6 @@ export const buildEmotionEvalRequestMessages = (
   return [
     { role: 'system', content: evaluatorSystem },
     ...dialogue,
-    {
-      role: 'user',
-      content: '【评估指令】以上是需要分析的真实对话记录。不要把本条评估指令当成用户在聊天里说的话；请严格按 system 中规定的 JSON 格式输出评估结果。',
-    },
   ];
 };
 
