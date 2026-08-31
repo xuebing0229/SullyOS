@@ -27,6 +27,7 @@ const GroupChat = lazyApp(() => import('../apps/GroupChat'));
 const ThemeMaker = lazyApp(() => import('../apps/ThemeMaker'));
 const Appearance = lazyApp(() => import('../apps/Appearance'));
 const Gallery = lazyApp(() => import('../apps/Gallery'));
+const VoiceLibraryApp = lazyApp(() => import('../apps/VoiceLibraryApp'));
 const DateApp = lazyApp(() => import('../apps/DateApp'));
 const UserApp = lazyApp(() => import('../apps/UserApp'));
 const JournalApp = lazyApp(() => import('../apps/JournalApp'));
@@ -67,7 +68,7 @@ const SpecialMomentsApp = lazyApp(() => import('./ValentineEvent').then(m => ({ 
 // 高频 App 在前；低端设备/省流量/2G 由 shouldUseIdleAppPreload 整体跳过。
 const APP_IDLE_PRELOAD_ORDER: PreloadableLazy[] = [
   Chat, Character, Settings, Appearance, GroupChat, RoomApp, CheckPhone,
-  JournalApp, ScheduleApp, SocialApp, MomentsApp, MusicApp, CallApp, Gallery, DateApp, UserApp,
+  JournalApp, ScheduleApp, SocialApp, MomentsApp, MusicApp, CallApp, Gallery, VoiceLibraryApp, DateApp, UserApp,
   StudyApp, GameApp, GameHallApp, LiveApp, SimulatorApp, ReadingTogetherApp, NovelApp, BankApp, WorldbookApp, MemoryPalaceApp, HandbookApp,
   VRWorldApp, WorldHomeApp, LifeSimApp, SongwritingApp, GuidebookApp, FAQApp, HotNewsApp,
   XhsStockApp, XhsFreeRoamApp, BrowserApp, VoiceDesignerApp, ThemeMaker, QQBridge,
@@ -83,7 +84,7 @@ let idlePreloadCursor = 0;
 const APP_BY_ID: Partial<Record<AppID, PreloadableLazy>> = {
   [AppID.Settings]: Settings, [AppID.Character]: Character, [AppID.Chat]: Chat,
   [AppID.GroupChat]: GroupChat, [AppID.ThemeMaker]: ThemeMaker, [AppID.Appearance]: Appearance,
-  [AppID.Gallery]: Gallery, [AppID.Date]: DateApp, [AppID.User]: UserApp,
+  [AppID.Gallery]: Gallery, [AppID.VoiceLibrary]: VoiceLibraryApp, [AppID.Date]: DateApp, [AppID.User]: UserApp,
   [AppID.Journal]: JournalApp, [AppID.Schedule]: ScheduleApp, [AppID.Room]: RoomApp,
   [AppID.CheckPhone]: CheckPhone, [AppID.Social]: SocialApp, [AppID.Moments]: MomentsApp, [AppID.Study]: StudyApp,
   [AppID.FAQ]: FAQApp, [AppID.Game]: GameApp, [AppID.GameHall]: GameHallApp,
@@ -969,6 +970,7 @@ const PhoneShell: React.FC = () => {
       case AppID.ThemeMaker: return <ThemeMaker />;
       case AppID.Appearance: return <Appearance />;
       case AppID.Gallery: return <Gallery />;
+      case AppID.VoiceLibrary: return <VoiceLibraryApp />;
       case AppID.Date: return <DateApp />; 
       case AppID.User: return <UserApp />;
       case AppID.Journal: return <JournalApp />; 
