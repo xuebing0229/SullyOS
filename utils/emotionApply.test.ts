@@ -21,7 +21,7 @@ vi.mock('./db', () => ({ DB: {
     getAllCharacters: () => getAllCharacters(),
 } }));
 
-import { parseEmotionEvalOutput, applyEmotionEvalRaw, extractAssistantText, prioritizeNewBuffs } from './emotionApply';
+import { parseEmotionEvalOutput, applyEmotionEvalRaw, extractAssistantText, prioritizeNewBuffs, reconcileEmotionBuffs } from './emotionApply';
 
 const makeChar = (extra: any = {}): any => ({
     id: 'char-1',
@@ -52,6 +52,8 @@ describe('情绪评估提示词 — 新情绪不被旧快照锚死', () => {
         expect(useChatAISource).toContain('它不需要是“重大事件”或“高冲击事件”');
         expect(useChatAISource).toContain('不要因为当前已有 3～4 个 buff 就默认不再新增');
         expect(useChatAISource).toContain('旧情绪仍然存在，而另一种不同核心的情绪同时新出现');
+        expect(useChatAISource).toContain('removedBuffIds');
+        expect(useChatAISource).toContain('禁止用遗漏 buffs 的方式表达删除');
         expect(useChatAISource).not.toContain('只有对话中出现了明确的、足够冲击力的情绪触发事件，才值得新增一个buff');
     });
 });
@@ -60,7 +62,7 @@ describe('情绪评估提示词 — buff 标题随语义演化', () => {
     it('明确要求核心情绪质变时同步改 name / label / description，而不是只改内容', () => {
         expect(useChatAISource).toContain('标题不是固定标识符');
         expect(useChatAISource).toContain('这个 label 现在还能准确概括 description 吗？不能就改标题。');
-        expect(useChatAISource).toContain('不代表旧 buff 的 name / label / description 必须照抄');
+        expect(useChatAISource).toContain('核心情绪变了就必须改');
     });
 });
 
@@ -88,6 +90,17 @@ describe('parseEmotionEvalOutput — 正常形态', () => {
         const r = parseEmotionEvalOutput(raw);
         expect(r?.changed).toBe(true);
         expect(r?.innerState).toBe('她还没回消息……');
+    });
+
+    it('解析显式 removedBuffIds', () => {
+        const r = parseEmotionEvalOutput(JSON.stringify({
+            changed: true,
+            buffs: [],
+            removedBuffIds: ['buff_old_a', 'buff_old_b'],
+            injection: 'x',
+            innerState: 'y',
+        }));
+        expect(r?.removedBuffIds).toEqual(['buff_old_a', 'buff_old_b']);
     });
 
     it('changed 为字符串 "true" 也认', () => {
@@ -193,6 +206,33 @@ describe('prioritizeNewBuffs — 新情绪置顶', () => {
     });
 });
 
+describe('reconcileEmotionBuffs — 显式删除协议', () => {
+    const a = { id: 'a', name: 'a', label: '旧A', intensity: 2 } as any;
+    const b = { id: 'b', name: 'b', label: '旧B', intensity: 3 } as any;
+    const c = { id: 'c', name: 'c', label: '旧C', intensity: 2 } as any;
+
+    it('本轮只吐一个新情绪时保留旧情绪，并让新情绪置顶', () => {
+        const fresh = { id: 'd', name: 'd', label: '新D', intensity: 4 } as any;
+        expect(reconcileEmotionBuffs([a, b, c], [fresh], []).map(x => x.id))
+            .toEqual(['d', 'a', 'b', 'c']);
+    });
+
+    it('同 id 返回新版时更新旧条目，不生成重复 buff', () => {
+        const changedB = { ...b, label: '旧B变了', intensity: 5 };
+        const result = reconcileEmotionBuffs([a, b, c], [changedB], []);
+        expect(result.map(x => x.id)).toEqual(['a', 'b', 'c']);
+        expect(result[1].intensity).toBe(5);
+        expect(result[1].label).toBe('旧B变了');
+    });
+
+    it('只有 removedBuffIds 能真正删除旧情绪', () => {
+        expect(reconcileEmotionBuffs([a, b, c], [], ['a', 'c']).map(x => x.id))
+            .toEqual(['b']);
+        expect(reconcileEmotionBuffs([a, b, c], [], []).map(x => x.id))
+            .toEqual(['a', 'b', 'c']);
+    });
+});
+
 describe('applyEmotionEvalRaw — 落库语义', () => {
     it('过期评估被 latest-write guard 拦截，不得落库覆盖新一轮', async () => {
         const dispatched: any[] = [];
@@ -241,15 +281,29 @@ describe('applyEmotionEvalRaw — 落库语义', () => {
         expect(saveCharacter).not.toHaveBeenCalled();
     });
 
-    it('changed=false 但返回空 buffs 快照 → 清掉已消退的旧情绪', async () => {
+    it('空 buffs 不再误清旧情绪；只有 removedBuffIds 明确列出的才删除', async () => {
+        const current = makeChar({
+            activeBuffs: [
+                { id: 'keep', name: 'keep', label: '保留', intensity: 2 },
+                { id: 'gone', name: 'gone', label: '消退', intensity: 1 },
+            ],
+            buffInjection: '旧注入',
+        });
+        getAllCharacters.mockResolvedValue([current]);
         await applyEmotionEvalRaw(
-            JSON.stringify({ changed: false, buffs: [], injection: '', innerState: '已经平静下来' }),
-            makeChar(),
+            JSON.stringify({
+                changed: true,
+                buffs: [],
+                removedBuffIds: ['gone'],
+                injection: '',
+                innerState: '已经平静一些',
+            }),
+            current,
         );
         expect(saveCharacter).toHaveBeenCalledTimes(1);
         const saved = saveCharacter.mock.calls[0][0];
-        expect(saved.activeBuffs).toEqual([]);
-        expect(saved.buffInjection).toBe('');
+        expect(saved.activeBuffs.map((buff: any) => buff.id)).toEqual(['keep']);
+        expect(saved.buffInjection).toBe('旧注入');
     });
 
     it('落情绪时保留 DB 中请求期间新保存的其他角色字段', async () => {
@@ -289,9 +343,10 @@ describe('applyEmotionEvalRaw — 落库语义', () => {
         });
         await applyEmotionEvalRaw(raw, makeChar());
         const saved = saveCharacter.mock.calls[0][0];
-        expect(saved.activeBuffs.length).toBe(2);
+        expect(saved.activeBuffs.length).toBe(3);
         expect(saved.activeBuffs[0].name).toBe('buff_x');
         expect(saved.activeBuffs[1].label).toBe('only_name');
+        expect(saved.activeBuffs[2].id).toBe('buff_old');
     });
 
     it('解析彻底失败 → null 且不动 DB', async () => {
