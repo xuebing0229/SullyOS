@@ -23,7 +23,7 @@ import {
 import { classifyLLMOutput } from './classifier';
 import { sanitizeIntoSegments, type Segment } from '../../../utils/sanitize';
 import { INSTANT_WORKER_VERSION } from '../../../utils/instantWorkerVersion';
-import { requestEmotionEvalWithFailover, restoreEvalPrompt } from '../../../utils/emotionEvalCore';
+import { buildEmotionEvalRequestMessages, requestEmotionEvalWithFailover } from '../../../utils/emotionEvalCore';
 
 export interface Env {
   VAPID_PUBLIC_KEY: string;
@@ -470,16 +470,15 @@ async function runEmotionEval(body: any): Promise<{ raw: string; error?: string 
     return { raw: '', error: '评估配置不完整（缺 prompt / baseUrl / apiKey / model）' };
   }
 
-  // 情绪评估 = 单条 user 消息, 与本地 buildEmotionEvalPrompt 输出**逐字对齐**. 客户端把 prompt 里
-  // 两段大文本 (system prompt、对话历史) 留成占位符, 用本次请求已有的 messages 还原后替换回原位,
-  // 这样上下文不必在请求体里重复发 (keepalive 不被降级), 评估质量/顺序与本地完全一致.
-  // 还原 + 请求 + 失败文案（含 apiKey 打码红线）收敛在 utils/emotionEvalCore.ts,
-  // 与 amsg worker 的即时对话评估共用同一份——改格式两边一起动, 不再手工同步两份副本.
+  // 情绪评估不再把整段对话拍平成一条 user 文本。客户端只把大体积 system 上下文留占位符，
+  // 这里从主请求复用 system，并把真实对话继续按 user / assistant role 交给副 API。
+  // “谁说了哪句话”由 Chat Completions 协议本身钉死，不再靠小模型读 [用户]/[角色] 标签猜。
+  // 组装 + 请求 + 失败文案（含 apiKey 打码红线）收敛在 utils/emotionEvalCore.ts。
   const priorMessages = Array.isArray(body?.messages) ? body.messages : [];
   const contactName = body?.contactName || '角色';
   const outcome = await requestEmotionEvalWithFailover(
     [ee.api, ...(Array.isArray(ee.fallbackApis) ? ee.fallbackApis : [])],
-    restoreEvalPrompt(String(ee.prompt), priorMessages, contactName),
+    buildEmotionEvalRequestMessages(String(ee.prompt), priorMessages, contactName),
   );
   return outcome.raw != null
     ? { raw: outcome.raw }
