@@ -141,19 +141,34 @@ export async function materializeVisionDescriptions(
       prepared.push(message);
       continue;
     }
-    const description = descriptionByImage.get(imageUrl)
-      || await describeImageWithVisionApi(imageUrl, config);
-    descriptionByImage.set(imageUrl, description);
+    try {
+      const description = descriptionByImage.get(imageUrl)
+        || await describeImageWithVisionApi(imageUrl, config);
+      descriptionByImage.set(imageUrl, description);
 
-    const metadata = {
-      ...(message.metadata || {}),
-      [VISION_DESCRIPTION_METADATA_KEY]: description,
-      visionRecognizedAt: Date.now(),
-      visionModel: config.model.trim(),
-    };
-    // 先写回 DB 再调用主模型：下一轮与刷新页面后都会直接命中，不重复扣识图额度。
-    await DB.updateMessageMetadata(message.id, prev => ({ ...(prev || {}), ...metadata }));
-    prepared.push({ ...message, metadata });
+      const metadata = {
+        ...(message.metadata || {}),
+        [VISION_DESCRIPTION_METADATA_KEY]: description,
+        visionRecognizedAt: Date.now(),
+        visionModel: config.model.trim(),
+      };
+      // 先写回 DB 再调用主模型：下一轮与刷新页面后都会直接命中，不重复扣识图额度。
+      await DB.updateMessageMetadata(message.id, prev => ({ ...(prev || {}), ...metadata }));
+      prepared.push({ ...message, metadata });
+    } catch (error) {
+      // 识图只是可选增强，绝不能因为识图端点超时/CORS/限流把整轮主聊天一起掐掉。
+      // 本轮临时塞一条不可见占位描述，让 buildMessageHistory 走纯文字分支、不把原图
+      // 再交给可能不支持视觉的主模型；失败结果不写 DB，下一轮仍可重新尝试识图。
+      console.warn('[VisionAPI] 识图失败，本轮降级为文字占位，主聊天继续', error);
+      prepared.push({
+        ...message,
+        metadata: {
+          ...(message.metadata || {}),
+          [VISION_DESCRIPTION_METADATA_KEY]: '图片识别暂时失败，本轮无法读取图片内容。',
+          visionRecognitionTransientFailure: true,
+        },
+      });
+    }
   }
 
   return prepared;
