@@ -121,9 +121,58 @@ export async function materializeVisionDescriptions(
     throw new Error('识图 API 已开启，但 URL、Key 或 Model 尚未填写完整');
   }
 
-  const descriptionByImage = new Map<string, string>();
-  const prepared: Message[] = [];
+  // 只让“这一轮刚发来的图片”阻塞主聊天：从最后一条 assistant 之后开始算当前用户轮。
+  // 旧历史如果尚未缓存描述，只给本轮主模型一个纯文字占位，不在这里补扫历史债。
+  // 否则用户刚开启识图时，几十张旧图会一张张排队识别，主 API 明明 8 秒却要等几分钟。
+  let lastAssistantIndex = -1;
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    if (messages[i].role === 'assistant') {
+      lastAssistantIndex = i;
+      break;
+    }
+  }
+  const currentTurnImageIds = new Set(
+    messages
+      .slice(lastAssistantIndex + 1)
+      .filter(message => message.role === 'user' && message.type === 'image')
+      .map(message => message.id),
+  );
 
+  const cachedByImage = new Map<string, string>();
+  for (const message of messages) {
+    if (message.type !== 'image') continue;
+    const cached = readVisionDescription(message);
+    if (cached && typeof message.content === 'string') cachedByImage.set(message.content, cached);
+  }
+
+  const recognitionByImage = new Map<string, Promise<string | null>>();
+  const coolingDown = Date.now() < visionFailureCooldownUntil;
+
+  // 当前轮若一次发了多张图，并发识别，延迟取最慢那张，而不是 N 张耗时相加。
+  if (!coolingDown) {
+    for (const message of messages) {
+      if (!currentTurnImageIds.has(message.id)) continue;
+      const imageUrl = typeof message.content === 'string' ? message.content : '';
+      if (!canDescribeImage(imageUrl) || cachedByImage.has(imageUrl) || recognitionByImage.has(imageUrl)) continue;
+      recognitionByImage.set(
+        imageUrl,
+        describeImageWithVisionApi(imageUrl, config).catch(error => {
+          visionFailureCooldownUntil = Date.now() + VISION_FAILURE_COOLDOWN_MS;
+          console.warn('[VisionAPI] 识图失败，进入 3 分钟冷却；本轮降级为文字占位，主聊天继续', error);
+          return null;
+        }),
+      );
+    }
+  }
+
+  const recognizedByImage = new Map<string, string | null>();
+  await Promise.all(
+    [...recognitionByImage.entries()].map(async ([imageUrl, promise]) => {
+      recognizedByImage.set(imageUrl, await promise);
+    }),
+  );
+
+  const prepared: Message[] = [];
   for (const message of messages) {
     if (message.type !== 'image') {
       prepared.push(message);
@@ -132,62 +181,52 @@ export async function materializeVisionDescriptions(
 
     const cached = readVisionDescription(message);
     if (cached) {
-      descriptionByImage.set(message.content, cached);
+      prepared.push(message);
+      continue;
+    }
+
+    // 生成图当前仍由 chatPrompts 的 mcpGeneratedImage 专用分支提供“生成引擎/提示词摘要”。
+    // 那条分支不会消费 visionDescription，因此这里不要白白花一次识图费。
+    if (message.role === 'assistant' && message.metadata?.mcpGeneratedImage) {
       prepared.push(message);
       continue;
     }
 
     const imageUrl = typeof message.content === 'string' ? message.content : '';
-    // 纯文字备份会保留 image 消息但移除原图数据；这种历史沿用“图片已不可用”占位，
-    // 不能因为新开了识图 API 就让整轮聊天失败。
     if (!canDescribeImage(imageUrl)) {
       prepared.push(message);
       continue;
     }
 
-    // 识图端点刚失败过时，短时间内不要让每一轮正常聊天都重新卡在同一个坏接口上。
-    // 冷却只存在内存里，不写消息、不写配置；用户在设置页点“测试识图”仍会真实发请求。
-    if (Date.now() < visionFailureCooldownUntil) {
-      prepared.push({
-        ...message,
-        metadata: {
-          ...(message.metadata || {}),
-          [VISION_DESCRIPTION_METADATA_KEY]: '图片识别服务暂时不可用，本轮无法读取图片内容。',
-          visionRecognitionTransientFailure: true,
-        },
-      });
-      continue;
-    }
+    const reused = cachedByImage.get(imageUrl);
+    const recognized = reused ?? recognizedByImage.get(imageUrl);
 
-    try {
-      const description = descriptionByImage.get(imageUrl)
-        || await describeImageWithVisionApi(imageUrl, config);
-      descriptionByImage.set(imageUrl, description);
-
+    if (typeof recognized === 'string' && recognized.trim()) {
       const metadata = {
         ...(message.metadata || {}),
-        [VISION_DESCRIPTION_METADATA_KEY]: description,
+        [VISION_DESCRIPTION_METADATA_KEY]: recognized,
         visionRecognizedAt: Date.now(),
         visionModel: config.model.trim(),
       };
-      // 先写回 DB 再调用主模型：下一轮与刷新页面后都会直接命中，不重复扣识图额度。
+      // 成功才落库；下一轮与刷新页面后直接命中，不重复扣识图额度。
       await DB.updateMessageMetadata(message.id, prev => ({ ...(prev || {}), ...metadata }));
       prepared.push({ ...message, metadata });
-    } catch (error) {
-      // 识图只是可选增强，绝不能因为识图端点超时/CORS/限流把整轮主聊天一起掐掉。
-      // 本轮临时塞一条不可见占位描述，让 buildMessageHistory 走纯文字分支、不把原图
-      // 再交给可能不支持视觉的主模型；失败结果不写 DB，冷却结束后仍可重新尝试识图。
-      visionFailureCooldownUntil = Date.now() + VISION_FAILURE_COOLDOWN_MS;
-      console.warn('[VisionAPI] 识图失败，进入 3 分钟冷却；本轮降级为文字占位，主聊天继续', error);
-      prepared.push({
-        ...message,
-        metadata: {
-          ...(message.metadata || {}),
-          [VISION_DESCRIPTION_METADATA_KEY]: '图片识别暂时失败，本轮无法读取图片内容。',
-          visionRecognitionTransientFailure: true,
-        },
-      });
+      continue;
     }
+
+    const isCurrentTurn = currentTurnImageIds.has(message.id);
+    prepared.push({
+      ...message,
+      metadata: {
+        ...(message.metadata || {}),
+        [VISION_DESCRIPTION_METADATA_KEY]: isCurrentTurn
+          ? '图片识别暂时失败，本轮无法读取图片内容。'
+          : '此前图片尚未识别，本轮先不读取图片内容。',
+        ...(isCurrentTurn
+          ? { visionRecognitionTransientFailure: true }
+          : { visionRecognitionDeferred: true }),
+      },
+    });
   }
 
   return prepared;
