@@ -1167,7 +1167,12 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
                       // （查手机/记忆宫殿/日程/剧场/群聊…40+ 处）升级为流式**传输**，防网关
                       // 空闲超时把长生成掐成半截；响应会在下面攒齐拼回标准 JSON，调用方无感。
                       // 已自带 stream:true 的请求（聊天主路径/见面/情绪评估）不碰。
-                      if (isGlobalStreamEnabled()) {
+                      // 独立识图明确要求非流式：它是主聊天前置的短任务，而且 safeFetchJson
+                      // 自己带硬超时。把它透明升级成 SSE 后，部分中转会在 [DONE] 后继续保持
+                      // HTTP 连接，assembleUpgradedResponse() 等 socket 真正关闭就会把识图拖到
+                      // 超时，进而让用户在主回复前白等几十秒。识图保持调用方的 stream:false。
+                      const requestPurpose = (config as any)?.__sullyMeta?.purpose;
+                      if (isGlobalStreamEnabled() && requestPurpose !== '识图') {
                           const upgraded = upgradeChatBodyToStream(body);
                           if (upgraded) {
                               body = upgraded;
