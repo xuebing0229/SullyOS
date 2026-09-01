@@ -20,6 +20,7 @@ export const SELF_SAFE_AREA_APPS: ReadonlySet<AppID> = new Set<AppID>([
     AppID.Gallery,
     AppID.VoiceLibrary,
     AppID.Date,
+    AppID.StoryTheater,
     AppID.User,
     AppID.Journal,
     AppID.Schedule,
