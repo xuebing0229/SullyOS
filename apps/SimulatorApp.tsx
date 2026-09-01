@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, Plus, Play, Trash, FloppyDisk, Sparkle, PaperPlaneTilt } from '@phosphor-icons/react';
+import { ArrowLeft, Plus, Play, Trash, FloppyDisk, Sparkle, PaperPlaneTilt, Smiley } from '@phosphor-icons/react';
 import { useOS } from '../context/OSContext';
 import { DB } from '../utils/db';
 import type {
@@ -90,6 +90,7 @@ const SimulatorApp: React.FC = () => {
   const [busy, setBusy] = useState(false);
   const [candidates, setCandidates] = useState<AppMemoryCandidate[]>([]);
   const [showMemory, setShowMemory] = useState(false);
+  const [runPanel, setRunPanel] = useState<'none' | 'actions'>('none');
   const [deleteTarget, setDeleteTarget] = useState<SimulatorProject | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
@@ -639,6 +640,13 @@ ${project?.breaker ? `\n附加规则：\n${project.breaker}` : ''}
           : chatChromeStyle === 'floating'
             ? 'bg-white/80 backdrop-blur-2xl border-t border-white/60 shadow-[0_-12px_30px_rgba(148,163,184,0.18)]'
             : 'bg-white/90 backdrop-blur-2xl border-t border-slate-200/50 shadow-[0_-5px_15px_rgba(0,0,0,0.02)]';
+    const actionButtonClass = acnh
+      ? 'w-11 h-11 shrink-0 rounded-full bg-[#4cb89e] flex items-center justify-center text-white hover:bg-[#43ad93] transition-colors shadow-sm'
+      : isPixelStyle
+        ? 'w-11 h-11 shrink-0 rounded-[4px] border-2 border-[#8f674a] bg-[#f8f0e0] flex items-center justify-center text-[#8f674a] hover:bg-[#fff7ed] transition-colors'
+        : isDiscordStyle
+          ? 'w-11 h-11 shrink-0 rounded-full bg-slate-800 flex items-center justify-center text-slate-200 hover:bg-slate-700 transition-colors'
+          : 'w-11 h-11 shrink-0 rounded-full bg-slate-100 flex items-center justify-center text-slate-500 hover:bg-slate-200 transition-colors';
     const inputWrapClass = acnh
       ? 'bg-[#fbf4de] border-2 border-[#e6dab4] rounded-full'
       : inputStyle === 'rounded'
@@ -718,15 +726,15 @@ ${project?.breaker ? `\n附加规则：\n${project.breaker}` : ''}
           onCancelSelection={() => undefined}
           activeCharacter={{
             id: char?.id || project.charId,
-            name: char?.name || project.name,
+            name: project.name,
             avatar: char?.avatar || '',
             activeBuffs: char?.activeBuffs || [],
           }}
           isTyping={busy}
           isSummarizing={false}
           statusText={session.status === 'ended'
-            ? `${project.name} · 已结束`
-            : `${project.name} · ${modeLabel[project.mode]}`}
+            ? `${char?.name || '角色'} · 已结束`
+            : `${char?.name || '角色'} · ${modeLabel[project.mode]}`}
           extraAction={{
             label: '整理记忆',
             icon: <Sparkle className="w-5 h-5" weight="duotone" />,
@@ -836,6 +844,14 @@ ${project?.breaker ? `\n附加规则：\n${project.breaker}` : ''}
 
             <div className={`sully-chat-inputbar ${inputShellClass} pb-safe shrink-0 z-40 relative`}>
               <div className="p-3 px-4 flex gap-3 items-end relative">
+                <button
+                  onClick={() => setRunPanel(runPanel === 'actions' ? 'none' : 'actions')}
+                  disabled={busy}
+                  className={actionButtonClass}
+                  aria-label="万象匣操作"
+                >
+                  <Plus className="w-6 h-6" weight="bold" />
+                </button>
                 <div
                   className={`flex-1 min-w-0 flex items-center px-1 transition-all overflow-hidden ${inputWrapClass} ${
                     isPixelStyle
@@ -860,7 +876,7 @@ ${project?.breaker ? `\n附加规则：\n${project.breaker}` : ''}
                     enterKeyHint="send"
                     autoCorrect="on"
                     autoCapitalize="sentences"
-                    placeholder={session.status === 'ended' ? '本局已结束' : '你要做什么…'}
+                    placeholder={session.status === 'ended' ? '本局已结束' : 'Message...'}
                     className={`flex-1 min-w-0 bg-transparent px-4 py-3 text-[15px] resize-none max-h-24 no-scrollbar outline-none disabled:opacity-50 ${
                       isDiscordStyle
                         ? 'text-white placeholder:text-slate-500'
@@ -869,6 +885,14 @@ ${project?.breaker ? `\n附加规则：\n${project.breaker}` : ''}
                           : 'text-slate-800 placeholder:text-slate-400'
                     }`}
                   />
+                  <button
+                    type="button"
+                    onClick={() => addToast('万象匣暂时只发送文字消息')}
+                    className={`p-2 shrink-0 ${isDiscordStyle ? 'text-slate-400 hover:text-sky-300' : isPixelStyle ? 'text-[#8f674a] hover:text-[#a16207]' : 'text-slate-400 hover:text-primary'}`}
+                    aria-label="表情"
+                  >
+                    <Smiley className="w-6 h-6" weight="regular" />
+                  </button>
                 </div>
                 <button
                   onClick={() => void sendText()}
@@ -879,6 +903,35 @@ ${project?.breaker ? `\n附加规则：\n${project.breaker}` : ''}
                     ? <span>发送</span>
                     : <PaperPlaneTilt className="w-5 h-5" weight="fill" />}
                 </button>
+              </div>
+
+              <div
+                className={`overflow-hidden transition-[max-height] duration-200 ease-out ${
+                  isPixelStyle ? 'bg-[#f8f0e0] border-t-2 border-[#8f674a]' :
+                  isDiscordStyle ? 'bg-slate-900/95 border-t border-white/10' :
+                  acnh ? 'bg-[#f3ecdc] border-t-[3px] border-[#e0d6c0]' :
+                  'bg-slate-50 border-t border-slate-200/60'
+                }`}
+                style={{ maxHeight: runPanel === 'actions' ? '9rem' : '0px' }}
+              >
+                <div className="grid grid-cols-2 gap-3 p-4">
+                  <button
+                    onClick={() => { setRunPanel('none'); if (!busy) void makeMemoryCandidates(); }}
+                    disabled={busy}
+                    className="h-16 rounded-2xl bg-white/80 border border-slate-200/70 flex flex-col items-center justify-center gap-1 text-xs font-semibold text-slate-600 active:scale-95 transition"
+                  >
+                    <Sparkle size={20} weight="duotone" />
+                    整理记忆
+                  </button>
+                  <button
+                    onClick={() => { setRunPanel('none'); if (!busy && session.status !== 'ended') void endSession(); }}
+                    disabled={busy || session.status === 'ended'}
+                    className="h-16 rounded-2xl bg-white/80 border border-slate-200/70 flex flex-col items-center justify-center gap-1 text-xs font-semibold text-slate-600 active:scale-95 transition disabled:opacity-40"
+                  >
+                    <span className="text-lg leading-none">■</span>
+                    结束本局
+                  </button>
+                </div>
               </div>
             </div>
           </div>
