@@ -1116,7 +1116,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                         return <article key={message.id} {...pressHandlersFor(message)}><StoryOutput content={message.content} onChoose={choice => setInput(choice)} affinityInputs={affinityInputsFromMessage(message, actors)} /><StoryRoundImage message={message} busy={regeneratingImageId === message.id} onRegenerate={() => void regenerateStoryImage(message)} />{isLatest && <div className='mt-4 flex items-center justify-end gap-2'><span className='w-1.5 h-1.5 rounded-full bg-violet-400' /><button disabled={sending} onClick={() => void send(message)} className='inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-slate-200 bg-white text-[10px] font-bold text-slate-500 disabled:opacity-40'>{rerollingId === message.id ? <SpinnerGap size={12} className='animate-spin' /> : <ArrowClockwise size={12} />}换一种写法</button></div>}</article>;
                     })}
                     {streamingText && <article className='relative'>
-                        <StoryOutput content={streamingText} />
+                        <StoryOutput content={streamingText} affinityInputs={[]} />
                         <div className='mt-4 flex items-center gap-2 text-[9px] font-bold text-violet-500'>
                             <span className='w-1.5 h-1.5 rounded-full bg-violet-500 animate-pulse' />
                             正在续写 · 首字出现后将固定当前线路
