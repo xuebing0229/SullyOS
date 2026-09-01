@@ -913,6 +913,7 @@ function cloneBody<T>(body: T): T {
 function bodyForRoute(
     baseBody: Record<string, any>,
     api: APIConfig,
+    forceStream = false,
 ): Record<string, any> {
     const body = cloneBody(baseBody);
     body.model = api.model;
@@ -924,7 +925,9 @@ function bodyForRoute(
         body.temperature = api.temperature;
     }
 
-    if (api.stream != null) {
+    if (forceStream) {
+        body.stream = true;
+    } else if (api.stream != null) {
         body.stream = Boolean(api.stream);
     }
 
@@ -945,6 +948,7 @@ function wrapStreamHooks(
     markStreamStarted: () => void,
     markFirstResponse: () => void,
     streamExpected: boolean,
+    commitMode: 'activity' | 'content' = 'activity',
 ): StreamHooks {
     return {
         // 非流式接口没有 token delta；首个响应体字节就是它能提供的最早响应信号。
@@ -954,11 +958,19 @@ function wrapStreamHooks(
             hooks?.onFirstBodyByte?.();
         },
         onFirstActivity: () => {
-            markFirstResponse();
-            markStreamStarted();
+            if (commitMode === 'activity') {
+                markFirstResponse();
+                markStreamStarted();
+            }
             hooks?.onFirstActivity?.();
         },
         onFirstDelta: () => {
+            if (commitMode === 'content') {
+                // 某些长文本场景把“首字”定义为第一段可见正文，而不是 reasoning/tool activity。
+                // 一旦真正吐出正文，就把这条线路视为已承诺：后续中断不再切线，避免重复生成。
+                markFirstResponse();
+                markStreamStarted();
+            }
             hooks?.onFirstDelta?.();
         },
         onDelta: (delta, fullText) => {
@@ -982,6 +994,10 @@ export interface ExecuteOpenAiChatPlanOptions {
     /** Existing behavior when no failover group is enabled. */
     directMaxRetries?: number;
     directTimeoutMs?: number;
+    /** 强制本次 completion 走 stream:true，不受 API 预设的 stream 开关覆盖。 */
+    forceStream?: boolean;
+    /** 流式故障转移何时视为“已经开始输出，不能再切线路”。默认 activity；content = 第一段可见正文。 */
+    streamCommitMode?: 'activity' | 'content';
     onAttempt?: (attempt: ApiFailoverAttempt) => void;
 }
 
@@ -990,7 +1006,7 @@ export async function executeOpenAiChatPlan(
 ): Promise<ApiFailoverRunResult<any>> {
     if (options.plan.mode === 'direct') {
         const route = options.plan.routes[0];
-        const body = bodyForRoute(options.body, route.api);
+        const body = bodyForRoute(options.body, route.api, options.forceStream === true);
         const baseUrl = route.api.baseUrl
             .trim()
             .replace(/\/+$/, '');
@@ -1050,6 +1066,7 @@ export async function executeOpenAiChatPlan(
             const body = bodyForRoute(
                 options.body,
                 route.api,
+                options.forceStream === true,
             );
             const baseUrl = route.api.baseUrl
                 .trim()
@@ -1123,6 +1140,7 @@ export async function executeOpenAiChatPlan(
                         context.markStreamStarted,
                         markFirstResponse,
                         Boolean(body.stream),
+                        options.streamCommitMode || 'activity',
                     ),
                 );
             } catch (error) {
