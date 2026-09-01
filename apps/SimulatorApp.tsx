@@ -1,9 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, Plus, Play, Trash, FloppyDisk, Sparkle } from '@phosphor-icons/react';
+import { ArrowLeft, Plus, Play, Trash, FloppyDisk, Sparkle, PaperPlaneTilt } from '@phosphor-icons/react';
 import { useOS } from '../context/OSContext';
 import { DB } from '../utils/db';
 import type {
   AppMemoryCandidate,
+  Message,
   SimulatorMode,
   SimulatorProject,
   SimulatorSession,
@@ -19,6 +20,12 @@ import {
 } from '../utils/appMemoryBridge';
 import AppMemoryCandidatePanel from '../components/AppMemoryCandidatePanel';
 import ConfirmDialog from '../components/os/ConfirmDialog';
+import ChatHeader from '../components/chat/ChatHeaderShell';
+import MessageItem from '../components/chat/MessageItem';
+import { PRESET_THEMES } from '../components/chat/ChatConstants';
+import { resolveChatTheme } from '../utils/groupChat/theme';
+import { buildChatFineTuneCss, mergeChatFineTune } from '../utils/chatFineTuneCss';
+import { useBlobRefUrl } from '../utils/blobRef';
 import {
   isSimulatorIframeAction,
   postSimulatorState,
@@ -71,6 +78,8 @@ const SimulatorApp: React.FC = () => {
     updateCharacter,
     addToast,
     registerBackHandler,
+    customThemes,
+    theme: osTheme,
   } = useOS();
 
   const [view, setView] = useState<View>('list');
@@ -89,6 +98,32 @@ const SimulatorApp: React.FC = () => {
     () => characters.find((v) => v.id === project?.charId) || null,
     [characters, project?.charId],
   );
+
+  // 万象匣的聊天区直接吃主聊天的外观状态：角色气泡主题、聊天背景、
+  // 白框/输入栏配置与细节微调都共用同一份数据，不再维护第二套“像聊天”的皮肤。
+  const resolvedChatBackground = useBlobRefUrl(char?.chatBackground);
+  const activeChatTheme = useMemo(
+    () => resolveChatTheme(char?.bubbleStyle || 'default', customThemes, PRESET_THEMES),
+    [char?.bubbleStyle, customThemes],
+  );
+  const mergedChatFineTune = useMemo(
+    () => mergeChatFineTune(osTheme, char?.chatFineTune),
+    [osTheme, char?.chatFineTune],
+  );
+  const simulatorChatFineTuneCss = useMemo(
+    () => buildChatFineTuneCss(mergedChatFineTune),
+    [mergedChatFineTune],
+  );
+  const runScrollRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (view !== 'run') return;
+    const el = runScrollRef.current;
+    if (!el) return;
+    requestAnimationFrame(() => {
+      el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+    });
+  }, [view, session?.turns.length, busy]);
 
   const reload = useCallback(async () => {
     setProjects(await DB.getSimulatorProjects());
@@ -530,63 +565,189 @@ ${project?.breaker ? `\n附加规则：\n${project.breaker}` : ''}
   if (view === 'run' && project && session) {
     const showFrame = project.mode !== 'text';
     const showChat = project.mode !== 'html';
+    const acnh = osTheme.skin === 'animalcrossing' && osTheme.acnhChatSync !== false;
+    const chatChromeStyle = osTheme.chatChromeStyle || 'soft';
+    const chatBackgroundStyle = osTheme.chatBackgroundStyle || 'plain';
+    const chatRootClass =
+      chatChromeStyle === 'pixel'
+        ? 'flex flex-col h-full bg-[#efe1cf] overflow-hidden relative font-sans transition-[background-image,background-color] duration-500'
+        : chatChromeStyle === 'flat'
+          ? 'flex flex-col h-full bg-white overflow-hidden relative font-sans transition-[background-image,background-color] duration-500'
+          : chatChromeStyle === 'floating'
+            ? 'flex flex-col h-full bg-[#eef2ff] overflow-hidden relative font-sans transition-[background-image,background-color] duration-500'
+            : 'flex flex-col h-full bg-[#f1f5f9] overflow-hidden relative font-sans transition-[background-image,background-color] duration-500';
+
+    const chatRootStyle: React.CSSProperties = resolvedChatBackground
+      ? {
+          backgroundImage: `url("${resolvedChatBackground}")`,
+          backgroundSize: 'cover',
+          backgroundPosition: 'center',
+        }
+      : chatBackgroundStyle === 'grid'
+        ? {
+            backgroundColor: chatChromeStyle === 'pixel' ? '#efe1cf' : '#f8fafc',
+            backgroundImage:
+              'linear-gradient(rgba(148,163,184,0.14) 1px, transparent 1px), linear-gradient(90deg, rgba(148,163,184,0.14) 1px, transparent 1px)',
+            backgroundSize: '20px 20px',
+          }
+        : chatBackgroundStyle === 'paper'
+          ? {
+              backgroundColor: chatChromeStyle === 'pixel' ? '#f4e8d9' : '#f9f7f2',
+              backgroundImage: 'radial-gradient(circle at 1px 1px, rgba(148,163,184,0.12) 1px, transparent 0)',
+              backgroundSize: '16px 16px',
+            }
+          : chatBackgroundStyle === 'mesh'
+            ? {
+                backgroundColor: '#f8fafc',
+                backgroundImage:
+                  'radial-gradient(circle at 15% 20%, rgba(59,130,246,0.18), transparent 28%), radial-gradient(circle at 85% 15%, rgba(244,114,182,0.18), transparent 24%), radial-gradient(circle at 60% 75%, rgba(45,212,191,0.18), transparent 26%)',
+              }
+            : { backgroundImage: 'none' };
+
+    const finalChatRootClass = acnh
+      ? 'flex flex-col h-full overflow-hidden relative font-sans transition-[background-color] duration-500'
+      : chatRootClass;
+    const finalChatRootStyle: React.CSSProperties = acnh
+      ? { backgroundColor: '#F6F0D8', backgroundImage: 'none' }
+      : chatRootStyle;
+
+    const simulatorMessages: Message[] = session.turns.map((turn, index) => ({
+      id: turn.createdAt + index,
+      charId: char?.id || project.charId,
+      role: turn.role,
+      type: 'text',
+      content: turn.action
+        ? `前端动作 · ${turn.action}\n${JSON.stringify(turn.payload ?? '')}`
+        : turn.content,
+      timestamp: turn.createdAt,
+      metadata: { source: 'simulator', simulatorTurnId: turn.id },
+    }));
+    const userAvatar = (char?.id && userProfile.perCharAvatars?.[char.id])
+      || userProfile.avatar
+      || '';
+
+    const inputStyle = osTheme.chatInputStyle || 'default';
+    const sendButtonStyle = osTheme.chatSendButtonStyle || 'circle';
+    const isDiscordStyle = inputStyle === 'discord';
+    const isPixelStyle = inputStyle === 'pixel' || chatChromeStyle === 'pixel';
+    const inputShellClass = acnh
+      ? 'bg-[#a8d6bb] border-t-[3px] border-[#86c29a] shadow-[0_-3px_0_rgba(110,160,130,0.18)]'
+      : chatChromeStyle === 'pixel'
+        ? 'bg-[#eadfce] border-t-[3px] border-[#8f674a] shadow-[0_-4px_0_rgba(123,90,64,0.15)]'
+        : chatChromeStyle === 'flat'
+          ? 'bg-white border-t border-slate-200 shadow-none'
+          : chatChromeStyle === 'floating'
+            ? 'bg-white/80 backdrop-blur-2xl border-t border-white/60 shadow-[0_-12px_30px_rgba(148,163,184,0.18)]'
+            : 'bg-white/90 backdrop-blur-2xl border-t border-slate-200/50 shadow-[0_-5px_15px_rgba(0,0,0,0.02)]';
+    const inputWrapClass = acnh
+      ? 'bg-[#fbf4de] border-2 border-[#e6dab4] rounded-full'
+      : inputStyle === 'rounded'
+        ? 'bg-slate-100 rounded-full'
+        : inputStyle === 'flat'
+          ? 'bg-transparent border-b border-slate-200 rounded-none'
+          : inputStyle === 'wechat'
+            ? 'bg-white border border-slate-200 rounded-full'
+            : inputStyle === 'ios'
+              ? 'bg-white/80 border border-white/80 shadow-inner rounded-[26px]'
+              : inputStyle === 'telegram'
+                ? 'bg-white border border-sky-100 rounded-2xl'
+                : inputStyle === 'discord'
+                  ? 'bg-slate-800 border border-white/10 rounded-2xl text-white'
+                  : inputStyle === 'pixel'
+                    ? 'bg-[#f8f0e0] border-2 border-[#8f674a] rounded-[4px]'
+                    : 'bg-slate-100 rounded-[24px]';
+    const sendButtonClass = acnh
+      ? 'w-11 h-11 shrink-0 rounded-full bg-[#f3d06a] text-[#6b5a3e] flex items-center justify-center shadow-md'
+      : sendButtonStyle === 'pill'
+        ? isPixelStyle
+          ? 'h-11 min-w-[72px] shrink-0 rounded-[4px] border-2 border-[#8f674a] bg-[#c99872] px-4 text-[11px] font-bold text-[#fff7ed]'
+          : 'h-11 min-w-[72px] shrink-0 rounded-full bg-primary px-4 text-[11px] font-bold text-white shadow-lg'
+        : sendButtonStyle === 'minimal'
+          ? isPixelStyle
+            ? 'w-11 h-11 shrink-0 rounded-[4px] border-2 border-[#8f674a] bg-[#c99872] text-[#fff7ed] flex items-center justify-center'
+            : isDiscordStyle
+              ? 'w-11 h-11 shrink-0 rounded-full bg-transparent text-sky-300 flex items-center justify-center'
+              : 'w-11 h-11 shrink-0 rounded-full bg-transparent text-primary flex items-center justify-center'
+          : isPixelStyle
+            ? 'w-11 h-11 shrink-0 rounded-[4px] border-2 border-[#8f674a] bg-[#c99872] text-[#fff7ed] flex items-center justify-center'
+            : 'w-11 h-11 shrink-0 rounded-full bg-primary text-white flex items-center justify-center transition-all shadow-lg';
+
+    const leaveRun = () => {
+      setView('list');
+      setSession(null);
+      setProject(null);
+    };
+
     return (
-      <div className="h-full w-full bg-[#f5f6fa] flex flex-col text-slate-800 relative">
-        <div
-          className="bg-white/90 backdrop-blur-xl border-b border-slate-200/70 shrink-0 z-20"
-          style={{ paddingTop: 'var(--safe-top)' }}
-        >
-          <div className="h-16 flex items-center px-4 gap-3">
-            <button
-              onClick={() => setView('list')}
-              className="p-2 -ml-2 rounded-full text-slate-600 active:bg-black/5 active:scale-90 transition-all"
-              aria-label="返回"
-            >
-              <ArrowLeft size={23} />
-            </button>
+      <div className={`sully-chat-root ${finalChatRootClass}`} style={finalChatRootStyle}>
+        {simulatorChatFineTuneCss && <style>{simulatorChatFineTuneCss}</style>}
+        {osTheme.chatChromeCustomCss && <style>{osTheme.chatChromeCustomCss}</style>}
+        {char?.chromeCustomCss && <style>{char.chromeCustomCss}</style>}
+        {activeChatTheme.customCss && <style>{activeChatTheme.customCss}</style>}
 
-            {char?.avatar ? (
-              <img
-                src={char.avatar}
-                alt=""
-                className="w-9 h-9 rounded-full object-cover shrink-0 border border-slate-100"
-              />
-            ) : (
-              <div className="w-9 h-9 rounded-full bg-slate-100 text-slate-500 grid place-items-center shrink-0 text-xs font-bold">
-                {(char?.name || '?').slice(0, 1)}
-              </div>
-            )}
+        {(osTheme.chatChromeCustomCss || char?.chromeCustomCss || activeChatTheme.customCss) && (
+          <style>{`
+            .sully-chat-back{visibility:visible!important;opacity:1!important;pointer-events:auto!important;}
+            .sully-chat-inputbar{visibility:visible!important;opacity:1!important;pointer-events:auto!important;}
+            .sully-chat-inputbar textarea,.sully-chat-inputbar button{pointer-events:auto!important;visibility:visible!important;}
+          `}</style>
+        )}
 
-            <div className="min-w-0 flex-1">
-              <h1 className="text-[15px] font-semibold text-slate-800 truncate">{project.name}</h1>
-              <p className="text-[11px] text-slate-400 truncate">
-                {char?.name} · {modeLabel[project.mode]}
-              </p>
-            </div>
+        {acnh && (
+          <style>{`
+            .sully-bubble-ai {
+              background: #FBF4DE !important;
+              color: #6b5a3e !important;
+              border: 1.5px solid #efe6c8 !important;
+              border-radius: 24px !important;
+              box-shadow: 0 4px 10px -5px rgba(120,95,45,0.28) !important;
+            }
+            .sully-bubble-user {
+              background: #F5C896 !important;
+              color: #6b4a2f !important;
+              border: 1.5px solid #eeb87f !important;
+              border-radius: 24px !important;
+              box-shadow: 0 4px 10px -5px rgba(150,100,55,0.32) !important;
+            }
+          `}</style>
+        )}
 
-            <button
-              onClick={makeMemoryCandidates}
-              disabled={busy}
-              className="w-9 h-9 rounded-xl bg-slate-100 text-slate-600 grid place-items-center active:scale-95 transition-all disabled:opacity-40"
-              aria-label="整理记忆"
-            >
-              <Sparkle size={18} weight="duotone" />
-            </button>
-
-            <button
-              onClick={endSession}
-              disabled={session.status === 'ended'}
-              className={[
-                'h-9 px-3 rounded-xl text-xs font-semibold transition-all',
-                session.status === 'ended'
-                  ? 'bg-slate-100 text-slate-400'
-                  : 'bg-rose-50 text-rose-500 active:scale-95',
-              ].join(' ')}
-            >
-              {session.status === 'ended' ? '已结束' : '结束'}
-            </button>
-          </div>
-        </div>
+        <ChatHeader
+          selectionMode={false}
+          selectedCount={0}
+          onCancelSelection={() => undefined}
+          activeCharacter={{
+            id: char?.id || project.charId,
+            name: char?.name || project.name,
+            avatar: char?.avatar || '',
+            activeBuffs: char?.activeBuffs || [],
+          }}
+          isTyping={busy}
+          isSummarizing={false}
+          statusText={session.status === 'ended'
+            ? `${project.name} · 已结束`
+            : `${project.name} · ${modeLabel[project.mode]}`}
+          extraAction={{
+            label: '整理记忆',
+            icon: <Sparkle className="w-5 h-5" weight="duotone" />,
+            onClick: () => { if (!busy) void makeMemoryCandidates(); },
+          }}
+          triggerIcon="stop"
+          lastTokenUsage={null}
+          onClose={leaveRun}
+          onTriggerAI={() => {
+            if (!busy && session.status !== 'ended') void endSession();
+          }}
+          onShowCharsPanel={() => undefined}
+          hideBuffs={osTheme.chatHideHeaderBuffs}
+          headerStyle={osTheme.chatHeaderStyle}
+          avatarShape={osTheme.chatAvatarShape}
+          headerAlign={osTheme.chatHeaderAlign}
+          headerDensity={osTheme.chatHeaderDensity}
+          statusStyle={osTheme.chatStatusStyle}
+          chromeStyle={osTheme.chatChromeStyle}
+          acnh={acnh}
+        />
 
         {showFrame && (
           <div
@@ -607,92 +768,116 @@ ${project?.breaker ? `\n附加规则：\n${project.breaker}` : ''}
         )}
 
         {showChat && (
-          <div className="flex-1 min-h-0 flex flex-col bg-[#f5f6fa]">
-            <div className="flex-1 min-h-0 overflow-y-auto px-4 py-5 space-y-3 no-scrollbar">
-              {session.turns.length === 0 && !busy && (
+          <div className="flex-1 min-h-0 flex flex-col bg-transparent">
+            <div
+              ref={runScrollRef}
+              className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden pt-6 pb-6 no-scrollbar"
+            >
+              {simulatorMessages.length === 0 && !busy && (
                 <div className="h-full min-h-48 flex flex-col items-center justify-center text-center px-10">
-                  <div className="w-14 h-14 rounded-2xl bg-white border border-slate-100 shadow-sm grid place-items-center text-indigo-400 mb-3">
-                    <Sparkle size={25} weight="duotone" />
-                  </div>
-                  <div className="text-sm font-semibold text-slate-600">本局还没开始说话</div>
+                  <div className="text-sm font-semibold text-slate-500">本局还没开始说话</div>
                   <p className="mt-1.5 text-xs leading-5 text-slate-400">
                     和 {char?.name || '角色'} 一起推进这段故事。
                   </p>
                 </div>
               )}
 
-              {session.turns.map(t => {
-                const isUser = t.role === 'user';
-                return (
-                  <div
-                    key={t.id}
-                    className={`flex w-full ${isUser ? 'justify-end' : 'justify-start'}`}
-                  >
-                    {!isUser && (
-                      char?.avatar ? (
-                        <img
-                          src={char.avatar}
-                          alt=""
-                          className="w-8 h-8 rounded-full object-cover shrink-0 mr-2 mt-0.5 border border-white shadow-sm"
-                        />
-                      ) : (
-                        <div className="w-8 h-8 rounded-full bg-white border border-slate-100 shadow-sm text-slate-500 grid place-items-center shrink-0 mr-2 mt-0.5 text-[10px] font-bold">
-                          {(char?.name || '?').slice(0, 1)}
-                        </div>
-                      )
-                    )}
-
-                    <div
-                      className={[
-                        'max-w-[78%] px-3.5 py-2.5 text-[14px] leading-6 whitespace-pre-wrap break-words',
-                        isUser
-                          ? 'bg-primary text-white rounded-[20px] rounded-br-[7px] shadow-sm'
-                          : 'bg-white text-slate-700 border border-slate-100 rounded-[20px] rounded-bl-[7px] shadow-sm shadow-slate-200/40',
-                      ].join(' ')}
-                    >
-                      {t.action ? (
-                        <>
-                          <div className={`mb-1.5 text-[10px] font-semibold tracking-wide ${isUser ? 'text-white/70' : 'text-slate-400'}`}>
-                            前端动作 · {t.action}
-                          </div>
-                          <div>{JSON.stringify(t.payload ?? '')}</div>
-                        </>
-                      ) : (
-                        t.content
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
+              {simulatorMessages.map((message, index) => (
+                <MessageItem
+                  key={session.turns[index]?.id || message.id}
+                  msg={message}
+                  isFirstInGroup={index === 0 || simulatorMessages[index - 1].role !== message.role}
+                  isLastInGroup={index === simulatorMessages.length - 1 || simulatorMessages[index + 1].role !== message.role}
+                  activeTheme={activeChatTheme}
+                  charAvatar={char?.avatar || ''}
+                  charName={char?.name || '角色'}
+                  userAvatar={userAvatar}
+                  isLatestMessage={index === simulatorMessages.length - 1}
+                  onLongPress={() => undefined}
+                  onReply={() => undefined}
+                  selectionMode={false}
+                  isSelected={false}
+                  onToggleSelect={() => undefined}
+                  avatarShape={osTheme.chatAvatarShape}
+                  avatarSize={osTheme.chatAvatarSize}
+                  avatarMode={osTheme.chatAvatarMode}
+                  bubbleVariant={osTheme.chatBubbleStyle}
+                  messageSpacing={osTheme.chatMessageSpacing}
+                  showTimestamp={osTheme.chatShowTimestamp}
+                  moduleAlign={mergedChatFineTune.chatModuleAlign || 'center'}
+                />
+              ))}
 
               {busy && (
-                <div className="flex items-center gap-2 text-xs text-slate-400 pl-10">
-                  <span className="w-1.5 h-1.5 rounded-full bg-slate-300 animate-pulse" />
-                  {char?.name || '角色'} 正在回复…
+                <div className="flex items-end gap-2 px-4 mb-4">
+                  {char?.avatar && (
+                    <img
+                      src={char.avatar}
+                      alt=""
+                      className="w-9 h-9 rounded-full object-cover shrink-0 ring-1 ring-black/5"
+                    />
+                  )}
+                  <div
+                    className="px-4 py-3 rounded-[20px] text-sm"
+                    style={{
+                      color: activeChatTheme.ai.textColor,
+                      backgroundColor: activeChatTheme.ai.backgroundColor,
+                      opacity: activeChatTheme.ai.opacity ?? 1,
+                    }}
+                  >
+                    <span className="inline-flex items-center gap-1.5">
+                      <span className="w-1.5 h-1.5 rounded-full bg-current opacity-35 animate-pulse" />
+                      <span className="opacity-55">{char?.name || '角色'} 正在回复…</span>
+                    </span>
+                  </div>
                 </div>
               )}
             </div>
 
-            <div
-              className="shrink-0 px-3 pt-2 bg-white/90 backdrop-blur-xl border-t border-slate-200/70"
-              style={{ paddingBottom: 'calc(10px + var(--safe-bottom))' }}
-            >
-              <div className="flex items-end gap-2">
-                <div className="flex-1 min-w-0 min-h-[46px] rounded-[22px] bg-slate-100 border border-slate-200/70 px-4 py-2.5 flex items-center">
+            <div className={`sully-chat-inputbar ${inputShellClass} pb-safe shrink-0 z-40 relative`}>
+              <div className="p-3 px-4 flex gap-3 items-end relative">
+                <div
+                  className={`flex-1 min-w-0 flex items-center px-1 transition-all overflow-hidden ${inputWrapClass} ${
+                    isPixelStyle
+                      ? 'focus-within:bg-[#fff7ed]'
+                      : isDiscordStyle
+                        ? 'focus-within:bg-slate-800 focus-within:border-white/20'
+                        : 'border border-transparent focus-within:bg-white focus-within:border-primary/30'
+                  }`}
+                >
                   <textarea
-                    value={input}
-                    onChange={e => setInput(e.target.value)}
                     rows={1}
-                    placeholder="你要做什么…"
-                    className="w-full max-h-28 resize-none bg-transparent outline-none text-[14px] leading-6 text-slate-800 placeholder:text-slate-400"
+                    value={input}
+                    onChange={(event) => setInput(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' && !event.shiftKey) {
+                        event.preventDefault();
+                        if (!busy && session.status !== 'ended' && input.trim()) void sendText();
+                      }
+                    }}
+                    disabled={busy || session.status === 'ended'}
+                    inputMode="text"
+                    enterKeyHint="send"
+                    autoCorrect="on"
+                    autoCapitalize="sentences"
+                    placeholder={session.status === 'ended' ? '本局已结束' : '你要做什么…'}
+                    className={`flex-1 min-w-0 bg-transparent px-4 py-3 text-[15px] resize-none max-h-24 no-scrollbar outline-none disabled:opacity-50 ${
+                      isDiscordStyle
+                        ? 'text-white placeholder:text-slate-500'
+                        : isPixelStyle
+                          ? 'text-[#6a4c35] placeholder:text-[#9b8677]'
+                          : 'text-slate-800 placeholder:text-slate-400'
+                    }`}
                   />
                 </div>
                 <button
-                  onClick={sendText}
-                  disabled={busy || !input.trim()}
-                  className="h-11 px-4 rounded-[18px] bg-primary text-white text-sm font-semibold shadow-sm active:scale-95 transition-all disabled:opacity-35 disabled:active:scale-100"
+                  onClick={() => void sendText()}
+                  disabled={busy || session.status === 'ended' || !input.trim()}
+                  className={`${sendButtonClass} ${input.trim() && session.status !== 'ended' ? '' : 'opacity-45 shadow-none'} disabled:active:scale-100`}
                 >
-                  发送
+                  {sendButtonStyle === 'pill'
+                    ? <span>发送</span>
+                    : <PaperPlaneTilt className="w-5 h-5" weight="fill" />}
                 </button>
               </div>
             </div>
