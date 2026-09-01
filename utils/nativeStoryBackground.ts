@@ -246,23 +246,8 @@ export const executeStoryCompletionInNativeBackground = async (
     jobId = makeJobId();
     const routes = toNativeRoutes(options.plan);
     const timeoutMs = options.plan.group?.policy.timeoutMs ?? 240_000;
-    const submitted = await NativeStoryBackground.submit({
-      spec: {
-        jobId,
-        ownerKey: options.ownerKey,
-        title: options.title || '剧情',
-        mode: options.plan.mode,
-        timeoutMs,
-        routes,
-        baseBody: {
-          ...options.body,
-          // 后台服务自己根据每条 API 的 stream 偏好决定是否走 SSE；
-          // 页面不再承担长连接，因此切屏/锁屏不会让请求跟着 WebView 冻结。
-          stream: false,
-        },
-      },
-    });
-    job = submitted.job;
+    // 先记本地 pending，再把任务交给原生层：即使用户恰好在 submit 返回前
+    // 切屏/系统冻结 WebView，回来也知道这一轮有后台任务需要接回。
     setPending({
       jobId,
       ownerKey: options.ownerKey,
@@ -270,6 +255,28 @@ export const executeStoryCompletionInNativeBackground = async (
       createdAt: Date.now(),
       meta: options.meta,
     });
+    try {
+      const submitted = await NativeStoryBackground.submit({
+        spec: {
+          jobId,
+          ownerKey: options.ownerKey,
+          title: options.title || '剧情',
+          mode: options.plan.mode,
+          timeoutMs,
+          routes,
+          baseBody: {
+            ...options.body,
+            // 后台服务自己根据每条 API 的 stream 偏好决定是否走 SSE；
+            // 页面不再承担长连接，因此切屏/锁屏不会让请求跟着 WebView 冻结。
+            stream: false,
+          },
+        },
+      });
+      job = submitted.job;
+    } catch (error) {
+      await clearPendingNativeStoryJob(options.ownerKey);
+      throw error;
+    }
   }
 
   if (job.status === 'queued' || job.status === 'running') {
