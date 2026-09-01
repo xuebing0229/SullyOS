@@ -132,41 +132,120 @@ export const prioritizeNewBuffs = (
     return newlyAdded.length > 0 ? [...newlyAdded, ...existing] : nextBuffs;
 };
 
+export const EMOTION_BUFF_MAX_COUNT = 5;
+export const EMOTION_BUFF_MISS_GRACE_ROUNDS = 1;
+
+const buffTrackingKey = (buff: CharacterBuff): string =>
+    buff.id?.trim()
+    || buff.name?.trim().toLowerCase()
+    || buff.label?.trim()
+    || '';
+
+/**
+ * Hybrid lifecycle:
+ * - model confirms/updates a buff -> keep, missed counter resets
+ * - model omits a buff once -> keep for one grace round
+ * - model omits it twice in a row -> expire automatically
+ * - removedBuffIds -> remove immediately
+ * - hard cap at 5, with genuinely new/confirmed emotions ahead of grace-kept history
+ *
+ * missCounts is intentionally external so callers can keep one small counter map per character
+ * without polluting persisted CharacterBuff objects or the evaluator prompt.
+ */
 export const reconcileEmotionBuffs = (
     previousBuffs: CharacterBuff[],
     incomingBuffs: CharacterBuff[],
     removedBuffIds: string[] = [],
+    missCounts: Map<string, number> = new Map(),
 ): CharacterBuff[] => {
     const removed = new Set(
         removedBuffIds.map(id => String(id || '').trim()).filter(Boolean),
     );
-    const remainingPrevious = previousBuffs.filter(buff => !removed.has(buff.id));
+
+    for (const previous of previousBuffs) {
+        if (removed.has(previous.id)) {
+            const key = buffTrackingKey(previous);
+            if (key) missCounts.delete(key);
+        }
+    }
+
+    const effectiveIncoming = incomingBuffs.filter(
+        buff => !buff.id || !removed.has(buff.id),
+    );
 
     const incomingById = new Map<string, CharacterBuff>();
     const incomingByName = new Map<string, CharacterBuff>();
     const incomingByLabel = new Map<string, CharacterBuff>();
-    for (const buff of incomingBuffs) {
+    for (const buff of effectiveIncoming) {
         if (buff.id) incomingById.set(buff.id.trim(), buff);
         if (buff.name) incomingByName.set(buff.name.trim().toLowerCase(), buff);
         if (buff.label) incomingByLabel.set(buff.label.trim(), buff);
     }
 
     const consumed = new Set<CharacterBuff>();
-    const preservedOrUpdated = remainingPrevious.map(previous => {
+    const confirmedExisting: CharacterBuff[] = [];
+    const gracePreserved: CharacterBuff[] = [];
+
+    for (const previous of previousBuffs) {
+        if (removed.has(previous.id)) continue;
+
         const replacement =
             (previous.id ? incomingById.get(previous.id.trim()) : undefined)
             || (previous.name ? incomingByName.get(previous.name.trim().toLowerCase()) : undefined)
             || (previous.label ? incomingByLabel.get(previous.label.trim()) : undefined);
-        if (!replacement) return previous;
-        consumed.add(replacement);
-        return replacement;
-    });
 
-    const genuinelyNew = incomingBuffs.filter(buff => !consumed.has(buff));
-    return prioritizeNewBuffs(
-        [...genuinelyNew, ...preservedOrUpdated],
-        remainingPrevious,
-    );
+        const previousKey = buffTrackingKey(previous);
+        if (replacement) {
+            consumed.add(replacement);
+            if (previousKey) missCounts.delete(previousKey);
+            const replacementKey = buffTrackingKey(replacement);
+            if (replacementKey) missCounts.delete(replacementKey);
+            confirmedExisting.push(replacement);
+            continue;
+        }
+
+        const missed = (previousKey ? missCounts.get(previousKey) : 0) || 0;
+        const nextMissed = missed + 1;
+        if (nextMissed <= EMOTION_BUFF_MISS_GRACE_ROUNDS) {
+            if (previousKey) missCounts.set(previousKey, nextMissed);
+            gracePreserved.push(previous);
+        } else if (previousKey) {
+            missCounts.delete(previousKey);
+        }
+    }
+
+    const genuinelyNew = effectiveIncoming.filter(buff => !consumed.has(buff));
+    for (const buff of genuinelyNew) {
+        const key = buffTrackingKey(buff);
+        if (key) missCounts.delete(key);
+    }
+
+    const result = [
+        ...genuinelyNew,
+        ...confirmedExisting,
+        ...gracePreserved,
+    ].slice(0, EMOTION_BUFF_MAX_COUNT);
+
+    const keptKeys = new Set(result.map(buffTrackingKey).filter(Boolean));
+    for (const key of Array.from(missCounts.keys())) {
+        if (!keptKeys.has(key)) missCounts.delete(key);
+    }
+
+    return result;
+};
+
+// Per-character omission counters live only in memory. A restart simply grants old buffs
+// another single grace round; it never makes them immortal and avoids leaking internal
+// lifecycle metadata into backups, prompts, or UI.
+const emotionBuffMissCountsByChar = new Map<string, Map<string, number>>();
+
+const getEmotionBuffMissCounts = (charId: string): Map<string, number> => {
+    let map = emotionBuffMissCountsByChar.get(charId);
+    if (!map) {
+        map = new Map<string, number>();
+        emotionBuffMissCountsByChar.set(charId, map);
+    }
+    return map;
 };
 
 // ─── JSON 修复链 (全部 string-aware 逐字符扫描, 不用正则盲扫以免误伤字符串内容) ───
@@ -576,8 +655,13 @@ export async function applyEmotionEvalRaw(
             ? result.removedBuffIds!.map(id => String(id || '').trim()).filter(Boolean)
             : [];
         const sanitizedBuffs = (hasBuffArray || hasRemovedBuffIds)
-            ? reconcileEmotionBuffs(previousBuffs, sanitizedIncoming, removedBuffIds)
-            : previousBuffs;
+            ? reconcileEmotionBuffs(
+                previousBuffs,
+                sanitizedIncoming,
+                removedBuffIds,
+                getEmotionBuffMissCounts(charData.id),
+            )
+            : previousBuffs.slice(0, EMOTION_BUFF_MAX_COUNT);
         const buffInjection = hasInjection
             ? replaceInternalUserLabel(result.injection!, userName)
             : (latestChar.buffInjection || '');
