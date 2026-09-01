@@ -33,7 +33,13 @@ declare module './types' {
   }
 
   interface ApiPreset {
+    /** Legacy one-model price. New presets keep pricing on each model entry. */
     pricing?: ApiPricing;
+    /** One connection can expose multiple models; only pricing is model-specific. */
+    models?: Array<{
+      model: string;
+      pricing?: ApiPricing;
+    }>;
   }
 
   interface VRWorldCharState {
