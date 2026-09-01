@@ -61,6 +61,7 @@ import {
 } from '../utils/chatContextRange';
 import { isScheduleFeatureOn } from '../utils/scheduleGenerator';
 import { evaluateEmotionBackground } from '../hooks/useChatAI';
+import { EMOTION_BUFF_MAX_COUNT } from '../utils/emotionApply';
 import { CHAT_GEN_EVENTS, setChatViewSnapshot } from '../utils/chatGenEvents';
 import { buildChatRequestPayload } from '../utils/chatRequestPayload';
 import { ChatPrompts } from '../utils/chatPrompts';
@@ -1690,14 +1691,24 @@ recordApiCall({ requestId: (config as any)?.__sullyApiCallId, url: urlStr, body:
 
         let resetAutoContextCount = 0;
         let migratedContextCount = 0;
+        let trimmedEmotionBuffCount = 0;
         finalChars = finalChars.map(c => {
           const normalized = normalizeCharacterDefaults(normalizeCharacterImpression(c));
           const migration = migrateCharacterContextRange(normalized);
           if (migration.migrated) migratedContextCount++;
           if (migration.resetAutoContext) resetAutoContextCount++;
+
+          const currentBuffs = migration.character.activeBuffs || [];
+          if (currentBuffs.length > EMOTION_BUFF_MAX_COUNT) {
+            trimmedEmotionBuffCount++;
+            return {
+              ...migration.character,
+              activeBuffs: currentBuffs.slice(0, EMOTION_BUFF_MAX_COUNT),
+            };
+          }
           return migration.character;
         });
-        if (migratedContextCount > 0) {
+        if (migratedContextCount > 0 || trimmedEmotionBuffCount > 0) {
           await Promise.all(finalChars.map(c => DB.saveCharacter(c)));
         }
         if (resetAutoContextCount > 0) {
