@@ -138,10 +138,30 @@ const mirrorArchived = (message: Message, entry: StoryTheaterEntry): boolean => 
 
 interface DisplayLine { label?: string; value: string; }
 
-const splitDisplayLines = (text: string): DisplayLine[] => text.split(/\n+/).map(row => row.trim()).filter(Boolean).map(row => {
-    const match = row.match(/^([^：]{1,14})：(.*)$/);
-    return match ? { label: match[1].trim(), value: match[2].trim() } : { value: row };
-});
+const splitDisplayLines = (text: string): DisplayLine[] => {
+    const rows = text.split(/\n+/).map(row => row.trim()).filter(Boolean);
+    const result: DisplayLine[] = [];
+
+    for (const row of rows) {
+        const match = row.match(/^([^：:]{1,20})[：:]\s*(.*)$/);
+        if (match) {
+            result.push({ label: match[1].trim(), value: match[2].trim() });
+            continue;
+        }
+
+        // 没有出现新的“栏目名：”就视为上一栏的续行。
+        // 这样 true_monologue / voice / red / surge 等栏目内部即使主动换行，
+        // 也不会被前端错误拆成一个新的“记录”栏目。
+        const previous = result[result.length - 1];
+        if (previous) {
+            previous.value = previous.value ? `${previous.value}\n${row}` : row;
+        } else {
+            result.push({ value: row });
+        }
+    }
+
+    return result;
+};
 
 const LabeledRows: React.FC<{ lines: DisplayLine[] }> = ({ lines }) => <div className='divide-y divide-current/10'>
     {lines.map((line, index) => <div key={index} className='py-2.5 grid grid-cols-[76px_1fr] gap-3 items-start'>
