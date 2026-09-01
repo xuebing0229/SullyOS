@@ -595,7 +595,8 @@ public class SullyStoryBackgroundService extends Service {
         if (routes != null) {
             for (int i = 0; i < routes.length(); i++) {
                 JSONObject route = routes.optJSONObject(i);
-                if (route != null) route.put("apiKey", "");
+                if (route == null) continue;
+                try { route.put("apiKey", ""); } catch (Exception ignored) { }
             }
         }
     }
