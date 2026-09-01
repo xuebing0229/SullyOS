@@ -407,7 +407,6 @@ public class SullyStoryBackgroundService extends Service {
             connection.setRequestProperty("Accept", stream ? "text/event-stream, application/json" : "application/json, text/event-stream");
             connection.setRequestProperty("Authorization", "Bearer " + route.optString("apiKey", "sk-none"));
             byte[] requestBytes = body.toString().getBytes(StandardCharsets.UTF_8);
-            try (FileOutputStream ignored = null) { }
             try (java.io.OutputStream out = connection.getOutputStream()) {
                 out.write(requestBytes);
             }
