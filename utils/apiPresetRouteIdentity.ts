@@ -1,4 +1,5 @@
 import type { APIConfig, ApiPreset } from '../types';
+import { apiPresetHasModel } from './apiPresetModels';
 
 export type ApiPresetMatchReason =
     | 'preset_not_found'
@@ -33,8 +34,7 @@ const presetMatchesRoute = (
 ): boolean =>
     normalizeBaseUrl(preset.config?.baseUrl || '')
         === normalizeBaseUrl(input.baseUrl)
-    && normalizeModel(preset.config?.model || '')
-        === normalizeModel(input.model);
+    && apiPresetHasModel(preset, normalizeModel(input.model));
 
 /**
  * 用一次真实请求的完整线路身份匹配计费预设。
