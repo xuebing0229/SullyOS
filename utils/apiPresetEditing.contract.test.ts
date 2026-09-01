@@ -6,14 +6,15 @@ const root = path.resolve(__dirname, '..');
 const settings = fs.readFileSync(path.join(root, 'apps/Settings.tsx'), 'utf8');
 const context = fs.readFileSync(path.join(root, 'context/OSContext.tsx'), 'utf8');
 
-describe('editable API preset integration contract', () => {
-  it('updates the selected preset and then applies the same config through the credential-sync path', () => {
+describe('editable multi-model API preset integration contract', () => {
+  it('adds the selected model to the selected preset and activates the same preset identity', () => {
     const handler = settings.slice(
       settings.indexOf('const handleSaveApi ='),
-      settings.indexOf('const handleSaveOtherApis ='),
+      settings.indexOf('const buildVisionApiConfig ='),
     );
-    expect(handler).toContain('updateApiPreset(selectedApiPreset.id, { name: presetName, config: nextConfig })');
-    expect(handler.indexOf('updateApiPreset')).toBeLessThan(handler.indexOf('commitApiConfig'));
+    expect(handler).toContain('setApiPresetDefaultModel(');
+    expect(handler).toContain('models: updatedPreset.models');
+    expect(handler).toContain('activateApiPreset(updatedPreset)');
     expect(handler).toContain('保存到「');
   });
 
@@ -22,6 +23,10 @@ describe('editable API preset integration contract', () => {
     expect(settings).toContain('setSelectedPresetId(preset.id)');
     expect(context).toContain('persistCurrentApiConfig(applyApiPresetConfig(apiConfig, preset.config))');
     expect(context).toContain('persistActiveApiPresetId(preset.id)');
+  });
+
+  it('stores a model collection on newly created presets', () => {
+    expect(context).toContain("models: config.model ? [{ model: config.model, pricing }] : []");
   });
 
   it('resets failover runtime when presets change and exposes Save As copy', () => {
