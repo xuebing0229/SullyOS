@@ -1,4 +1,5 @@
 import type { APIConfig, ApiPreset } from '../types';
+import { normalizeApiPresetModels } from './apiPresetModels';
 
 // Clipboard contents can carry zero-width characters that String.trim() does not
 // remove. They are never valid at the edges of an API URL, token, or model id.
@@ -35,9 +36,9 @@ export function normalizeApiConfig(config: APIConfig): APIConfig {
 }
 
 export function normalizeApiPreset(preset: ApiPreset): ApiPreset {
-  return {
+  return normalizeApiPresetModels({
     ...preset,
     name: String(preset.name ?? '').trim(),
     config: normalizeApiConfig(preset.config),
-  };
+  });
 }
