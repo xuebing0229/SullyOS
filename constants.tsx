@@ -41,6 +41,7 @@ import {
   BookOpen,
   Broadcast,
   CirclesFour,
+  FilmSlate,
 } from '@phosphor-icons/react';
 
 // SVG 图标库 - Phosphor Icons
@@ -87,6 +88,7 @@ export const Icons: Record<string, React.FC<{ className?: string }>> = {
   ReadingTogether: ({ className }) => <BookOpen className={className} weight="regular" />,
   Live: ({ className }) => <Broadcast className={className} weight="fill" />,
   Moments: ({ className }) => <CirclesFour className={className} weight="fill" />,
+  StoryTheater: ({ className }) => <FilmSlate className={className} weight="regular" />,
 };
 
 export const INSTALLED_APPS: AppConfig[] = [
@@ -101,6 +103,7 @@ export const INSTALLED_APPS: AppConfig[] = [
   { id: AppID.CheckPhone, name: '查手机', icon: 'CheckPhone', color: 'slate' },
   // { id: AppID.Browser, name: '浏览器', icon: 'Browser', color: 'blue' }, // Hidden
   { id: AppID.Date, name: '见面', icon: 'Date', color: 'pink' },
+  { id: AppID.StoryTheater, name: '文游', icon: 'StoryTheater', color: 'violet' },
   { id: AppID.User, name: '档案', icon: 'User', color: 'blue' },
   { id: AppID.Bank, name: '存钱罐', icon: 'Bank', color: 'lime' }, // Hidden
   { id: AppID.Journal, name: '交换日记', icon: 'Journal', color: 'amber' },
