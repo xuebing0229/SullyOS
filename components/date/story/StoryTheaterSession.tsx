@@ -303,6 +303,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
     const [messages, setMessages] = useState<Message[]>([]);
     const [input, setInput] = useState('');
     const [sending, setSending] = useState(false);
+    const [streamingText, setStreamingText] = useState('');
     const [memoryStatus, setMemoryStatus] = useState('');
     const [contextTokens, setContextTokens] = useState(0);
     const [contextTokensExact, setContextTokensExact] = useState(false);
@@ -368,6 +369,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
     // twice before `sending` re-renders the disabled button, creating two billable
     // completions. Keep the state for UI only and use this ref as the real mutex.
     const sendLock = useRef(false);
+    const streamingTextRef = useRef('');
     const archiveLock = useRef(false);
     const bottomRef = useRef<HTMLDivElement>(null);
     const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -492,6 +494,8 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
         setMemoryCandidates([]);
         setShowMemoryCards(false);
         setMemoryCardBusy(false);
+        streamingTextRef.current = '';
+        setStreamingText('');
     }, [entry.id]);
     const patchAffinityDraft = useCallback((characterId: string, patch: Partial<AffinityDraft>) => {
         setAffinityDrafts(current => ({
@@ -568,6 +572,11 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
         }
     }, [addToast, deletingMessage, entry.writesToCharacterMemory, loadMessages, mutatingMessage, relatedMessageIds]);
     useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' }); }, [messages.length, sending]);
+    useEffect(() => {
+        if (!streamingText) return;
+        const frame = requestAnimationFrame(() => bottomRef.current?.scrollIntoView({ block: 'end' }));
+        return () => cancelAnimationFrame(frame);
+    }, [streamingText]);
     const pageCount = Math.max(1, Math.ceil(messages.length / STORY_PAGE_SIZE));
     useEffect(() => { setMessagePage(Math.max(0, pageCount - 1)); }, [messages.length, pageCount]);
     const pageMessages = useMemo(() => messages.slice(messagePage * STORY_PAGE_SIZE, (messagePage + 1) * STORY_PAGE_SIZE), [messagePage, messages]);
@@ -686,15 +695,21 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
         }
     }, [actors, addToast, apiConfig, entry, groups, mask.name, memoryActors, memoryCardBusy, messages, realtimeConfig, userProfile]);
 
-    const callCompletion = useCallback(async (payload: Array<{ role: string; content: string }>, settings?: Partial<StoryGenerationSettings>, onPromptTokens?: (tokens: number) => void): Promise<string> => {
+    const callCompletion = useCallback(async (
+        payload: Array<{ role: string; content: string }>,
+        settings?: Partial<StoryGenerationSettings>,
+        onPromptTokens?: (tokens: number) => void,
+        onStreamText?: (fullText: string) => void,
+    ): Promise<string> => {
         const generationSettings = prepareStoryGenerationSettings(settings, entry.omitSamplingParams === true);
         const plan = resolveApiExecutionPlan('chat', apiConfig, true);
+        const wantsStream = Boolean(onStreamText);
         const { value: data } = await executeOpenAiChatPlan({
             plan,
             body: {
                 model: apiConfig.model,
                 messages: payload,
-                stream: false,
+                stream: wantsStream,
                 ...generationSettings,
             },
             meta: {
@@ -703,6 +718,13 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 purpose: '剧情续写',
             },
             directMaxRetries: 2,
+            forceStream: wantsStream,
+            // 剧情正文按“首个可见正文字符”承诺线路：首字前可以故障转移，
+            // 首字一旦已经展示，后续断流也绝不换线路，避免两条线路各写半篇。
+            streamCommitMode: wantsStream ? 'content' : 'activity',
+            streamHooks: wantsStream ? {
+                onDelta: (_delta, fullText) => onStreamText?.(fullText),
+            } : undefined,
         });
         const reportedPromptTokens = Number(data?.usage?.prompt_tokens);
         if (Number.isFinite(reportedPromptTokens) && reportedPromptTokens > 0) onPromptTokens?.(reportedPromptTokens);
@@ -873,14 +895,27 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
     const send = useCallback(async (rerollTarget?: Message, continueRequested = false) => {
         if (sendLock.current || actors.length === 0) return;
         sendLock.current = true;
+        streamingTextRef.current = '';
+        setStreamingText('');
         setSending(true);
         setRerollingId(rerollTarget?.id || null);
+
+        let partialStreamText = '';
+        let partialAffinityInputs: StoryAffinityInput[] = [];
+        let partialPromptTokens = 0;
+        let partialPromptTokensExact = false;
+        let partialIsReroll = false;
+        let partialRerollTarget: Message | undefined;
+        let partialClearInput = false;
+
         try {
             const before = (await DB.getMessagesByCharId(threadId, true))
                 .filter(message => message.metadata?.source === 'story_theater')
                 .sort((a, b) => a.id - b.id);
             const latest = before[before.length - 1];
             const isReroll = Boolean(rerollTarget && latest?.id === rerollTarget.id && latest.role === 'assistant' && !mirrorArchived(latest, entry));
+            partialIsReroll = isReroll;
+            partialRerollTarget = rerollTarget;
             if (rerollTarget && !isReroll) return;
             const openingPrompt = `请直接写出「${entry.title}」的第一幕。${entry.premise ? `剧情介绍：${entry.premise}` : '没有额外剧情介绍，请根据角色、世界与预设自然建立场景。'}直接开始，不要求补充信息，也不要替当前由你执笔的身份做重大决定。`;
             const typedText = input.trim();
@@ -897,6 +932,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             const isContinueTurn = isReroll
                 ? previousUser?.metadata?.theaterContinue === true
                 : continueRequested || (retry && latest?.metadata?.theaterContinue === true);
+            partialClearInput = !isContinueTurn;
             const modelText = isContinueTurn ? buildStoryContinueInstruction(promptIdentityName) : text;
             const draftAffinityInputs = affinityEnabled ? actors.map(actor => {
                 const draft = affinityDrafts[actor.id] || EMPTY_AFFINITY_DRAFT;
@@ -905,6 +941,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             const savedAffinityInputs = affinityInputsFromMessage(isReroll ? previousUser : retry ? latest : undefined, actors);
             const rerollAffinityInputs = isReroll ? affinityInputsFromMessage(rerollTarget, actors) : [];
             const affinityInputs = savedAffinityInputs.length > 0 ? savedAffinityInputs : rerollAffinityInputs.length > 0 ? rerollAffinityInputs : draftAffinityInputs;
+            partialAffinityInputs = affinityInputs;
             const userMessageId = isReroll
                 ? (previousUser?.id || 0)
                 : assistantOpening
@@ -974,15 +1011,24 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             const payload = appendStoryUserTurn(payloadBeforeTurn, modelInput, compiled.assistantPrefill, promptEntry.forceUserLastMessage === true);
             let promptTokenCount = estimateStoryTokens(payload.map(message => `${message.role}\n${message.content}`).join('\n'));
             let promptTokenCountExact = false;
+            partialPromptTokens = promptTokenCount;
+            partialPromptTokensExact = false;
             setContextTokens(promptTokenCount);
             setContextTokensExact(false);
+            const prefill = compiled.assistantPrefill?.content || '';
             const generated = await callCompletion(payload, compiled.settings, reported => {
                 promptTokenCount = reported;
                 promptTokenCountExact = true;
+                partialPromptTokens = reported;
+                partialPromptTokensExact = true;
                 setContextTokens(reported);
                 setContextTokensExact(true);
+            }, fullText => {
+                const visible = prefill && !fullText.startsWith(prefill) ? `${prefill}${fullText}` : fullText;
+                partialStreamText = visible;
+                streamingTextRef.current = visible;
+                setStreamingText(visible);
             });
-            const prefill = compiled.assistantPrefill?.content || '';
             const content = prefill && !generated.startsWith(prefill) ? `${prefill}${generated}` : generated;
             if (isReroll && rerollTarget) {
                 const mirrorIds = Object.values((rerollTarget.metadata?.theaterMirrorIds || {}) as Record<string, number>).map(Number).filter(Boolean);
@@ -997,6 +1043,9 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             setAffinityDrafts({});
             setShowAffinityInput(false);
             await loadMessages();
+            streamingTextRef.current = '';
+            setStreamingText('');
+            partialStreamText = '';
             if (entry.imageGeneration?.enabled) {
                 setMemoryStatus('正在为本轮剧情绘制插图…');
                 try {
@@ -1017,6 +1066,37 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             else void archiveIfNeeded();
         } catch (error: any) {
             console.error('[StoryTheater] send failed', error);
+
+            const committedPartial = (partialStreamText || streamingTextRef.current).trim();
+            if (committedPartial) {
+                try {
+                    if (partialIsReroll && partialRerollTarget) {
+                        const mirrorIds = Object.values((partialRerollTarget.metadata?.theaterMirrorIds || {}) as Record<string, number>)
+                            .map(Number)
+                            .filter(Boolean);
+                        await DB.deleteMessages([partialRerollTarget.id, ...mirrorIds]);
+                    }
+                    await saveCentralAndMirrors('assistant', committedPartial, {
+                        theaterPromptTokens: partialPromptTokens,
+                        theaterPromptTokensExact: partialPromptTokensExact,
+                        theaterInterrupted: true,
+                        ...(partialAffinityInputs.length > 0 ? { theaterAffinityInputs: partialAffinityInputs } : {}),
+                    });
+                    if (partialClearInput) setInput('');
+                    setAffinityDrafts({});
+                    setShowAffinityInput(false);
+                    await loadMessages();
+                    streamingTextRef.current = '';
+                    setStreamingText('');
+                    addToast('流式生成中途断开，已保留已经出现的正文；因为已经出首字，没有切换故障转移线路。', 'error');
+                    return;
+                } catch (savePartialError: any) {
+                    console.error('[StoryTheater] preserve interrupted stream failed', savePartialError);
+                }
+            }
+
+            streamingTextRef.current = '';
+            setStreamingText('');
             const message = String(error?.message || error);
             const isOpaqueBrowserFailure = /load failed|failed to fetch|networkerror|network request failed/i.test(message);
             addToast(
@@ -1147,6 +1227,13 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                         const isLatest = message.id === messages[messages.length - 1]?.id;
                         return <article key={message.id} {...pressHandlersFor(message)}><StoryOutput content={message.content} onChoose={choice => setInput(choice)} affinityInputs={affinityInputsFromMessage(message, actors)} /><StoryRoundImage message={message} busy={regeneratingImageId === message.id} onRegenerate={() => void regenerateStoryImage(message)} />{isLatest && <div className='mt-4 flex items-center justify-end gap-2'><span className='w-1.5 h-1.5 rounded-full bg-violet-400' /><button disabled={sending} onClick={() => void send(message)} className='inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-slate-200 bg-white text-[10px] font-bold text-slate-500 disabled:opacity-40'>{rerollingId === message.id ? <SpinnerGap size={12} className='animate-spin' /> : <ArrowClockwise size={12} />}换一种写法</button></div>}</article>;
                     })}
+                    {streamingText && <article className='relative'>
+                        <StoryOutput content={streamingText} />
+                        <div className='mt-4 flex items-center gap-2 text-[9px] font-bold text-violet-500'>
+                            <span className='w-1.5 h-1.5 rounded-full bg-violet-500 animate-pulse' />
+                            正在续写 · 首字出现后将固定当前线路
+                        </div>
+                    </article>}
                 </div>
                 {pageCount > 1 && <StoryPagination className='mt-8' page={messagePage} pageCount={pageCount} onChange={setMessagePage} />}
                 {archivedCount > 0 && <div className='mt-10 flex items-center justify-center gap-2 text-[9px] text-slate-400'><Archive size={13} />{archivedCount} 条旧内容已归档，仍会通过所选记忆方式参与续写</div>}
