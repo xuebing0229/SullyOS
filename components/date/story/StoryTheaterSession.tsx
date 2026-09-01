@@ -61,6 +61,7 @@ import StoryImageSettingsButton from './StoryImageSettings';
 import AppMemoryCandidatePanel from '../../AppMemoryCandidatePanel';
 import { generateAppMemoryCandidates } from '../../../utils/appMemoryBridge';
 import {
+    clearPendingNativeStoryJob,
     executeStoryCompletionInNativeBackground,
     getPendingNativeStoryJob,
     isNativeStoryBackgroundRuntime,
@@ -843,6 +844,9 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
         let partialIsReroll = false;
         let partialRerollTarget: Message | undefined;
         let partialClearInput = false;
+        const backgroundOwnerKey = `story-turn:${entry.id}`;
+        let usedNativeBackground = false;
+        let nativeCompletionReceived = false;
 
         try {
             const before = (await DB.getMessagesByCharId(threadId, true))
@@ -952,6 +956,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             setContextTokens(promptTokenCount);
             setContextTokensExact(false);
             const prefill = compiled.assistantPrefill?.content || '';
+            usedNativeBackground = isNativeStoryBackgroundRuntime();
             const generated = await callCompletion(payload, compiled.settings, reported => {
                 promptTokenCount = reported;
                 promptTokenCountExact = true;
@@ -965,7 +970,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 streamingTextRef.current = visible;
                 setStreamingText(visible);
             }, {
-                ownerKey: `story-turn:${entry.id}`,
+                ownerKey: backgroundOwnerKey,
                 title: entry.title,
                 meta: {
                     ...(isReroll && rerollTarget ? { rerollTargetId: rerollTarget.id } : {}),
@@ -973,6 +978,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                     isContinueTurn,
                 },
             });
+            nativeCompletionReceived = usedNativeBackground;
             const content = prefill && !generated.startsWith(prefill) ? `${prefill}${generated}` : generated;
             if (isReroll && rerollTarget) {
                 const mirrorIds = Object.values((rerollTarget.metadata?.theaterMirrorIds || {}) as Record<string, number>).map(Number).filter(Boolean);
@@ -983,6 +989,9 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 theaterPromptTokensExact: promptTokenCountExact,
                 ...(affinityInputs.length > 0 ? { theaterAffinityInputs: affinityInputs } : {}),
             });
+            // 只有正文已经真正写入 IndexedDB，才把 native job 清掉。
+            // 这样即使 App 在收到模型结果后立刻被系统杀掉，回来仍能继续收尾，不会丢正文。
+            if (usedNativeBackground) await clearPendingNativeStoryJob(backgroundOwnerKey);
             if (!isContinueTurn) setInput('');
             setAffinityDrafts({});
             setShowAffinityInput(false);
@@ -1032,6 +1041,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                     await loadMessages();
                     streamingTextRef.current = '';
                     setStreamingText('');
+                    if (usedNativeBackground) await clearPendingNativeStoryJob(backgroundOwnerKey);
                     addToast('流式生成中途断开，已保留已经出现的正文；因为已经出首字，没有切换故障转移线路。', 'error');
                     return;
                 } catch (savePartialError: any) {
@@ -1041,6 +1051,11 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
 
             streamingTextRef.current = '';
             setStreamingText('');
+            // native completion 已经成功但后续落库失败时保留 job，回来可以重新收尾；
+            // 真正的 native 请求失败则清掉，让用户下一次点击可以明确重试。
+            if (usedNativeBackground && !nativeCompletionReceived) {
+                await clearPendingNativeStoryJob(backgroundOwnerKey);
+            }
             const message = String(error?.message || error);
             const isOpaqueBrowserFailure = /load failed|failed to fetch|networkerror|network request failed/i.test(message);
             addToast(
@@ -1278,6 +1293,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
         <footer className='story-safe-footer shrink-0 px-4 pt-3 bg-stone-100/95 backdrop-blur border-t border-slate-200'>
             <div className='max-w-2xl mx-auto'>
                 {memoryStatus && <div className='mb-2 flex items-center gap-2 text-[10px] text-violet-600'><SpinnerGap size={13} className='animate-spin' />{memoryStatus}</div>}
+                {sending && isNativeStoryBackgroundRuntime() && <div className='mb-2 flex items-center gap-2 text-[10px] text-emerald-700'><span className='w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse' />已转入后台续写，可以切屏或锁屏；写好后会通知你</div>}
                 {!sending && !memoryStatus && !input.trim() && pendingRetryInput && <div className='mb-2 text-[10px] text-violet-600'>上次续写可能中断了，点击推进即可继续</div>}
                 <div className='rounded-[22px] bg-white border border-slate-200 shadow-sm px-3 pt-2.5 pb-2'>
                     <textarea
