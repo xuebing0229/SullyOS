@@ -35,8 +35,12 @@ const StoryImageSettingsButton: React.FC<Props> = ({ entry, onChange }) => {
         setOpen(false);
     };
     return <>
-        <button type='button' onClick={() => setOpen(true)} className={`relative grid h-9 w-9 place-items-center rounded-full ${entry.imageGeneration?.enabled ? 'text-violet-600' : ''}`} title='剧情配图' aria-label='剧情配图'><ImageSquare size={18} weight={entry.imageGeneration?.enabled ? 'fill' : 'regular'} />{entry.imageGeneration?.enabled && <span className='absolute right-1 top-1 h-2 w-2 rounded-full border border-stone-100 bg-emerald-500' />}</button>
-        {open && createPortal(<div className='story-theme fixed inset-0 z-[95] flex items-end justify-center bg-slate-950/35' onClick={() => setOpen(false)}>
+        <button type='button' onClick={() => setOpen(true)} className={`relative z-20 grid h-9 w-9 place-items-center rounded-full ${entry.imageGeneration?.enabled ? 'text-violet-600' : ''}`} title='剧情配图' aria-label='剧情配图'><ImageSquare size={18} weight={entry.imageGeneration?.enabled ? 'fill' : 'regular'} />{entry.imageGeneration?.enabled && <span className='absolute right-1 top-1 h-2 w-2 rounded-full border border-stone-100 bg-emerald-500' />}</button>
+        {open && createPortal(<div
+            className='story-theme fixed inset-0 z-[95] flex items-end justify-center bg-slate-950/35'
+            style={{ position: 'fixed', inset: 0, pointerEvents: 'auto' }}
+            onClick={() => setOpen(false)}
+        >
             <div className='story-safe-sheet flex max-h-[88dvh] w-full max-w-sm flex-col overflow-hidden rounded-t-[28px] bg-stone-100 shadow-2xl' onClick={event => event.stopPropagation()} role='dialog' aria-modal='true' aria-labelledby='story-image-settings-title'>
                 <div className='shrink-0 px-5 pb-4 pt-5'><div className='flex items-start gap-4'><div className='min-w-0 flex-1'><div className='text-[9px] font-bold uppercase tracking-[.22em] text-violet-500'>Story illustration</div><h2 id='story-image-settings-title' className='mt-1 text-lg font-semibold'>本剧情自动配图</h2><p className='mt-1 text-[10px] leading-5 text-slate-500'>直接复用设置里当前选中的 GPT Image 或 NovelAI。</p></div><button type='button' onClick={() => setOpen(false)} className='grid h-10 w-10 shrink-0 place-items-center rounded-full border border-slate-200 bg-white'><X size={17} /></button></div></div>
                 <div className='min-h-0 flex-1 overflow-y-auto border-y border-slate-200 px-5'>
