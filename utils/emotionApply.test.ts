@@ -21,7 +21,14 @@ vi.mock('./db', () => ({ DB: {
     getAllCharacters: () => getAllCharacters(),
 } }));
 
-import { parseEmotionEvalOutput, applyEmotionEvalRaw, extractAssistantText, prioritizeNewBuffs, reconcileEmotionBuffs } from './emotionApply';
+import {
+    parseEmotionEvalOutput,
+    applyEmotionEvalRaw,
+    extractAssistantText,
+    prioritizeNewBuffs,
+    reconcileEmotionBuffs,
+    EMOTION_BUFF_MAX_COUNT,
+} from './emotionApply';
 
 const makeChar = (extra: any = {}): any => ({
     id: 'char-1',
@@ -206,30 +213,60 @@ describe('prioritizeNewBuffs — 新情绪置顶', () => {
     });
 });
 
-describe('reconcileEmotionBuffs — 显式删除协议', () => {
+describe('reconcileEmotionBuffs — 有限生命周期', () => {
     const a = { id: 'a', name: 'a', label: '旧A', intensity: 2 } as any;
     const b = { id: 'b', name: 'b', label: '旧B', intensity: 3 } as any;
     const c = { id: 'c', name: 'c', label: '旧C', intensity: 2 } as any;
 
-    it('本轮只吐一个新情绪时保留旧情绪，并让新情绪置顶', () => {
+    it('本轮只吐一个新情绪时，旧情绪先保留一轮且新情绪置顶', () => {
         const fresh = { id: 'd', name: 'd', label: '新D', intensity: 4 } as any;
-        expect(reconcileEmotionBuffs([a, b, c], [fresh], []).map(x => x.id))
+        const misses = new Map<string, number>();
+        expect(reconcileEmotionBuffs([a, b, c], [fresh], [], misses).map(x => x.id))
             .toEqual(['d', 'a', 'b', 'c']);
+    });
+
+    it('旧情绪连续漏两轮自动淘汰，重新出现会把漏记清零', () => {
+        const misses = new Map<string, number>();
+        const first = reconcileEmotionBuffs([a, b], [], [], misses);
+        expect(first.map(x => x.id)).toEqual(['a', 'b']);
+
+        const second = reconcileEmotionBuffs(first, [], [], misses);
+        expect(second).toEqual([]);
+
+        const revivedMisses = new Map<string, number>();
+        const onceMissing = reconcileEmotionBuffs([a], [], [], revivedMisses);
+        const confirmed = reconcileEmotionBuffs(onceMissing, [{ ...a, intensity: 5 }], [], revivedMisses);
+        expect(confirmed.map(x => x.id)).toEqual(['a']);
+        expect(confirmed[0].intensity).toBe(5);
+        expect(revivedMisses.size).toBe(0);
+    });
+
+    it('removedBuffIds 明确删除时立即移除，不等宽限期', () => {
+        const misses = new Map<string, number>();
+        expect(reconcileEmotionBuffs([a, b, c], [], ['a', 'c'], misses).map(x => x.id))
+            .toEqual(['b']);
+    });
+
+    it('总数硬上限 5，新情绪和本轮确认情绪优先于只靠宽限保留的历史', () => {
+        const old = Array.from({ length: 6 }, (_, i) => ({
+            id: `old-${i}`,
+            name: `old_${i}`,
+            label: `旧${i}`,
+            intensity: 2,
+        })) as any[];
+        const fresh = { id: 'fresh', name: 'fresh', label: '全新', intensity: 4 } as any;
+        const result = reconcileEmotionBuffs(old, [fresh, old[4]], [], new Map());
+        expect(result).toHaveLength(EMOTION_BUFF_MAX_COUNT);
+        expect(result[0].id).toBe('fresh');
+        expect(result.some(x => x.id === 'old-4')).toBe(true);
     });
 
     it('同 id 返回新版时更新旧条目，不生成重复 buff', () => {
         const changedB = { ...b, label: '旧B变了', intensity: 5 };
-        const result = reconcileEmotionBuffs([a, b, c], [changedB], []);
-        expect(result.map(x => x.id)).toEqual(['a', 'b', 'c']);
-        expect(result[1].intensity).toBe(5);
-        expect(result[1].label).toBe('旧B变了');
-    });
-
-    it('只有 removedBuffIds 能真正删除旧情绪', () => {
-        expect(reconcileEmotionBuffs([a, b, c], [], ['a', 'c']).map(x => x.id))
-            .toEqual(['b']);
-        expect(reconcileEmotionBuffs([a, b, c], [], []).map(x => x.id))
-            .toEqual(['a', 'b', 'c']);
+        const result = reconcileEmotionBuffs([a, b, c], [changedB], [], new Map());
+        expect(result.map(x => x.id)).toEqual(['b', 'a', 'c']);
+        expect(result[0].intensity).toBe(5);
+        expect(result[0].label).toBe('旧B变了');
     });
 });
 
