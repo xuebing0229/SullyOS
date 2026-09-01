@@ -4172,24 +4172,26 @@ const Settings: React.FC = () => {
           <div className="space-y-2">
               <label className="text-[10px] font-bold text-slate-400 uppercase">预设名称 (例如: DeepSeek)</label>
               <input value={newPresetName} onChange={e => setNewPresetName(e.target.value)} className="w-full bg-slate-100 rounded-xl px-4 py-3 text-sm focus:outline-primary" autoFocus placeholder="Name..." />
+              <p className="text-[10px] text-slate-400">当前模型：<span className="font-mono text-slate-600">{localModel || '未填写'}</span></p>
               <ApiPricingEditor value={newPresetPricing} onChange={setNewPresetPricing} compact />
           </div>
       </Modal>
 
       <Modal
           isOpen={pricingPresetId !== null}
-          title="API 预设价格"
-          onClose={() => { setPricingPresetId(null); setPricingDraft(undefined); }}
+          title={pricingModel ? `模型价格 · ${pricingModel}` : '模型价格'}
+          onClose={() => { setPricingPresetId(null); setPricingModel(''); setPricingDraft(undefined); }}
           footer={
               <button
                   onClick={() => {
                       const preset = apiPresets.find(item => item.id === pricingPresetId);
-                      if (!preset || !pricingDraft) return;
-                      const updated = { ...preset, pricing: pricingDraft };
-                      updateApiPreset(preset.id, { pricing: pricingDraft });
+                      if (!preset || !pricingModel || !pricingDraft) return;
+                      const updated = setApiPresetModelPricing(preset, pricingModel, pricingDraft);
+                      updateApiPreset(preset.id, { models: updated.models });
                       setPricingPresetId(null);
+                      setPricingModel('');
                       setPricingDraft(undefined);
-                      addToast('价格已保存', 'success');
+                      addToast(`${pricingModel} 的价格已保存`, 'success');
                       void backfillUnpricedCallsForPreset(updated).then(count => {
                           if (count > 0) addToast(`已补算最近记录 ${count} 条`, 'info');
                       });
@@ -4214,7 +4216,7 @@ const Settings: React.FC = () => {
               <input value={editPresetName} onChange={event => setEditPresetName(event.target.value)} placeholder="预设名称" className="w-full bg-slate-100 rounded-xl px-4 py-2.5 text-sm focus:outline-primary" />
               <input value={editPresetUrl} onChange={event => setEditPresetUrl(event.target.value)} placeholder="https://..." className="w-full bg-slate-100 rounded-xl px-4 py-2.5 text-sm font-mono focus:outline-primary" />
               <SensitiveTextInput value={editPresetKey} onChange={event => setEditPresetKey(event.target.value)} placeholder="sk-..." className="w-full bg-slate-100 rounded-xl px-4 py-2.5 text-sm font-mono focus:outline-primary" />
-              <input value={editPresetModel} onChange={event => setEditPresetModel(event.target.value)} placeholder="模型名称" className="w-full bg-slate-100 rounded-xl px-4 py-2.5 text-sm font-mono focus:outline-primary" />
+              <input value={editPresetModel} onChange={event => setEditPresetModel(event.target.value)} placeholder="默认模型（保存时会加入模型列表）" className="w-full bg-slate-100 rounded-xl px-4 py-2.5 text-sm font-mono focus:outline-primary" />
               <div className="rounded-xl border border-slate-100 bg-slate-50/70 px-3 py-3 space-y-3">
                   <button type="button" aria-pressed={editPresetStream} onClick={() => setEditPresetStream(value => !value)} className="w-full flex items-center justify-between text-xs font-bold text-slate-500">
                       <span>流式输出（随预设保存）</span><span>{editPresetStream ? '开启' : '关闭'}</span>
@@ -4228,7 +4230,10 @@ const Settings: React.FC = () => {
                   setEditPresetUrl(localUrl); setEditPresetKey(localKey); setEditPresetModel(localModel);
                   setEditPresetStream(localStream); setEditPresetTemperature(localTemperature);
               }} className="w-full py-2 bg-slate-100 text-slate-500 text-xs font-bold rounded-xl">用当前完整配置填入</button>
-              <p className="text-[10px] text-slate-400">{editingPresetId === activePresetId ? '这条正在使用中，保存后当前配置会同步更新。' : '只修改这条预设，不影响当前配置。'}</p>
+              <p className="text-[10px] text-slate-400">
+                  URL / Key / 流式 / 温度由这条预设下的所有模型共用；只有价格按模型分别保存。
+                  {editingPresetId === activePresetId ? ' 这条正在使用中，保存后当前配置会同步更新。' : ''}
+              </p>
           </div>
       </Modal>
 
