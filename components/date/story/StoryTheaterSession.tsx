@@ -1,8 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Archive, ArrowBendDownRight, ArrowClockwise, ArrowLeft, Broadcast, CaretDown, CaretLeft, CaretRight, ChatCircleDots, Clock, Database, DownloadSimple, Eye, EyeSlash, FilmSlate, GearSix, HeartStraight, Key, MapPin, PaperPlaneTilt, PencilSimple, SlidersHorizontal, SpinnerGap, Trash, X } from '@phosphor-icons/react';
+import { Archive, ArrowBendDownRight, ArrowClockwise, ArrowLeft, Broadcast, CaretDown, CaretLeft, CaretRight, ChatCircleDots, Clock, Database, DownloadSimple, Eye, EyeSlash, FilmSlate, GearSix, HeartStraight, Key, MapPin, PaperPlaneTilt, PencilSimple, SlidersHorizontal, Sparkle, SpinnerGap, Trash, X } from '@phosphor-icons/react';
 import { useOS } from '../../../context/OSContext';
 import TokenImg from '../../os/TokenImg';
-import type { CharacterProfile, Message, StoryTheaterEntry, StoryTheaterImageFrame, StoryTheaterMask, StoryTheaterPreset } from '../../../types';
+import type { AppMemoryCandidate, CharacterProfile, Message, StoryTheaterEntry, StoryTheaterImageFrame, StoryTheaterMask, StoryTheaterPreset } from '../../../types';
 import { DB } from '../../../utils/db';
 import { ContextBuilder } from '../../../utils/context';
 import { safeResponseJson, extractContent } from '../../../utils/safeApi';
@@ -58,6 +58,8 @@ import { StoryAppearanceButton } from './StoryTheaterTheme';
 import { shareOrDownloadFile } from '../../../utils/shareExport';
 import { generateStoryTheaterImage } from '../../../utils/storyTheaterImage';
 import StoryImageSettingsButton from './StoryImageSettings';
+import AppMemoryCandidatePanel from '../../AppMemoryCandidatePanel';
+import { generateAppMemoryCandidates } from '../../../utils/appMemoryBridge';
 import {
     buildStoryContinueInstruction,
     MEETING_CONTINUE_DISPLAY_TEXT,
@@ -281,7 +283,7 @@ const StoryOutput: React.FC<{ content: string; onChoose?: (text: string) => void
 };
 
 const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, onEdit, onOpenVectorMemory, onEntryChange }) => {
-    const { characters, userProfile, apiConfig, memoryPalaceConfig, remoteVectorConfig, updateCharacter, addToast } = useOS();
+    const { characters, userProfile, groups, apiConfig, realtimeConfig, memoryPalaceConfig, remoteVectorConfig, updateCharacter, addToast } = useOS();
     const threadId = storyTheaterThreadId(entry.id);
     const actors = useMemo(() => characters.filter(char => entry.characterIds.includes(char.id)), [characters, entry.characterIds]);
     const memoryActors = useMemo(() => {
@@ -310,6 +312,9 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
     const [messagePage, setMessagePage] = useState(0);
     const [expandedArchivedIds, setExpandedArchivedIds] = useState<Set<number>>(() => new Set());
     const [exporting, setExporting] = useState(false);
+    const [memoryCandidates, setMemoryCandidates] = useState<AppMemoryCandidate[]>([]);
+    const [showMemoryCards, setShowMemoryCards] = useState(false);
+    const [memoryCardBusy, setMemoryCardBusy] = useState(false);
     const [showQuickPreset, setShowQuickPreset] = useState(false);
     const [rerollingId, setRerollingId] = useState<number | null>(null);
     const [regeneratingImageId, setRegeneratingImageId] = useState<number | null>(null);
@@ -362,6 +367,9 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
         setMessageMenu(null);
         setEditingMessage(null);
         setDeletingMessage(null);
+        setMemoryCandidates([]);
+        setShowMemoryCards(false);
+        setMemoryCardBusy(false);
     }, [entry.id]);
     const patchAffinityDraft = useCallback((characterId: string, patch: Partial<AffinityDraft>) => {
         setAffinityDrafts(current => ({
@@ -490,6 +498,71 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             setExporting(false);
         }
     }, [actors, addToast, entry, exporting, mask.name, messages]);
+
+    const openSharedFictionMemoryCards = useCallback(async () => {
+        if (entry.writesToCharacterMemory) {
+            addToast('真实时间陪伴已经按真实经历进入角色记忆，不需要再做虚构记忆卡', 'info');
+            return;
+        }
+        if (messages.length === 0) {
+            addToast('先演一段剧情，再整理共同演绎记忆', 'info');
+            return;
+        }
+        if (memoryCardBusy || memoryActors.length === 0) return;
+
+        setMemoryCardBusy(true);
+        try {
+            const existingGroups = await Promise.all(
+                memoryActors.map(actor => DB.getAppMemoryCandidatesBySource(actor.id, 'story_theater', entry.id)),
+            );
+            const existing = existingGroups.flat();
+            const pending = existing.filter(candidate => candidate.status === 'pending');
+            if (pending.length > 0) {
+                setMemoryCandidates(existing);
+                setShowMemoryCards(true);
+                return;
+            }
+
+            const transcript = [
+                `[剧情标题] ${entry.title}`,
+                entry.premise ? `[剧情介绍] ${entry.premise}` : '',
+                '[记忆性质] 这是一段大家在剧情剧场里共同创作、共同演绎的虚构故事，不是现实经历。',
+                `[用户侧执笔身份] ${mask.name}`,
+                `[参与角色] ${actors.map(actor => actor.name).join('、') || '暂无'}`,
+                ...messages.map(message => {
+                    const who = message.role === 'user' ? `${mask.name}（用户侧执笔）` : '剧场正文';
+                    return `[${who}] ${message.content}`;
+                }),
+            ].filter(Boolean).join('\n\n');
+
+            const generated: AppMemoryCandidate[] = [];
+            for (const actor of memoryActors) {
+                setMemoryStatus(`正在为 ${actor.name} 整理“我们一起演过”的记忆卡……`);
+                const rows = await generateAppMemoryCandidates({
+                    sourceApp: 'story_theater',
+                    sourceRecordId: entry.id,
+                    char: actor,
+                    userProfile,
+                    groups,
+                    apiConfig,
+                    realtimeConfig,
+                    transcript,
+                    sceneHint: `与用户共同演绎虚构剧情《${entry.title}》；记住共同创作本身，不把剧中事件当成现实经历。用户侧执笔身份：${mask.name}`,
+                });
+                generated.push(...rows);
+            }
+
+            setMemoryCandidates([...existing, ...generated]);
+            setShowMemoryCards(true);
+            if (generated.length === 0) addToast('目前没有值得带回主聊天的共同演绎记忆', 'info');
+        } catch (error: any) {
+            console.error('[StoryTheater] shared fiction memory cards failed', error);
+            addToast(`整理共同演绎记忆失败：${error?.message || error}`, 'error');
+        } finally {
+            setMemoryStatus('');
+            setMemoryCardBusy(false);
+        }
+    }, [actors, addToast, apiConfig, entry, groups, mask.name, memoryActors, memoryCardBusy, messages, realtimeConfig, userProfile]);
 
     const callCompletion = useCallback(async (payload: Array<{ role: string; content: string }>, settings?: Partial<StoryGenerationSettings>, onPromptTokens?: (tokens: number) => void): Promise<string> => {
         const generationSettings = prepareStoryGenerationSettings(settings, entry.omitSamplingParams === true);
@@ -869,6 +942,35 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 </div>
             </details>
         </header>
+
+        {!entry.writesToCharacterMemory && (
+            <div className='shrink-0 px-5 py-2.5 bg-stone-100/95 border-b border-slate-200'>
+                <button
+                    disabled={memoryCardBusy || messages.length === 0 || memoryActors.length === 0}
+                    onClick={() => void openSharedFictionMemoryCards()}
+                    className='w-full h-9 rounded-xl bg-violet-50 border border-violet-200 text-violet-700 text-[10px] font-bold flex items-center justify-center gap-2 disabled:opacity-35 active:scale-[0.99] transition-transform'
+                    title='把“我们一起演过”作为共同创作记忆带回主聊天'
+                >
+                    {memoryCardBusy ? <SpinnerGap size={14} className='animate-spin' /> : <Sparkle size={14} weight='fill' />}
+                    {memoryCardBusy ? '正在整理共同演绎记忆…' : '整理“我们一起演过”的记忆卡'}
+                </button>
+            </div>
+        )}
+
+        {showMemoryCards && memoryActors[0] && (
+            <AppMemoryCandidatePanel
+                candidates={memoryCandidates}
+                char={memoryActors[0]}
+                characters={memoryActors}
+                userProfile={userProfile}
+                memoryPalaceConfig={memoryPalaceConfig}
+                remoteVectorConfig={remoteVectorConfig}
+                updateCharacter={updateCharacter}
+                addToast={addToast}
+                onChange={setMemoryCandidates}
+                onClose={() => setShowMemoryCards(false)}
+            />
+        )}
 
         <main className='story-page-scroll flex-1 overflow-y-auto px-5 py-7'>
             <div className='max-w-2xl mx-auto'>
