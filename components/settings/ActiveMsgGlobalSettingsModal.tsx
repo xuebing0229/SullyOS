@@ -130,7 +130,7 @@ const DIAGNOSTIC_STYLES: Record<AmsgDiagnosticLevel, { dot: string; text: string
   unknown: { dot: 'bg-slate-300', text: 'text-slate-400', word: '查不到' },
 };
 
-/** 刚生成的密钥明文：输入框是 password 型，只能在这一处让用户看见并手动复制。 */
+/** 刚生成的密钥明文：生成后在这里额外展示，方便核对与手动复制。 */
 const SecretReveal: React.FC<{ value: string; className?: string }> = ({ value, className = '' }) => (
   <p className={`font-mono text-[10px] leading-relaxed text-slate-500 break-all bg-white border border-slate-200 rounded-xl px-2 py-1.5 ${className}`}>
     {value}
@@ -692,7 +692,7 @@ const ActiveMsgGlobalSettingsModal: React.FC<ActiveMsgGlobalSettingsModalProps> 
 
   /**
    * 把刚生成的密钥交给用户：存进 state 供展示 + 尽量复制到剪贴板。
-   * 输入框是 password 型看不见内容，所以生成时必须把值显示出来，
+   * 共享密钥输入框保持明文可见；生成时仍把值单独展示出来，
    * 否则「把同样的值填进 Worker 环境变量」这一步没法做。
    * 剪贴板不可用时用户是从下方手抄的，所以展示的那份要和复制的一模一样。
    */
@@ -1300,11 +1300,11 @@ const ActiveMsgGlobalSettingsModal: React.FC<ActiveMsgGlobalSettingsModalProps> 
             </label>
             <div className="flex gap-2">
               <input
-                type="password"
+                type="text"
                 value={config.serverToken || ''}
                 onChange={(event) => patchConfig({ serverToken: event.target.value })}
                 placeholder="worker 配了 AMSG_SERVER_TOKEN 才需要填"
-                className="flex-1 bg-white/70 border border-slate-200 rounded-2xl px-4 py-3 text-sm"
+                className="flex-1 bg-white/70 border border-slate-200 rounded-2xl px-4 py-3 text-sm font-mono"
               />
               <button
                 type="button"
