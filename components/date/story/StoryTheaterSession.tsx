@@ -61,6 +61,11 @@ import StoryImageSettingsButton from './StoryImageSettings';
 import AppMemoryCandidatePanel from '../../AppMemoryCandidatePanel';
 import { generateAppMemoryCandidates } from '../../../utils/appMemoryBridge';
 import {
+    executeStoryCompletionInNativeBackground,
+    getPendingNativeStoryJob,
+    isNativeStoryBackgroundRuntime,
+} from '../../../utils/nativeStoryBackground';
+import {
     buildStoryContinueInstruction,
     MEETING_CONTINUE_DISPLAY_TEXT,
 } from '../../../utils/meetingContinue';
@@ -608,18 +613,41 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
         settings?: Partial<StoryGenerationSettings>,
         onPromptTokens?: (tokens: number) => void,
         onStreamText?: (fullText: string) => void,
+        background?: { ownerKey: string; title: string; meta?: Record<string, any> },
     ): Promise<string> => {
         const generationSettings = prepareStoryGenerationSettings(settings, entry.omitSamplingParams === true);
         const plan = resolveApiExecutionPlan('chat', apiConfig, true);
         const wantsStream = Boolean(onStreamText);
+        const requestBody = {
+            model: apiConfig.model,
+            messages: payload,
+            stream: wantsStream,
+            ...generationSettings,
+        };
+
+        if (background && isNativeStoryBackgroundRuntime()) {
+            try {
+                const data = await executeStoryCompletionInNativeBackground({
+                    ownerKey: background.ownerKey,
+                    title: background.title,
+                    plan,
+                    body: requestBody,
+                    meta: background.meta,
+                    onPromptTokens,
+                });
+                const content = extractContent(data).trim();
+                if (!content) throw new Error(describeEmptyStoryCompletion(data));
+                return content;
+            } catch (error: any) {
+                const partial = String(error?.partialContent || '').trim();
+                if (partial && onStreamText) onStreamText(partial);
+                throw error;
+            }
+        }
+
         const { value: data } = await executeOpenAiChatPlan({
             plan,
-            body: {
-                model: apiConfig.model,
-                messages: payload,
-                stream: wantsStream,
-                ...generationSettings,
-            },
+            body: requestBody,
             meta: {
                 appId: 'date',
                 appName: '剧情剧场',
@@ -936,6 +964,14 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 partialStreamText = visible;
                 streamingTextRef.current = visible;
                 setStreamingText(visible);
+            }, {
+                ownerKey: `story-turn:${entry.id}`,
+                title: entry.title,
+                meta: {
+                    ...(isReroll && rerollTarget ? { rerollTargetId: rerollTarget.id } : {}),
+                    ...(affinityInputs.length > 0 ? { affinityInputs } : {}),
+                    isContinueTurn,
+                },
             });
             const content = prefill && !generated.startsWith(prefill) ? `${prefill}${generated}` : generated;
             if (isReroll && rerollTarget) {
@@ -1021,6 +1057,26 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             setRerollingId(null);
         }
     }, [actors, addToast, affinityDrafts, affinityEnabled, apiConfig, applyActorMemoryPipeline, archiveIfNeeded, buildActorContexts, buildMaskMemoryContext, callCompletion, effectivePreset, entry, independentRecall, input, loadMessages, mask, promptIdentityName, saveCentralAndMirrors, selectedBooks, threadId, userProfile]);
+
+    useEffect(() => {
+        if (!isNativeStoryBackgroundRuntime() || sending || sendLock.current) return;
+        const pending = getPendingNativeStoryJob(`story-turn:${entry.id}`);
+        if (!pending) return;
+
+        let cancelled = false;
+        void (async () => {
+            let rerollTarget: Message | undefined;
+            const rerollTargetId = Number(pending.meta?.rerollTargetId || 0);
+            if (rerollTargetId > 0) {
+                const rows = (await DB.getMessagesByCharId(threadId, true))
+                    .filter(message => message.metadata?.source === 'story_theater');
+                rerollTarget = rows.find(message => message.id === rerollTargetId);
+            }
+            if (!cancelled) void send(rerollTarget);
+        })();
+
+        return () => { cancelled = true; };
+    }, [entry.id, send, sending, threadId]);
 
     const archivedCount = messages.filter(message => mirrorArchived(message, entry)).length;
     const pendingRetryInput = getPendingStoryRetryInput(messages);
