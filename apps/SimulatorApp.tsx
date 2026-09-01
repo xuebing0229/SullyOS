@@ -18,6 +18,7 @@ import {
   generateAppMemoryCandidates,
 } from '../utils/appMemoryBridge';
 import AppMemoryCandidatePanel from '../components/AppMemoryCandidatePanel';
+import ConfirmDialog from '../components/os/ConfirmDialog';
 import {
   isSimulatorIframeAction,
   postSimulatorState,
@@ -35,6 +36,11 @@ const modeLabel: Record<SimulatorMode, string> = {
   hybrid: '文字 + HTML 面板',
   frontend_ai: 'HTML 选项 + AI 推进',
 };
+
+const fieldClass =
+  'w-full rounded-xl border border-slate-200 bg-slate-50/80 px-4 py-3 text-sm text-slate-800 outline-none transition-all placeholder:text-slate-400 focus:border-indigo-400 focus:bg-white focus:ring-4 focus:ring-indigo-50';
+const sectionClass =
+  'rounded-[1.5rem] border border-slate-200/70 bg-white p-5 shadow-sm shadow-slate-200/40';
 
 const defaultHtml = `<div style="font-family:sans-serif;padding:24px">
   <h2>我的万象匣</h2>
@@ -75,6 +81,7 @@ const SimulatorApp: React.FC = () => {
   const [busy, setBusy] = useState(false);
   const [candidates, setCandidates] = useState<AppMemoryCandidate[]>([]);
   const [showMemory, setShowMemory] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<SimulatorProject | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
 
@@ -158,7 +165,9 @@ const SimulatorApp: React.FC = () => {
 
   const deleteProject = async (id: string) => {
     await DB.deleteSimulatorProject(id);
+    setDeleteTarget(null);
     await reload();
+    addToast('万象匣已删除', 'success');
   };
 
   const start = async (p: SimulatorProject) => {
@@ -373,38 +382,146 @@ ${project?.breaker ? `\n附加规则：\n${project.breaker}` : ''}
 
   if (view === 'editor' && project) {
     return (
-      <div className="w-full h-full overflow-auto bg-stone-50">
-        <header style={{ padding: 'calc(var(--safe-top) + 14px) 16px 12px', display: 'flex', gap: 12 }}>
-          <button onClick={() => setView('list')}><ArrowLeft size={22} /></button>
-          <strong style={{ flex: 1 }}>编辑万象匣</strong>
-          <button onClick={saveProject}><FloppyDisk size={22} /></button>
-        </header>
-        <main style={{ padding: 16, display: 'grid', gap: 14 }}>
-          <label>名称<input value={project.name} onChange={e => setProject({...project,name:e.target.value})} /></label>
-          <label>角色
-            <select value={project.charId} onChange={e => setProject({...project,charId:e.target.value})}>
-              {characters.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-            </select>
-          </label>
-          <label>运行模式
-            <select value={project.mode} onChange={e => setProject({...project,mode:e.target.value as SimulatorMode})}>
-              {Object.entries(modeLabel).map(([k,v]) => <option key={k} value={k}>{v}</option>)}
-            </select>
-          </label>
-          <label>局内上下文条数
-            <input type="number" min={1} max={200} value={project.localContextLimit}
-              onChange={e => setProject({...project,localContextLimit:Math.max(1,Number(e.target.value)||1)})}/>
-          </label>
-          {project.mode !== 'html' && (
-            <label>玩法提示词<textarea rows={8} value={project.prompt} onChange={e => setProject({...project,prompt:e.target.value})}/></label>
-          )}
+      <div className="h-full w-full bg-[#f5f6fa] flex flex-col text-slate-800">
+        <div
+          className="bg-white/90 backdrop-blur-xl border-b border-slate-200/70 shrink-0 z-20"
+          style={{ paddingTop: 'var(--safe-top)' }}
+        >
+          <div className="h-16 flex items-center px-4 gap-3">
+            <button
+              onClick={() => setView('list')}
+              className="p-2 -ml-2 rounded-full text-slate-600 active:bg-black/5 active:scale-90 transition-all"
+              aria-label="返回"
+            >
+              <ArrowLeft size={23} />
+            </button>
+            <div className="min-w-0 flex-1">
+              <h1 className="text-lg font-semibold tracking-tight">编辑万象匣</h1>
+              <p className="text-[11px] text-slate-400 truncate">
+                {project.name.trim() || '新建项目'}
+              </p>
+            </div>
+            <button
+              onClick={saveProject}
+              className="h-9 px-3.5 rounded-xl bg-slate-900 text-white text-xs font-semibold shadow-sm active:scale-95 transition-all flex items-center gap-1.5"
+            >
+              <FloppyDisk size={16} weight="bold" />
+              保存
+            </button>
+          </div>
+        </div>
+
+        <main className="flex-1 min-h-0 overflow-y-auto px-4 py-4 pb-10 space-y-4">
+          <section className={sectionClass}>
+            <div className="mb-4">
+              <div className="text-[11px] font-bold tracking-[0.14em] text-indigo-500 uppercase">基础信息</div>
+              <p className="mt-1 text-[10px] text-slate-400">名称、同行角色与运行方式。</p>
+            </div>
+
+            <div className="space-y-4">
+              <label className="block">
+                <span className="mb-2 block text-xs font-bold text-slate-500">名称</span>
+                <input
+                  value={project.name}
+                  onChange={e => setProject({ ...project, name: e.target.value })}
+                  placeholder="给这个万象匣起个名字"
+                  className={fieldClass}
+                />
+              </label>
+
+              <label className="block">
+                <span className="mb-2 block text-xs font-bold text-slate-500">角色</span>
+                <select
+                  value={project.charId}
+                  onChange={e => setProject({ ...project, charId: e.target.value })}
+                  className={fieldClass}
+                >
+                  {characters.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                </select>
+              </label>
+
+              <label className="block">
+                <span className="mb-2 block text-xs font-bold text-slate-500">运行模式</span>
+                <select
+                  value={project.mode}
+                  onChange={e => setProject({ ...project, mode: e.target.value as SimulatorMode })}
+                  className={fieldClass}
+                >
+                  {Object.entries(modeLabel).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+                </select>
+              </label>
+            </div>
+          </section>
+
+          <section className={sectionClass}>
+            <div className="mb-4">
+              <div className="text-[11px] font-bold tracking-[0.14em] text-indigo-500 uppercase">AI 与上下文</div>
+              <p className="mt-1 text-[10px] text-slate-400">控制局内历史和玩法提示词。</p>
+            </div>
+
+            <div className="space-y-4">
+              <label className="block">
+                <span className="mb-2 block text-xs font-bold text-slate-500">局内上下文条数</span>
+                <input
+                  type="number"
+                  min={1}
+                  max={200}
+                  value={project.localContextLimit}
+                  onChange={e => setProject({
+                    ...project,
+                    localContextLimit: Math.max(1, Number(e.target.value) || 1),
+                  })}
+                  className={fieldClass}
+                />
+              </label>
+
+              {project.mode !== 'html' && (
+                <label className="block">
+                  <span className="mb-2 block text-xs font-bold text-slate-500">玩法提示词</span>
+                  <textarea
+                    rows={8}
+                    value={project.prompt}
+                    onChange={e => setProject({ ...project, prompt: e.target.value })}
+                    className={`${fieldClass} resize-y leading-6`}
+                  />
+                </label>
+              )}
+            </div>
+          </section>
+
           {project.mode !== 'text' && (
-            <>
-              <label>HTML<textarea rows={18} value={project.html} onChange={e => setProject({...project,html:e.target.value})}/></label>
-              <details><summary>iframe 通信示例</summary><pre style={{whiteSpace:'pre-wrap'}}>{SIMULATOR_BRIDGE_HELP}</pre></details>
-            </>
+            <section className={sectionClass}>
+              <div className="mb-4">
+                <div className="text-[11px] font-bold tracking-[0.14em] text-indigo-500 uppercase">页面与交互</div>
+                <p className="mt-1 text-[10px] text-slate-400">HTML 会在沙箱 iframe 中运行。</p>
+              </div>
+
+              <label className="block">
+                <span className="mb-2 block text-xs font-bold text-slate-500">HTML</span>
+                <textarea
+                  rows={18}
+                  value={project.html}
+                  onChange={e => setProject({ ...project, html: e.target.value })}
+                  className={`${fieldClass} resize-y font-mono text-xs leading-5`}
+                />
+              </label>
+
+              <details className="mt-4 rounded-xl border border-slate-200 bg-slate-50/70 px-4 py-3">
+                <summary className="cursor-pointer text-xs font-semibold text-slate-600">iframe 通信示例</summary>
+                <pre className="mt-3 whitespace-pre-wrap break-words text-[11px] leading-5 text-slate-500">
+                  {SIMULATOR_BRIDGE_HELP}
+                </pre>
+              </details>
+            </section>
           )}
-          <button onClick={saveProject} style={{padding:14,background:'#6d28d9',color:'#fff',borderRadius:14}}>保存</button>
+
+          <button
+            onClick={saveProject}
+            className="w-full h-12 rounded-2xl bg-slate-900 text-white text-sm font-semibold shadow-sm active:scale-[0.98] transition-all flex items-center justify-center gap-2"
+          >
+            <FloppyDisk size={18} weight="bold" />
+            保存万象匣
+          </button>
         </main>
       </div>
     );
@@ -481,24 +598,116 @@ ${project?.breaker ? `\n附加规则：\n${project.breaker}` : ''}
   }
 
   return (
-    <div className="w-full h-full overflow-auto bg-[#f7f4ed]">
-      <header style={{padding:'calc(var(--safe-top) + 14px) 16px 12px',display:'flex',alignItems:'center',gap:12}}>
-        <button onClick={closeApp}><ArrowLeft size={22}/></button>
-        <div style={{flex:1}}><h1 style={{fontSize:20,fontWeight:800}}>万象匣</h1><div style={{fontSize:12,color:'#78716c'}}>导入页面、模拟器和 AI 文游</div></div>
-        <button onClick={openNew}><Plus size={23}/></button>
-      </header>
-      <main style={{padding:16,display:'grid',gap:12}}>
-        {projects.length===0 && <div style={{padding:48,textAlign:'center',color:'#78716c'}}>还没有万象匣</div>}
-        {projects.map(p=>(
-          <div key={p.id} style={{padding:14,borderRadius:18,background:'#fff',boxShadow:'0 8px 24px rgba(0,0,0,.06)'}}>
-            <div style={{display:'flex',gap:10,alignItems:'center'}}>
-              <div style={{flex:1}}><strong>{p.name}</strong><div style={{fontSize:12,color:'#78716c',marginTop:4}}>{modeLabel[p.mode]} · {characters.find(c=>c.id===p.charId)?.name||'角色已删除'}</div></div>
-              <button onClick={()=>{setProject(p);setView('editor')}}>编辑</button>
-              <button onClick={()=>deleteProject(p.id)}><Trash size={18}/></button>
-              <button onClick={()=>start(p)} style={{padding:9,borderRadius:999,background:'#6d28d9',color:'#fff'}}><Play size={18}/></button>
-            </div>
+    <div className="h-full w-full bg-[#f5f6fa] flex flex-col text-slate-800 relative">
+      <ConfirmDialog
+        isOpen={!!deleteTarget}
+        title="删除万象匣"
+        message={deleteTarget ? `确定删除「${deleteTarget.name}」吗？相关项目数据会一并移除。` : ''}
+        confirmText="删除"
+        variant="danger"
+        onConfirm={() => {
+          if (deleteTarget) void deleteProject(deleteTarget.id);
+        }}
+        onCancel={() => setDeleteTarget(null)}
+      />
+
+      <div
+        className="bg-white/90 backdrop-blur-xl border-b border-slate-200/70 shrink-0 z-20"
+        style={{ paddingTop: 'var(--safe-top)' }}
+      >
+        <div className="h-16 flex items-center px-4 gap-3">
+          <button
+            onClick={closeApp}
+            className="p-2 -ml-2 rounded-full text-slate-600 active:bg-black/5 active:scale-90 transition-all"
+            aria-label="返回"
+          >
+            <ArrowLeft size={23} />
+          </button>
+
+          <div className="min-w-0 flex-1">
+            <h1 className="text-lg font-semibold tracking-tight">万象匣</h1>
+            <p className="text-[11px] text-slate-400">导入页面、模拟器和 AI 文游</p>
           </div>
-        ))}
+
+          <button
+            onClick={openNew}
+            className="w-10 h-10 rounded-xl bg-slate-900 text-white grid place-items-center shadow-sm active:scale-95 transition-all"
+            aria-label="新建万象匣"
+          >
+            <Plus size={20} weight="bold" />
+          </button>
+        </div>
+      </div>
+
+      <main className="flex-1 min-h-0 overflow-y-auto px-4 py-4">
+        {projects.length === 0 ? (
+          <div className="h-72 flex flex-col items-center justify-center text-center px-8">
+            <div className="w-16 h-16 rounded-2xl bg-white border border-slate-100 shadow-sm grid place-items-center text-indigo-400 mb-4">
+              <Sparkle size={28} weight="duotone" />
+            </div>
+            <div className="text-sm font-semibold text-slate-600">还没有万象匣</div>
+            <p className="mt-2 text-xs leading-5 text-slate-400">
+              新建一个项目，把纯文字文游、HTML 页面或 AI 互动收进来。
+            </p>
+            <button
+              onClick={openNew}
+              className="mt-5 h-10 px-4 rounded-xl bg-slate-900 text-white text-xs font-semibold shadow-sm active:scale-95 transition-all"
+            >
+              新建万象匣
+            </button>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {projects.map(p => {
+              const projectChar = characters.find(c => c.id === p.charId);
+              return (
+                <article
+                  key={p.id}
+                  className="rounded-[1.5rem] border border-slate-200/70 bg-white p-4 shadow-sm shadow-slate-200/40"
+                >
+                  <div className="flex gap-3 items-start">
+                    <div className="w-12 h-12 rounded-2xl bg-indigo-50 text-indigo-500 grid place-items-center shrink-0">
+                      <Sparkle size={22} weight="duotone" />
+                    </div>
+
+                    <div className="min-w-0 flex-1 pt-0.5">
+                      <div className="text-[15px] font-bold text-slate-800 truncate">{p.name}</div>
+                      <div className="mt-1 text-xs text-slate-400 truncate">
+                        {modeLabel[p.mode]} · {projectChar?.name || '角色已删除'}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="mt-4 pt-3 border-t border-slate-100 flex items-center gap-2">
+                    <button
+                      onClick={() => {
+                        setProject(p);
+                        setView('editor');
+                      }}
+                      className="h-9 px-3 rounded-xl bg-slate-100 text-slate-600 text-xs font-semibold active:scale-95 transition-all"
+                    >
+                      编辑
+                    </button>
+                    <button
+                      onClick={() => setDeleteTarget(p)}
+                      className="w-9 h-9 rounded-xl bg-rose-50 text-rose-500 grid place-items-center active:scale-95 transition-all"
+                      aria-label={`删除 ${p.name}`}
+                    >
+                      <Trash size={17} />
+                    </button>
+                    <button
+                      onClick={() => void start(p)}
+                      className="ml-auto h-9 px-4 rounded-xl bg-slate-900 text-white text-xs font-semibold flex items-center gap-1.5 shadow-sm active:scale-95 transition-all"
+                    >
+                      <Play size={15} weight="fill" />
+                      进入
+                    </button>
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+        )}
       </main>
     </div>
   );
