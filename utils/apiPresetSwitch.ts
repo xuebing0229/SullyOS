@@ -12,6 +12,7 @@
 
 import type { APIConfig, ApiPreset } from '../types';
 import { normalizeApiBaseUrl, normalizeApiCredential, normalizeApiModel } from './apiConfigNormalize';
+import { apiPresetHasModel } from './apiPresetModels';
 
 /**
  * 切换预设时覆盖的字段。
@@ -41,7 +42,7 @@ export function presetMatchesConfig(
 ): boolean {
   return normalizeApiBaseUrl(preset.config.baseUrl) === normalizeApiBaseUrl(config.baseUrl)
     && normalizeApiCredential(preset.config.apiKey) === normalizeApiCredential(config.apiKey)
-    && normalizeApiModel(preset.config.model) === normalizeApiModel(config.model);
+    && apiPresetHasModel(preset, normalizeApiModel(config.model));
 }
 
 /**
