@@ -316,6 +316,26 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
     const [showMemoryCards, setShowMemoryCards] = useState(false);
     const [memoryCardBusy, setMemoryCardBusy] = useState(false);
     const [showQuickPreset, setShowQuickPreset] = useState(false);
+    const [quickPresetPosition, setQuickPresetPosition] = useState<{ x: number; y: number }>(() => {
+        if (typeof window === 'undefined') return { x: 300, y: 500 };
+        const buttonSize = 44;
+        const margin = 10;
+        const fallback = {
+            x: Math.max(margin, window.innerWidth - buttonSize - 18),
+            y: Math.max(88, window.innerHeight - buttonSize - 150),
+        };
+        try {
+            const raw = localStorage.getItem('sully-story-quick-preset-position-v1');
+            if (!raw) return fallback;
+            const parsed = JSON.parse(raw) as Partial<{ x: number; y: number }>;
+            return {
+                x: Number.isFinite(parsed.x) ? Number(parsed.x) : fallback.x,
+                y: Number.isFinite(parsed.y) ? Number(parsed.y) : fallback.y,
+            };
+        } catch {
+            return fallback;
+        }
+    });
     const [rerollingId, setRerollingId] = useState<number | null>(null);
     const [regeneratingImageId, setRegeneratingImageId] = useState<number | null>(null);
     const [messageMenu, setMessageMenu] = useState<Message | null>(null);
@@ -331,6 +351,46 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
     const bottomRef = useRef<HTMLDivElement>(null);
     const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
     const longPressOrigin = useRef<{ x: number; y: number } | null>(null);
+    const quickPresetDragRef = useRef<{
+        pointerId: number;
+        startX: number;
+        startY: number;
+        originX: number;
+        originY: number;
+        moved: boolean;
+    } | null>(null);
+
+    const clampQuickPresetPosition = useCallback((x: number, y: number) => {
+        if (typeof window === 'undefined') return { x, y };
+        const buttonSize = 44;
+        const margin = 10;
+        const minY = 76;
+        const maxX = Math.max(margin, window.innerWidth - buttonSize - margin);
+        const maxY = Math.max(minY, window.innerHeight - buttonSize - 86);
+        return {
+            x: Math.min(maxX, Math.max(margin, x)),
+            y: Math.min(maxY, Math.max(minY, y)),
+        };
+    }, []);
+
+    const persistQuickPresetPosition = useCallback((position: { x: number; y: number }) => {
+        try {
+            localStorage.setItem('sully-story-quick-preset-position-v1', JSON.stringify(position));
+        } catch { /* localStorage unavailable: dragging still works for this session */ }
+    }, []);
+
+    useEffect(() => {
+        const keepInsideViewport = () => {
+            setQuickPresetPosition(current => {
+                const next = clampQuickPresetPosition(current.x, current.y);
+                persistQuickPresetPosition(next);
+                return next;
+            });
+        };
+        keepInsideViewport();
+        window.addEventListener('resize', keepInsideViewport);
+        return () => window.removeEventListener('resize', keepInsideViewport);
+    }, [clampQuickPresetPosition, persistQuickPresetPosition]);
 
     const loadMessages = useCallback(async () => {
         const rows = await DB.getMessagesByCharId(threadId, true);
@@ -1021,11 +1081,53 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             </div>
         </main>
 
-        <div className='story-quick-preset pointer-events-none absolute inset-x-0 z-20 px-4'>
-            <div className='max-w-2xl mx-auto flex justify-end pr-2'>
-                <button onClick={() => setShowQuickPreset(true)} className='pointer-events-auto w-11 h-11 rounded-xl bg-violet-600 text-white shadow-lg grid place-items-center active:scale-95 transition-transform' title='本剧情快速预设' aria-label='本剧情快速预设'><SlidersHorizontal size={19} weight='bold' /></button>
-            </div>
-        </div>
+        <button
+            type='button'
+            onPointerDown={event => {
+                event.currentTarget.setPointerCapture?.(event.pointerId);
+                quickPresetDragRef.current = {
+                    pointerId: event.pointerId,
+                    startX: event.clientX,
+                    startY: event.clientY,
+                    originX: quickPresetPosition.x,
+                    originY: quickPresetPosition.y,
+                    moved: false,
+                };
+            }}
+            onPointerMove={event => {
+                const drag = quickPresetDragRef.current;
+                if (!drag || drag.pointerId !== event.pointerId) return;
+                const dx = event.clientX - drag.startX;
+                const dy = event.clientY - drag.startY;
+                if (!drag.moved && Math.hypot(dx, dy) > 5) drag.moved = true;
+                if (!drag.moved) return;
+                event.preventDefault();
+                setQuickPresetPosition(clampQuickPresetPosition(drag.originX + dx, drag.originY + dy));
+            }}
+            onPointerUp={event => {
+                const drag = quickPresetDragRef.current;
+                if (!drag || drag.pointerId !== event.pointerId) return;
+                quickPresetDragRef.current = null;
+                try { event.currentTarget.releasePointerCapture?.(event.pointerId); } catch { /* already released */ }
+                if (drag.moved) {
+                    const next = clampQuickPresetPosition(
+                        drag.originX + (event.clientX - drag.startX),
+                        drag.originY + (event.clientY - drag.startY),
+                    );
+                    setQuickPresetPosition(next);
+                    persistQuickPresetPosition(next);
+                    return;
+                }
+                setShowQuickPreset(true);
+            }}
+            onPointerCancel={() => { quickPresetDragRef.current = null; }}
+            className='fixed z-[30] w-11 h-11 rounded-xl bg-violet-600 text-white shadow-lg grid place-items-center active:scale-95 transition-transform cursor-grab active:cursor-grabbing'
+            style={{ left: quickPresetPosition.x, top: quickPresetPosition.y, touchAction: 'none' }}
+            title='拖动可换位置；轻点打开本剧情快速预设'
+            aria-label='本剧情快速预设，可拖动'
+        >
+            <SlidersHorizontal size={19} weight='bold' />
+        </button>
 
         <footer className='story-safe-footer shrink-0 px-4 pt-3 bg-stone-100/95 backdrop-blur border-t border-slate-200'>
             <div className='max-w-2xl mx-auto'>
