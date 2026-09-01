@@ -120,7 +120,7 @@ export interface NovelAiPreciseReferenceConfig {
   updatedAt: number;
 }
 
-export type AppMemorySource = 'simulator' | 'reading_together';
+export type AppMemorySource = 'simulator' | 'reading_together' | 'story_theater';
 
 export type AppMemoryCandidateStatus = 'pending' | 'committed' | 'dismissed';
 
