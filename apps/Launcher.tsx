@@ -532,7 +532,20 @@ const Launcher: React.FC = () => {
 
   const normalizeOrder = useCallback((saved: string[] | undefined, available: string[]) => {
       const valid = new Set(available);
-      return [...(saved || []).filter((id, index, all) => valid.has(id) && all.indexOf(id) === index), ...available.filter(id => !(saved || []).includes(id))];
+      const savedOrder = (saved || []).filter((id, index, all) => valid.has(id) && all.indexOf(id) === index);
+      const missing = available.filter(id => !(saved || []).includes(id));
+
+      // 「文游」是从见面拆出的新 App。老用户已有桌面排序时，普通新增 App 会被补到最后一页；
+      // 这里仅在首次遇到这个新 ID 时把它插到「见面」旁边，之后用户自己的拖动顺序照常尊重。
+      if (saved?.length && valid.has(AppID.StoryTheater) && !saved.includes(AppID.StoryTheater)) {
+          const remaining = missing.filter(id => id !== AppID.StoryTheater);
+          const dateIndex = savedOrder.indexOf(AppID.Date);
+          if (dateIndex >= 0) savedOrder.splice(dateIndex + 1, 0, AppID.StoryTheater);
+          else savedOrder.push(AppID.StoryTheater);
+          return [...savedOrder, ...remaining];
+      }
+
+      return [...savedOrder, ...missing];
   }, []);
 
   const availableGridIds = useMemo(() => availableGridApps.map(app => app.id), [availableGridApps]);
