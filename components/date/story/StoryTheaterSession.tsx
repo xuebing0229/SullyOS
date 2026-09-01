@@ -336,6 +336,27 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             return fallback;
         }
     });
+    const [affinityPosition, setAffinityPosition] = useState<{ x: number; y: number }>(() => {
+        if (typeof window === 'undefined') return { x: 18, y: 460 };
+        const buttonWidth = 66;
+        const buttonHeight = 40;
+        const margin = 10;
+        const fallback = {
+            x: 18,
+            y: Math.max(88, window.innerHeight - buttonHeight - 170),
+        };
+        try {
+            const raw = localStorage.getItem('sully-story-affinity-position-v1');
+            if (!raw) return fallback;
+            const parsed = JSON.parse(raw) as Partial<{ x: number; y: number }>;
+            return {
+                x: Number.isFinite(parsed.x) ? Number(parsed.x) : fallback.x,
+                y: Number.isFinite(parsed.y) ? Number(parsed.y) : fallback.y,
+            };
+        } catch {
+            return fallback;
+        }
+    });
     const [rerollingId, setRerollingId] = useState<number | null>(null);
     const [regeneratingImageId, setRegeneratingImageId] = useState<number | null>(null);
     const [messageMenu, setMessageMenu] = useState<Message | null>(null);
@@ -352,6 +373,14 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
     const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
     const longPressOrigin = useRef<{ x: number; y: number } | null>(null);
     const quickPresetDragRef = useRef<{
+        pointerId: number;
+        startX: number;
+        startY: number;
+        originX: number;
+        originY: number;
+        moved: boolean;
+    } | null>(null);
+    const affinityDragRef = useRef<{
         pointerId: number;
         startX: number;
         startY: number;
@@ -391,6 +420,39 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
         window.addEventListener('resize', keepInsideViewport);
         return () => window.removeEventListener('resize', keepInsideViewport);
     }, [clampQuickPresetPosition, persistQuickPresetPosition]);
+
+    const clampAffinityPosition = useCallback((x: number, y: number) => {
+        if (typeof window === 'undefined') return { x, y };
+        const buttonWidth = 66;
+        const buttonHeight = 40;
+        const margin = 10;
+        const minY = 76;
+        const maxX = Math.max(margin, window.innerWidth - buttonWidth - margin);
+        const maxY = Math.max(minY, window.innerHeight - buttonHeight - 86);
+        return {
+            x: Math.min(maxX, Math.max(margin, x)),
+            y: Math.min(maxY, Math.max(minY, y)),
+        };
+    }, []);
+
+    const persistAffinityPosition = useCallback((position: { x: number; y: number }) => {
+        try {
+            localStorage.setItem('sully-story-affinity-position-v1', JSON.stringify(position));
+        } catch { /* localStorage unavailable: dragging still works for this session */ }
+    }, []);
+
+    useEffect(() => {
+        const keepInsideViewport = () => {
+            setAffinityPosition(current => {
+                const next = clampAffinityPosition(current.x, current.y);
+                persistAffinityPosition(next);
+                return next;
+            });
+        };
+        keepInsideViewport();
+        window.addEventListener('resize', keepInsideViewport);
+        return () => window.removeEventListener('resize', keepInsideViewport);
+    }, [clampAffinityPosition, persistAffinityPosition]);
 
     const loadMessages = useCallback(async () => {
         const rows = await DB.getMessagesByCharId(threadId, true);
@@ -989,6 +1051,22 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 <summary className='list-none cursor-pointer px-5 pb-3 flex items-center gap-3'>
                     <span className='flex -space-x-1.5 shrink-0'>{mask.avatar ? <TokenImg value={mask.avatar} alt='' className='w-7 h-7 rounded-full object-cover border-2 border-stone-100 relative z-10' /> : <span className='w-7 h-7 rounded-full bg-violet-100 text-violet-700 border-2 border-stone-100 grid place-items-center text-[9px] font-bold relative z-10'>{mask.name.slice(0, 1)}</span>}{actors.slice(0, 2).map(actor => <TokenImg key={actor.id} value={actor.avatar} alt='' className='w-7 h-7 rounded-full object-cover border-2 border-stone-100' />)}</span>
                     <span className='min-w-0 flex-1'><strong className='block truncate text-[11px] text-slate-700'>{youLabel} · 角色：{actors.map(actor => actor.name).join('、')}</strong><span className='block mt-0.5 truncate text-[9px] text-slate-400'>{entry.writesToCharacterMemory ? '真实时间陪伴' : '虚构剧场'}{activeMiniTheater ? ` · ${activeMiniTheater.name.replace(/^\S+小剧场[｜·]?\s*/, '')}` : ''}</span></span>
+                    {!entry.writesToCharacterMemory && <button
+                        type='button'
+                        disabled={memoryCardBusy || messages.length === 0 || memoryActors.length === 0}
+                        onPointerDown={event => event.stopPropagation()}
+                        onClick={event => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            void openSharedFictionMemoryCards();
+                        }}
+                        className='shrink-0 h-8 px-2.5 rounded-xl bg-violet-50 border border-violet-200 text-violet-700 text-[9px] font-bold inline-flex items-center gap-1.5 disabled:opacity-30'
+                        title='整理“我们一起演过”的记忆卡'
+                        aria-label='整理共同演绎记忆卡'
+                    >
+                        {memoryCardBusy ? <SpinnerGap size={12} className='animate-spin' /> : <Sparkle size={12} weight='fill' />}
+                        记忆卡
+                    </button>}
                     <span className='shrink-0 text-[9px] font-bold text-slate-400' title={displayedTokenInfo.exact ? '本轮实际使用的完整上下文' : '按本轮完整上下文估算'}>{displayedTokenInfo.count > 0 ? `${(displayedTokenInfo.count / 1000).toFixed(displayedTokenInfo.count >= 10000 ? 0 : 1)}k` : '—'}</span>
                     <CaretDown size={13} className='shrink-0 text-slate-400 transition-transform group-open:rotate-180' />
                 </summary>
@@ -1002,20 +1080,6 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 </div>
             </details>
         </header>
-
-        {!entry.writesToCharacterMemory && (
-            <div className='shrink-0 px-5 py-2.5 bg-stone-100/95 border-b border-slate-200'>
-                <button
-                    disabled={memoryCardBusy || messages.length === 0 || memoryActors.length === 0}
-                    onClick={() => void openSharedFictionMemoryCards()}
-                    className='w-full h-9 rounded-xl bg-violet-50 border border-violet-200 text-violet-700 text-[10px] font-bold flex items-center justify-center gap-2 disabled:opacity-35 active:scale-[0.99] transition-transform'
-                    title='把“我们一起演过”作为共同创作记忆带回主聊天'
-                >
-                    {memoryCardBusy ? <SpinnerGap size={14} className='animate-spin' /> : <Sparkle size={14} weight='fill' />}
-                    {memoryCardBusy ? '正在整理共同演绎记忆…' : '整理“我们一起演过”的记忆卡'}
-                </button>
-            </div>
-        )}
 
         {showMemoryCards && memoryActors[0] && (
             <AppMemoryCandidatePanel
@@ -1039,6 +1103,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                     <h2 className='mt-3 text-3xl font-serif font-semibold leading-tight'>{entry.title}</h2>
                     <p className='mt-5 text-sm leading-7 text-slate-600 whitespace-pre-wrap'>{entry.premise || (canWriteOpening ? '人物与世界已经就位，可以让故事先写下第一幕。' : '写下第一句话，让人物走进这座只属于本条剧情的剧场。')}</p>
                     <p className='mt-6 text-[10px] text-slate-400'>{canWriteOpening ? '输入框留空，点击推进即可开场' : '这一幕由你先落笔'}</p>
+                    <p className='mt-3 text-[9px] leading-5 text-slate-400'>小提示：生成正文后，长按楼层可编辑或删除；“预设”和“关系”浮钮都可以拖到顺手的位置。</p>
                 </section> : entry.writesToCharacterMemory && <div className='mb-8 py-3 border-y border-amber-200 text-center text-[11px] text-amber-700'>和朋友们已经分别相处了一段时间……</div>}
 
                 {pageCount > 1 && <StoryPagination className='mb-4' page={messagePage} pageCount={pageCount} onChange={setMessagePage} />}
@@ -1129,34 +1194,135 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             <SlidersHorizontal size={19} weight='bold' />
         </button>
 
+        {affinityEnabled && <button
+            type='button'
+            onPointerDown={event => {
+                event.currentTarget.setPointerCapture?.(event.pointerId);
+                affinityDragRef.current = {
+                    pointerId: event.pointerId,
+                    startX: event.clientX,
+                    startY: event.clientY,
+                    originX: affinityPosition.x,
+                    originY: affinityPosition.y,
+                    moved: false,
+                };
+            }}
+            onPointerMove={event => {
+                const drag = affinityDragRef.current;
+                if (!drag || drag.pointerId !== event.pointerId) return;
+                const dx = event.clientX - drag.startX;
+                const dy = event.clientY - drag.startY;
+                if (!drag.moved && Math.hypot(dx, dy) > 5) drag.moved = true;
+                if (!drag.moved) return;
+                event.preventDefault();
+                setAffinityPosition(clampAffinityPosition(drag.originX + dx, drag.originY + dy));
+            }}
+            onPointerUp={event => {
+                const drag = affinityDragRef.current;
+                if (!drag || drag.pointerId !== event.pointerId) return;
+                affinityDragRef.current = null;
+                try { event.currentTarget.releasePointerCapture?.(event.pointerId); } catch { /* already released */ }
+                if (drag.moved) {
+                    const next = clampAffinityPosition(
+                        drag.originX + (event.clientX - drag.startX),
+                        drag.originY + (event.clientY - drag.startY),
+                    );
+                    setAffinityPosition(next);
+                    persistAffinityPosition(next);
+                    return;
+                }
+                setShowAffinityInput(true);
+            }}
+            onPointerCancel={() => { affinityDragRef.current = null; }}
+            className='fixed z-[30] h-10 px-3 rounded-xl bg-rose-500 text-white shadow-lg inline-flex items-center gap-1.5 text-[10px] font-bold active:scale-95 transition-transform cursor-grab active:cursor-grabbing'
+            style={{ left: affinityPosition.x, top: affinityPosition.y, touchAction: 'none' }}
+            title='拖动可换位置；轻点填写本轮关系变化'
+            aria-label='本轮关系变化，可拖动'
+        >
+            <HeartStraight size={15} weight={filledAffinityActorIds.length > 0 ? 'fill' : 'regular'} />
+            关系
+            {filledAffinityActorIds.length > 0 && <span className='min-w-4 h-4 px-1 rounded-full bg-white/90 text-rose-600 text-[8px] grid place-items-center'>{filledAffinityActorIds.length}</span>}
+        </button>}
+
+        {affinityEnabled && showAffinityInput && <div
+            className='fixed inset-0 z-[60] flex items-end bg-slate-950/30'
+            onClick={() => setShowAffinityInput(false)}
+        >
+            <div
+                className='story-safe-sheet w-full max-h-[74dvh] overflow-y-auto rounded-t-[28px] bg-stone-100 px-5 pt-5 shadow-2xl'
+                onClick={event => event.stopPropagation()}
+                role='dialog'
+                aria-modal='true'
+                aria-label='本轮关系备注'
+            >
+                <div className='flex items-start gap-4'>
+                    <div className='w-10 h-10 shrink-0 rounded-xl bg-rose-100 text-rose-600 grid place-items-center'>
+                        <HeartStraight size={18} weight='fill' />
+                    </div>
+                    <div className='min-w-0 flex-1'>
+                        <div className='text-[9px] tracking-[.18em] uppercase font-bold text-rose-500'>Affinity note</div>
+                        <h2 className='mt-0.5 text-base font-semibold'>这轮关系备注 · 可选</h2>
+                        <p className='mt-1 text-[9px] leading-4 text-slate-400'>
+                            {filledAffinityActorIds.length > 0
+                                ? `已填写 ${filledAffinityActorIds.length} 位：${actors.filter(actor => filledAffinityActorIds.includes(actor.id)).map(actor => actor.name).join('、')}`
+                                : '只有你觉得关系真的有变化时才需要填。'}
+                        </p>
+                    </div>
+                    <button type='button' onClick={() => setShowAffinityInput(false)} className='w-9 h-9 shrink-0 rounded-full bg-white border border-slate-200 grid place-items-center text-slate-500' aria-label='关闭关系备注'>
+                        <X size={16} />
+                    </button>
+                </div>
+
+                <div className='mt-5 border-t border-rose-200'>
+                    <div className='pt-4 flex gap-2 overflow-x-auto'>
+                        {actors.map(actor => {
+                            const filled = filledAffinityActorIds.includes(actor.id);
+                            const selected = selectedAffinityActor?.id === actor.id;
+                            return <button key={actor.id} type='button' onClick={() => setSelectedAffinityActorId(actor.id)} className={`shrink-0 px-2.5 py-2 rounded-xl flex items-center gap-2 border text-[10px] font-bold ${selected ? 'bg-white border-rose-300 text-rose-700' : 'border-transparent text-slate-500'}`}>
+                                <TokenImg value={actor.avatar} alt='' className='w-6 h-6 rounded-full object-cover' />
+                                <span>{actor.name}</span>
+                                <span className={`w-1.5 h-1.5 rounded-full ${filled ? 'bg-rose-500' : 'bg-slate-200'}`} />
+                            </button>;
+                        })}
+                    </div>
+
+                    {selectedAffinityActor && <div className='mt-4 pt-4 border-t border-rose-200/70'>
+                        <div className='flex items-center justify-between gap-3'>
+                            <div>
+                                <span className='block text-[10px] font-bold text-rose-700'>你 → {selectedAffinityActor.name}</span>
+                                <span className='block mt-0.5 text-[9px] text-slate-400'>只改变你和这位角色在这一轮的关系</span>
+                            </div>
+                            <button type='button' onClick={() => setAffinityDrafts(current => { const next = { ...current }; delete next[selectedAffinityActor.id]; return next; })} className='text-[9px] font-bold text-slate-400'>清空这位</button>
+                        </div>
+
+                        <div className='mt-4 flex items-center gap-3'>
+                            <span className='text-[10px] font-bold text-rose-600'>变化</span>
+                            <input disabled={sending} type='range' min={-10} max={10} step={1} value={selectedAffinityDraft.delta} onChange={event => patchAffinityDraft(selectedAffinityActor.id, { delta: Number(event.target.value) })} className='min-w-0 flex-1 accent-rose-500' />
+                            <strong className={`w-8 text-right text-xs ${selectedAffinityDraft.delta > 0 ? 'text-rose-600' : selectedAffinityDraft.delta < 0 ? 'text-slate-600' : 'text-slate-400'}`}>{selectedAffinityDraft.delta >= 0 ? '+' : ''}{selectedAffinityDraft.delta}</strong>
+                        </div>
+
+                        <input disabled={sending} maxLength={200} value={selectedAffinityDraft.reason} onChange={event => patchAffinityDraft(selectedAffinityActor.id, { reason: event.target.value })} placeholder={`为什么你对 ${selectedAffinityActor.name} 有这点变化？`} className='mt-3 w-full px-3 py-3 rounded-xl bg-white border border-rose-200 text-xs outline-none placeholder:text-slate-300' />
+
+                        <div className='mt-3 grid grid-cols-2 p-1 rounded-xl bg-white border border-rose-200'>
+                            <button type='button' disabled={sending} onClick={() => patchAffinityDraft(selectedAffinityActor.id, { awareness: 'unnoticed' })} className={`py-2.5 rounded-lg text-[9px] font-bold ${selectedAffinityDraft.awareness === 'unnoticed' ? 'bg-slate-100 text-slate-700' : 'text-slate-400'}`}><span className='inline-flex items-center gap-1'><EyeSlash size={12} />未察觉 · 只变氛围</span></button>
+                            <button type='button' disabled={sending} onClick={() => patchAffinityDraft(selectedAffinityActor.id, { awareness: 'noticed' })} className={`py-2.5 rounded-lg text-[9px] font-bold ${selectedAffinityDraft.awareness === 'noticed' ? 'bg-violet-100 text-violet-700' : 'text-slate-400'}`}><span className='inline-flex items-center gap-1'><Eye size={12} />已察觉 · 完全透视</span></button>
+                        </div>
+
+                        <p className='mt-3 pb-2 text-[9px] leading-4 text-rose-500'>没有填写的角色，本轮保持原关系。</p>
+                    </div>}
+                </div>
+            </div>
+        </div>}
+
         <footer className='story-safe-footer shrink-0 px-4 pt-3 bg-stone-100/95 backdrop-blur border-t border-slate-200'>
             <div className='max-w-2xl mx-auto'>
                 {memoryStatus && <div className='mb-2 flex items-center gap-2 text-[10px] text-violet-600'><SpinnerGap size={13} className='animate-spin' />{memoryStatus}</div>}
                 {!sending && !memoryStatus && !input.trim() && pendingRetryInput && <div className='mb-2 text-[10px] text-violet-600'>上次续写可能中断了，点击推进即可继续</div>}
-                {!sending && !memoryStatus && canWriteOpening && <div className='mb-2 text-[10px] text-violet-600'>准备好了，点击推进让故事写下第一幕</div>}
-                {affinityEnabled && <div className='mb-2 overflow-hidden rounded-2xl border border-rose-200 bg-rose-50/70'>
-                    <button type='button' aria-expanded={showAffinityInput} onClick={() => setShowAffinityInput(value => !value)} className='w-full px-3 py-2.5 flex items-center gap-2 text-left'>
-                        <HeartStraight size={15} weight={filledAffinityActorIds.length > 0 ? 'fill' : 'regular'} className='text-rose-500' />
-                        <span className='min-w-0 flex-1'><strong className='block text-[10px] text-rose-800'>这轮关系备注 · 可选</strong><span className='block mt-0.5 truncate text-[9px] text-rose-500'>{filledAffinityActorIds.length > 0 ? `已填写 ${filledAffinityActorIds.length} 位：${actors.filter(actor => filledAffinityActorIds.includes(actor.id)).map(actor => actor.name).join('、')}` : '先选择角色，再分别填写你对 TA 的变化'}</span></span>
-                        <span className='text-[9px] font-bold text-rose-500'>{showAffinityInput ? '收起' : '填写'}</span>
-                    </button>
-                    {showAffinityInput && <div className='px-3 pb-3 border-t border-rose-200/70'>
-                        <div className='pt-3 flex gap-2 overflow-x-auto'>{actors.map(actor => { const filled = filledAffinityActorIds.includes(actor.id); const selected = selectedAffinityActor?.id === actor.id; return <button key={actor.id} type='button' onClick={() => setSelectedAffinityActorId(actor.id)} className={`shrink-0 px-2.5 py-2 rounded-xl flex items-center gap-2 border text-[10px] font-bold ${selected ? 'bg-white border-rose-300 text-rose-700' : 'border-transparent text-slate-500'}`}><TokenImg value={actor.avatar} alt='' className='w-6 h-6 rounded-full object-cover' /><span>{actor.name}</span><span className={`w-1.5 h-1.5 rounded-full ${filled ? 'bg-rose-500' : 'bg-slate-200'}`} /></button>; })}</div>
-                        {selectedAffinityActor && <div className='mt-3 pt-3 border-t border-rose-200/70'>
-                            <div className='flex items-center justify-between gap-3'><div><span className='block text-[9px] font-bold text-rose-700'>你 → {selectedAffinityActor.name}</span><span className='block mt-0.5 text-[8px] text-slate-400'>这一栏只改变你和这位角色的关系</span></div><button type='button' onClick={() => setAffinityDrafts(current => { const next = { ...current }; delete next[selectedAffinityActor.id]; return next; })} className='text-[9px] font-bold text-slate-400'>清空这位</button></div>
-                            <div className='mt-3 flex items-center gap-3'><span className='text-[9px] font-bold text-rose-600'>变化</span><input disabled={sending} type='range' min={-10} max={10} step={1} value={selectedAffinityDraft.delta} onChange={event => patchAffinityDraft(selectedAffinityActor.id, { delta: Number(event.target.value) })} className='min-w-0 flex-1 accent-rose-500' /><strong className={`w-8 text-right text-xs ${selectedAffinityDraft.delta > 0 ? 'text-rose-600' : selectedAffinityDraft.delta < 0 ? 'text-slate-600' : 'text-slate-400'}`}>{selectedAffinityDraft.delta >= 0 ? '+' : ''}{selectedAffinityDraft.delta}</strong></div>
-                            <input disabled={sending} maxLength={200} value={selectedAffinityDraft.reason} onChange={event => patchAffinityDraft(selectedAffinityActor.id, { reason: event.target.value })} placeholder={`为什么你对 ${selectedAffinityActor.name} 有这点变化？`} className='mt-2 w-full px-3 py-2.5 rounded-xl bg-white border border-rose-200 text-xs outline-none placeholder:text-slate-300' />
-                            <div className='mt-2 grid grid-cols-2 p-1 rounded-xl bg-white border border-rose-200'><button type='button' disabled={sending} onClick={() => patchAffinityDraft(selectedAffinityActor.id, { awareness: 'unnoticed' })} className={`py-2 rounded-lg text-[9px] font-bold ${selectedAffinityDraft.awareness === 'unnoticed' ? 'bg-slate-100 text-slate-700' : 'text-slate-400'}`}><span className='inline-flex items-center gap-1'><EyeSlash size={12} />未察觉 · 只变氛围</span></button><button type='button' disabled={sending} onClick={() => patchAffinityDraft(selectedAffinityActor.id, { awareness: 'noticed' })} className={`py-2 rounded-lg text-[9px] font-bold ${selectedAffinityDraft.awareness === 'noticed' ? 'bg-violet-100 text-violet-700' : 'text-slate-400'}`}><span className='inline-flex items-center gap-1'><Eye size={12} />已察觉 · 完全透视</span></button></div>
-                            <div className='mt-2 text-[9px] leading-4 text-rose-500'>可以继续点另一位角色填写；没有填写的角色本轮保持原关系。</div>
-                        </div>}
-                    </div>}
-                </div>}
                 <div className='flex items-end gap-2 p-2 rounded-2xl bg-white border border-slate-200 shadow-sm'>
                     <button type='button' onClick={() => void send(undefined, true)} disabled={sending || actors.length === 0} className='self-end h-11 shrink-0 px-3 rounded-xl border border-violet-200 bg-violet-50 text-violet-700 text-xs font-bold active:scale-95 transition-transform disabled:opacity-30' title='本轮不主动行动，让剧情按当前预设继续' aria-label='继续当前剧情'>继续</button>
                     <textarea value={input} onChange={event => setInput(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); void send(); } }} disabled={sending} rows={2} placeholder={pendingRetryInput ? '留空并点击推进，可继续上次中断' : canWriteOpening ? '也可以先写一句；留空推进则由故事开场' : '写下动作、对白、时间跳转，或你希望故事发生的事……'} className='min-w-0 min-h-12 max-h-36 flex-1 px-2 py-2 bg-transparent text-sm leading-6 resize-none outline-none disabled:opacity-50' />
                     <button onClick={() => void send()} disabled={sending || (!input.trim() && !pendingRetryInput && !canWriteOpening)} title={!input.trim() && pendingRetryInput ? '继续上次中断' : canWriteOpening && !input.trim() ? '让故事先开场' : '推进'} className='story-send-button self-end w-11 h-11 shrink-0 rounded-xl bg-slate-900 text-white grid place-items-center disabled:opacity-30'>{sending ? <SpinnerGap size={18} className='animate-spin' /> : <PaperPlaneTilt size={18} weight='fill' />}</button>
                 </div>
-                <div className='mt-2 text-center text-[9px] text-slate-400'>{messages.length === 0 ? '点击推进写下第一幕 · 生成正文后可长按楼层编辑或删除' : 'Ctrl / ⌘ + Enter 推进 · 长按楼层可编辑或删除'}</div>
             </div>
         </footer>
         {showQuickPreset && <StoryQuickPresetPanel
