@@ -24,6 +24,7 @@ export enum AppID {
   ThemeMaker = 'thememaker',
   Appearance = 'appearance',
   Date = 'date',
+  StoryTheater = 'story_theater', // 文游 — 从「见面」拆出的独立剧情文字游戏 App
   User = 'user',
   Journal = 'journal',
   Schedule = 'schedule',
