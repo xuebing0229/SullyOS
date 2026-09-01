@@ -531,51 +531,170 @@ ${project?.breaker ? `\n附加规则：\n${project.breaker}` : ''}
     const showFrame = project.mode !== 'text';
     const showChat = project.mode !== 'html';
     return (
-      <div className="w-full h-full flex flex-col bg-slate-950 text-white" style={{position:'relative'}}>
-        <header style={{ padding: 'calc(var(--safe-top) + 10px) 12px 10px', display:'flex',gap:10,alignItems:'center' }}>
-          <button onClick={() => setView('list')}><ArrowLeft size={22}/></button>
-          <div style={{flex:1}}><strong>{project.name}</strong><div style={{fontSize:11,opacity:.6}}>{char?.name} · {modeLabel[project.mode]}</div></div>
-          <button onClick={makeMemoryCandidates} disabled={busy}><Sparkle size={21}/></button>
-          <button
-            onClick={endSession}
-            disabled={session.status==='ended'}
-            style={{padding:'7px 10px',borderRadius:999,background:'rgba(51,65,85,.84)',whiteSpace:'nowrap'}}
-          >
-            {session.status==='ended'?'已结束':'结束本局'}
-          </button>
-        </header>
+      <div className="h-full w-full bg-[#f5f6fa] flex flex-col text-slate-800 relative">
+        <div
+          className="bg-white/90 backdrop-blur-xl border-b border-slate-200/70 shrink-0 z-20"
+          style={{ paddingTop: 'var(--safe-top)' }}
+        >
+          <div className="h-16 flex items-center px-4 gap-3">
+            <button
+              onClick={() => setView('list')}
+              className="p-2 -ml-2 rounded-full text-slate-600 active:bg-black/5 active:scale-90 transition-all"
+              aria-label="返回"
+            >
+              <ArrowLeft size={23} />
+            </button>
+
+            {char?.avatar ? (
+              <img
+                src={char.avatar}
+                alt=""
+                className="w-9 h-9 rounded-full object-cover shrink-0 border border-slate-100"
+              />
+            ) : (
+              <div className="w-9 h-9 rounded-full bg-slate-100 text-slate-500 grid place-items-center shrink-0 text-xs font-bold">
+                {(char?.name || '?').slice(0, 1)}
+              </div>
+            )}
+
+            <div className="min-w-0 flex-1">
+              <h1 className="text-[15px] font-semibold text-slate-800 truncate">{project.name}</h1>
+              <p className="text-[11px] text-slate-400 truncate">
+                {char?.name} · {modeLabel[project.mode]}
+              </p>
+            </div>
+
+            <button
+              onClick={makeMemoryCandidates}
+              disabled={busy}
+              className="w-9 h-9 rounded-xl bg-slate-100 text-slate-600 grid place-items-center active:scale-95 transition-all disabled:opacity-40"
+              aria-label="整理记忆"
+            >
+              <Sparkle size={18} weight="duotone" />
+            </button>
+
+            <button
+              onClick={endSession}
+              disabled={session.status === 'ended'}
+              className={[
+                'h-9 px-3 rounded-xl text-xs font-semibold transition-all',
+                session.status === 'ended'
+                  ? 'bg-slate-100 text-slate-400'
+                  : 'bg-rose-50 text-rose-500 active:scale-95',
+              ].join(' ')}
+            >
+              {session.status === 'ended' ? '已结束' : '结束'}
+            </button>
+          </div>
+        </div>
 
         {showFrame && (
-          <iframe
-            ref={iframeRef}
-            title={project.name}
-            srcDoc={project.html}
-            sandbox="allow-scripts allow-forms allow-modals"
-            style={{ width:'100%', flex: project.mode === 'hybrid' ? '.9 1 0' : '1 1 0', border:0, background:'#fff' }}
-            onLoad={() => postSimulatorState(iframeRef.current, session.frontendState ?? {})}
-          />
+          <div
+            className={[
+              'bg-white min-h-0',
+              project.mode === 'hybrid' ? 'flex-[0.9_1_0]' : 'flex-1',
+            ].join(' ')}
+          >
+            <iframe
+              ref={iframeRef}
+              title={project.name}
+              srcDoc={project.html}
+              sandbox="allow-scripts allow-forms allow-modals"
+              className="w-full h-full border-0 bg-white"
+              onLoad={() => postSimulatorState(iframeRef.current, session.frontendState ?? {})}
+            />
+          </div>
         )}
 
         {showChat && (
-          <div style={{flex:'1 1 0',minHeight:0,display:'flex',flexDirection:'column',background:'#0f172a'}}>
-            <div style={{flex:1,minHeight:0,overflowY:'auto',padding:14,display:'flex',flexDirection:'column',alignItems:'stretch',justifyContent:'flex-start',gap:10}}>
-              {session.turns.map(t => (
-                <div key={t.id} style={{
-                  alignSelf:t.role==='user'?'flex-end':'flex-start',
-                  width:'fit-content',maxWidth:'86%',height:'auto',flexShrink:0,
-                  padding:'9px 12px',borderRadius:14,
-                  background:t.role==='user'?'#6d28d9':'#1e293b',
-                  whiteSpace:'pre-wrap',overflowWrap:'anywhere'
-                }}>
-                  {t.action ? `[${t.action}] ${JSON.stringify(t.payload ?? '')}` : t.content}
+          <div className="flex-1 min-h-0 flex flex-col bg-[#f5f6fa]">
+            <div className="flex-1 min-h-0 overflow-y-auto px-4 py-5 space-y-3 no-scrollbar">
+              {session.turns.length === 0 && !busy && (
+                <div className="h-full min-h-48 flex flex-col items-center justify-center text-center px-10">
+                  <div className="w-14 h-14 rounded-2xl bg-white border border-slate-100 shadow-sm grid place-items-center text-indigo-400 mb-3">
+                    <Sparkle size={25} weight="duotone" />
+                  </div>
+                  <div className="text-sm font-semibold text-slate-600">本局还没开始说话</div>
+                  <p className="mt-1.5 text-xs leading-5 text-slate-400">
+                    和 {char?.name || '角色'} 一起推进这段故事。
+                  </p>
                 </div>
-              ))}
-              {busy && <div style={{alignSelf:'flex-start',flexShrink:0,opacity:.6}}>正在推进…</div>}
+              )}
+
+              {session.turns.map(t => {
+                const isUser = t.role === 'user';
+                return (
+                  <div
+                    key={t.id}
+                    className={`flex w-full ${isUser ? 'justify-end' : 'justify-start'}`}
+                  >
+                    {!isUser && (
+                      char?.avatar ? (
+                        <img
+                          src={char.avatar}
+                          alt=""
+                          className="w-8 h-8 rounded-full object-cover shrink-0 mr-2 mt-0.5 border border-white shadow-sm"
+                        />
+                      ) : (
+                        <div className="w-8 h-8 rounded-full bg-white border border-slate-100 shadow-sm text-slate-500 grid place-items-center shrink-0 mr-2 mt-0.5 text-[10px] font-bold">
+                          {(char?.name || '?').slice(0, 1)}
+                        </div>
+                      )
+                    )}
+
+                    <div
+                      className={[
+                        'max-w-[78%] px-3.5 py-2.5 text-[14px] leading-6 whitespace-pre-wrap break-words',
+                        isUser
+                          ? 'bg-primary text-white rounded-[20px] rounded-br-[7px] shadow-sm'
+                          : 'bg-white text-slate-700 border border-slate-100 rounded-[20px] rounded-bl-[7px] shadow-sm shadow-slate-200/40',
+                      ].join(' ')}
+                    >
+                      {t.action ? (
+                        <>
+                          <div className={`mb-1.5 text-[10px] font-semibold tracking-wide ${isUser ? 'text-white/70' : 'text-slate-400'}`}>
+                            前端动作 · {t.action}
+                          </div>
+                          <div>{JSON.stringify(t.payload ?? '')}</div>
+                        </>
+                      ) : (
+                        t.content
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+
+              {busy && (
+                <div className="flex items-center gap-2 text-xs text-slate-400 pl-10">
+                  <span className="w-1.5 h-1.5 rounded-full bg-slate-300 animate-pulse" />
+                  {char?.name || '角色'} 正在回复…
+                </div>
+              )}
             </div>
-            <div style={{display:'flex',gap:8,padding:`10px 12px calc(10px + var(--safe-bottom))`}}>
-              <textarea value={input} onChange={e=>setInput(e.target.value)} rows={1}
-                placeholder="你要做什么…" style={{flex:1,borderRadius:14,padding:10,color:'#111'}}/>
-              <button onClick={sendText} disabled={busy||!input.trim()} style={{padding:'0 16px',background:'#7c3aed',borderRadius:14}}>发送</button>
+
+            <div
+              className="shrink-0 px-3 pt-2 bg-white/90 backdrop-blur-xl border-t border-slate-200/70"
+              style={{ paddingBottom: 'calc(10px + var(--safe-bottom))' }}
+            >
+              <div className="flex items-end gap-2">
+                <div className="flex-1 min-w-0 min-h-[46px] rounded-[22px] bg-slate-100 border border-slate-200/70 px-4 py-2.5 flex items-center">
+                  <textarea
+                    value={input}
+                    onChange={e => setInput(e.target.value)}
+                    rows={1}
+                    placeholder="你要做什么…"
+                    className="w-full max-h-28 resize-none bg-transparent outline-none text-[14px] leading-6 text-slate-800 placeholder:text-slate-400"
+                  />
+                </div>
+                <button
+                  onClick={sendText}
+                  disabled={busy || !input.trim()}
+                  className="h-11 px-4 rounded-[18px] bg-primary text-white text-sm font-semibold shadow-sm active:scale-95 transition-all disabled:opacity-35 disabled:active:scale-100"
+                >
+                  发送
+                </button>
+              </div>
             </div>
           </div>
         )}
@@ -590,7 +709,7 @@ ${project?.breaker ? `\n附加规则：\n${project.breaker}` : ''}
             updateCharacter={updateCharacter}
             addToast={addToast}
             onChange={setCandidates}
-            onClose={()=>setShowMemory(false)}
+            onClose={() => setShowMemory(false)}
           />
         )}
       </div>
