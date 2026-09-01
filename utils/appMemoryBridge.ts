@@ -34,6 +34,12 @@ const clamp = (n: unknown, min: number, max: number, fallback: number): number =
   return Number.isFinite(value) ? Math.min(max, Math.max(min, value)) : fallback;
 };
 
+const sourceLabel = (source: AppMemorySource): string => {
+  if (source === 'reading_together') return '素页同栖';
+  if (source === 'story_theater') return '剧情剧场';
+  return '万象匣';
+};
+
 const normalizeRoom = (room: unknown, source: AppMemorySource): MemoryRoom => {
   const value = String(room || '') as MemoryRoom;
   if (ROOM_SET.has(value)) return value;
@@ -46,8 +52,16 @@ const sanitizeTags = (tags: unknown, source: AppMemorySource): string[] => {
     .map((v) => String(v || '').trim())
     .filter(Boolean)
     .slice(0, 8);
-  const sourceTag = source === 'simulator' ? '万象匣' : '素页同栖';
-  return Array.from(new Set([sourceTag, ...cleaned]));
+  return Array.from(new Set([sourceLabel(source), ...cleaned]));
+};
+
+const frameCommittedSummary = (candidate: AppMemoryCandidate): string => {
+  const summary = String(candidate.summary || '').trim();
+  if (candidate.sourceApp !== 'story_theater') return summary;
+  const guard = '记忆性质：这是和用户共同创作、共同演绎过的虚构剧情，不是现实中真实发生的经历。';
+  return summary.includes('不是现实') || summary.includes('虚构剧情')
+    ? `${guard}\n${summary}`
+    : `${guard}\n共同演绎内容：${summary}`;
 };
 
 export interface GenerateCandidateInput {
@@ -69,7 +83,8 @@ export interface GenerateCandidateInput {
 export async function generateAppMemoryCandidates(
   input: GenerateCandidateInput,
 ): Promise<AppMemoryCandidate[]> {
-  const sourceName = input.sourceApp === 'simulator' ? '万象匣' : '素页同栖';
+  const sourceName = sourceLabel(input.sourceApp);
+  const fictionalGuard = input.sourceApp === 'story_theater' ? `\n这是“剧情剧场”的虚构演绎记录。候选卡要让角色记得“我们一起演过/共同创作过这段故事”，而不是把剧中事件误认成现实亲历。\n- summary 必须明确写出这是共同演绎、共同创作或虚构剧情；\n- 可以记录共同演过的故事、双方的创作偏好、共同梗、对某段虚构桥段的印象；\n- 不能把剧中受伤、结婚、死亡、搬家、亲属关系等写成现实发生，除非明确表述为“在虚构剧情里演过”；\n- 即使记录关系或情绪，也要表述成“通过这次共同演绎发现/感受到”，不要伪造现实共同经历。\n` : '';
   const raw = await callAppModel({
     sourceApp: input.sourceApp,
     purpose: '整理候选记忆卡',
@@ -84,6 +99,7 @@ export async function generateAppMemoryCandidates(
     appSystemPrompt: `
 你正在为“${sourceName}”的一段经历整理候选记忆卡。
 这些卡片不会自动进入长期记忆，用户稍后会亲自勾选和编辑。
+${fictionalGuard}
 
 只保留未来真的值得角色记住的内容：
 - 双方共同经历的重要事件；
@@ -184,12 +200,12 @@ export async function commitAppMemoryCandidate(
   const { candidate, char, memoryPalaceConfig, remoteVectorConfig } = deps;
   if (candidate.status === 'committed') return candidate;
 
-  const sourceLabel =
-    candidate.sourceApp === 'simulator' ? '万象匣' : '素页同栖';
+  const label = sourceLabel(candidate.sourceApp);
+  const committedSummary = frameCommittedSummary(candidate);
   const cardContent =
-    `「${sourceLabel} · 记忆卡」\n` +
+    `「${label} · 记忆卡」\n` +
     `${candidate.title}\n` +
-    `${candidate.summary}`;
+    `${committedSummary}`;
 
   // 提交可重试：先按 candidateId 查重，避免“聊天已写入、记忆写入失败”后重试产生重复卡片。
   const existingMessage = (await DB.getMessagesByCharId(char.id, true)).find(
@@ -211,6 +227,7 @@ export async function commitAppMemoryCandidate(
       importance: candidate.importance,
       skipMemoryExtraction: true,
       memoryCommitted: true,
+      ...(candidate.sourceApp === 'story_theater' ? { memorySemantics: 'shared_fiction', fictionalSharedMemory: true } : {}),
     },
     timestamp: Date.now(),
   } as any);
@@ -224,7 +241,7 @@ export async function commitAppMemoryCandidate(
   } = {
     id: memoryNodeId,
     charId: char.id,
-    content: candidate.summary,
+    content: committedSummary,
     room: candidate.room,
     tags: candidate.tags,
     importance: candidate.importance,
@@ -279,7 +296,7 @@ export async function commitAppMemoryCandidate(
     const fragment = {
       id: `appfrag_${candidate.id}`,
       date,
-      summary: `- [${sourceLabel}] ${candidate.summary}`,
+      summary: `- [${label}] ${committedSummary}`,
       mood: 'app_card',
     };
     await deps.updateCharacter(char.id, (prev) => ({
