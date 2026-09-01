@@ -5,7 +5,8 @@ import TokenImg from '../../os/TokenImg';
 import type { AppMemoryCandidate, CharacterProfile, Message, StoryTheaterEntry, StoryTheaterImageFrame, StoryTheaterMask, StoryTheaterPreset } from '../../../types';
 import { DB } from '../../../utils/db';
 import { ContextBuilder } from '../../../utils/context';
-import { safeResponseJson, extractContent } from '../../../utils/safeApi';
+import { extractContent } from '../../../utils/safeApi';
+import { executeOpenAiChatPlan, resolveApiExecutionPlan } from '../../../utils/apiFailover';
 import {
     appendStoryAffinityInputs,
     appendStoryUserTurn,
@@ -25,7 +26,6 @@ import {
     prepareStoryGenerationSettings,
     dedupeTheaterWorldbooks,
     describeEmptyStoryCompletion,
-    describeStoryApiError,
     estimateStoryTokens,
     formatActorRecentMessages,
     formatStoryTheaterExport,
@@ -688,14 +688,22 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
 
     const callCompletion = useCallback(async (payload: Array<{ role: string; content: string }>, settings?: Partial<StoryGenerationSettings>, onPromptTokens?: (tokens: number) => void): Promise<string> => {
         const generationSettings = prepareStoryGenerationSettings(settings, entry.omitSamplingParams === true);
-        const response = await fetch(`${apiConfig.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiConfig.apiKey}` },
-            body: JSON.stringify({ model: apiConfig.model, messages: payload, stream: false, ...generationSettings }),
-            __sullyMeta: { appId: 'date', appName: '见面', purpose: '剧情见面生成' },
-        } as RequestInit & { __sullyMeta: { appId: string; appName: string; purpose: string } });
-        const data = await safeResponseJson(response);
-        if (!response.ok) throw new Error(describeStoryApiError(response.status, data));
+        const plan = resolveApiExecutionPlan('chat', apiConfig, true);
+        const { value: data } = await executeOpenAiChatPlan({
+            plan,
+            body: {
+                model: apiConfig.model,
+                messages: payload,
+                stream: false,
+                ...generationSettings,
+            },
+            meta: {
+                appId: 'date',
+                appName: '剧情剧场',
+                purpose: '剧情续写',
+            },
+            directMaxRetries: 2,
+        });
         const reportedPromptTokens = Number(data?.usage?.prompt_tokens);
         if (Number.isFinite(reportedPromptTokens) && reportedPromptTokens > 0) onPromptTokens?.(reportedPromptTokens);
         const content = extractContent(data).trim();
