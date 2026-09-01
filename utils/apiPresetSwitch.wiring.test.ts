@@ -44,9 +44,12 @@ describe('点预设 = 直接切过去', () => {
     expect(settings).not.toMatch(/loadPreset/);
   });
 
-  it('切换走 commitApiConfig，不自己调 updateApiConfig（否则漏掉凭据同步）', () => {
+  it('切换保留预设身份，并同步云端凭据', () => {
     const applyPreset = bodyOf('applyPreset');
-    expect(applyPreset).toMatch(/commitApiConfig\(configFromPreset\(preset\)\)/);
+    expect(applyPreset).toMatch(/setApiPresetDefaultModel\(preset, model\)/);
+    expect(applyPreset).toMatch(/activateApiPreset\(runtimePreset\)/);
+    expect(applyPreset).toMatch(/syncAmsgLlmCredentials/);
+    expect(applyPreset).toMatch(/refreshApiCredentialsForPendingTasks/);
     expect(applyPreset).not.toMatch(/updateApiConfig\(/);
   });
 
@@ -60,14 +63,16 @@ describe('保存配置与已选预设保持一致', () => {
     const handleSaveApi = bodyOf('handleSaveApi');
     expect(handleSaveApi).toMatch(/commitApiConfig\(nextConfig\)/);
     expect(handleSaveApi).toMatch(/if \(selectedApiPreset\)/);
-    expect(handleSaveApi).toMatch(/updateApiPreset\(selectedApiPreset\.id, \{ name: presetName, config: nextConfig \}\)/);
+    expect(handleSaveApi).toMatch(/setApiPresetDefaultModel/);
+    expect(handleSaveApi).toMatch(/models: updatedPreset\.models/);
+    expect(handleSaveApi).toMatch(/activateApiPreset\(updatedPreset\)/);
   });
 
   it('主表单、编辑弹窗与费用弹窗分别更新对应字段', () => {
     expect(settings.match(/updateApiPreset\(/g) ?? []).toHaveLength(3);
     expect(bodyOf('handleSaveApi')).toMatch(/updateApiPreset\(selectedApiPreset\.id/);
-    expect(bodyOf('handleUpdatePreset')).toMatch(/updateApiPreset\(preset\.id, \{ name, config: nextConfig \}\)/);
-    expect(settings).toMatch(/updateApiPreset\(preset\.id, \{ pricing: pricingDraft \}\)/);
+    expect(bodyOf('handleUpdatePreset')).toMatch(/models: updatedPreset\.models/);
+    expect(settings).toMatch(/updateApiPreset\(preset\.id, \{ models: updated\.models \}\)/);
   });
 
   it('新建和保存预设都包含流式与温度', () => {
