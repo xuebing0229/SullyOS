@@ -52,6 +52,7 @@ const AppMemoryCandidatePanel: React.FC<Props> = ({
     () => candidates.filter((v) => v.status === 'pending'),
     [candidates],
   );
+  const isStoryTheater = pending.some((v) => v.sourceApp === 'story_theater');
 
   const replace = (next: AppMemoryCandidate) => {
     onChange(candidates.map((v) => (v.id === next.id ? next : v)));
@@ -166,7 +167,9 @@ const AppMemoryCandidatePanel: React.FC<Props> = ({
           <div>
             <div style={{ fontSize: 18, fontWeight: 800 }}>整理记忆卡片</div>
             <div style={{ fontSize: 12, color: '#78716c', marginTop: 4 }}>
-              只有你确认的卡片才进入主聊天和主记忆
+              {isStoryTheater
+                ? '剧情剧场只记“我们一起演过/创作过”，不会把剧中事件当成现实'
+                : '只有你确认的卡片才进入主聊天和主记忆'}
             </div>
           </div>
           <button onClick={onClose} disabled={busy}>关闭</button>
