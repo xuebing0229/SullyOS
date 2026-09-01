@@ -21,7 +21,7 @@ export interface AppContextDeps {
   localMessages?: Array<{ role: 'user' | 'assistant' | 'system'; content: string }>;
   signal?: AbortSignal;
   temperature?: number;
-  sourceApp?: 'simulator' | 'reading_together';
+  sourceApp?: 'simulator' | 'reading_together' | 'story_theater';
   purpose?: string;
 }
 
@@ -105,7 +105,7 @@ export async function callAppModel(deps: AppContextDeps): Promise<string> {
     }),
   }, 0, 0, {
     appId: deps.sourceApp || 'simulator',
-    appName: deps.sourceApp === 'reading_together' ? '素页同栖' : '万象匣',
+    appName: deps.sourceApp === 'reading_together' ? '素页同栖' : deps.sourceApp === 'story_theater' ? '剧情剧场' : '万象匣',
     charId: deps.char.id,
     charName: deps.char.name,
     purpose: deps.purpose || 'App 内文本生成',
