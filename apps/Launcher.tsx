@@ -582,18 +582,46 @@ const Launcher: React.FC = () => {
       return launcherDockOrder.map(id => byId.get(id as AppID)).filter(Boolean) as typeof INSTALLED_APPS;
   }, [launcherDockOrder]);
 
-  // Split apps into pages of 8 (4 cols x 2 rows fit comfortably below widget)
-  // Pages: 0 = clock+chat+music+grid (original), 1 = pinwheel, 2 = widget images + grid,
-  //        3+ = plain grid. Pad to at least 3 slots so the pinwheel/widget pages always exist.
-  const APPS_PER_PAGE = 8;
+  // Desktop app packing uses real slot capacity instead of slicing every page at 8 apps.
+  // Page 0 and page 1 are intentionally capped at 8 because their large widgets consume
+  // the rest of the usable area. Page 2 counts optional launcher widgets as occupied grid
+  // slots; later plain pages can use the full 4 x 4 app grid.
+  const PRIMARY_PAGE_APP_SLOTS = 8;
+  const PINWHEEL_PAGE_APP_SLOTS = 8;
+  const PLAIN_PAGE_APP_SLOTS = 16;
+
+  const thirdPageAppSlots = useMemo(() => {
+      const widgets = theme.launcherWidgets || {};
+      // tl/tr share one half-width square row. Even if only one is configured, the
+      // current layout still reserves the other half, so together that row occupies 8 slots.
+      const squareRowSlots = widgets['tl'] || widgets['tr'] ? 8 : 0;
+      // The full-width 128px widget is roughly one 4-column app row.
+      const wideWidgetSlots = widgets['wide'] ? 4 : 0;
+      return Math.max(0, PLAIN_PAGE_APP_SLOTS - squareRowSlots - wideWidgetSlots);
+  }, [theme.launcherWidgets]);
+
   const appPages = useMemo(() => {
       const pages: typeof INSTALLED_APPS[] = [];
-      for (let i = 0; i < gridApps.length; i += APPS_PER_PAGE) {
-          pages.push(gridApps.slice(i, i + APPS_PER_PAGE));
+      let cursor = 0;
+
+      const takePage = (capacity: number) => {
+          const next = gridApps.slice(cursor, cursor + capacity);
+          pages.push(next);
+          cursor += next.length;
+      };
+
+      takePage(PRIMARY_PAGE_APP_SLOTS);
+      takePage(PINWHEEL_PAGE_APP_SLOTS);
+      takePage(thirdPageAppSlots);
+
+      while (cursor < gridApps.length) {
+          takePage(PLAIN_PAGE_APP_SLOTS);
       }
+
+      // Keep the three special launcher pages present even when there are few apps.
       while (pages.length < 3) pages.push([]);
       return pages;
-  }, [gridApps]);
+  }, [gridApps, thirdPageAppSlots]);
 
   // Page 2 (pinwheel) uses appPages[1]: split into two 2x2 quads
   const page2Apps = appPages[1] || [];
