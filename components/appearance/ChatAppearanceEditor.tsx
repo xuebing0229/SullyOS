@@ -411,6 +411,10 @@ export const ChatAppearanceEditor: React.FC<Props> = ({ theme, updateTheme, onRe
     const sendButtonStyle = theme.chatSendButtonStyle || defaults.chatSendButtonStyle;
     const pendingIndicator = theme.chatPendingIndicator !== false;
     const showHeaderBuffs = theme.chatHideHeaderBuffs !== true;
+    const textToneEnabled = theme.chatTextToneColorsEnabled === true;
+    const narrationColor = theme.chatNarrationColor || '#334155';
+    const dialogueColor = theme.chatDialogueColor || '#e58f6c';
+    const actionColor = theme.chatActionColor || '#8b5cf6';
     const [showStyleHelp, setShowStyleHelp] = useState(false);
 
     // 聊天壳设置面板悬浮化——同私聊「聊天装扮」的形态：面板浮在预览上方而不占文档流，
@@ -446,7 +450,7 @@ export const ChatAppearanceEditor: React.FC<Props> = ({ theme, updateTheme, onRe
     };
 
     // 悬浮面板内左右翻页：一页一个主题，改哪项都能立刻在后面的预览里看到。
-    const PAGE_TITLES = ['快速预设', '聊天壳', '头部', '气泡与头像', '细节微调', '表情包与输入栏'];
+    const PAGE_TITLES = ['快速预设', '聊天壳', '头部', '气泡与头像', '细节微调', '表情包与输入栏', '正文分色'];
     const [page, setPage] = useState(0);
     const swipeStartX = useRef<number | null>(null);
     const goPage = (next: number) => setPage(Math.max(0, Math.min(PAGE_TITLES.length - 1, next)));
@@ -768,6 +772,74 @@ export const ChatAppearanceEditor: React.FC<Props> = ({ theme, updateTheme, onRe
                     <div className="mt-4">
                         <ChoiceGroup title="发送按钮" items={choices.send} value={sendButtonStyle} onPick={(value) => updateTheme({ chatSendButtonStyle: value as OSTheme['chatSendButtonStyle'] })} />
                     </div>
+                </>)}
+
+                {page === 6 && (<>
+                    <div className="flex items-center justify-between rounded-2xl bg-slate-50 px-3 py-3">
+                        <div className="min-w-0 pr-3">
+                            <div className="text-[11px] font-bold text-slate-700">角色回复正文分色</div>
+                            <div className="mt-0.5 text-[10px] leading-relaxed text-slate-400">
+                                像酒馆美化一样只改显示层：旁白 / 引号里的对白 / *星号包住的动作或心理* 分别着色，不改消息原文，也不会把颜色标记发给 AI。
+                            </div>
+                        </div>
+                        <button
+                            onClick={() => updateTheme(textToneEnabled
+                                ? { chatTextToneColorsEnabled: false }
+                                : {
+                                    chatTextToneColorsEnabled: true,
+                                    chatNarrationColor: narrationColor,
+                                    chatDialogueColor: dialogueColor,
+                                    chatActionColor: actionColor,
+                                })}
+                            className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${textToneEnabled ? 'bg-primary' : 'bg-slate-300'}`}
+                            aria-pressed={textToneEnabled}
+                        >
+                            <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-all ${textToneEnabled ? 'left-[22px]' : 'left-0.5'}`} />
+                        </button>
+                    </div>
+
+                    <div className="mt-4 rounded-2xl border border-slate-100 bg-white p-3">
+                        <div className="text-[9px] font-bold uppercase tracking-widest text-slate-400">预览</div>
+                        <div className="mt-2 text-[13px] leading-7">
+                            <span style={{ color: textToneEnabled ? narrationColor : '#334155' }}>他抬眼看了你一会儿。</span>
+                            <span style={{ color: textToneEnabled ? dialogueColor : '#334155' }}>「今天回来得挺早。」</span>
+                            <em style={{ color: textToneEnabled ? actionColor : '#334155' }}>指尖轻轻敲了两下桌面。</em>
+                        </div>
+                    </div>
+
+                    {([
+                        ['旁白', '普通叙述正文', narrationColor, 'chatNarrationColor'],
+                        ['对白', '识别 「」『』“”‘’ 和英文双引号', dialogueColor, 'chatDialogueColor'],
+                        ['动作 / 心理', '识别单星号 *……*；**粗体** 不会误判', actionColor, 'chatActionColor'],
+                    ] as const).map(([label, desc, value, field]) => (
+                        <div key={field} className="mt-3 flex items-center gap-3 rounded-2xl border border-slate-100 bg-slate-50 px-3 py-2.5">
+                            <input
+                                type="color"
+                                value={value}
+                                onChange={(event) => updateTheme({ [field]: event.target.value } as Partial<OSTheme>)}
+                                className="h-9 w-11 shrink-0 cursor-pointer rounded-xl border border-slate-200 bg-white p-1"
+                                aria-label={`${label}颜色`}
+                            />
+                            <div className="min-w-0 flex-1">
+                                <div className="text-[11px] font-bold text-slate-700">{label}</div>
+                                <div className="mt-0.5 text-[9px] text-slate-400">{desc}</div>
+                            </div>
+                            <code className="shrink-0 text-[9px] font-mono text-slate-400">{value.toUpperCase()}</code>
+                        </div>
+                    ))}
+
+                    <button
+                        onClick={() => updateTheme({
+                            chatTextToneColorsEnabled: true,
+                            chatNarrationColor: '#334155',
+                            chatDialogueColor: '#e58f6c',
+                            chatActionColor: '#8b5cf6',
+                        })}
+                        className="mt-4 w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-2.5 text-[11px] font-bold text-slate-500 active:scale-[0.99]"
+                    >
+                        恢复推荐配色
+                    </button>
+                    <p className="mt-2 text-[9px] leading-relaxed text-slate-400">目前只给角色回复分色，自己的气泡继续使用原本的气泡文字色，避免深色/彩色用户气泡被改得看不清。</p>
                 </>)}
                 </div>
             </section>
