@@ -29,6 +29,7 @@ const Appearance = lazyApp(() => import('../apps/Appearance'));
 const Gallery = lazyApp(() => import('../apps/Gallery'));
 const VoiceLibraryApp = lazyApp(() => import('../apps/VoiceLibraryApp'));
 const DateApp = lazyApp(() => import('../apps/DateApp'));
+const StoryTheaterApp = lazyApp(() => import('../apps/StoryTheaterApp'));
 const UserApp = lazyApp(() => import('../apps/UserApp'));
 const JournalApp = lazyApp(() => import('../apps/JournalApp'));
 const ScheduleApp = lazyApp(() => import('../apps/ScheduleApp'));
@@ -68,7 +69,7 @@ const SpecialMomentsApp = lazyApp(() => import('./ValentineEvent').then(m => ({ 
 // 高频 App 在前；低端设备/省流量/2G 由 shouldUseIdleAppPreload 整体跳过。
 const APP_IDLE_PRELOAD_ORDER: PreloadableLazy[] = [
   Chat, Character, Settings, Appearance, GroupChat, RoomApp, CheckPhone,
-  JournalApp, ScheduleApp, SocialApp, MomentsApp, MusicApp, CallApp, Gallery, VoiceLibraryApp, DateApp, UserApp,
+  JournalApp, ScheduleApp, SocialApp, MomentsApp, MusicApp, CallApp, Gallery, VoiceLibraryApp, DateApp, StoryTheaterApp, UserApp,
   StudyApp, GameApp, GameHallApp, LiveApp, SimulatorApp, ReadingTogetherApp, NovelApp, BankApp, WorldbookApp, MemoryPalaceApp, HandbookApp,
   VRWorldApp, WorldHomeApp, LifeSimApp, SongwritingApp, GuidebookApp, FAQApp, HotNewsApp,
   XhsStockApp, XhsFreeRoamApp, BrowserApp, VoiceDesignerApp, ThemeMaker, QQBridge,
@@ -84,7 +85,7 @@ let idlePreloadCursor = 0;
 const APP_BY_ID: Partial<Record<AppID, PreloadableLazy>> = {
   [AppID.Settings]: Settings, [AppID.Character]: Character, [AppID.Chat]: Chat,
   [AppID.GroupChat]: GroupChat, [AppID.ThemeMaker]: ThemeMaker, [AppID.Appearance]: Appearance,
-  [AppID.Gallery]: Gallery, [AppID.VoiceLibrary]: VoiceLibraryApp, [AppID.Date]: DateApp, [AppID.User]: UserApp,
+  [AppID.Gallery]: Gallery, [AppID.VoiceLibrary]: VoiceLibraryApp, [AppID.Date]: DateApp, [AppID.StoryTheater]: StoryTheaterApp, [AppID.User]: UserApp,
   [AppID.Journal]: JournalApp, [AppID.Schedule]: ScheduleApp, [AppID.Room]: RoomApp,
   [AppID.CheckPhone]: CheckPhone, [AppID.Social]: SocialApp, [AppID.Moments]: MomentsApp, [AppID.Study]: StudyApp,
   [AppID.FAQ]: FAQApp, [AppID.Game]: GameApp, [AppID.GameHall]: GameHallApp,
@@ -972,6 +973,7 @@ const PhoneShell: React.FC = () => {
       case AppID.Gallery: return <Gallery />;
       case AppID.VoiceLibrary: return <VoiceLibraryApp />;
       case AppID.Date: return <DateApp />; 
+      case AppID.StoryTheater: return <StoryTheaterApp />;
       case AppID.User: return <UserApp />;
       case AppID.Journal: return <JournalApp />; 
       case AppID.Schedule: return <ScheduleApp />;
