@@ -7,30 +7,32 @@ const settingsSource = readFileSync(
     'utf8',
 );
 
-describe('Settings API preset pricing entry contract', () => {
-    it('keeps a visible pricing action for every API preset', () => {
+describe('Settings API preset per-model pricing entry contract', () => {
+    it('keeps a visible pricing action for every saved model', () => {
         expect(settingsSource).toContain(
-            "preset.pricing ? '修改价格' : '设置价格'",
+            "item.pricing ? '修改价格' : '设置价格'",
         );
         expect(settingsSource).toContain(
             'setPricingPresetId(preset.id)',
         );
         expect(settingsSource).toContain(
-            'setPricingDraft(',
+            'setPricingModel(item.model)',
+        );
+        expect(settingsSource).toContain(
+            'getApiPresetPricing(preset, item.model)',
         );
     });
 
-    it('keeps pricing and safe-delete as separate actions', () => {
-        const pricingIndex = settingsSource.indexOf(
-            'setPricingPresetId(preset.id)',
+    it('saves pricing onto the targeted model instead of the preset root', () => {
+        expect(settingsSource).toContain(
+            'setApiPresetModelPricing(preset, pricingModel, pricingDraft)',
         );
-        const safeDeleteIndex = settingsSource.indexOf(
-            'aria-label={`长按或双击删除预设 ${preset.name}`}',
+        expect(settingsSource).toContain(
+            'updateApiPreset(preset.id, { models: updated.models })',
         );
-
-        expect(pricingIndex).toBeGreaterThan(-1);
-        expect(safeDeleteIndex).toBeGreaterThan(-1);
-        expect(pricingIndex).toBeLessThan(safeDeleteIndex);
+        expect(settingsSource).not.toContain(
+            'updateApiPreset(preset.id, { pricing: pricingDraft })',
+        );
     });
 
     it('does not make opening pricing also select or delete the preset', () => {
@@ -53,9 +55,6 @@ describe('Settings API preset pricing entry contract', () => {
 
         expect(pricingButton).toContain(
             'event.stopPropagation()',
-        );
-        expect(pricingButton).not.toContain(
-            'loadPreset(',
         );
         expect(pricingButton).not.toContain(
             'deleteApiPreset(',

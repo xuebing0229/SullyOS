@@ -44,6 +44,12 @@ import type { APIConfig, ApiPricing, TtsProvider } from '../types';
 import { buildApiPresetConfig } from '../utils/apiPresetConfig';
 import { configFromPreset, findActivePresetId, type PresetSwitchPatch } from '../utils/apiPresetSwitch';
 import { backfillUnpricedCallsForPreset } from '../utils/apiCostBackfill';
+import {
+    getApiPresetModelEntries,
+    getApiPresetPricing,
+    setApiPresetDefaultModel,
+    setApiPresetModelPricing,
+} from '../utils/apiPresetModels';
 import ImageGenerationSettings from '../components/settings/ImageGenerationSettings';
 import OrphanImageCleanupCard from '../components/settings/OrphanImageCleanupCard';
 import { DB } from '../utils/db';
@@ -544,6 +550,7 @@ const Settings: React.FC = () => {
   const [newPresetName, setNewPresetName] = useState('');
   const [newPresetPricing, setNewPresetPricing] = useState<ApiPricing>({ mode: 'per_request', pricePerRequestYuan: '' });
   const [pricingPresetId, setPricingPresetId] = useState<string | null>(null);
+  const [pricingModel, setPricingModel] = useState('');
   const [pricingDraft, setPricingDraft] = useState<ApiPricing | undefined>(undefined);
   const [selectedPresetId, setSelectedPresetId] = useState<string | null>(null);
   const [selectedPresetName, setSelectedPresetName] = useState('');
@@ -1000,18 +1007,22 @@ const Settings: React.FC = () => {
       void ActiveMsgClient.refreshApiCredentialsForPendingTasks({ ...apiConfig, ...patch });
   };
 
-  const applyPreset = (preset: typeof apiPresets[0]) => {
+  const applyPreset = (preset: typeof apiPresets[0], modelOverride?: string) => {
+      const model = normalizeApiModel(modelOverride || preset.config.model);
+      const runtimePreset = setApiPresetDefaultModel(preset, model);
+      const patch = configFromPreset(runtimePreset);
       setSelectedPresetId(preset.id);
       setSelectedPresetName(preset.name);
-      setLocalUrl(preset.config.baseUrl);
-      setLocalKey(preset.config.apiKey);
-      setLocalModel(preset.config.model);
-      setLocalStream(preset.config.stream === true);
-      setLocalTemperature(typeof preset.config.temperature === 'number' ? preset.config.temperature : 0.85);
-      commitApiConfig(configFromPreset(preset));
-      // MiniMax / AceStep settings are NOT overwritten by presets — typically one user
-      // has only one MiniMax / Replicate account regardless of which LLM preset they use.
-      addToast(`已加载配置: ${preset.name}`, 'info');
+      setLocalUrl(runtimePreset.config.baseUrl);
+      setLocalKey(runtimePreset.config.apiKey);
+      setLocalModel(runtimePreset.config.model);
+      setLocalStream(runtimePreset.config.stream === true);
+      setLocalTemperature(typeof runtimePreset.config.temperature === 'number' ? runtimePreset.config.temperature : 0.85);
+      activateApiPreset(runtimePreset);
+      void syncAmsgLlmCredentials({ ...apiConfig, ...patch });
+      void ActiveMsgClient.refreshApiCredentialsForPendingTasks({ ...apiConfig, ...patch });
+      // MiniMax / AceStep settings are NOT overwritten by presets.
+      addToast(`已加载配置: ${preset.name} · ${runtimePreset.config.model}`, 'info');
   };
 
   const openEditPreset = (preset: typeof apiPresets[0]) => {
@@ -1049,8 +1060,21 @@ const Settings: React.FC = () => {
           temperature: editPresetTemperature,
       };
       const wasActive = activePresetId === preset.id;
-      updateApiPreset(preset.id, { name, config: nextConfig });
-      if (wasActive) commitApiConfig(configFromPreset({ ...preset, name, config: nextConfig }));
+      const updatedPreset = setApiPresetDefaultModel(
+          { ...preset, name, config: nextConfig },
+          nextConfig.model,
+      );
+      updateApiPreset(preset.id, {
+          name,
+          config: updatedPreset.config,
+          models: updatedPreset.models,
+      });
+      if (wasActive) {
+          const patch = configFromPreset(updatedPreset);
+          activateApiPreset(updatedPreset);
+          void syncAmsgLlmCredentials({ ...apiConfig, ...patch });
+          void ActiveMsgClient.refreshApiCredentialsForPendingTasks({ ...apiConfig, ...patch });
+      }
       if (selectedPresetId === preset.id) setSelectedPresetName(name);
       setEditingPresetId(null);
       addToast(wasActive ? `「${name}」已更新，当前配置同步生效` : `「${name}」已更新`, 'success');
@@ -1114,8 +1138,19 @@ const Settings: React.FC = () => {
         addToast('预设名称不能为空', 'error');
         return;
       }
-      updateApiPreset(selectedApiPreset.id, { name: presetName, config: nextConfig });
-      commitApiConfig(nextConfig);
+      const updatedPreset = setApiPresetDefaultModel(
+          { ...selectedApiPreset, name: presetName, config: nextConfig },
+          nextConfig.model,
+      );
+      updateApiPreset(selectedApiPreset.id, {
+          name: presetName,
+          config: updatedPreset.config,
+          models: updatedPreset.models,
+      });
+      const patch = configFromPreset(updatedPreset);
+      activateApiPreset(updatedPreset);
+      void syncAmsgLlmCredentials({ ...apiConfig, ...patch });
+      void ActiveMsgClient.refreshApiCredentialsForPendingTasks({ ...apiConfig, ...patch });
       setStatusMsg(`已保存到「${presetName}」`);
     } else {
       commitApiConfig(nextConfig);
@@ -2351,68 +2386,118 @@ const Settings: React.FC = () => {
             {apiPresets.length > 0 && (
                 <div className="mb-4">
                     <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2 block pl-1">我的预设 (Presets)</label>
-                    <div className="flex gap-2 flex-wrap">
-                        {apiPresets.map(preset => (
-                            <div key={preset.id} className={`flex items-center rounded-lg pl-3 pr-1 py-1 shadow-sm border transition-colors ${
-                                activePresetId === preset.id
-                                    ? 'bg-primary/5 border-primary/30'
-                                    : 'bg-white border-slate-200'
-                            }`}>
-                                <button type="button" onClick={() => applyPreset(preset)}
-                                    title={`切换到 ${preset.name}`}
-                                    className={`text-xs font-medium cursor-pointer mr-1.5 transition-colors ${
-                                        activePresetId === preset.id ? 'text-primary' : 'text-slate-600 hover:text-primary'
-                                    }`}>
-                                    {preset.name}
-                                    {activePresetId === preset.id && <span className="ml-1 text-[9px] font-bold">· 使用中</span>}
-                                </button>
-                                <button
-                                    type="button"
-                                    aria-label={`编辑预设 ${preset.name}`}
-                                    title="编辑这条预设"
-                                    onClick={(event) => { event.stopPropagation(); openEditPreset(preset); }}
-                                    className="p-1 rounded-full text-slate-300 hover:bg-primary/10 hover:text-primary transition-colors">
-                                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-3 h-3"><path d="M13.586 3.586a2 2 0 1 1 2.828 2.828l-.793.793-2.828-2.828.793-.793ZM11.379 5.793 3 14.172V17h2.828l8.38-8.379-2.83-2.828Z" /></svg>
-                                </button>
-                                <button
-                                    type="button"
-                                    onClick={(event) => {
-                                        event.stopPropagation();
-                                        setPricingPresetId(preset.id);
-                                        setPricingDraft(
-                                            preset.pricing ?? {
-                                                mode: 'per_request',
-                                                pricePerRequestYuan: '',
-                                            },
-                                        );
-                                    }}
-                                    aria-label={`${preset.pricing ? '修改' : '设置'}预设 ${preset.name} 的价格`}
-                                    title={preset.pricing ? '修改价格' : '设置价格'}
-                                    className="shrink-0 rounded-lg bg-emerald-50 px-2.5 py-1 text-[10px] font-bold text-emerald-600 transition-colors hover:bg-emerald-100 active:scale-95"
-                                >
-                                    {preset.pricing ? '修改价格' : '设置价格'}
-                                </button>
-                                <button
-                                    type="button"
-                                    aria-label={`长按或双击删除预设 ${preset.name}`}
-                                    title="长按或双击删除"
-                                    onPointerDown={(event) => { event.stopPropagation(); beginPresetDeleteHold(preset.id, preset.name); }}
-                                    onPointerUp={cancelPresetDeleteHold}
-                                    onPointerCancel={cancelPresetDeleteHold}
-                                    onPointerLeave={cancelPresetDeleteHold}
-                                    onDoubleClick={(event) => { event.stopPropagation(); deleteApiPreset(preset.id, preset.name); }}
-                                    onContextMenu={(event) => event.preventDefault()}
-                                    className={`p-1 rounded-full transition-colors select-none touch-none ${
-                                        holdingDeletePresetId === preset.id
-                                            ? 'bg-red-100 text-red-500 scale-110'
-                                            : 'text-slate-300 hover:bg-red-50 hover:text-red-400'
-                                    }`}>
-                                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-3 h-3"><path d="M6.28 5.22a.75.75 0 0 0-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 1 0 1.06 1.06L10 11.06l3.72 3.72a.75.75 0 1 0 1.06-1.06L11.06 10l3.72-3.72a.75.75 0 0 0-1.06-1.06L10 8.94 6.28 5.22Z" /></svg>
-                                </button>
-                            </div>
-                        ))}
+                    <div className="space-y-2">
+                        {apiPresets.map(preset => {
+                            const presetModels = getApiPresetModelEntries(preset);
+                            return (
+                                <div key={preset.id} className={`rounded-xl px-3 py-2.5 shadow-sm border transition-colors ${
+                                    activePresetId === preset.id
+                                        ? 'bg-primary/5 border-primary/30'
+                                        : 'bg-white border-slate-200'
+                                }`}>
+                                    <div className="flex items-center gap-1.5">
+                                        <button
+                                            type="button"
+                                            onClick={() => applyPreset(preset)}
+                                            title={`切换到 ${preset.name} 的默认模型`}
+                                            className={`min-w-0 flex-1 text-left text-xs font-bold transition-colors ${
+                                                activePresetId === preset.id ? 'text-primary' : 'text-slate-600 hover:text-primary'
+                                            }`}
+                                        >
+                                            <span className="truncate block">
+                                                {preset.name}
+                                                {activePresetId === preset.id && <span className="ml-1 text-[9px] font-bold">· 使用中</span>}
+                                            </span>
+                                        </button>
+                                        <button
+                                            type="button"
+                                            aria-label={`编辑预设 ${preset.name}`}
+                                            title="编辑共用的 URL / Key / 默认模型"
+                                            onClick={(event) => { event.stopPropagation(); openEditPreset(preset); }}
+                                            className="p-1.5 rounded-full text-slate-300 hover:bg-primary/10 hover:text-primary transition-colors"
+                                        >
+                                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-3 h-3"><path d="M13.586 3.586a2 2 0 1 1 2.828 2.828l-.793.793-2.828-2.828.793-.793ZM11.379 5.793 3 14.172V17h2.828l8.38-8.379-2.83-2.828Z" /></svg>
+                                        </button>
+                                        <button
+                                            type="button"
+                                            aria-label={`长按或双击删除预设 ${preset.name}`}
+                                            title="长按或双击删除"
+                                            onPointerDown={(event) => { event.stopPropagation(); beginPresetDeleteHold(preset.id, preset.name); }}
+                                            onPointerUp={cancelPresetDeleteHold}
+                                            onPointerCancel={cancelPresetDeleteHold}
+                                            onPointerLeave={cancelPresetDeleteHold}
+                                            onDoubleClick={(event) => { event.stopPropagation(); deleteApiPreset(preset.id, preset.name); }}
+                                            onContextMenu={(event) => event.preventDefault()}
+                                            className={`p-1.5 rounded-full transition-colors select-none touch-none ${
+                                                holdingDeletePresetId === preset.id
+                                                    ? 'bg-red-100 text-red-500 scale-110'
+                                                    : 'text-slate-300 hover:bg-red-50 hover:text-red-400'
+                                            }`}
+                                        >
+                                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-3 h-3"><path d="M6.28 5.22a.75.75 0 0 0-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 1 0 1.06 1.06L10 11.06l3.72 3.72a.75.75 0 1 0 1.06-1.06L11.06 10l3.72-3.72a.75.75 0 0 0-1.06-1.06L10 8.94 6.28 5.22Z" /></svg>
+                                        </button>
+                                    </div>
+
+                                    {presetModels.length > 0 ? (
+                                        <div className="mt-2 space-y-1.5">
+                                            {presetModels.map(item => {
+                                                const modelActive =
+                                                    activePresetId === preset.id
+                                                    && normalizeApiModel(apiConfig.model) === normalizeApiModel(item.model);
+                                                return (
+                                                    <div key={item.model} className={`flex items-center gap-2 rounded-lg border px-2.5 py-1.5 ${
+                                                        modelActive
+                                                            ? 'border-primary/20 bg-white'
+                                                            : 'border-slate-100 bg-slate-50/70'
+                                                    }`}>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => applyPreset(preset, item.model)}
+                                                            title={item.model}
+                                                            className={`min-w-0 flex-1 truncate text-left font-mono text-[10px] ${
+                                                                modelActive ? 'font-bold text-primary' : 'text-slate-500'
+                                                            }`}
+                                                        >
+                                                            {item.model}
+                                                            {modelActive && <span className="ml-1 font-sans text-[8px]">· 当前</span>}
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            onClick={(event) => {
+                                                                event.stopPropagation();
+                                                                setPricingPresetId(preset.id);
+                                                                setPricingModel(item.model);
+                                                                setPricingDraft(
+                                                                    getApiPresetPricing(preset, item.model) ?? {
+                                                                        mode: 'per_request',
+                                                                        pricePerRequestYuan: '',
+                                                                    },
+                                                                );
+                                                            }}
+                                                            aria-label={`${item.pricing ? '修改' : '设置'} ${item.model} 的价格`}
+                                                            title={item.pricing ? '修改这个模型的价格' : '设置这个模型的价格'}
+                                                            className={`shrink-0 rounded-lg px-2 py-1 text-[9px] font-bold transition-colors active:scale-95 ${
+                                                                item.pricing
+                                                                    ? 'bg-emerald-50 text-emerald-600 hover:bg-emerald-100'
+                                                                    : 'bg-slate-100 text-slate-400 hover:bg-slate-200'
+                                                            }`}
+                                                        >
+                                                            {item.pricing ? '修改价格' : '设置价格'}
+                                                        </button>
+                                                    </div>
+                                                );
+                                            })}
+                                        </div>
+                                    ) : (
+                                        <p className="mt-2 text-[9px] text-slate-300">还没有保存模型；在下方选择 Model 后点“保存到预设”即可加入。</p>
+                                    )}
+                                </div>
+                            );
+                        })}
                     </div>
-                    <p className="text-[9px] text-slate-300 mt-1.5 pl-1">点名称直接切换并生效；铅笔改这条预设的内容；长按或双击 × 才会删除。</p>
+                    <p className="text-[9px] text-slate-300 mt-1.5 pl-1 leading-relaxed">
+                        一条预设共用 URL / Key；点模型直接切换。价格只属于对应模型，不会串到同预设里的其它模型。
+                    </p>
                 </div>
             )}
 
@@ -2509,7 +2594,9 @@ const Settings: React.FC = () => {
                 </button>
                 {apiPresets.length > 0 && (
                     <p className="text-[9px] text-slate-300 px-1 leading-relaxed">
-                        这里改的是当前生效的配置，不会动上面的预设；要把改动存回某条预设，点它的铅笔。
+                        {selectedApiPreset
+                            ? `已选中「${selectedPresetName.trim() || selectedApiPreset.name}」：换 Model 后点保存，会把这个模型加入同一预设；URL / Key 仍共用。`
+                            : '未选中预设时这里只保存当前 API 配置；点上面的预设名称后即可继续给它添加模型。'}
                     </p>
                 )}
 
@@ -4085,24 +4172,26 @@ const Settings: React.FC = () => {
           <div className="space-y-2">
               <label className="text-[10px] font-bold text-slate-400 uppercase">预设名称 (例如: DeepSeek)</label>
               <input value={newPresetName} onChange={e => setNewPresetName(e.target.value)} className="w-full bg-slate-100 rounded-xl px-4 py-3 text-sm focus:outline-primary" autoFocus placeholder="Name..." />
+              <p className="text-[10px] text-slate-400">当前模型：<span className="font-mono text-slate-600">{localModel || '未填写'}</span></p>
               <ApiPricingEditor value={newPresetPricing} onChange={setNewPresetPricing} compact />
           </div>
       </Modal>
 
       <Modal
           isOpen={pricingPresetId !== null}
-          title="API 预设价格"
-          onClose={() => { setPricingPresetId(null); setPricingDraft(undefined); }}
+          title={pricingModel ? `模型价格 · ${pricingModel}` : '模型价格'}
+          onClose={() => { setPricingPresetId(null); setPricingModel(''); setPricingDraft(undefined); }}
           footer={
               <button
                   onClick={() => {
                       const preset = apiPresets.find(item => item.id === pricingPresetId);
-                      if (!preset || !pricingDraft) return;
-                      const updated = { ...preset, pricing: pricingDraft };
-                      updateApiPreset(preset.id, { pricing: pricingDraft });
+                      if (!preset || !pricingModel || !pricingDraft) return;
+                      const updated = setApiPresetModelPricing(preset, pricingModel, pricingDraft);
+                      updateApiPreset(preset.id, { models: updated.models });
                       setPricingPresetId(null);
+                      setPricingModel('');
                       setPricingDraft(undefined);
-                      addToast('价格已保存', 'success');
+                      addToast(`${pricingModel} 的价格已保存`, 'success');
                       void backfillUnpricedCallsForPreset(updated).then(count => {
                           if (count > 0) addToast(`已补算最近记录 ${count} 条`, 'info');
                       });
@@ -4127,7 +4216,7 @@ const Settings: React.FC = () => {
               <input value={editPresetName} onChange={event => setEditPresetName(event.target.value)} placeholder="预设名称" className="w-full bg-slate-100 rounded-xl px-4 py-2.5 text-sm focus:outline-primary" />
               <input value={editPresetUrl} onChange={event => setEditPresetUrl(event.target.value)} placeholder="https://..." className="w-full bg-slate-100 rounded-xl px-4 py-2.5 text-sm font-mono focus:outline-primary" />
               <SensitiveTextInput value={editPresetKey} onChange={event => setEditPresetKey(event.target.value)} placeholder="sk-..." className="w-full bg-slate-100 rounded-xl px-4 py-2.5 text-sm font-mono focus:outline-primary" />
-              <input value={editPresetModel} onChange={event => setEditPresetModel(event.target.value)} placeholder="模型名称" className="w-full bg-slate-100 rounded-xl px-4 py-2.5 text-sm font-mono focus:outline-primary" />
+              <input value={editPresetModel} onChange={event => setEditPresetModel(event.target.value)} placeholder="默认模型（保存时会加入模型列表）" className="w-full bg-slate-100 rounded-xl px-4 py-2.5 text-sm font-mono focus:outline-primary" />
               <div className="rounded-xl border border-slate-100 bg-slate-50/70 px-3 py-3 space-y-3">
                   <button type="button" aria-pressed={editPresetStream} onClick={() => setEditPresetStream(value => !value)} className="w-full flex items-center justify-between text-xs font-bold text-slate-500">
                       <span>流式输出（随预设保存）</span><span>{editPresetStream ? '开启' : '关闭'}</span>
@@ -4141,7 +4230,10 @@ const Settings: React.FC = () => {
                   setEditPresetUrl(localUrl); setEditPresetKey(localKey); setEditPresetModel(localModel);
                   setEditPresetStream(localStream); setEditPresetTemperature(localTemperature);
               }} className="w-full py-2 bg-slate-100 text-slate-500 text-xs font-bold rounded-xl">用当前完整配置填入</button>
-              <p className="text-[10px] text-slate-400">{editingPresetId === activePresetId ? '这条正在使用中，保存后当前配置会同步更新。' : '只修改这条预设，不影响当前配置。'}</p>
+              <p className="text-[10px] text-slate-400">
+                  URL / Key / 流式 / 温度由这条预设下的所有模型共用；只有价格按模型分别保存。
+                  {editingPresetId === activePresetId ? ' 这条正在使用中，保存后当前配置会同步更新。' : ''}
+              </p>
           </div>
       </Modal>
 

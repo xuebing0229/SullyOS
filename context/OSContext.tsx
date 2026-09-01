@@ -3181,8 +3181,9 @@ recordApiCall({ requestId: (config as any)?.__sullyApiCallId, url: urlStr, body:
   };
   const saveModels = (models: string[]) => { setAvailableModels(models); localStorage.setItem('os_available_models', JSON.stringify(models)); };
   const persistApiPresets = (next: ApiPreset[]) => {
-      setApiPresets(next);
-      localStorage.setItem('os_api_presets', JSON.stringify(next));
+      const normalized = next.map(normalizeApiPreset);
+      setApiPresets(normalized);
+      localStorage.setItem('os_api_presets', JSON.stringify(normalized));
       resetApiFailoverRuntime();
   };
   const activateApiPreset = (preset: ApiPreset) => {
@@ -3191,7 +3192,12 @@ recordApiCall({ requestId: (config as any)?.__sullyApiCallId, url: urlStr, body:
       resetApiFailoverRuntime();
   };
   const addApiPreset = (name: string, config: APIConfig, pricing?: ApiPricing): ApiPreset => {
-      const preset: ApiPreset = { id: Date.now().toString(), name, config, pricing };
+      const preset = normalizeApiPreset({
+          id: Date.now().toString(),
+          name,
+          config,
+          models: config.model ? [{ model: config.model, pricing }] : [],
+      });
       persistApiPresets([...apiPresets, preset]);
       persistCurrentApiConfig(applyApiPresetConfig(apiConfig, preset.config));
       persistActiveApiPresetId(preset.id);
@@ -3200,7 +3206,7 @@ recordApiCall({ requestId: (config as any)?.__sullyApiCallId, url: urlStr, body:
   const updateApiPreset = (id: string, patch: Partial<ApiPreset>) => {
       const previous = apiPresets.find(preset => preset.id === id);
       if (!previous) return;
-      const updated = mergeApiPresetPatch(previous, patch);
+      const updated = normalizeApiPreset(mergeApiPresetPatch(previous, patch));
       persistApiPresets(apiPresets.map(preset => preset.id === id ? updated : preset));
       if (activeApiPresetId === id && patch.config) {
           persistCurrentApiConfig(applyApiPresetConfig(apiConfig, updated.config));
@@ -3211,7 +3217,7 @@ recordApiCall({ requestId: (config as any)?.__sullyApiCallId, url: urlStr, body:
       persistApiPresets(apiPresets.filter(preset => preset.id !== id));
       if (activeApiPresetId === id) persistActiveApiPresetId(null);
   };
-  const savePresets = (presets: ApiPreset[]) => { setApiPresets(presets); localStorage.setItem('os_api_presets', JSON.stringify(presets)); resetApiFailoverRuntime(); };
+  const savePresets = (presets: ApiPreset[]) => { persistApiPresets(presets); };
   const addCharacter = async () => {
     const name = 'New Character';
     // 默认开启 emotionConfig.enabled，让"开日程 = 开情绪"这条隐含约定对新角色也成立。

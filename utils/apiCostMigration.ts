@@ -44,7 +44,7 @@ export async function migrateApiCostV1(): Promise<void> {
     const migrated = entries.map(entry => {
       if (entry.costStatus) return entry;
       const matched = matchApiPresetForBilling(presets, { baseUrl: entry.baseUrl, model: entry.model });
-      const pricingSnapshot = snapshotPricing(matched.preset);
+      const pricingSnapshot = snapshotPricing(matched.preset, entry.model);
       const usage = legacyUsage(entry);
       const cost = calculateApiCallCost({
         pricingSnapshot,

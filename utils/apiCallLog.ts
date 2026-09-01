@@ -1,6 +1,7 @@
 import type { ApiBillingUsage, ApiCallCostStatus, ApiCallUnpricedReason, ApiPricingSnapshot, ApiPreset } from '../types';
 import { calculateApiCallCost, matchApiPresetForBilling, normalizeApiBillingUsage, snapshotPricing } from './apiPricing';
 import { extractBearerCredential } from './apiPresetRouteIdentity';
+import { apiPresetHasModel } from './apiPresetModels';
 
 /**
  * 全局 API 调用记录（给 设置 → API 调用记录 页面用）。
@@ -262,7 +263,7 @@ export function captureApiBillingContext(
                 presetId: explicitPreset.id,
                 presetName: explicitPreset.name,
                 pricingSnapshot:
-                    snapshotPricing(explicitPreset),
+                    snapshotPricing(explicitPreset, model, true),
             };
         }
     }
@@ -312,7 +313,11 @@ export function captureApiBillingContext(
                 presetId: recoveredPreset.id,
                 presetName: recoveredPreset.name,
                 pricingSnapshot:
-                    snapshotPricing(recoveredPreset),
+                    snapshotPricing(
+                        recoveredPreset,
+                        model,
+                        recoveredPreset.id === activePresetId,
+                    ),
             };
         }
 
@@ -328,7 +333,7 @@ export function captureApiBillingContext(
         presetId: matched.preset.id,
         presetName: matched.preset.name,
         pricingSnapshot:
-            snapshotPricing(matched.preset),
+            snapshotPricing(matched.preset, model),
     };
 }
 const localDateKey=(timestamp:number):string=>{const d=new Date(timestamp),pad=(v:number)=>String(v).padStart(2,'0');return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;};
@@ -456,7 +461,7 @@ function resolvePresetName(baseUrl: string, model: string): string {
         // 优先 baseUrl + model 都对上；退而求其次只对 baseUrl
         const exact = presets.find((p: any) =>
             stripTrailingSlash(p?.config?.baseUrl || '') === normBase &&
-            (p?.config?.model || '') === model);
+            apiPresetHasModel(p as ApiPreset, model));
         if (exact?.name) return exact.name;
         const byBase = presets.find((p: any) =>
             stripTrailingSlash(p?.config?.baseUrl || '') === normBase);

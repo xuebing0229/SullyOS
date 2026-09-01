@@ -1,13 +1,18 @@
 import type { ApiBillingUsage, ApiPreset } from '../types';
 import { DB } from './db';
 import { calculateApiCallCost, snapshotPricing } from './apiPricing';
+import { getApiPresetModelEntries } from './apiPresetModels';
 
 const stripTrailingSlash = (value: string): string => value.replace(/\/+$/, '');
 
+const hasAnyPricing = (preset: ApiPreset): boolean =>
+  getApiPresetModelEntries(preset).some(item => item.pricing);
+
+const canSafelyFallbackToOnlyPricedModel = (preset: ApiPreset): boolean =>
+  getApiPresetModelEntries(preset).filter(item => item.pricing).length === 1;
+
 export async function backfillUnpricedCallsForPreset(preset: ApiPreset): Promise<number> {
-  if (!preset.pricing) return 0;
-  const pricingSnapshot = snapshotPricing(preset);
-  if (!pricingSnapshot) return 0;
+  if (!hasAnyPricing(preset)) return 0;
   const entries = await DB.getApiCostUnresolvedEntries();
   let changed = 0;
   for (const entry of entries) {
@@ -15,8 +20,16 @@ export async function backfillUnpricedCallsForPreset(preset: ApiPreset): Promise
     const matchesPreset = entry.presetId
       ? entry.presetId === preset.id
       : stripTrailingSlash(entry.baseUrl || '') === stripTrailingSlash(preset.config.baseUrl || '')
-        && (entry.model || '') === (preset.config.model || '');
+        && getApiPresetModelEntries(preset).some(item => item.model === (entry.model || ''));
     if (!matchesPreset) continue;
+
+    const exactSnapshot = snapshotPricing(preset, entry.model);
+    const pricingSnapshot = exactSnapshot
+      ?? (entry.presetId && canSafelyFallbackToOnlyPricedModel(preset)
+        ? snapshotPricing(preset, preset.config.model, true)
+        : undefined);
+    if (!pricingSnapshot) continue;
+
     const usage: ApiBillingUsage = entry.billingUsage ?? {
       inputTokens: 0, cacheWriteTokens: 0, cacheReadTokens: 0, outputTokens: 0, usageAvailable: false,
     };
@@ -35,15 +48,14 @@ export async function backfillUnpricedCallsForPreset(preset: ApiPreset): Promise
   return changed;
 }
 
-
 /**
- * 修复已经落进“待处理”的新式记录：只认记录当时保存下来的 presetId，
- * 不用名称 / URL 猜，避免同线路多个预设时串账。
+ * 修复已经落进“待处理”的新式记录：优先认记录当时保存下来的 presetId。
+ * 老记录没有 id 时，只在“端点唯一 + 模型价格能唯一确定”时补算，绝不跨模型猜价格。
  */
 export async function backfillUnpricedCallsByPresetIdentity(
   presets: ApiPreset[],
 ): Promise<number> {
-  const pricedPresets = presets.filter(preset => preset.pricing);
+  const pricedPresets = presets.filter(hasAnyPricing);
   const pricedById = new Map(
     pricedPresets.map(preset => [preset.id, preset] as const),
   );
@@ -58,23 +70,33 @@ export async function backfillUnpricedCallsByPresetIdentity(
       ? pricedById.get(entry.presetId)
       : undefined;
 
-    // 第一版只能修“已经保存 presetId”的新记录；旧记录正因为匹配失败所以根本没有 id。
-    // 对这类历史项只做一个保守兜底：若这个 Base URL 在当前所有“已配置价格”的预设里
-    // 只有唯一归属，就可以确定应套哪个价格；同线路存在多个预设时绝不猜，继续留待处理。
+    let pricingSnapshot = preset
+      ? snapshotPricing(preset, entry.model)
+      : undefined;
+
+    if (
+      preset
+      && !pricingSnapshot
+      && canSafelyFallbackToOnlyPricedModel(preset)
+    ) {
+      pricingSnapshot = snapshotPricing(preset, preset.config.model, true);
+    }
+
     if (!preset && !entry.presetId) {
       const normBase = stripTrailingSlash(entry.baseUrl || '');
-      const endpointCandidates = pricedPresets.filter(
-        candidate =>
-          stripTrailingSlash(candidate.config.baseUrl || '') === normBase,
-      );
+      const endpointCandidates = pricedPresets.filter(candidate => {
+        if (stripTrailingSlash(candidate.config.baseUrl || '') !== normBase) return false;
+        return Boolean(snapshotPricing(candidate, entry.model))
+          || canSafelyFallbackToOnlyPricedModel(candidate);
+      });
       if (endpointCandidates.length === 1) {
         preset = endpointCandidates[0];
+        pricingSnapshot = snapshotPricing(preset, entry.model)
+          ?? snapshotPricing(preset, preset.config.model, true);
       }
     }
 
-    if (!preset) continue;
-    const pricingSnapshot = snapshotPricing(preset);
-    if (!pricingSnapshot) continue;
+    if (!preset || !pricingSnapshot) continue;
     const usage: ApiBillingUsage = entry.billingUsage ?? {
       inputTokens: 0,
       cacheWriteTokens: 0,

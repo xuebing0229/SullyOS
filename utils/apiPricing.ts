@@ -7,6 +7,7 @@ import type {
   ApiPreset,
 } from '../types';
 import { matchApiPresetRoute } from './apiPresetRouteIdentity';
+import { getApiPresetPricing, normalizeApiPresetModelName } from './apiPresetModels';
 
 const MICROS_PER_YUAN = 1_000_000n;
 const TOKENS_PER_MILLION = 1_000_000n;
@@ -578,18 +579,19 @@ export function matchApiPresetForBilling(
 
 export function snapshotPricing(
   preset: ApiPreset | undefined,
+  model?: string,
+  fallbackToDefault = false,
 ): ApiPricingSnapshot | undefined {
-  if (!preset?.pricing) {
-    return undefined;
-  }
+  if (!preset) return undefined;
+  const resolvedModel = normalizeApiPresetModelName(model ?? preset.config?.model);
+  const pricing = getApiPresetPricing(preset, resolvedModel, fallbackToDefault);
+  if (!pricing) return undefined;
 
   return {
     presetId: preset.id,
     presetName: preset.name,
-    pricing:
-      cloneApiPricing(
-        preset.pricing,
-      ),
+    model: resolvedModel || undefined,
+    pricing: cloneApiPricing(pricing),
   };
 }
 
