@@ -14,6 +14,7 @@ import {
 interface Props {
   candidates: AppMemoryCandidate[];
   char: CharacterProfile;
+  characters?: CharacterProfile[];
   userProfile: UserProfile;
   memoryPalaceConfig: any;
   remoteVectorConfig?: any;
@@ -36,6 +37,7 @@ const roomLabel: Record<string, string> = {
 const AppMemoryCandidatePanel: React.FC<Props> = ({
   candidates,
   char,
+  characters,
   userProfile,
   memoryPalaceConfig,
   remoteVectorConfig,
@@ -70,10 +72,17 @@ const AppMemoryCandidatePanel: React.FC<Props> = ({
     try {
       const committed: AppMemoryCandidate[] = [];
       for (const candidate of rows) {
+        const targetChar =
+          candidate.charId === char.id
+            ? char
+            : characters?.find((item) => item.id === candidate.charId);
+        if (!targetChar) {
+          throw new Error(`找不到记忆卡对应的角色（${candidate.charId}）`);
+        }
         committed.push(
           await commitAppMemoryCandidate({
             candidate,
-            char,
+            char: targetChar,
             userProfile,
             memoryPalaceConfig,
             remoteVectorConfig,
@@ -96,6 +105,10 @@ const AppMemoryCandidatePanel: React.FC<Props> = ({
     const rows = pending.filter((v) => selected.has(v.id));
     if (rows.length < 2) {
       addToast('至少勾选两张卡片');
+      return;
+    }
+    if (new Set(rows.map((item) => item.charId)).size > 1) {
+      addToast('不同角色的记忆卡不能合并', 'info');
       return;
     }
     setBusy(true);
@@ -165,7 +178,12 @@ const AppMemoryCandidatePanel: React.FC<Props> = ({
           </div>
         ) : (
           <div style={{ display: 'grid', gap: 12, marginTop: 16 }}>
-            {pending.map((card) => (
+            {pending.map((card) => {
+              const targetName =
+                card.charId === char.id
+                  ? char.name
+                  : characters?.find((item) => item.id === card.charId)?.name;
+              return (
               <div
                 key={card.id}
                 style={{
@@ -209,6 +227,11 @@ const AppMemoryCandidatePanel: React.FC<Props> = ({
                     }}
                   />
                 </label>
+                {characters && characters.length > 1 && targetName && (
+                  <div style={{ marginTop: 7, fontSize: 11, color: '#6d28d9', fontWeight: 700 }}>
+                    写给 {targetName}
+                  </div>
+                )}
                 <textarea
                   value={card.summary}
                   onChange={(e) =>
@@ -265,7 +288,8 @@ const AppMemoryCandidatePanel: React.FC<Props> = ({
                   </button>
                 </div>
               </div>
-            ))}
+              );
+            })}
           </div>
         )}
 
