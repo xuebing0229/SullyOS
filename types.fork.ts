@@ -24,6 +24,8 @@ export interface ApiBillingUsage {
 export interface ApiPricingSnapshot {
   presetId: string;
   presetName: string;
+  /** Model whose price was captured at request time. */
+  model?: string;
   pricing: ApiPricing;
 }
 
