@@ -64,6 +64,7 @@ export interface PendingNativeStoryJob {
   title: string;
   createdAt: number;
   meta?: Record<string, any>;
+  loggedJobId?: string;
 }
 
 interface PendingMap {
@@ -103,11 +104,15 @@ const setPending = (item: PendingNativeStoryJob): void => {
   writePending(map);
 };
 
-const clearPending = (ownerKey: string): void => {
+export const clearPendingNativeStoryJob = async (ownerKey: string): Promise<void> => {
   const map = readPending();
-  if (!map[ownerKey]) return;
+  const pending = map[ownerKey];
+  if (!pending) return;
   delete map[ownerKey];
   writePending(map);
+  if (isNativeStoryBackgroundRuntime()) {
+    await NativeStoryBackground.remove({ jobId: pending.jobId }).catch(() => undefined);
+  }
 };
 
 export const getPendingNativeStoryJob = (ownerKey: string): PendingNativeStoryJob | null =>
@@ -146,7 +151,7 @@ const checkJob = async (jobId: string): Promise<NativeStoryJob | null> => {
 const waitForTerminal = async (jobId: string): Promise<NativeStoryJob> => {
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
-  let resumeHandle: Awaited<ReturnType<typeof App.addListener>> | null = null;
+  let resumeHandle: { remove: () => Promise<void> } | null = null;
 
   return new Promise<NativeStoryJob>((resolve, reject) => {
     const finish = (fn: () => void) => {
@@ -276,13 +281,20 @@ export const executeStoryCompletionInNativeBackground = async (
     try { parsed = JSON.parse(job.responseJson); } catch {}
   }
 
-  logNativeAttempts(job, options.plan, options.body, parsed);
+  const pendingBeforeLog = getPendingNativeStoryJob(options.ownerKey);
+  if (pendingBeforeLog?.loggedJobId !== job.jobId) {
+    logNativeAttempts(job, options.plan, options.body, parsed);
+    if (pendingBeforeLog) {
+      setPending({ ...pendingBeforeLog, loggedJobId: job.jobId });
+    }
+  }
 
   const promptTokens = Number(job.promptTokens ?? parsed?.usage?.prompt_tokens);
   if (Number.isFinite(promptTokens) && promptTokens > 0) options.onPromptTokens?.(promptTokens);
 
-  clearPending(options.ownerKey);
-
+  // 不在这里清 pending：native 已经拿到回复 ≠ 剧情楼层已经成功落库。
+  // 由 StoryTheaterSession 在 assistant 楼层保存成功后再清理，避免 App 恰好
+  // 在“收到结果→写 IndexedDB”之间被系统杀掉时丢失这一轮。
   if (job.status === 'succeeded' && parsed) return parsed;
 
   const error = new Error(job.error || '剧情后台续写失败');
