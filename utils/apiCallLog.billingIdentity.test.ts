@@ -72,6 +72,49 @@ describe('API billing capture route identity', () => {
         expect(capture.missingPresetReason).toBeUndefined();
     });
 
+    it('uses different prices for different models under one connection preset', () => {
+        const presets: ApiPreset[] = [
+            {
+                id: 'multi',
+                name: '同一站子',
+                config: {
+                    baseUrl: 'https://relay.example/v1',
+                    apiKey: 'key-multi',
+                    model: 'model-b',
+                },
+                models: [
+                    {
+                        model: 'model-a',
+                        pricing: { mode: 'per_request', pricePerRequestYuan: '0.10' },
+                    },
+                    {
+                        model: 'model-b',
+                        pricing: { mode: 'per_request', pricePerRequestYuan: '0.35' },
+                    },
+                ],
+            },
+        ];
+        localStorage.setItem('os_api_presets', JSON.stringify(presets));
+
+        const captureA = captureApiBillingContext(
+            'https://relay.example/v1/chat/completions',
+            JSON.stringify({ model: 'model-a' }),
+            undefined,
+            { Authorization: 'Bearer key-multi' },
+        );
+        const captureB = captureApiBillingContext(
+            'https://relay.example/v1/chat/completions',
+            JSON.stringify({ model: 'model-b' }),
+            undefined,
+            { Authorization: 'Bearer key-multi' },
+        );
+
+        expect(captureA.presetId).toBe('multi');
+        expect(captureA.pricingSnapshot?.pricing).toMatchObject({ pricePerRequestYuan: '0.10' });
+        expect(captureB.presetId).toBe('multi');
+        expect(captureB.pricingSnapshot?.pricing).toMatchObject({ pricePerRequestYuan: '0.35' });
+    });
+
     it('recovers the active preset when the relay rewrites the model alias', () => {
         const presets: ApiPreset[] = [
             {
