@@ -1432,6 +1432,13 @@ interface MessageItemProps {
     isPending?: boolean;
     /** 是否开启 dot pulse 指示。关掉则 pending 期间不显示任何视觉 */
     pendingIndicator?: boolean;
+    /** 角色回复正文语义分色。只影响普通角色文本；用户气泡继续沿用气泡主题文字色。 */
+    textToneColors?: {
+        enabled?: boolean;
+        narration?: string;
+        dialogue?: string;
+        action?: string;
+    };
     /** 麦当劳菜单卡里点了"发送给角色"时调用 */
     onMcdSendCart?: (items: import('./McdCard').McdCartItem[]) => void;
     onMcdCandidate?: (item: import('./McdCard').McdCartItem) => void;
@@ -1485,6 +1492,7 @@ const MessageItem = React.memo(({
     suppressEntranceAnimation = false,
     isPending = false,
     pendingIndicator = true,
+    textToneColors,
     onMcdSendCart,
     onMcdCandidate,
     onLuckinSendCart,
@@ -3454,6 +3462,97 @@ const MessageItem = React.memo(({
         return nodes;
     };
 
+    type TextTone = 'narration' | 'dialogue' | 'action';
+    const toneColor = (tone: TextTone): string | undefined => {
+        if (!textToneColors?.enabled || isUser) return undefined;
+        if (tone === 'dialogue') return textToneColors.dialogue;
+        if (tone === 'action') return textToneColors.action;
+        return textToneColors.narration;
+    };
+
+    /**
+     * 酒馆式正文分色：
+     * - 「...」/『...』/“...”/‘...’/"..." → 对白
+     * - 单星号 *...* → 动作 / 心理（**粗体** 不误判）
+     * - 其他 → 旁白
+     *
+     * 只处理显示层，不改消息原文，也不把额外标记送回模型。
+     */
+    const renderToneInline = (line: string): React.ReactNode[] => {
+        if (!textToneColors?.enabled || isUser || !line) return renderInline(line);
+
+        const out: React.ReactNode[] = [];
+        let plainStart = 0;
+        let i = 0;
+        let toneKey = 0;
+
+        const pushPart = (text: string, tone: TextTone, italic = false) => {
+            if (!text) return;
+            const color = toneColor(tone);
+            const inner = renderInline(text);
+            if (!color && !italic) {
+                out.push(...inner);
+                return;
+            }
+            const Tag = italic ? 'em' : 'span';
+            out.push(
+                <Tag
+                    key={`tone-${toneKey++}`}
+                    className={italic ? 'italic' : undefined}
+                    style={color ? { color } : undefined}
+                >
+                    {inner}
+                </Tag>,
+            );
+        };
+
+        const pushNarrationUntil = (end: number) => {
+            if (end > plainStart) pushPart(line.slice(plainStart, end), 'narration');
+        };
+
+        const closingFor = (open: string): string | null => {
+            if (open === '「') return '」';
+            if (open === '『') return '』';
+            if (open === '“') return '”';
+            if (open === '‘') return '’';
+            if (open === '"') return '"';
+            return null;
+        };
+
+        while (i < line.length) {
+            const ch = line[i];
+
+            // 单星号动作 / 心理。**bold** 留给原 Markdown parser。
+            if (ch === '*' && line[i + 1] !== '*' && line[i - 1] !== '*') {
+                const end = line.indexOf('*', i + 1);
+                if (end > i + 1 && line[end + 1] !== '*') {
+                    pushNarrationUntil(i);
+                    pushPart(line.slice(i + 1, end), 'action', true);
+                    i = end + 1;
+                    plainStart = i;
+                    continue;
+                }
+            }
+
+            const close = closingFor(ch);
+            if (close) {
+                const end = line.indexOf(close, i + 1);
+                if (end > i + 1) {
+                    pushNarrationUntil(i);
+                    pushPart(line.slice(i, end + 1), 'dialogue');
+                    i = end + 1;
+                    plainStart = i;
+                    continue;
+                }
+            }
+
+            i += 1;
+        }
+
+        pushNarrationUntil(line.length);
+        return out;
+    };
+
     // --- Enhanced Text Rendering (Markdown Lite) ---
     const renderContent = (text: string) => {
         // 1. Split by Code Blocks (triple backtick)
@@ -3484,7 +3583,7 @@ const MessageItem = React.memo(({
                     if (!quoteText) return null;
                     return (
                         <div key={key} className="my-1 pl-2.5 border-l-[3px] border-current opacity-70 italic text-[13px]">
-                            {renderInline(quoteText)}
+                            {renderToneInline(quoteText)}
                         </div>
                     );
                 }
@@ -3492,10 +3591,10 @@ const MessageItem = React.memo(({
                 // Markdown Header "# text" → render as bold text (strip the #)
                 const headerMatch = line.match(/^#{1,6}\s+(.+)$/);
                 if (headerMatch) {
-                    return <div key={key} className="min-h-[1.2em] font-bold">{renderInline(headerMatch[1])}</div>;
+                    return <div key={key} className="min-h-[1.2em] font-bold">{renderToneInline(headerMatch[1])}</div>;
                 }
 
-                return <div key={key} className="min-h-[1.2em]">{renderInline(line)}</div>;
+                return <div key={key} className="min-h-[1.2em]">{renderToneInline(line)}</div>;
             });
         });
     };
