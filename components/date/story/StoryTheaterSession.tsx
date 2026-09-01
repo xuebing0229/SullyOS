@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Archive, ArrowBendDownRight, ArrowClockwise, ArrowLeft, Broadcast, CaretDown, CaretLeft, CaretRight, ChatCircleDots, Clock, Database, DownloadSimple, Eye, EyeSlash, FilmSlate, GearSix, HeartStraight, Key, MapPin, PaperPlaneTilt, PencilSimple, SlidersHorizontal, Sparkle, SpinnerGap, Trash, X } from '@phosphor-icons/react';
+import { Archive, ArrowBendDownRight, ArrowClockwise, ArrowLeft, ArrowUp, Broadcast, CaretDown, CaretLeft, CaretRight, ChatCircleDots, Clock, Database, DownloadSimple, Eye, EyeSlash, FilmSlate, GearSix, HeartStraight, Key, MapPin, PencilSimple, SlidersHorizontal, Sparkle, SpinnerGap, Trash, X } from '@phosphor-icons/react';
 import { useOS } from '../../../context/OSContext';
 import TokenImg from '../../os/TokenImg';
 import type { AppMemoryCandidate, CharacterProfile, Message, StoryTheaterEntry, StoryTheaterImageFrame, StoryTheaterMask, StoryTheaterPreset } from '../../../types';
@@ -328,47 +328,6 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
     const [showMemoryCards, setShowMemoryCards] = useState(false);
     const [memoryCardBusy, setMemoryCardBusy] = useState(false);
     const [showQuickPreset, setShowQuickPreset] = useState(false);
-    const [quickPresetPosition, setQuickPresetPosition] = useState<{ x: number; y: number }>(() => {
-        if (typeof window === 'undefined') return { x: 300, y: 500 };
-        const buttonSize = 44;
-        const margin = 10;
-        const fallback = {
-            x: Math.max(margin, window.innerWidth - buttonSize - 18),
-            y: Math.max(88, window.innerHeight - buttonSize - 150),
-        };
-        try {
-            const raw = localStorage.getItem('sully-story-quick-preset-position-v1');
-            if (!raw) return fallback;
-            const parsed = JSON.parse(raw) as Partial<{ x: number; y: number }>;
-            return {
-                x: Number.isFinite(parsed.x) ? Number(parsed.x) : fallback.x,
-                y: Number.isFinite(parsed.y) ? Number(parsed.y) : fallback.y,
-            };
-        } catch {
-            return fallback;
-        }
-    });
-    const [affinityPosition, setAffinityPosition] = useState<{ x: number; y: number }>(() => {
-        if (typeof window === 'undefined') return { x: 18, y: 460 };
-        const buttonWidth = 66;
-        const buttonHeight = 40;
-        const margin = 10;
-        const fallback = {
-            x: 18,
-            y: Math.max(88, window.innerHeight - buttonHeight - 170),
-        };
-        try {
-            const raw = localStorage.getItem('sully-story-affinity-position-v1');
-            if (!raw) return fallback;
-            const parsed = JSON.parse(raw) as Partial<{ x: number; y: number }>;
-            return {
-                x: Number.isFinite(parsed.x) ? Number(parsed.x) : fallback.x,
-                y: Number.isFinite(parsed.y) ? Number(parsed.y) : fallback.y,
-            };
-        } catch {
-            return fallback;
-        }
-    });
     const [rerollingId, setRerollingId] = useState<number | null>(null);
     const [regeneratingImageId, setRegeneratingImageId] = useState<number | null>(null);
     const [messageMenu, setMessageMenu] = useState<Message | null>(null);
@@ -385,88 +344,6 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
     const bottomRef = useRef<HTMLDivElement>(null);
     const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
     const longPressOrigin = useRef<{ x: number; y: number } | null>(null);
-    const quickPresetDragRef = useRef<{
-        pointerId: number;
-        startX: number;
-        startY: number;
-        originX: number;
-        originY: number;
-        moved: boolean;
-    } | null>(null);
-    const affinityDragRef = useRef<{
-        pointerId: number;
-        startX: number;
-        startY: number;
-        originX: number;
-        originY: number;
-        moved: boolean;
-    } | null>(null);
-
-    const clampQuickPresetPosition = useCallback((x: number, y: number) => {
-        if (typeof window === 'undefined') return { x, y };
-        const buttonSize = 44;
-        const margin = 10;
-        const minY = 76;
-        const maxX = Math.max(margin, window.innerWidth - buttonSize - margin);
-        const maxY = Math.max(minY, window.innerHeight - buttonSize - 86);
-        return {
-            x: Math.min(maxX, Math.max(margin, x)),
-            y: Math.min(maxY, Math.max(minY, y)),
-        };
-    }, []);
-
-    const persistQuickPresetPosition = useCallback((position: { x: number; y: number }) => {
-        try {
-            localStorage.setItem('sully-story-quick-preset-position-v1', JSON.stringify(position));
-        } catch { /* localStorage unavailable: dragging still works for this session */ }
-    }, []);
-
-    useEffect(() => {
-        const keepInsideViewport = () => {
-            setQuickPresetPosition(current => {
-                const next = clampQuickPresetPosition(current.x, current.y);
-                persistQuickPresetPosition(next);
-                return next;
-            });
-        };
-        keepInsideViewport();
-        window.addEventListener('resize', keepInsideViewport);
-        return () => window.removeEventListener('resize', keepInsideViewport);
-    }, [clampQuickPresetPosition, persistQuickPresetPosition]);
-
-    const clampAffinityPosition = useCallback((x: number, y: number) => {
-        if (typeof window === 'undefined') return { x, y };
-        const buttonWidth = 66;
-        const buttonHeight = 40;
-        const margin = 10;
-        const minY = 76;
-        const maxX = Math.max(margin, window.innerWidth - buttonWidth - margin);
-        const maxY = Math.max(minY, window.innerHeight - buttonHeight - 86);
-        return {
-            x: Math.min(maxX, Math.max(margin, x)),
-            y: Math.min(maxY, Math.max(minY, y)),
-        };
-    }, []);
-
-    const persistAffinityPosition = useCallback((position: { x: number; y: number }) => {
-        try {
-            localStorage.setItem('sully-story-affinity-position-v1', JSON.stringify(position));
-        } catch { /* localStorage unavailable: dragging still works for this session */ }
-    }, []);
-
-    useEffect(() => {
-        const keepInsideViewport = () => {
-            setAffinityPosition(current => {
-                const next = clampAffinityPosition(current.x, current.y);
-                persistAffinityPosition(next);
-                return next;
-            });
-        };
-        keepInsideViewport();
-        window.addEventListener('resize', keepInsideViewport);
-        return () => window.removeEventListener('resize', keepInsideViewport);
-    }, [clampAffinityPosition, persistAffinityPosition]);
-
     const loadMessages = useCallback(async () => {
         const rows = await DB.getMessagesByCharId(threadId, true);
         setMessages(rows.filter(message => message.metadata?.source === 'story_theater').sort((a, b) => a.id - b.id));
@@ -1252,104 +1129,6 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             </div>
         </main>
 
-        <button
-            type='button'
-            onPointerDown={event => {
-                event.currentTarget.setPointerCapture?.(event.pointerId);
-                quickPresetDragRef.current = {
-                    pointerId: event.pointerId,
-                    startX: event.clientX,
-                    startY: event.clientY,
-                    originX: quickPresetPosition.x,
-                    originY: quickPresetPosition.y,
-                    moved: false,
-                };
-            }}
-            onPointerMove={event => {
-                const drag = quickPresetDragRef.current;
-                if (!drag || drag.pointerId !== event.pointerId) return;
-                const dx = event.clientX - drag.startX;
-                const dy = event.clientY - drag.startY;
-                if (!drag.moved && Math.hypot(dx, dy) > 5) drag.moved = true;
-                if (!drag.moved) return;
-                event.preventDefault();
-                setQuickPresetPosition(clampQuickPresetPosition(drag.originX + dx, drag.originY + dy));
-            }}
-            onPointerUp={event => {
-                const drag = quickPresetDragRef.current;
-                if (!drag || drag.pointerId !== event.pointerId) return;
-                quickPresetDragRef.current = null;
-                try { event.currentTarget.releasePointerCapture?.(event.pointerId); } catch { /* already released */ }
-                if (drag.moved) {
-                    const next = clampQuickPresetPosition(
-                        drag.originX + (event.clientX - drag.startX),
-                        drag.originY + (event.clientY - drag.startY),
-                    );
-                    setQuickPresetPosition(next);
-                    persistQuickPresetPosition(next);
-                    return;
-                }
-                setShowQuickPreset(true);
-            }}
-            onPointerCancel={() => { quickPresetDragRef.current = null; }}
-            className='fixed z-[30] w-11 h-11 rounded-xl bg-violet-600 text-white shadow-lg grid place-items-center active:scale-95 transition-transform cursor-grab active:cursor-grabbing'
-            style={{ left: quickPresetPosition.x, top: quickPresetPosition.y, touchAction: 'none' }}
-            title='拖动可换位置；轻点打开本剧情快速预设'
-            aria-label='本剧情快速预设，可拖动'
-        >
-            <SlidersHorizontal size={19} weight='bold' />
-        </button>
-
-        {affinityEnabled && <button
-            type='button'
-            onPointerDown={event => {
-                event.currentTarget.setPointerCapture?.(event.pointerId);
-                affinityDragRef.current = {
-                    pointerId: event.pointerId,
-                    startX: event.clientX,
-                    startY: event.clientY,
-                    originX: affinityPosition.x,
-                    originY: affinityPosition.y,
-                    moved: false,
-                };
-            }}
-            onPointerMove={event => {
-                const drag = affinityDragRef.current;
-                if (!drag || drag.pointerId !== event.pointerId) return;
-                const dx = event.clientX - drag.startX;
-                const dy = event.clientY - drag.startY;
-                if (!drag.moved && Math.hypot(dx, dy) > 5) drag.moved = true;
-                if (!drag.moved) return;
-                event.preventDefault();
-                setAffinityPosition(clampAffinityPosition(drag.originX + dx, drag.originY + dy));
-            }}
-            onPointerUp={event => {
-                const drag = affinityDragRef.current;
-                if (!drag || drag.pointerId !== event.pointerId) return;
-                affinityDragRef.current = null;
-                try { event.currentTarget.releasePointerCapture?.(event.pointerId); } catch { /* already released */ }
-                if (drag.moved) {
-                    const next = clampAffinityPosition(
-                        drag.originX + (event.clientX - drag.startX),
-                        drag.originY + (event.clientY - drag.startY),
-                    );
-                    setAffinityPosition(next);
-                    persistAffinityPosition(next);
-                    return;
-                }
-                setShowAffinityInput(true);
-            }}
-            onPointerCancel={() => { affinityDragRef.current = null; }}
-            className='fixed z-[30] h-10 px-3 rounded-xl bg-rose-500 text-white shadow-lg inline-flex items-center gap-1.5 text-[10px] font-bold active:scale-95 transition-transform cursor-grab active:cursor-grabbing'
-            style={{ left: affinityPosition.x, top: affinityPosition.y, touchAction: 'none' }}
-            title='拖动可换位置；轻点填写本轮关系变化'
-            aria-label='本轮关系变化，可拖动'
-        >
-            <HeartStraight size={15} weight={filledAffinityActorIds.length > 0 ? 'fill' : 'regular'} />
-            关系
-            {filledAffinityActorIds.length > 0 && <span className='min-w-4 h-4 px-1 rounded-full bg-white/90 text-rose-600 text-[8px] grid place-items-center'>{filledAffinityActorIds.length}</span>}
-        </button>}
-
         {affinityEnabled && showAffinityInput && <div
             className='fixed inset-0 z-[60] flex items-end bg-slate-950/30'
             onClick={() => setShowAffinityInput(false)}
@@ -1424,9 +1203,66 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             <div className='max-w-2xl mx-auto'>
                 {memoryStatus && <div className='mb-2 flex items-center gap-2 text-[10px] text-violet-600'><SpinnerGap size={13} className='animate-spin' />{memoryStatus}</div>}
                 {!sending && !memoryStatus && !input.trim() && pendingRetryInput && <div className='mb-2 text-[10px] text-violet-600'>上次续写可能中断了，点击推进即可继续</div>}
-                <div className='flex items-end gap-2 p-2 rounded-2xl bg-white border border-slate-200 shadow-sm'>
-                    <textarea value={input} onChange={event => setInput(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); void send(); } }} disabled={sending} rows={2} placeholder={pendingRetryInput ? '留空并点击推进，可继续上次中断' : canWriteOpening ? '也可以先写一句；留空推进则由故事开场' : '写下动作、对白、时间跳转，或直接输入“继续”……'} className='min-w-0 min-h-12 max-h-36 flex-1 px-2 py-2 bg-transparent text-sm leading-6 resize-none outline-none disabled:opacity-50' />
-                    <button onClick={() => void send()} disabled={sending || (!input.trim() && !pendingRetryInput && !canWriteOpening)} title={!input.trim() && pendingRetryInput ? '继续上次中断' : canWriteOpening && !input.trim() ? '让故事先开场' : '推进'} className='story-send-button self-end w-11 h-11 shrink-0 rounded-xl bg-slate-900 text-white grid place-items-center disabled:opacity-30'>{sending ? <SpinnerGap size={18} className='animate-spin' /> : <PaperPlaneTilt size={18} weight='fill' />}</button>
+                <div className='rounded-[22px] bg-white border border-slate-200 shadow-sm px-3 pt-2.5 pb-2'>
+                    <textarea
+                        value={input}
+                        onChange={event => setInput(event.target.value)}
+                        onKeyDown={event => {
+                            if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
+                                event.preventDefault();
+                                void send();
+                            }
+                        }}
+                        disabled={sending}
+                        rows={2}
+                        placeholder={pendingRetryInput ? '留空发送，可继续上次中断' : canWriteOpening ? '也可以先写一句；留空发送则由故事开场' : '写下动作、对白、时间跳转，或你希望故事发生的事……'}
+                        className='w-full min-h-14 max-h-36 px-1 py-1 bg-transparent text-sm leading-6 resize-none outline-none disabled:opacity-50'
+                    />
+                    <div className='mt-1.5 flex items-center gap-2'>
+                        <button
+                            type='button'
+                            onClick={() => void send(undefined, true)}
+                            disabled={sending || actors.length === 0}
+                            className='h-9 min-w-9 px-2.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 grid place-items-center text-[10px] font-bold active:scale-95 transition-transform disabled:opacity-30'
+                            title='按当前节奏继续，不额外替你行动'
+                            aria-label='继续当前剧情'
+                        >
+                            续
+                        </button>
+
+                        <div className='flex-1' />
+
+                        <button
+                            type='button'
+                            onClick={() => setShowQuickPreset(true)}
+                            className='relative w-9 h-9 rounded-full bg-rose-50 text-rose-600 border border-rose-200 grid place-items-center active:scale-95 transition-transform'
+                            title='本剧情快速预设'
+                            aria-label='本剧情快速预设'
+                        >
+                            <SlidersHorizontal size={17} weight='bold' />
+                        </button>
+
+                        {affinityEnabled && <button
+                            type='button'
+                            onClick={() => setShowAffinityInput(true)}
+                            className='relative w-9 h-9 rounded-full bg-amber-50 text-amber-600 border border-amber-200 grid place-items-center active:scale-95 transition-transform'
+                            title='本轮关系变化'
+                            aria-label='本轮关系变化'
+                        >
+                            <HeartStraight size={18} weight={filledAffinityActorIds.length > 0 ? 'fill' : 'regular'} />
+                            {filledAffinityActorIds.length > 0 && <span className='absolute -right-1 -top-1 min-w-4 h-4 px-1 rounded-full bg-amber-500 text-white text-[8px] grid place-items-center'>{filledAffinityActorIds.length}</span>}
+                        </button>}
+
+                        <button
+                            type='button'
+                            onClick={() => void send()}
+                            disabled={sending || (!input.trim() && !pendingRetryInput && !canWriteOpening)}
+                            title={!input.trim() && pendingRetryInput ? '继续上次中断' : canWriteOpening && !input.trim() ? '让故事先开场' : '推进'}
+                            className='story-send-button w-10 h-10 rounded-full bg-blue-500 text-white grid place-items-center shadow-sm active:scale-95 transition-transform disabled:bg-slate-300 disabled:text-white disabled:opacity-100'
+                        >
+                            {sending ? <SpinnerGap size={18} className='animate-spin' /> : <ArrowUp size={20} weight='bold' />}
+                        </button>
+                    </div>
                 </div>
             </div>
         </footer>
