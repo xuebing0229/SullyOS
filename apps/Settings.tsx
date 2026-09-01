@@ -44,6 +44,12 @@ import type { APIConfig, ApiPricing, TtsProvider } from '../types';
 import { buildApiPresetConfig } from '../utils/apiPresetConfig';
 import { configFromPreset, findActivePresetId, type PresetSwitchPatch } from '../utils/apiPresetSwitch';
 import { backfillUnpricedCallsForPreset } from '../utils/apiCostBackfill';
+import {
+    getApiPresetModelEntries,
+    getApiPresetPricing,
+    setApiPresetDefaultModel,
+    setApiPresetModelPricing,
+} from '../utils/apiPresetModels';
 import ImageGenerationSettings from '../components/settings/ImageGenerationSettings';
 import OrphanImageCleanupCard from '../components/settings/OrphanImageCleanupCard';
 import { DB } from '../utils/db';
@@ -544,6 +550,7 @@ const Settings: React.FC = () => {
   const [newPresetName, setNewPresetName] = useState('');
   const [newPresetPricing, setNewPresetPricing] = useState<ApiPricing>({ mode: 'per_request', pricePerRequestYuan: '' });
   const [pricingPresetId, setPricingPresetId] = useState<string | null>(null);
+  const [pricingModel, setPricingModel] = useState('');
   const [pricingDraft, setPricingDraft] = useState<ApiPricing | undefined>(undefined);
   const [selectedPresetId, setSelectedPresetId] = useState<string | null>(null);
   const [selectedPresetName, setSelectedPresetName] = useState('');
@@ -1000,18 +1007,22 @@ const Settings: React.FC = () => {
       void ActiveMsgClient.refreshApiCredentialsForPendingTasks({ ...apiConfig, ...patch });
   };
 
-  const applyPreset = (preset: typeof apiPresets[0]) => {
+  const applyPreset = (preset: typeof apiPresets[0], modelOverride?: string) => {
+      const model = normalizeApiModel(modelOverride || preset.config.model);
+      const runtimePreset = setApiPresetDefaultModel(preset, model);
+      const patch = configFromPreset(runtimePreset);
       setSelectedPresetId(preset.id);
       setSelectedPresetName(preset.name);
-      setLocalUrl(preset.config.baseUrl);
-      setLocalKey(preset.config.apiKey);
-      setLocalModel(preset.config.model);
-      setLocalStream(preset.config.stream === true);
-      setLocalTemperature(typeof preset.config.temperature === 'number' ? preset.config.temperature : 0.85);
-      commitApiConfig(configFromPreset(preset));
-      // MiniMax / AceStep settings are NOT overwritten by presets — typically one user
-      // has only one MiniMax / Replicate account regardless of which LLM preset they use.
-      addToast(`已加载配置: ${preset.name}`, 'info');
+      setLocalUrl(runtimePreset.config.baseUrl);
+      setLocalKey(runtimePreset.config.apiKey);
+      setLocalModel(runtimePreset.config.model);
+      setLocalStream(runtimePreset.config.stream === true);
+      setLocalTemperature(typeof runtimePreset.config.temperature === 'number' ? runtimePreset.config.temperature : 0.85);
+      activateApiPreset(runtimePreset);
+      void syncAmsgLlmCredentials({ ...apiConfig, ...patch });
+      void ActiveMsgClient.refreshApiCredentialsForPendingTasks({ ...apiConfig, ...patch });
+      // MiniMax / AceStep settings are NOT overwritten by presets.
+      addToast(`已加载配置: ${preset.name} · ${runtimePreset.config.model}`, 'info');
   };
 
   const openEditPreset = (preset: typeof apiPresets[0]) => {
@@ -1049,8 +1060,21 @@ const Settings: React.FC = () => {
           temperature: editPresetTemperature,
       };
       const wasActive = activePresetId === preset.id;
-      updateApiPreset(preset.id, { name, config: nextConfig });
-      if (wasActive) commitApiConfig(configFromPreset({ ...preset, name, config: nextConfig }));
+      const updatedPreset = setApiPresetDefaultModel(
+          { ...preset, name, config: nextConfig },
+          nextConfig.model,
+      );
+      updateApiPreset(preset.id, {
+          name,
+          config: updatedPreset.config,
+          models: updatedPreset.models,
+      });
+      if (wasActive) {
+          const patch = configFromPreset(updatedPreset);
+          activateApiPreset(updatedPreset);
+          void syncAmsgLlmCredentials({ ...apiConfig, ...patch });
+          void ActiveMsgClient.refreshApiCredentialsForPendingTasks({ ...apiConfig, ...patch });
+      }
       if (selectedPresetId === preset.id) setSelectedPresetName(name);
       setEditingPresetId(null);
       addToast(wasActive ? `「${name}」已更新，当前配置同步生效` : `「${name}」已更新`, 'success');
@@ -1114,8 +1138,19 @@ const Settings: React.FC = () => {
         addToast('预设名称不能为空', 'error');
         return;
       }
-      updateApiPreset(selectedApiPreset.id, { name: presetName, config: nextConfig });
-      commitApiConfig(nextConfig);
+      const updatedPreset = setApiPresetDefaultModel(
+          { ...selectedApiPreset, name: presetName, config: nextConfig },
+          nextConfig.model,
+      );
+      updateApiPreset(selectedApiPreset.id, {
+          name: presetName,
+          config: updatedPreset.config,
+          models: updatedPreset.models,
+      });
+      const patch = configFromPreset(updatedPreset);
+      activateApiPreset(updatedPreset);
+      void syncAmsgLlmCredentials({ ...apiConfig, ...patch });
+      void ActiveMsgClient.refreshApiCredentialsForPendingTasks({ ...apiConfig, ...patch });
       setStatusMsg(`已保存到「${presetName}」`);
     } else {
       commitApiConfig(nextConfig);
