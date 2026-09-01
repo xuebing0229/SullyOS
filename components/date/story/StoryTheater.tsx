@@ -25,13 +25,12 @@ import { StoryAppearanceButton, StoryTheaterThemeProvider } from './StoryTheater
 import { deleteStoryTheaterData } from '../../../utils/storyTheaterDeletion';
 
 interface Props {
-    onSwitchCompanion: () => void;
     onClose: () => void;
 }
 
 type View = 'list' | 'editor' | 'session' | 'preset' | 'masks' | 'vectors';
 
-const StoryTheaterContent: React.FC<Props> = ({ onSwitchCompanion, onClose }) => {
+const StoryTheaterContent: React.FC<Props> = ({ onClose }) => {
     const { characters, userProfile, addToast, remoteVectorConfig } = useOS();
     const [view, setView] = useState<View>('list');
     const [entries, setEntries] = useState<StoryTheaterEntry[]>([]);
@@ -225,13 +224,9 @@ const StoryTheaterContent: React.FC<Props> = ({ onSwitchCompanion, onClose }) =>
         <header className='story-safe-header shrink-0 border-b border-slate-200'>
             <div className='h-16 px-4 flex items-center gap-3'>
                 <button onClick={onClose} className='w-9 h-9 rounded-full grid place-items-center'><ArrowLeft size={20} /></button>
-                <div><div className='text-[9px] uppercase tracking-[.24em] font-bold text-violet-500'>Meet</div><h1 className='font-semibold'>见面</h1></div>
+                <div><div className='text-[9px] uppercase tracking-[.24em] font-bold text-violet-500'>TEXT ADVENTURE</div><h1 className='font-semibold'>文游</h1></div>
                 <StoryAppearanceButton className='ml-auto bg-white border border-slate-200' />
                 <button onClick={() => { setMaskLocked(false); setActiveEntry({ ...createStoryTheaterDraft(), presetId: presets[0]?.id }); setView('editor'); }} className='w-10 h-10 rounded-full bg-slate-900 text-white grid place-items-center'><Plus size={19} /></button>
-            </div>
-            <div className='mx-5 mb-4 grid grid-cols-2 p-1 rounded-xl bg-slate-200'>
-                <button onClick={onSwitchCompanion} className='py-2 rounded-lg text-xs font-bold text-slate-500'>陪伴</button>
-                <button className='py-2 rounded-lg bg-white shadow-sm text-xs font-bold text-violet-700'>剧情</button>
             </div>
         </header>
 
