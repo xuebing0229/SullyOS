@@ -5,7 +5,12 @@ import { useOS } from '../../../context/OSContext';
 import type { StoryTheaterEntry, StoryTheaterImageConfig } from '../../../types';
 import { getBuiltinImageMcpServers, loadBuiltinImageSettings } from '../../../utils/builtinImageMcp';
 
-interface Props { entry: StoryTheaterEntry; onChange: (entry: StoryTheaterEntry) => Promise<void> | void; }
+interface Props {
+    entry: StoryTheaterEntry;
+    onChange: (entry: StoryTheaterEntry) => Promise<void> | void;
+    triggerLabel?: string;
+    triggerClassName?: string;
+}
 
 const fallback = (entry: StoryTheaterEntry): StoryTheaterImageConfig => ({
     enabled: entry.imageGeneration?.enabled === true,
@@ -19,7 +24,7 @@ const fallback = (entry: StoryTheaterEntry): StoryTheaterImageConfig => ({
 
 const Toggle: React.FC<{ value: boolean; onChange: (value: boolean) => void }> = ({ value, onChange }) => <button type='button' aria-pressed={value} onClick={() => onChange(!value)} className={`relative h-7 w-12 shrink-0 rounded-full transition ${value ? 'bg-violet-600' : 'bg-slate-200'}`}><span className={`absolute top-1 h-5 w-5 rounded-full bg-white shadow transition ${value ? 'left-6' : 'left-1'}`} /></button>;
 
-const StoryImageSettingsButton: React.FC<Props> = ({ entry, onChange }) => {
+const StoryImageSettingsButton: React.FC<Props> = ({ entry, onChange, triggerLabel, triggerClassName }) => {
     const { addToast, characters, userProfile } = useOS();
     const [open, setOpen] = useState(false);
     const [draft, setDraft] = useState<StoryTheaterImageConfig>(() => fallback(entry));
@@ -35,7 +40,17 @@ const StoryImageSettingsButton: React.FC<Props> = ({ entry, onChange }) => {
         setOpen(false);
     };
     return <>
-        <button type='button' onClick={() => setOpen(true)} className={`relative z-20 grid h-9 w-9 place-items-center rounded-full ${entry.imageGeneration?.enabled ? 'text-violet-600' : ''}`} title='剧情配图' aria-label='剧情配图'><ImageSquare size={18} weight={entry.imageGeneration?.enabled ? 'fill' : 'regular'} />{entry.imageGeneration?.enabled && <span className='absolute right-1 top-1 h-2 w-2 rounded-full border border-stone-100 bg-emerald-500' />}</button>
+        <button
+            type='button'
+            onClick={() => setOpen(true)}
+            className={triggerClassName || `relative z-20 grid h-9 w-9 place-items-center rounded-full ${entry.imageGeneration?.enabled ? 'text-violet-600' : ''}`}
+            title='剧情配图'
+            aria-label='剧情配图'
+        >
+            <ImageSquare size={18} weight={entry.imageGeneration?.enabled ? 'fill' : 'regular'} />
+            {triggerLabel && <span className='min-w-0 flex-1 text-left'>{triggerLabel}</span>}
+            {entry.imageGeneration?.enabled && <span className={triggerLabel ? 'ml-auto h-2 w-2 shrink-0 rounded-full bg-emerald-500' : 'absolute right-1 top-1 h-2 w-2 rounded-full border border-stone-100 bg-emerald-500'} />}
+        </button>
         {open && createPortal(<div
             className='story-theme fixed inset-0 z-[95] flex items-end justify-center bg-slate-950/35'
             style={{ position: 'fixed', inset: 0, pointerEvents: 'auto' }}
