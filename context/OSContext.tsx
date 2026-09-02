@@ -3538,13 +3538,23 @@ recordApiCall({ requestId: (config as any)?.__sullyApiCallId, url: urlStr, body:
   const addToastRef = useRef(addToast);
   useEffect(() => { addToastRef.current = addToast; }, [addToast]);
   useEffect(() => startBackgroundImageJobMonitor({
-    onCompleted: () => {
+    onCompleted: job => {
       setLastMsgTimestamp(Date.now());
-      addToastRef.current('后台图片已生成，已保存到聊天和相册', 'success');
+      addToastRef.current(
+        job.ownerType === 'story-theater'
+          ? '剧情配图已生成，已挂回正文并保存到相册'
+          : '后台图片已生成，已保存到聊天和相册',
+        'success',
+      );
     },
     onFailed: job => {
       setLastMsgTimestamp(Date.now());
-      addToastRef.current(job.lastError || '后台生图失败', 'error');
+      addToastRef.current(
+        job.ownerType === 'story-theater'
+          ? `剧情配图失败：${job.lastError || '后台生图失败'}`
+          : (job.lastError || '后台生图失败'),
+        'error',
+      );
     },
   }), []);
   const showError = (title: string, details: string) => { setErrorDialog({ title, details }); };
