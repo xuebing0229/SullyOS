@@ -12,8 +12,9 @@ const packageDir = path.join(root, 'android', 'app', 'src', 'main', 'java', ...a
 const pluginDir = path.join(packageDir, 'plugins');
 const mainPath = path.join(packageDir, 'MainActivity.java');
 const manifestPath = path.join(root, 'android', 'app', 'src', 'main', 'AndroidManifest.xml');
+const gradlePath = path.join(root, 'android', 'app', 'build.gradle');
 
-await Promise.all([access(mainPath), access(manifestPath)]);
+await Promise.all([access(mainPath), access(manifestPath), access(gradlePath)]);
 await mkdir(pluginDir, { recursive: true });
 
 for (const name of ['SullyStoryBackgroundPlugin.java', 'SullyStoryBackgroundService.java']) {
@@ -60,4 +61,14 @@ if (!manifest.includes('SullyStoryBackgroundService')) {
 }
 await writeFile(manifestPath, manifest);
 
-console.log('[SullyStoryBackground] Native foreground completion service installed');
+// Android 的 HttpURLConnection 在部分系统 / 中转组合下长 SSE 会稳定报
+// "Software caused connection abort"。剧情后台改用 OkHttp 原生长流客户端。
+let gradle = await readFile(gradlePath, 'utf8');
+const okHttpDependency = 'implementation "com.squareup.okhttp3:okhttp:4.12.0"';
+if (!gradle.includes('com.squareup.okhttp3:okhttp')) {
+  if (!/dependencies\s*\{/.test(gradle)) throw new Error('无法定位 android/app/build.gradle dependencies');
+  gradle = gradle.replace(/dependencies\s*\{/, match => `${match}\n    ${okHttpDependency}`);
+  await writeFile(gradlePath, gradle);
+}
+
+console.log('[SullyStoryBackground] Native foreground completion service installed (OkHttp SSE)');
