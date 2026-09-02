@@ -253,46 +253,24 @@ const splitStoryToneSegments = (text: string): StoryToneSegment[] => {
     return segments.length > 0 ? segments : [{ kind: 'narration', text: source }];
 };
 
-const isStandalonePsychologyLine = (line: string): boolean => /^\s*\*(?!\*)[^*\n]+?\*\s*$/.test(line);
-
 /**
- * 模型常把连续心理活动写成：
- * *第一句*
- * *第二句*
- * 中间只有单换行。对显示层来说它们已经是独立可见段落；
- * 若仍塞在同一个 <p> 里，CSS text-indent 只会作用于第一行。
- * 这里只把“整行都是单星号心理”的行拆成视觉段落，普通旁白/对白的单换行保持原样。
+ * 剧情正文里的“硬换行”就是模型主动换段，不能当作同一 <p> 里的普通换行。
+ *
+ * 之前这里只按空行拆段（再额外照顾整行心理），于是模型如果用单换行写：
+ *   第一段。
+ *   第二段。
+ * 浏览器虽然视觉上换了行，但两行仍在同一个 <p> 中，CSS text-indent 只会缩进第一行。
+ *
+ * 这里统一把每个非空硬换行都转成独立视觉段落；真正的自动折行没有 \n，
+ * 仍然只会缩进每段第一行，正好符合小说排版。
  */
-export const splitStoryIndentedParagraphs = (text: string): string[] => {
-    const coarseParagraphs = String(text || '')
+export const splitStoryIndentedParagraphs = (text: string): string[] => (
+    String(text || '')
         .trim()
-        .split(/\n[ \t]*\n+/)
+        .split(/\n+/)
         .map(paragraph => paragraph.trim())
-        .filter(Boolean);
-    const result: string[] = [];
-
-    for (const paragraph of coarseParagraphs) {
-        const lines = paragraph.split(/\n/);
-        let buffer: string[] = [];
-        const flush = () => {
-            const value = buffer.join('\n').trim();
-            if (value) result.push(value);
-            buffer = [];
-        };
-
-        for (const line of lines) {
-            if (isStandalonePsychologyLine(line)) {
-                flush();
-                result.push(line.trim());
-            } else {
-                buffer.push(line);
-            }
-        }
-        flush();
-    }
-
-    return result;
-};
+        .filter(Boolean)
+);
 
 const StorySceneRelationships: React.FC<{ inputs: StoryAffinityInput[] }> = ({ inputs }) => <div className='mt-4 pt-4 border-t border-violet-100'>
     <div className='flex items-center gap-2 text-[9px] font-bold text-slate-400'><HeartStraight size={13} weight='fill' className='text-rose-400' />本轮 U→C 关系变化</div>
