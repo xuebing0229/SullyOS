@@ -37,6 +37,10 @@ import { APP_VERSION_TAG } from './buildInfo';
 const SCRIPT_URL = (import.meta.env.VITE_UMAMI_SCRIPT_URL || '').trim();
 const WEBSITE_ID = (import.meta.env.VITE_UMAMI_WEBSITE_ID || '').trim();
 
+// 二改版隐私策略：彻底禁止任何外发使用统计。保留本文件的本地分桶/数据量辅助函数，
+// 供设置页和本地状态展示使用，但绝不加载 Umami、绝不向统计服务发送请求。
+const OUTBOUND_ANALYTICS_DISABLED = true;
+
 /** 开关状态存这里，跟 os_theme / os_api_config 一样是本地的用户偏好。 */
 const SETTINGS_KEY = 'os_analytics';
 
@@ -58,6 +62,7 @@ declare global {
 
 /** 默认开启，用户可在设置里关掉（公告口径：默认开 + 随时可关）。 */
 export function isAnalyticsEnabled(): boolean {
+  if (OUTBOUND_ANALYTICS_DISABLED) return false;
   if (typeof localStorage === 'undefined') return false;
   try {
     const raw = localStorage.getItem(SETTINGS_KEY);
@@ -80,7 +85,7 @@ export function setAnalyticsEnabled(enabled: boolean): void {
 
 /** 统计功能在这次构建里是否可用（用来决定设置页要不要显示这个开关）。 */
 export function isAnalyticsConfigured(): boolean {
-  return Boolean(SCRIPT_URL && WEBSITE_ID);
+  return !OUTBOUND_ANALYTICS_DISABLED && Boolean(SCRIPT_URL && WEBSITE_ID);
 }
 
 /**
@@ -88,6 +93,7 @@ export function isAnalyticsConfigured(): boolean {
  * surfaced as an OS/API failure when an ad blocker or the network blocks it.
  */
 export function isAnalyticsRequestUrl(value: string): boolean {
+  if (OUTBOUND_ANALYTICS_DISABLED) return false;
   if (!SCRIPT_URL || !value) return false;
   try {
     const pageBase =
@@ -152,6 +158,7 @@ let loadAttempted = false;
  *   - 本地开发 / 局域网真机调试
  */
 export function initAnalytics(): void {
+  if (OUTBOUND_ANALYTICS_DISABLED) return;
   if (loadAttempted) return;
   if (typeof document === 'undefined') return;
   if (!isAnalyticsConfigured()) return;
@@ -217,6 +224,7 @@ export function trackEvent(
   name: string,
   data?: Record<string, string | number | boolean>
 ): void {
+  if (OUTBOUND_ANALYTICS_DISABLED) return;
   // 没有 window 就直接走人。埋点散在一堆工具模块里，其中有些是跟 worker 共用的叶子，
   // 会在没有 window 的环境里被 import；这里少一道判断就是把「永远安全的空调用」
   // 变成 ReferenceError。`window.umami?.` 只挡得住 umami 没加载，挡不住 window 不存在。
