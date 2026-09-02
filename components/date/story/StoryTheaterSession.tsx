@@ -1599,7 +1599,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             <div className='max-w-2xl mx-auto'>
                 {memoryStatus && <div className='mb-1 flex items-center gap-2 px-1 text-[9px] text-violet-600'><SpinnerGap size={12} className='animate-spin' />{memoryStatus}</div>}
                 {sending && isNativeStoryBackgroundRuntime() && <div className='mb-1 flex items-center gap-2 px-1 text-[9px] text-emerald-700'><span className='w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse' />后台续写中，可直接切屏</div>}
-                {!sending && !uncertainRetryMessage && !memoryStatus && !input.trim() && pendingRetryInput && <div className='mb-1 px-1 text-[9px] text-violet-600'>上次续写已断开，可以直接点发送重试</div>}
+                {!sending && !memoryStatus && !input.trim() && pendingRetryInput && <div className='mb-1 px-1 text-[9px] text-violet-600'>上次续写已断开，可以直接点发送重试</div>}
                 <div className='rounded-[22px] bg-white border border-slate-200 shadow-sm px-3 py-2'>
                     <textarea
                         value={input}
