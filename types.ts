@@ -206,14 +206,6 @@ export interface OSTheme {
   chatSendButtonStyle?: 'circle' | 'pill' | 'minimal';
   /** Instant Push 用户气泡左侧的"准备中"圆点动画。默认开启。 */
   chatPendingIndicator?: boolean;
-  /** 角色回复正文按语义分色：旁白 / 引号对白 / *动作或心理*。默认关闭，避免改变旧外观。 */
-  chatTextToneColorsEnabled?: boolean;
-  /** 旁白正文颜色；仅在 chatTextToneColorsEnabled=true 时应用于角色消息。 */
-  chatNarrationColor?: string;
-  /** 「」『』“”等对白片段颜色。 */
-  chatDialogueColor?: string;
-  /** 单星号 *...* 标记的动作 / 心理片段颜色。 */
-  chatActionColor?: string;
   /** 聊天「白框」自定义 CSS：作用于 .sully-chat-root 下的顶栏、输入栏与消息布局钩子。
    *  可换色 / 贴图 / 改外形 / 挪位；稳定选择器清单见 ChromeCssEditor。 */
   chatChromeCustomCss?: string;
