@@ -26,7 +26,7 @@ interface Props {
     ) => void;
 }
 
-const SCOPES: ApiFailoverScope[] = ['chat', 'emotion'];
+const SCOPES: ApiFailoverScope[] = ['chat', 'story', 'emotion'];
 
 interface RouteOption {
     key: string;
@@ -254,12 +254,12 @@ const ApiFailoverSettings: React.FC<Props> = ({ addToast }) => {
             <div className="rounded-2xl border border-slate-200/70 bg-white px-4 py-3 shadow-sm">
                 <div className="text-[11px] font-bold text-slate-600">故障转移线路</div>
                 <p className="mt-1 text-[10px] leading-relaxed text-slate-400">
-                    现在每一条线路都由“API 预设 + 具体模型”组成；同一个站点的不同模型可以分别加入并排序。
+                    主聊天、剧情文游、情绪评估各自保存线路；每一条线路都由“API 预设 + 具体模型”组成，同一个站点的不同模型可以分别加入并排序。
                 </p>
             </div>
 
             <div className="rounded-2xl bg-slate-50/90 px-4 py-3 text-[10px] leading-relaxed text-slate-500">
-                请求失败会先停止当前线路再切到下一条，失败线路冷却 3 分钟。主聊天还可以给每条线路单独设置首字等待；Instant Push 仍只使用第一线路。
+                请求失败会先停止当前线路再切到下一条，失败线路冷却 3 分钟。主聊天和剧情都可以给每条线路单独设置首字等待；Instant Push 仍只使用主聊天第一线路。
             </div>
 
             {cooldowns.length > 0 && (
@@ -296,12 +296,20 @@ const ApiFailoverSettings: React.FC<Props> = ({ addToast }) => {
                                     {group.name}线路
                                 </div>
                                 <div className="mt-0.5 text-[10px] text-slate-400">
-                                    按从上到下的顺序尝试
-                                    {effectiveEnabled
-                                        ? ` · 回退已启用 ${analysis.compatibleRouteCount} 条`
-                                        : analysis.compatibleRouteCount === 1
-                                            ? ' · 单 API 直连'
-                                            : ' · 回退未启用'}
+                                    {group.scope === 'story'
+                                        ? analysis.compatibleRouteCount > 0
+                                            ? effectiveEnabled
+                                                ? `第一条为剧情专用主线路 · 回退已启用 ${analysis.compatibleRouteCount} 条`
+                                                : '第一条为剧情专用主线路 · 回退未启用'
+                                            : '未配置时沿用当前主 API'
+                                        : <>
+                                            按从上到下的顺序尝试
+                                            {effectiveEnabled
+                                                ? ` · 回退已启用 ${analysis.compatibleRouteCount} 条`
+                                                : analysis.compatibleRouteCount === 1
+                                                    ? ' · 单 API 直连'
+                                                    : ' · 回退未启用'}
+                                        </>}
                                 </div>
                             </div>
 
@@ -464,7 +472,7 @@ const ApiFailoverSettings: React.FC<Props> = ({ addToast }) => {
                                             </div>
                                         )}
 
-                                        {group.scope === 'chat' && (
+                                        {group.scope !== 'emotion' && (
                                             <label className="mt-2 flex items-center gap-1.5 text-[9px] text-slate-400">
                                                 <span className="shrink-0">首字最多等</span>
                                                 <input
@@ -516,7 +524,7 @@ const ApiFailoverSettings: React.FC<Props> = ({ addToast }) => {
                             disabled={unusedRouteOptions(group).length === 0}
                             className="w-full rounded-xl border border-dashed border-primary/25 bg-primary/5 py-2.5 text-[11px] font-bold text-primary transition-all active:scale-[0.99] disabled:border-slate-200 disabled:bg-slate-50 disabled:text-slate-300"
                         >
-                            + 添加备用线路
+                            {group.members.length === 0 ? '+ 选择主线路' : '+ 添加备用线路'}
                         </button>
 
                         <button
