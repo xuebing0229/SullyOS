@@ -1032,6 +1032,11 @@ export interface ExecuteOpenAiChatPlanOptions {
     /** Existing behavior when no failover group is enabled. */
     directMaxRetries?: number;
     directTimeoutMs?: number;
+    /**
+     * 直连流式请求不启用“首字超时”。剧情剧场用它区分“真的网络断了”和“模型只是很慢”：
+     * 单线路时宁可继续等，也不要客户端先判死后让用户重复发请求。
+     */
+    disableDirectFirstVisibleTimeout?: boolean;
     /** 强制本次 completion 走 stream:true，不受 API 预设的 stream 开关覆盖。 */
     forceStream?: boolean;
     /** 流式故障转移何时视为“已经开始输出，不能再切线路”。默认 activity；content = 第一段可见正文。 */
@@ -1072,7 +1077,7 @@ export async function executeOpenAiChatPlan(
         if (options.signal?.aborted) forwardAbort();
         else options.signal?.addEventListener('abort', forwardAbort, { once: true });
 
-        const firstVisibleTimeoutMs = body.stream
+        const firstVisibleTimeoutMs = body.stream && !options.disableDirectFirstVisibleTimeout
             ? Math.max(
                 1,
                 route.firstByteTimeoutMs
