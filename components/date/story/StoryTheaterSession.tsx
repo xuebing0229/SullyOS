@@ -879,6 +879,27 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             if (Number.isFinite(reportedPromptTokens) && reportedPromptTokens > 0) onPromptTokens?.(reportedPromptTokens);
             const content = extractContent(data).trim();
             if (!content) throw new Error(describeEmptyStoryCompletion(data));
+
+            const finishReason = String(
+                data?.choices?.[0]?.finish_reason
+                || data?.choices?.[0]?.finishReason
+                || '',
+            ).trim();
+            const streamIncomplete = data?._sullyStreamIncomplete === true;
+            const outputLimited = finishReason === 'length' || finishReason === 'max_tokens';
+            if (outputLimited || streamIncomplete) {
+                const reason = outputLimited
+                    ? `模型达到输出上限（finish_reason=${finishReason}）`
+                    : '流式连接结束时没有收到模型完成标记';
+                const incompleteError: any = new Error(`剧情正文疑似被截断：${reason}`);
+                incompleteError.storyIncompleteCompletion = {
+                    content,
+                    finishReason,
+                    streamIncomplete,
+                };
+                throw incompleteError;
+            }
+
             completionSucceeded = true;
             return content;
         } catch (completionError: any) {
@@ -1358,7 +1379,8 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 console.error('[StoryTheater] send failed', error);
             }
 
-            const committedPartial = (partialStreamText || streamingTextRef.current).trim();
+            const returnedPartial = String(error?.storyIncompleteCompletion?.content || '').trim();
+            const committedPartial = (partialStreamText || streamingTextRef.current || returnedPartial).trim();
             if (committedPartial) {
                 try {
                     if (partialIsReroll && partialRerollTarget) {
@@ -1397,7 +1419,12 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                     streamingTextRef.current = '';
                     setStreamingText('');
                     if (usedNativeBackground) await clearPendingNativeStoryJob(backgroundOwnerKey);
-                    addToast('流式生成中途断开，已保留已经出现的正文；因为已经出首字，没有切换故障转移线路。', 'error');
+                    addToast(
+                        error?.storyIncompleteCompletion
+                            ? '这一轮确实被截断了：已保留现有正文并标成“中断”，不会再冒充正常生成。可以直接点「续」接着写。'
+                            : '流式生成中途断开，已保留已经出现的正文；因为已经出首字，没有切换故障转移线路。',
+                        'error',
+                    );
                     return;
                 } catch (savePartialError: any) {
                     console.error('[StoryTheater] preserve interrupted stream failed', savePartialError);
