@@ -13,7 +13,7 @@ export interface StoryAppearance {
     textToneEnabled: boolean;
     narrationColor: string;
     dialogueColor: string;
-    actionColor: string;
+    psychologyColor: string;
     firstLineIndent: boolean;
 }
 
@@ -22,7 +22,7 @@ interface StoryThemeContextValue {
     setColor: (value: StoryColorMode) => void;
     setDecor: (value: StoryDecorMode) => void;
     setTextToneEnabled: (value: boolean) => void;
-    setTextToneColor: (kind: 'narration' | 'dialogue' | 'action', value: string) => void;
+    setTextToneColor: (kind: 'narration' | 'dialogue' | 'psychology', value: string) => void;
     setFirstLineIndent: (value: boolean) => void;
 }
 
@@ -34,7 +34,7 @@ const DEFAULT_APPEARANCE: StoryAppearance = {
     textToneEnabled: true,
     narrationColor: '#334155',
     dialogueColor: '#d97757',
-    actionColor: '#8b5cf6',
+    psychologyColor: '#8b5cf6',
     firstLineIndent: true,
 };
 const StoryThemeContext = createContext<StoryThemeContextValue | null>(null);
@@ -43,14 +43,17 @@ function readAppearance(): StoryAppearance {
     try {
         const raw = localStorage.getItem(STORAGE_KEY);
         if (!raw) return DEFAULT_APPEARANCE;
-        const value = JSON.parse(raw) as Partial<StoryAppearance>;
+        const value = JSON.parse(raw) as Partial<StoryAppearance> & { actionColor?: string };
+        const legacyPsychologyColor = typeof value.actionColor === 'string' && /^#[0-9a-f]{6}$/i.test(value.actionColor)
+            ? value.actionColor
+            : undefined;
         return {
             color: value.color === 'dark' ? 'dark' : 'light',
             decor: value.decor === 'cinema' ? 'cinema' : 'plain',
             textToneEnabled: value.textToneEnabled !== false,
             narrationColor: typeof value.narrationColor === 'string' && /^#[0-9a-f]{6}$/i.test(value.narrationColor) ? value.narrationColor : DEFAULT_APPEARANCE.narrationColor,
             dialogueColor: typeof value.dialogueColor === 'string' && /^#[0-9a-f]{6}$/i.test(value.dialogueColor) ? value.dialogueColor : DEFAULT_APPEARANCE.dialogueColor,
-            actionColor: typeof value.actionColor === 'string' && /^#[0-9a-f]{6}$/i.test(value.actionColor) ? value.actionColor : DEFAULT_APPEARANCE.actionColor,
+            psychologyColor: typeof value.psychologyColor === 'string' && /^#[0-9a-f]{6}$/i.test(value.psychologyColor) ? value.psychologyColor : legacyPsychologyColor || DEFAULT_APPEARANCE.psychologyColor,
             firstLineIndent: value.firstLineIndent !== false,
         };
     } catch {
@@ -189,7 +192,7 @@ export const StoryTheaterThemeProvider: React.FC<React.PropsWithChildren> = ({ c
                 ? { narrationColor: colorValue }
                 : kind === 'dialogue'
                     ? { dialogueColor: colorValue }
-                    : { actionColor: colorValue }),
+                    : { psychologyColor: colorValue }),
         })),
         setFirstLineIndent: firstLineIndent => setAppearance(current => ({ ...current, firstLineIndent })),
     }), [appearance]);
@@ -293,8 +296,8 @@ export const StoryAppearanceButton: React.FC<{ className?: string }> = ({ classN
                         <div className='mt-4 rounded-2xl border border-slate-200 bg-white p-3'>
                             <div className='flex items-center justify-between gap-3'>
                                 <div>
-                                    <div className='text-[10px] font-bold text-slate-700'>旁白 / 对白 / 动作·心理 三色</div>
-                                    <div className='mt-0.5 text-[9px] leading-4 text-slate-400'>对白识别 「」『』“”‘’ 和英文双引号；动作/心理识别单星号 *……*。</div>
+                                    <div className='text-[10px] font-bold text-slate-700'>旁白 / 对白 / 心理 三色</div>
+                                    <div className='mt-0.5 text-[9px] leading-4 text-slate-400'>对白识别 「」『』“”‘’ 和英文双引号；心理识别单星号 *……*；动作、环境和普通叙述都属于旁白。</div>
                                 </div>
                                 <button
                                     type='button'
@@ -312,14 +315,14 @@ export const StoryAppearanceButton: React.FC<{ className?: string }> = ({ classN
                             >
                                 <span style={{ color: appearance.textToneEnabled ? appearance.narrationColor : undefined }}>他把杯子推到你面前，停了一瞬。</span>
                                 <span style={{ color: appearance.textToneEnabled ? appearance.dialogueColor : undefined }}>“先喝一口。”</span>
-                                <em style={{ color: appearance.textToneEnabled ? appearance.actionColor : undefined }}>其实他比看上去更紧张。</em>
+                                <em style={{ color: appearance.textToneEnabled ? appearance.psychologyColor : undefined }}>其实他比看上去更紧张。</em>
                             </p>
                         </div>
 
                         {([
                             ['旁白', 'narration', appearance.narrationColor],
                             ['对白', 'dialogue', appearance.dialogueColor],
-                            ['动作 / 心理', 'action', appearance.actionColor],
+                            ['心理', 'psychology', appearance.psychologyColor],
                         ] as const).map(([label, kind, colorValue]) => (
                             <label key={kind} className='mt-3 flex items-center gap-3 rounded-2xl border border-slate-200 bg-white px-3 py-2.5'>
                                 <input
@@ -340,7 +343,7 @@ export const StoryAppearanceButton: React.FC<{ className?: string }> = ({ classN
                                 setTextToneEnabled(true);
                                 setTextToneColor('narration', DEFAULT_APPEARANCE.narrationColor);
                                 setTextToneColor('dialogue', DEFAULT_APPEARANCE.dialogueColor);
-                                setTextToneColor('action', DEFAULT_APPEARANCE.actionColor);
+                                setTextToneColor('psychology', DEFAULT_APPEARANCE.psychologyColor);
                                 setFirstLineIndent(true);
                             }}
                             className='mt-3 w-full rounded-xl border border-slate-200 bg-slate-50 py-2.5 text-[10px] font-bold text-slate-500'
