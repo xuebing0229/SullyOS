@@ -68,6 +68,7 @@ import {
     isNativeStoryBackgroundRuntime,
     releaseNativeStoryKeepAlive,
 } from '../../../utils/nativeStoryBackground';
+import { BACKGROUND_IMAGE_JOB_EVENT } from '../../../utils/backgroundImageJobs';
 import {
     buildStoryContinueInstruction,
     MEETING_CONTINUE_DISPLAY_TEXT,
@@ -462,6 +463,21 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
     }, [threadId]);
 
     useEffect(() => { void loadMessages(); }, [loadMessages]);
+    useEffect(() => {
+        if (typeof window === 'undefined') return;
+        const onBackgroundImageJob = (event: Event) => {
+            const detail = (event as CustomEvent).detail || {};
+            if (
+                detail.charId !== threadId
+                || detail.ownerType !== 'story-theater'
+            ) return;
+            if (detail.type === 'completed' || detail.type === 'failed') {
+                void loadMessages();
+            }
+        };
+        window.addEventListener(BACKGROUND_IMAGE_JOB_EVENT, onBackgroundImageJob as EventListener);
+        return () => window.removeEventListener(BACKGROUND_IMAGE_JOB_EVENT, onBackgroundImageJob as EventListener);
+    }, [loadMessages, threadId]);
 
     const regenerateStoryImage = useCallback(async (message: Message) => {
         if (regeneratingImageId !== null) return;
@@ -481,7 +497,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             const rows = (await DB.getMessagesByCharId(threadId, true))
                 .filter(item => item.metadata?.source === 'story_theater' && item.id <= message.id)
                 .sort((a, b) => a.id - b.id);
-            const frame = await generateStoryTheaterImage({
+            const imageResult = await generateStoryTheaterImage({
                 apiConfig,
                 plannerApiConfig: resolveStoryImagePlannerApiConfig(entry, apiConfig, apiPresets),
                 entry,
@@ -489,10 +505,15 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 userProfile,
                 userName: promptIdentityName,
                 messages: rows,
+                targetMessageId: message.id,
             });
-            await DB.updateMessageMetadata(message.id, previous => ({ ...previous, theaterImage: frame }));
-            await loadMessages();
-            addToast('本轮配图已重新生成', 'success');
+            if (imageResult.frame) {
+                await DB.updateMessageMetadata(message.id, previous => ({ ...previous, theaterImage: imageResult.frame }));
+                await loadMessages();
+                addToast('本轮配图已重新生成', 'success');
+            } else if (imageResult.queued) {
+                addToast('本轮配图已交给后台生成，完成后会自动挂回这一楼', 'info');
+            }
         } catch (error: any) {
             console.error('[StoryTheater] image regeneration failed', error);
             addToast(`重新生成失败：${error?.message || error}`, 'error');
@@ -1343,7 +1364,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                     const imageRows = (await DB.getMessagesByCharId(threadId, true))
                         .filter(message => message.metadata?.source === 'story_theater')
                         .sort((a, b) => a.id - b.id);
-                    const frame = await generateStoryTheaterImage({
+                    const imageResult = await generateStoryTheaterImage({
                         apiConfig,
                         plannerApiConfig: resolveStoryImagePlannerApiConfig(entry, apiConfig, apiPresets),
                         entry,
@@ -1351,9 +1372,14 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                         userProfile,
                         userName: promptIdentityName,
                         messages: imageRows,
+                        targetMessageId: assistantMessageId,
                     });
-                    await DB.updateMessageMetadata(assistantMessageId, previous => ({ ...previous, theaterImage: frame }));
-                    await loadMessages();
+                    if (imageResult.frame) {
+                        await DB.updateMessageMetadata(assistantMessageId, previous => ({ ...previous, theaterImage: imageResult.frame }));
+                        await loadMessages();
+                    } else if (imageResult.queued) {
+                        addToast('剧情配图已进入后台生成，完成后会自动挂回本轮正文', 'info');
+                    }
                 } catch (imageError: any) {
                     console.error('[StoryTheater] automatic image failed', imageError);
                     addToast(`正文已保存，但自动配图失败：${imageError?.message || imageError}`, 'error');
