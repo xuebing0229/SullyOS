@@ -316,6 +316,7 @@ const normalizeDocument = (value: any, fallbackName: string): StoryTheaterPreset
         enabled: prompt?.enabled !== false,
         role: normalizeRole(prompt?.role),
         content: String(prompt?.content || ''),
+        ...(String(prompt?.group || '').trim() ? { group: String(prompt.group).trim() } : {}),
         ...(NATIVE_MARKERS.includes(prompt?.marker) ? { marker: prompt.marker } : {}),
     }));
     if (prompts.length === 0) throw new Error('预设中没有提示词条目');
@@ -660,6 +661,27 @@ export const getStoryPresetPromptGroups = (document: StoryTheaterPresetDocument)
         if (claimed.has(cursor)) { cursor += 1; continue; }
 
         const startIndex = cursor;
+        const metadataGroup = String(prompts[startIndex]?.group || '').trim();
+        if (metadataGroup) {
+            cursor += 1;
+            while (
+                cursor < prompts.length
+                && !claimed.has(cursor)
+                && String(prompts[cursor]?.group || '').trim() === metadataGroup
+            ) cursor += 1;
+            const endIndex = cursor - 1;
+            groups.push({
+                key: `metadata:${startIndex}:${metadataGroup}`,
+                label: metadataGroup,
+                description: `原生分组 · ${endIndex - startIndex + 1} 条提示词`,
+                promptIds: prompts.slice(startIndex, endIndex + 1).map(prompt => prompt.id),
+                startIndex,
+                endIndex,
+                protected: prompts.slice(startIndex, endIndex + 1).every(isProtectedStoryPrompt),
+            });
+            continue;
+        }
+
         const importedMarker = isImportedStoryPresetGroupMarker(prompts[startIndex]);
         if (importedMarker) {
             cursor += 1;
