@@ -41,4 +41,11 @@ describe('failover multi-model route contract', () => {
     expect(settings).toContain("bg-emerald-500");
     expect(settings).toContain('+ 添加备用线路');
   });
+
+  it('exposes a separate story route group with its own primary and fallback lines', () => {
+    expect(settings).toContain("['chat', 'story', 'emotion']");
+    expect(settings).toContain('第一条为剧情专用主线路');
+    expect(runtime).toContain("export type ApiFailoverScope = 'chat' | 'story' | 'emotion'");
+    expect(runtime).toContain("'direct-story-route-v1'");
+  });
 });
