@@ -689,6 +689,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                     body: requestBody,
                     meta: background.meta,
                     onPromptTokens,
+                    onStreamText,
                 });
                 const content = extractContent(data).trim();
                 if (!content) throw new Error(describeEmptyStoryCompletion(data));
