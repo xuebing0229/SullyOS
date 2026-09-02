@@ -505,6 +505,16 @@ describe('剧场输出展示解析', () => {
         expect(visible).not.toContain('<');
     });
 
+    it('心声里的 red / fracture / surge 只作为内联强调，不拆成多个栏目', () => {
+        const block = parseStoryDisplayBlocks(
+            '<backstage><true_monologue><owner>祁连云</owner><voice>对，阿竹，就是这个眼神。<red>继续恨我</red>，<fracture>别走</fracture>，<surge>只看着我</surge>。</voice></true_monologue></backstage>',
+        ).find(item => item.kind === 'backstage');
+        expect(block?.text).toContain('心声：对，阿竹，就是这个眼神。继续恨我，别走，只看着我。');
+        expect(block?.text).not.toContain('危险信号：');
+        expect(block?.text).not.toContain('裂纹：');
+        expect(block?.text).not.toContain('情绪峰值：');
+    });
+
     it('旧版关系温度仍只展示原先允许的角色侧记录', () => {
         const visible = parseStoryDisplayBlocks('<affinity_panel><c_score>62</c_score><c_delta>+2</c_delta><c_note>他主动留下</c_note><u_score>77</u_score><u_delta>-3</u_delta><u_note>用户自己的说明</u_note><relation_note>仍有余温</relation_note><relation_fragment>他把门留了一条缝。</relation_fragment></affinity_panel>')
             .map(block => block.text)
