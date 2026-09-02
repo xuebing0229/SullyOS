@@ -408,6 +408,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
     const [showMemoryCards, setShowMemoryCards] = useState(false);
     const [memoryCardBusy, setMemoryCardBusy] = useState(false);
     const [showQuickPreset, setShowQuickPreset] = useState(false);
+    const [showHeaderMenu, setShowHeaderMenu] = useState(false);
     const [rerollingId, setRerollingId] = useState<number | null>(null);
     const [regeneratingImageId, setRegeneratingImageId] = useState<number | null>(null);
     const [messageMenu, setMessageMenu] = useState<Message | null>(null);
@@ -1141,47 +1142,29 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
 
     return <div className='relative h-full w-full flex flex-col bg-stone-100 text-slate-800'>
         <header className='story-safe-header shrink-0 bg-stone-100/95 backdrop-blur border-b border-slate-200 z-10'>
-            <div className='h-16 px-4 flex items-center gap-3'>
-                <button onClick={onBack} className='w-9 h-9 rounded-full grid place-items-center'><ArrowLeft size={20} /></button>
-                <div className='min-w-0 flex-1'><div className='text-[9px] tracking-[.24em] uppercase font-bold text-violet-500'>Story theater</div><h1 className='font-serif font-semibold truncate'>{entry.title}</h1></div>
-                {onOpenVectorMemory && <button onClick={onOpenVectorMemory} className='w-9 h-9 rounded-full grid place-items-center text-violet-600' title='本剧情向量记忆' aria-label='本剧情向量记忆'><Database size={18} /></button>}
-                <button disabled={exporting || messages.length === 0} onClick={() => void exportStory()} className='w-9 h-9 rounded-full grid place-items-center text-violet-600 disabled:opacity-30' title='导出全部剧情原文' aria-label='导出全部剧情原文'>{exporting ? <SpinnerGap size={18} className='animate-spin' /> : <DownloadSimple size={18} />}</button>
-                <StoryImageSettingsButton entry={entry} onChange={onEntryChange} />
-                <StoryAppearanceButton />
-                <button onClick={onEdit} className='w-9 h-9 rounded-full grid place-items-center'><GearSix size={19} /></button>
-            </div>
-            <details className='group'>
-                <summary className='list-none cursor-pointer px-5 pb-3 flex items-center gap-3'>
-                    <span className='flex -space-x-1.5 shrink-0'>{mask.avatar ? <TokenImg value={mask.avatar} alt='' className='w-7 h-7 rounded-full object-cover border-2 border-stone-100 relative z-10' /> : <span className='w-7 h-7 rounded-full bg-violet-100 text-violet-700 border-2 border-stone-100 grid place-items-center text-[9px] font-bold relative z-10'>{mask.name.slice(0, 1)}</span>}{actors.slice(0, 2).map(actor => <TokenImg key={actor.id} value={actor.avatar} alt='' className='w-7 h-7 rounded-full object-cover border-2 border-stone-100' />)}</span>
-                    <span className='min-w-0 flex-1'><strong className='block truncate text-[11px] text-slate-700'>{youLabel} · 角色：{actors.map(actor => actor.name).join('、')}</strong><span className='block mt-0.5 truncate text-[9px] text-slate-400'>{entry.writesToCharacterMemory ? '真实时间陪伴' : '虚构剧场'}{activeMiniTheater ? ` · ${activeMiniTheater.name.replace(/^\S+小剧场[｜·]?\s*/, '')}` : ''}</span></span>
-                    {!entry.writesToCharacterMemory && <button
-                        type='button'
-                        disabled={memoryCardBusy || messages.length === 0 || memoryActors.length === 0}
-                        onPointerDown={event => event.stopPropagation()}
-                        onClick={event => {
-                            event.preventDefault();
-                            event.stopPropagation();
-                            void openSharedFictionMemoryCards();
-                        }}
-                        className='shrink-0 h-8 px-2.5 rounded-xl bg-violet-50 border border-violet-200 text-violet-700 text-[9px] font-bold inline-flex items-center gap-1.5 disabled:opacity-30'
-                        title='整理“我们一起演过”的记忆卡'
-                        aria-label='整理共同演绎记忆卡'
-                    >
-                        {memoryCardBusy ? <SpinnerGap size={12} className='animate-spin' /> : <Sparkle size={12} weight='fill' />}
-                        记忆卡
-                    </button>}
-                    <span className='shrink-0 text-[9px] font-bold text-slate-400' title={displayedTokenInfo.exact ? '本轮实际使用的完整上下文' : '按本轮完整上下文估算'}>{displayedTokenInfo.count > 0 ? `${(displayedTokenInfo.count / 1000).toFixed(displayedTokenInfo.count >= 10000 ? 0 : 1)}k` : '—'}</span>
-                    <CaretDown size={13} className='shrink-0 text-slate-400 transition-transform group-open:rotate-180' />
-                </summary>
-                <div className='mx-5 mb-3 pt-3 border-t border-slate-200 grid grid-cols-2 gap-x-6 gap-y-3 text-[10px]'>
-                    <div><span className='block text-[8px] font-bold text-slate-400'>你</span><span className='block mt-1 truncate text-slate-600'>{mask.selection.type === 'user' ? '本人' : mask.name}</span></div>
-                    <div><span className='block text-[8px] font-bold text-slate-400'>记忆方式</span><span className='block mt-1 truncate text-slate-600'>{entry.writesToCharacterMemory ? '写入角色记忆' : entry.archiveStrategy === 'summary' ? '独立事件盒' : '独立向量分区'}</span></div>
-                    <div><span className='block text-[8px] font-bold text-slate-400'>结尾模块</span><span className='block mt-1 truncate text-slate-600'>{activeMiniTheater?.name || '未启用小剧场'}</span></div>
-                    <div><span className='block text-[8px] font-bold text-slate-400'>完整上下文</span><span className='block mt-1 truncate text-slate-600'>{displayedTokenInfo.count > 0 ? `${sending ? '本轮' : '上轮'}${displayedTokenInfo.exact ? '使用' : '估算'} ${displayedTokenInfo.count.toLocaleString()} tokens` : '推进时统计全部内容'}</span></div>
-                    <div><span className='block text-[8px] font-bold text-slate-400'>API 兼容</span><span className={`block mt-1 truncate ${entry.forceUserLastMessage ? 'font-semibold text-amber-700' : 'text-slate-600'}`}>{entry.forceUserLastMessage ? '400 兼容模式' : '原生预填（推荐）'}</span></div>
-                    <div><span className='block text-[8px] font-bold text-slate-400'>采样参数</span><span className={`block mt-1 truncate ${entry.omitSamplingParams ? 'font-semibold text-amber-700' : 'text-slate-600'}`}>{entry.omitSamplingParams ? '不发送高级参数' : '完整发送预设参数'}</span></div>
+            <div className='h-14 px-3 flex items-center gap-2'>
+                <button onClick={onBack} className='w-9 h-9 shrink-0 rounded-full grid place-items-center' aria-label='返回'><ArrowLeft size={20} /></button>
+                <div className='min-w-0 flex-1'>
+                    <div className='flex items-center gap-2'>
+                        <h1 className='min-w-0 flex-1 truncate font-serif text-[15px] font-semibold text-slate-800'>{entry.title}</h1>
+                        {sending && <span className='shrink-0 inline-flex items-center gap-1 text-[8px] font-bold text-emerald-700'><span className='h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse' />续写中</span>}
+                    </div>
+                    <div className='mt-0.5 flex min-w-0 items-center gap-1.5 text-[9px] text-slate-400'>
+                        <span className='truncate'>{youLabel} · {actors.map(actor => actor.name).join('、') || '未选角色'}</span>
+                        <span className='shrink-0'>·</span>
+                        <span className='shrink-0' title={displayedTokenInfo.exact ? '本轮实际使用的完整上下文' : '按本轮完整上下文估算'}>{displayedTokenInfo.count > 0 ? `${(displayedTokenInfo.count / 1000).toFixed(displayedTokenInfo.count >= 10000 ? 0 : 1)}k` : '—'}</span>
+                    </div>
                 </div>
-            </details>
+                <button
+                    type='button'
+                    onClick={() => setShowHeaderMenu(true)}
+                    className='w-9 h-9 shrink-0 rounded-full border border-slate-200 bg-white grid place-items-center text-slate-600 active:scale-95 transition-transform'
+                    title='剧情工具与设置'
+                    aria-label='剧情工具与设置'
+                >
+                    <GearSix size={18} />
+                </button>
+            </div>
         </header>
 
         {showMemoryCards && memoryActors[0] && (
@@ -1326,12 +1309,12 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             </div>
         </div>}
 
-        <footer className='story-safe-footer shrink-0 px-4 pt-3 bg-stone-100/95 backdrop-blur border-t border-slate-200'>
+        <footer className='story-safe-footer shrink-0 px-3 pt-1.5 bg-stone-100/95 backdrop-blur border-t border-slate-200'>
             <div className='max-w-2xl mx-auto'>
-                {memoryStatus && <div className='mb-2 flex items-center gap-2 text-[10px] text-violet-600'><SpinnerGap size={13} className='animate-spin' />{memoryStatus}</div>}
-                {sending && isNativeStoryBackgroundRuntime() && <div className='mb-2 flex items-center gap-2 text-[10px] text-emerald-700'><span className='w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse' />已转入后台续写，可以切屏或锁屏；写好后会通知你</div>}
-                {!sending && !memoryStatus && !input.trim() && pendingRetryInput && <div className='mb-2 text-[10px] text-violet-600'>上次续写可能中断了，点击推进即可继续</div>}
-                <div className='rounded-[22px] bg-white border border-slate-200 shadow-sm px-3 pt-2.5 pb-2'>
+                {memoryStatus && <div className='mb-1 flex items-center gap-2 px-1 text-[9px] text-violet-600'><SpinnerGap size={12} className='animate-spin' />{memoryStatus}</div>}
+                {sending && isNativeStoryBackgroundRuntime() && <div className='mb-1 flex items-center gap-2 px-1 text-[9px] text-emerald-700'><span className='w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse' />后台续写中，可直接切屏</div>}
+                {!sending && !memoryStatus && !input.trim() && pendingRetryInput && <div className='mb-1 px-1 text-[9px] text-violet-600'>上次续写可能中断，直接点发送即可继续</div>}
+                <div className='rounded-[22px] bg-white border border-slate-200 shadow-sm px-3 py-2'>
                     <textarea
                         value={input}
                         onChange={event => setInput(event.target.value)}
@@ -1342,16 +1325,16 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                             }
                         }}
                         disabled={sending}
-                        rows={2}
-                        placeholder={pendingRetryInput ? '留空发送，可继续上次中断' : canWriteOpening ? '也可以先写一句；留空发送则由故事开场' : '写下动作、对白、时间跳转，或你希望故事发生的事……'}
-                        className='w-full min-h-14 max-h-36 px-1 py-1 bg-transparent text-sm leading-6 resize-none outline-none disabled:opacity-50'
+                        rows={1}
+                        placeholder={pendingRetryInput ? '继续上次中断…' : canWriteOpening ? '留空发送即可开场…' : '写下动作、对白或你希望发生的事…'}
+                        className='block w-full min-h-9 max-h-28 overflow-y-auto px-1 py-1 bg-transparent text-[13px] leading-5 resize-none outline-none disabled:opacity-50'
                     />
-                    <div className='mt-1.5 flex items-center gap-2'>
+                    <div className='mt-1 flex items-center gap-1.5'>
                         <button
                             type='button'
                             onClick={() => void send(undefined, true)}
                             disabled={sending || actors.length === 0}
-                            className='h-9 min-w-9 px-2.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 grid place-items-center text-[10px] font-bold active:scale-95 transition-transform disabled:opacity-30'
+                            className='h-8 min-w-8 px-2 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 grid place-items-center text-[9px] font-bold active:scale-95 transition-transform disabled:opacity-30'
                             title='按当前节奏继续，不额外替你行动'
                             aria-label='继续当前剧情'
                         >
@@ -1363,21 +1346,21 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                         <button
                             type='button'
                             onClick={() => setShowQuickPreset(true)}
-                            className='relative w-9 h-9 rounded-full bg-rose-50 text-rose-600 border border-rose-200 grid place-items-center active:scale-95 transition-transform'
+                            className='relative w-8 h-8 rounded-full bg-rose-50 text-rose-600 border border-rose-200 grid place-items-center active:scale-95 transition-transform'
                             title='本剧情快速预设'
                             aria-label='本剧情快速预设'
                         >
-                            <SlidersHorizontal size={17} weight='bold' />
+                            <SlidersHorizontal size={15} weight='bold' />
                         </button>
 
                         {affinityEnabled && <button
                             type='button'
                             onClick={() => setShowAffinityInput(true)}
-                            className='relative w-9 h-9 rounded-full bg-amber-50 text-amber-600 border border-amber-200 grid place-items-center active:scale-95 transition-transform'
+                            className='relative w-8 h-8 rounded-full bg-amber-50 text-amber-600 border border-amber-200 grid place-items-center active:scale-95 transition-transform'
                             title='本轮关系变化'
                             aria-label='本轮关系变化'
                         >
-                            <HeartStraight size={18} weight={filledAffinityActorIds.length > 0 ? 'fill' : 'regular'} />
+                            <HeartStraight size={16} weight={filledAffinityActorIds.length > 0 ? 'fill' : 'regular'} />
                             {filledAffinityActorIds.length > 0 && <span className='absolute -right-1 -top-1 min-w-4 h-4 px-1 rounded-full bg-amber-500 text-white text-[8px] grid place-items-center'>{filledAffinityActorIds.length}</span>}
                         </button>}
 
@@ -1386,14 +1369,84 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                             onClick={() => void send()}
                             disabled={sending || (!input.trim() && !pendingRetryInput && !canWriteOpening)}
                             title={!input.trim() && pendingRetryInput ? '继续上次中断' : canWriteOpening && !input.trim() ? '让故事先开场' : '推进'}
-                            className='story-send-button w-10 h-10 rounded-full bg-blue-500 text-white grid place-items-center shadow-sm active:scale-95 transition-transform disabled:bg-slate-300 disabled:text-white disabled:opacity-100'
+                            className='story-send-button w-9 h-9 rounded-full bg-blue-500 text-white grid place-items-center shadow-sm active:scale-95 transition-transform disabled:bg-slate-300 disabled:text-white disabled:opacity-100'
                         >
-                            {sending ? <SpinnerGap size={18} className='animate-spin' /> : <ArrowUp size={20} weight='bold' />}
+                            {sending ? <SpinnerGap size={16} className='animate-spin' /> : <ArrowUp size={18} weight='bold' />}
                         </button>
                     </div>
                 </div>
             </div>
         </footer>
+        {showHeaderMenu && <div className='fixed inset-0 z-[68] flex items-end bg-slate-900/25' onClick={() => setShowHeaderMenu(false)}>
+            <div className='story-safe-sheet w-full max-h-[86dvh] overflow-y-auto rounded-t-[28px] bg-stone-100 px-4 pt-3 shadow-2xl' onClick={event => event.stopPropagation()}>
+                <div className='mx-auto mb-3 h-1 w-9 rounded-full bg-slate-300' />
+                <div className='flex items-start gap-3'>
+                    <span className='flex -space-x-1.5 shrink-0'>
+                        {mask.avatar ? <TokenImg value={mask.avatar} alt='' className='w-8 h-8 rounded-full object-cover border-2 border-stone-100 relative z-10' /> : <span className='w-8 h-8 rounded-full bg-violet-100 text-violet-700 border-2 border-stone-100 grid place-items-center text-[10px] font-bold relative z-10'>{mask.name.slice(0, 1)}</span>}
+                        {actors.slice(0, 2).map(actor => <TokenImg key={actor.id} value={actor.avatar} alt='' className='w-8 h-8 rounded-full object-cover border-2 border-stone-100' />)}
+                    </span>
+                    <div className='min-w-0 flex-1'>
+                        <div className='text-[9px] uppercase tracking-[.2em] font-bold text-violet-500'>Story tools</div>
+                        <h2 className='mt-0.5 truncate text-base font-semibold text-slate-800'>{entry.title}</h2>
+                        <p className='mt-0.5 truncate text-[9px] text-slate-400'>{youLabel} · {actors.map(actor => actor.name).join('、') || '未选角色'}</p>
+                    </div>
+                    <button onClick={() => setShowHeaderMenu(false)} className='w-8 h-8 rounded-full grid place-items-center text-slate-400' aria-label='关闭'><X size={16} /></button>
+                </div>
+
+                <div className='mt-4 grid grid-cols-2 gap-2'>
+                    <button
+                        type='button'
+                        onClick={() => { setShowHeaderMenu(false); onEdit(); }}
+                        className='h-11 rounded-2xl border border-slate-200 bg-white px-3 flex items-center gap-2 text-[10px] font-bold text-slate-700'
+                    >
+                        <GearSix size={16} className='text-violet-600' />剧情设置
+                    </button>
+                    <StoryAppearanceButton
+                        triggerLabel='外观与排版'
+                        className='h-11 w-full rounded-2xl border border-slate-200 bg-white px-3 flex items-center gap-2 text-[10px] font-bold text-slate-700'
+                    />
+                    <StoryImageSettingsButton
+                        entry={entry}
+                        onChange={onEntryChange}
+                        triggerLabel='剧情配图'
+                        triggerClassName='h-11 w-full rounded-2xl border border-slate-200 bg-white px-3 flex items-center gap-2 text-[10px] font-bold text-slate-700'
+                    />
+                    <button
+                        type='button'
+                        disabled={exporting || messages.length === 0}
+                        onClick={() => void exportStory()}
+                        className='h-11 rounded-2xl border border-slate-200 bg-white px-3 flex items-center gap-2 text-[10px] font-bold text-slate-700 disabled:opacity-30'
+                    >
+                        {exporting ? <SpinnerGap size={16} className='animate-spin text-violet-600' /> : <DownloadSimple size={16} className='text-violet-600' />}导出全文
+                    </button>
+                    {onOpenVectorMemory && <button
+                        type='button'
+                        onClick={() => { setShowHeaderMenu(false); onOpenVectorMemory(); }}
+                        className='h-11 rounded-2xl border border-slate-200 bg-white px-3 flex items-center gap-2 text-[10px] font-bold text-slate-700'
+                    >
+                        <Database size={16} className='text-violet-600' />向量记忆
+                    </button>}
+                    {!entry.writesToCharacterMemory && <button
+                        type='button'
+                        disabled={memoryCardBusy || messages.length === 0 || memoryActors.length === 0}
+                        onClick={() => { setShowHeaderMenu(false); void openSharedFictionMemoryCards(); }}
+                        className='h-11 rounded-2xl border border-violet-200 bg-violet-50 px-3 flex items-center gap-2 text-[10px] font-bold text-violet-700 disabled:opacity-30'
+                    >
+                        {memoryCardBusy ? <SpinnerGap size={16} className='animate-spin' /> : <Sparkle size={16} weight='fill' />}整理记忆卡
+                    </button>}
+                </div>
+
+                <div className='mt-4 rounded-2xl border border-slate-200 bg-white px-3 py-2.5 grid grid-cols-2 gap-x-5 gap-y-2.5 text-[9px]'>
+                    <div><span className='block text-[8px] font-bold text-slate-400'>模式</span><span className='mt-0.5 block truncate text-slate-600'>{entry.writesToCharacterMemory ? '真实时间陪伴' : '虚构剧场'}</span></div>
+                    <div><span className='block text-[8px] font-bold text-slate-400'>记忆方式</span><span className='mt-0.5 block truncate text-slate-600'>{entry.writesToCharacterMemory ? '写入角色记忆' : entry.archiveStrategy === 'summary' ? '独立事件盒' : '独立向量分区'}</span></div>
+                    <div><span className='block text-[8px] font-bold text-slate-400'>结尾模块</span><span className='mt-0.5 block truncate text-slate-600'>{activeMiniTheater?.name || '未启用小剧场'}</span></div>
+                    <div><span className='block text-[8px] font-bold text-slate-400'>上下文</span><span className='mt-0.5 block truncate text-slate-600'>{displayedTokenInfo.count > 0 ? `${displayedTokenInfo.exact ? '实际' : '估算'} ${displayedTokenInfo.count.toLocaleString()} tokens` : '推进时统计'}</span></div>
+                    <div><span className='block text-[8px] font-bold text-slate-400'>API 兼容</span><span className={`mt-0.5 block truncate ${entry.forceUserLastMessage ? 'font-semibold text-amber-700' : 'text-slate-600'}`}>{entry.forceUserLastMessage ? '400 兼容模式' : '原生预填'}</span></div>
+                    <div><span className='block text-[8px] font-bold text-slate-400'>采样参数</span><span className={`mt-0.5 block truncate ${entry.omitSamplingParams ? 'font-semibold text-amber-700' : 'text-slate-600'}`}>{entry.omitSamplingParams ? '不发送高级参数' : '完整发送'}</span></div>
+                </div>
+            </div>
+        </div>}
+
         {showQuickPreset && <StoryQuickPresetPanel
             document={effectivePreset.document}
             hasOverride={Boolean(entry.presetOverride)}
