@@ -87,6 +87,14 @@ async function createTenantContext(tenant) {
     runtimeStore,
     referenceStore,
     vibeEncodingCache,
+    upstreamStaticConfig: tenant.primary
+      ? staticConfig
+      : {
+          ...staticConfig,
+          upstreamExtraHeaders: {},
+          upstreamBodyOverrides: {},
+          upstreamParameterOverrides: {}
+        },
     imageJobs: null
   };
   context.imageJobs = await createBackgroundJobService({
@@ -172,7 +180,7 @@ const novelAiInputShape = {
 const novelAiArgumentsSchema = z.object(novelAiInputShape).strict();
 async function effectiveUpstreamConfig(tenantContext, runtimeOverride, { forcePersist = false } = {}) {
   const runtime = runtimeOverride ? structuredClone(runtimeOverride) : await tenantContext.runtimeStore.load();
-  const config = toUpstreamConfig(runtime, staticConfig);
+  const config = toUpstreamConfig(runtime, tenantContext.upstreamStaticConfig);
   if (forcePersist) config.upstreamImageDelivery = "proxy";
   if (!config.upstreamApiKey && config.upstreamAuthHeader) throw new Error("The upstream API key has not been configured");
   return { runtime, config };
