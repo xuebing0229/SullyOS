@@ -372,9 +372,26 @@ public class SullyStoryBackgroundService extends Service {
             || lower.contains("审核");
     }
 
+    private static int readTimeoutUntil(long deadlineMs, String reason) throws SocketTimeoutException {
+        long remaining = deadlineMs - System.currentTimeMillis();
+        if (remaining <= 0L) throw new SocketTimeoutException(reason);
+        return (int) Math.max(1L, Math.min((long) Integer.MAX_VALUE, remaining));
+    }
+
+    private static int nextReadTimeout(long hardDeadlineMs, long firstVisibleDeadlineMs, boolean committed) throws SocketTimeoutException {
+        if (!committed && firstVisibleDeadlineMs > 0L) {
+            return readTimeoutUntil(Math.min(hardDeadlineMs, firstVisibleDeadlineMs), "story-first-visible");
+        }
+        return readTimeoutUntil(hardDeadlineMs, "story-hard-timeout");
+    }
+
     private RouteResult executeRoute(String jobId, JSONObject route, JSONObject baseBody, long timeoutMs) throws RouteFailure {
         HttpURLConnection connection = null;
         StringBuilder streamedContent = new StringBuilder();
+        long attemptStartedAt = System.currentTimeMillis();
+        long firstByteTimeoutMs = Math.max(0L, Math.min(300_000L, route.optLong("firstByteTimeoutMs", 0L)));
+        long firstVisibleDeadlineMs = firstByteTimeoutMs > 0L ? attemptStartedAt + firstByteTimeoutMs : 0L;
+        long hardDeadlineMs = attemptStartedAt + timeoutMs;
         try {
             String baseUrl = route.optString("baseUrl", "").replaceAll("/+$", "");
             if (!(baseUrl.startsWith("https://") || baseUrl.startsWith("http://"))) {
@@ -401,8 +418,10 @@ public class SullyStoryBackgroundService extends Service {
             connection.setRequestMethod("POST");
             connection.setDoOutput(true);
             connection.setConnectTimeout((int) Math.min(20_000L, timeoutMs));
-            long firstByteTimeoutMs = Math.max(0L, Math.min(300_000L, route.optLong("firstByteTimeoutMs", 0L)));
-            connection.setReadTimeout((int) Math.min(Integer.MAX_VALUE, firstByteTimeoutMs > 0 ? firstByteTimeoutMs : timeoutMs));
+            // 这里不能把“首字等待”只当成 socket 静默超时：
+            // SSE 可能先持续吐 reasoning / heartbeat，但用户要求的是“第一段可见正文”。
+            // 因此 read timeout 每次都按绝对 deadline 的剩余时间重算，直到正文真正出现。
+            connection.setReadTimeout(nextReadTimeout(hardDeadlineMs, firstVisibleDeadlineMs, false));
             connection.setRequestProperty("Content-Type", "application/json");
             connection.setRequestProperty("Accept", stream ? "text/event-stream, application/json" : "application/json, text/event-stream");
             connection.setRequestProperty("Authorization", "Bearer " + route.optString("apiKey", "sk-none"));
@@ -411,24 +430,25 @@ public class SullyStoryBackgroundService extends Service {
                 out.write(requestBytes);
             }
 
+            // 写请求正文也可能花掉首字等待时间，所以真正等响应前再按剩余 deadline 校正一次。
+            connection.setReadTimeout(nextReadTimeout(hardDeadlineMs, firstVisibleDeadlineMs, false));
             int status = connection.getResponseCode();
             InputStream input = status >= 400 ? connection.getErrorStream() : connection.getInputStream();
             if (input == null) throw new RouteFailure(status, "API 返回空响应 (HTTP " + status + ")", false, "");
-            connection.setReadTimeout((int) Math.min(Integer.MAX_VALUE, timeoutMs));
             String contentType = connection.getContentType();
             boolean sse = stream || (contentType != null && contentType.toLowerCase(Locale.ROOT).contains("text/event-stream"));
 
             String raw;
             JSONObject response;
             if (sse) {
-                SseResult parsed = readSse(input, streamedContent);
+                SseResult parsed = readSse(input, streamedContent, connection, firstVisibleDeadlineMs, hardDeadlineMs);
                 raw = parsed.raw;
                 if (status >= 400) {
                     throw new RouteFailure(status, errorMessage(raw, status), !streamedContent.toString().isEmpty(), streamedContent.toString());
                 }
                 response = parsed.response;
             } else {
-                raw = readAll(input);
+                raw = readAll(input, connection, firstVisibleDeadlineMs, hardDeadlineMs);
                 if (status >= 400) throw new RouteFailure(status, errorMessage(raw, status), false, "");
                 try {
                     response = new JSONObject(raw);
@@ -455,7 +475,13 @@ public class SullyStoryBackgroundService extends Service {
         } catch (RouteFailure failure) {
             throw failure;
         } catch (SocketTimeoutException timeout) {
-            throw new RouteFailure(0, "剧情后台请求超时", !streamedContent.toString().isEmpty(), streamedContent.toString());
+            boolean committed = streamedContent.length() > 0;
+            boolean firstVisibleTimedOut = !committed && firstByteTimeoutMs > 0L
+                && ("story-first-visible".equals(timeout.getMessage()) || System.currentTimeMillis() >= firstVisibleDeadlineMs - 50L);
+            String message = firstVisibleTimedOut
+                ? "首字等待超时（" + Math.max(1L, Math.round(firstByteTimeoutMs / 1000.0)) + " 秒），已停止当前线路"
+                : "剧情后台请求超时（" + Math.max(1L, Math.round(timeoutMs / 1000.0)) + " 秒）";
+            throw new RouteFailure(0, message, committed, streamedContent.toString());
         } catch (Exception error) {
             throw new RouteFailure(0, error.getMessage() == null ? "剧情后台网络请求失败" : error.getMessage(), !streamedContent.toString().isEmpty(), streamedContent.toString());
         } finally {
@@ -463,16 +489,33 @@ public class SullyStoryBackgroundService extends Service {
         }
     }
 
-    private static String readAll(InputStream input) throws Exception {
+    private static String readAll(
+        InputStream input,
+        HttpURLConnection connection,
+        long firstBodyDeadlineMs,
+        long hardDeadlineMs
+    ) throws Exception {
         StringBuilder out = new StringBuilder();
+        boolean gotBody = false;
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(input, StandardCharsets.UTF_8))) {
-            String line;
-            while ((line = reader.readLine()) != null) out.append(line).append('\n');
+            while (true) {
+                connection.setReadTimeout(nextReadTimeout(hardDeadlineMs, firstBodyDeadlineMs, gotBody));
+                String line = reader.readLine();
+                if (line == null) break;
+                gotBody = true;
+                out.append(line).append('\n');
+            }
         }
         return out.toString().trim();
     }
 
-    private static SseResult readSse(InputStream input, StringBuilder content) throws Exception {
+    private static SseResult readSse(
+        InputStream input,
+        StringBuilder content,
+        HttpURLConnection connection,
+        long firstVisibleDeadlineMs,
+        long hardDeadlineMs
+    ) throws Exception {
         StringBuilder raw = new StringBuilder();
         JSONObject first = null;
         JSONObject usage = null;
@@ -481,8 +524,12 @@ public class SullyStoryBackgroundService extends Service {
         String role = "assistant";
         String finishReason = null;
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(input, StandardCharsets.UTF_8))) {
-            String line;
-            while ((line = reader.readLine()) != null) {
+            while (true) {
+                // content 一旦出现，就和前台 streamCommitMode='content' 一样正式锁定当前线路；
+                // 此后只受整轮 hard timeout 约束，不会再因为首字等待去切故障转移。
+                connection.setReadTimeout(nextReadTimeout(hardDeadlineMs, firstVisibleDeadlineMs, content.length() > 0));
+                String line = reader.readLine();
+                if (line == null) break;
                 raw.append(line).append('\n');
                 String trimmed = line.trim();
                 if (!trimmed.startsWith("data:")) continue;
