@@ -1047,7 +1047,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
         }
     }, [addToast, apiConfig, callCompletion, entry, loadMessages, mask.name, memoryPalaceConfig, onEntryChange, threadId]);
 
-    const send = useCallback(async (rerollTarget?: Message, continueRequested = false) => {
+    const send = useCallback(async (rerollTarget?: Message, continueRequested = false, forceUncertainRetry = false) => {
         if (sendLock.current || actors.length === 0) return;
         sendLock.current = true;
         streamingTextRef.current = '';
@@ -1066,12 +1066,23 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
         let usedNativeBackground = false;
         let nativeCompletionReceived = false;
         let automaticImageKeepAliveLease: string | null = null;
+        let activeRequestKey = '';
+        let activeUserMessageId = 0;
 
         try {
             const before = (await DB.getMessagesByCharId(threadId, true))
                 .filter(message => message.metadata?.source === 'story_theater')
                 .sort((a, b) => a.id - b.id);
             const latest = before[before.length - 1];
+            const latestRequestUncertain = Boolean(
+                latest?.role === 'user'
+                && latest.metadata?.theaterRequestState === 'uncertain'
+                && !latest.metadata?.theaterArchived
+            );
+            if (latestRequestUncertain && !rerollTarget && !forceUncertainRetry) {
+                addToast('上一轮只是连接超时/断开，无法确认上游是否已经停止；已先锁住继续，避免重复生成和重复扣费。', 'info');
+                return;
+            }
             const isReroll = Boolean(rerollTarget && latest?.id === rerollTarget.id && latest.role === 'assistant' && !mirrorArchived(latest, entry));
             partialIsReroll = isReroll;
             partialRerollTarget = rerollTarget;
@@ -1080,12 +1091,20 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             const typedText = input.trim();
             const rerollIndex = isReroll ? before.findIndex(message => message.id === rerollTarget?.id) : -1;
             const previousUser = rerollIndex > 0 ? [...before.slice(0, rerollIndex)].reverse().find(message => message.role === 'user') : undefined;
+            const forcedRetryText = forceUncertainRetry && latestRequestUncertain ? String(latest?.content || '').trim() : '';
             const assistantOpening = !isReroll && !continueRequested && before.length === 0 && entry.openingMode === 'assistant' && !typedText;
             const text = isReroll
                 ? (previousUser?.content.trim() || openingPrompt)
-                : (continueRequested ? MEETING_CONTINUE_DISPLAY_TEXT : (typedText || getPendingStoryRetryInput(before) || (assistantOpening ? openingPrompt : '')));
+                : (forcedRetryText || (continueRequested ? MEETING_CONTINUE_DISPLAY_TEXT : (typedText || getPendingStoryRetryInput(before) || (assistantOpening ? openingPrompt : ''))));
             if (!text) return;
             const retry = !isReroll && latest?.role === 'user' && latest.content === text;
+            activeRequestKey = isReroll && rerollTarget
+                ? `story-reroll:${entry.id}:${rerollTarget.id}`
+                : retry
+                    ? String(latest?.metadata?.theaterRequestKey || `story-turn:${entry.id}:${latest?.id || makeStoryTheaterId()}`)
+                    : assistantOpening
+                        ? `story-opening:${entry.id}`
+                        : `story-turn:${entry.id}:${makeStoryTheaterId()}`;
             // 重新生成与失败重试都从消息标记恢复“继续”，模型始终收到模式专属调度词；
             // 数据库、阅读页与角色镜像只留下简洁的“（继续）”。
             const isContinueTurn = isReroll
@@ -1110,7 +1129,20 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                         : await saveCentralAndMirrors('user', text, {
                             ...(affinityInputs.length > 0 ? { theaterAffinityInputs: affinityInputs } : {}),
                             ...(isContinueTurn ? { theaterContinue: true } : {}),
+                            theaterRequestKey: activeRequestKey,
+                            theaterRequestState: 'pending',
+                            theaterRequestStartedAt: Date.now(),
                         });
+            activeUserMessageId = Number(userMessageId || 0);
+            if (!isReroll && activeUserMessageId > 0) {
+                await DB.updateMessageMetadata(activeUserMessageId, previous => ({
+                    ...previous,
+                    theaterRequestKey: activeRequestKey,
+                    theaterRequestState: 'pending',
+                    theaterRequestStartedAt: previous.theaterRequestStartedAt || Date.now(),
+                    ...(retry ? { theaterRequestRetriedAt: Date.now() } : {}),
+                }));
+            }
             if (!isReroll && !assistantOpening) await loadMessages();
 
             // 归档不能只放在成功生成之后：一旦会话已经碰到上游上下文上限，正文永远生成
@@ -1210,15 +1242,40 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             });
             nativeCompletionReceived = usedNativeBackground;
             const content = prefill && !generated.startsWith(prefill) ? `${prefill}${generated}` : generated;
-            if (isReroll && rerollTarget) {
-                const mirrorIds = Object.values((rerollTarget.metadata?.theaterMirrorIds || {}) as Record<string, number>).map(Number).filter(Boolean);
-                await DB.deleteMessages([rerollTarget.id, ...mirrorIds]);
+            const rowsBeforeCommit = (await DB.getMessagesByCharId(threadId, true))
+                .filter(message => message.metadata?.source === 'story_theater')
+                .sort((a, b) => a.id - b.id);
+            const duplicateAssistant = rowsBeforeCommit.find(message =>
+                message.role === 'assistant'
+                && message.metadata?.theaterRequestKey === activeRequestKey
+                && message.id !== rerollTarget?.id
+            );
+            let didCommitAssistant = false;
+            let assistantMessageId: number;
+            if (duplicateAssistant) {
+                assistantMessageId = duplicateAssistant.id;
+                console.warn('[StoryTheater] duplicate completion discarded', { requestKey: activeRequestKey, messageId: duplicateAssistant.id });
+            } else {
+                if (isReroll && rerollTarget) {
+                    const mirrorIds = Object.values((rerollTarget.metadata?.theaterMirrorIds || {}) as Record<string, number>).map(Number).filter(Boolean);
+                    await DB.deleteMessages([rerollTarget.id, ...mirrorIds]);
+                }
+                assistantMessageId = await saveCentralAndMirrors('assistant', content, {
+                    theaterPromptTokens: promptTokenCount,
+                    theaterPromptTokensExact: promptTokenCountExact,
+                    theaterRequestKey: activeRequestKey,
+                    ...(affinityInputs.length > 0 ? { theaterAffinityInputs: affinityInputs } : {}),
+                });
+                didCommitAssistant = true;
             }
-            const assistantMessageId = await saveCentralAndMirrors('assistant', content, {
-                theaterPromptTokens: promptTokenCount,
-                theaterPromptTokensExact: promptTokenCountExact,
-                ...(affinityInputs.length > 0 ? { theaterAffinityInputs: affinityInputs } : {}),
-            });
+            if (!isReroll && activeUserMessageId > 0) {
+                await DB.updateMessageMetadata(activeUserMessageId, previous => ({
+                    ...previous,
+                    theaterRequestKey: activeRequestKey,
+                    theaterRequestState: 'done',
+                    theaterRequestFinishedAt: Date.now(),
+                }));
+            }
             // 只有正文已经真正写入 IndexedDB，才把 native job 清掉。
             // 这样即使 App 在收到模型结果后立刻被系统杀掉，回来仍能继续收尾，不会丢正文。
             if (usedNativeBackground) await clearPendingNativeStoryJob(backgroundOwnerKey);
@@ -1229,7 +1286,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             streamingTextRef.current = '';
             setStreamingText('');
             partialStreamText = '';
-            if (entry.imageGeneration?.enabled) {
+            if (didCommitAssistant && entry.imageGeneration?.enabled) {
                 setMemoryStatus('正在为本轮剧情绘制插图…');
                 try {
                     const imageRows = (await DB.getMessagesByCharId(threadId, true))
@@ -1255,8 +1312,10 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                     setMemoryStatus('');
                 }
             }
-            if (entry.writesToCharacterMemory) void applyActorMemoryPipeline();
-            else void archiveIfNeeded();
+            if (didCommitAssistant) {
+                if (entry.writesToCharacterMemory) void applyActorMemoryPipeline();
+                else void archiveIfNeeded();
+            }
         } catch (error: any) {
             const storyDiagnostics = error?.storyTransportDiagnostics;
             if (storyDiagnostics) {
@@ -1278,12 +1337,29 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                             .filter(Boolean);
                         await DB.deleteMessages([partialRerollTarget.id, ...mirrorIds]);
                     }
-                    await saveCentralAndMirrors('assistant', committedPartial, {
-                        theaterPromptTokens: partialPromptTokens,
-                        theaterPromptTokensExact: partialPromptTokensExact,
-                        theaterInterrupted: true,
-                        ...(partialAffinityInputs.length > 0 ? { theaterAffinityInputs: partialAffinityInputs } : {}),
-                    });
+                    const partialRows = (await DB.getMessagesByCharId(threadId, true))
+                        .filter(message => message.metadata?.source === 'story_theater')
+                        .sort((a, b) => a.id - b.id);
+                    const duplicatePartial = activeRequestKey
+                        ? partialRows.find(message => message.role === 'assistant' && message.metadata?.theaterRequestKey === activeRequestKey)
+                        : undefined;
+                    if (!duplicatePartial) {
+                        await saveCentralAndMirrors('assistant', committedPartial, {
+                            theaterPromptTokens: partialPromptTokens,
+                            theaterPromptTokensExact: partialPromptTokensExact,
+                            theaterInterrupted: true,
+                            ...(activeRequestKey ? { theaterRequestKey: activeRequestKey } : {}),
+                            ...(partialAffinityInputs.length > 0 ? { theaterAffinityInputs: partialAffinityInputs } : {}),
+                        });
+                    }
+                    if (!partialIsReroll && activeUserMessageId > 0) {
+                        await DB.updateMessageMetadata(activeUserMessageId, previous => ({
+                            ...previous,
+                            ...(activeRequestKey ? { theaterRequestKey: activeRequestKey } : {}),
+                            theaterRequestState: 'done',
+                            theaterRequestFinishedAt: Date.now(),
+                        }));
+                    }
                     if (partialClearInput) setInput('');
                     setAffinityDrafts({});
                     setShowAffinityInput(false);
@@ -1306,15 +1382,34 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 await clearPendingNativeStoryJob(backgroundOwnerKey);
             }
             const message = String(error?.message || error);
-            const isOpaqueBrowserFailure = /load failed|failed to fetch|networkerror|network request failed/i.test(message);
-            addToast(
-                isOpaqueBrowserFailure
-                    ? '剧情请求被上游/网关断开，浏览器读不到真实错误。若陪伴原版同 API 正常，可在剧情设置尝试“不发送高级采样参数”或“400 兼容模式”；请求差异已写入 Network 日志，请勿连续重发。'
-                    : message.includes('API Error 400') && isStoryUserLastCompatibilityError(message) && !entry.forceUserLastMessage
-                    ? '剧情续写失败：API 400。若日志提示最后一条必须是 user，可在右上角设置开启“400 兼容模式”；更建议更换模型。'
-                    : `剧情续写失败：${message}`,
-                'error',
+            const isOpaqueBrowserFailure = /load failed|failed to fetch|network\s*error|network request failed/i.test(message);
+            const isAmbiguousTransportFailure = (
+                error?.name === 'TypeError'
+                || error?.name === 'AbortError'
+                || /network\s*error|failed to fetch|load failed|network request failed|timeout|timed out|aborted|首字等待超时/i.test(message)
             );
+            if (!partialIsReroll && activeUserMessageId > 0) {
+                await DB.updateMessageMetadata(activeUserMessageId, previous => ({
+                    ...previous,
+                    ...(activeRequestKey ? { theaterRequestKey: activeRequestKey } : {}),
+                    theaterRequestState: isAmbiguousTransportFailure ? 'uncertain' : 'failed',
+                    theaterRequestFailedAt: Date.now(),
+                    theaterRequestError: message.slice(0, 300),
+                }));
+                await loadMessages();
+            }
+            if (isAmbiguousTransportFailure) {
+                addToast('连接超时/断开，但上游是否仍在生成无法确认。已锁住这一轮的普通“继续”，避免重复输出和重复扣费；确定要重发时请点“强制重试”。', 'info');
+            } else {
+                addToast(
+                    isOpaqueBrowserFailure
+                        ? '剧情请求被上游/网关断开，浏览器读不到真实错误。请求差异已写入 Network 日志。'
+                        : message.includes('API Error 400') && isStoryUserLastCompatibilityError(message) && !entry.forceUserLastMessage
+                        ? '剧情续写失败：API 400。若日志提示最后一条必须是 user，可在右上角设置开启“400 兼容模式”；更建议更换模型。'
+                        : `剧情续写失败：${message}`,
+                    'error',
+                );
+            }
         } finally {
             await releaseNativeStoryKeepAlive(automaticImageKeepAliveLease);
             automaticImageKeepAliveLease = null;
@@ -1328,6 +1423,11 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
 
     const archivedCount = messages.filter(message => mirrorArchived(message, entry)).length;
     const pendingRetryInput = getPendingStoryRetryInput(messages);
+    const latestStoryMessage = messages[messages.length - 1];
+    const uncertainRetryMessage = latestStoryMessage?.role === 'user'
+        && latestStoryMessage.metadata?.theaterRequestState === 'uncertain'
+        ? latestStoryMessage
+        : null;
     const canWriteOpening = messages.length === 0 && entry.openingMode === 'assistant';
     const filledAffinityActorIds = actors.filter(actor => {
         const draft = affinityDrafts[actor.id];
@@ -1511,7 +1611,17 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             <div className='max-w-2xl mx-auto'>
                 {memoryStatus && <div className='mb-1 flex items-center gap-2 px-1 text-[9px] text-violet-600'><SpinnerGap size={12} className='animate-spin' />{memoryStatus}</div>}
                 {sending && isNativeStoryBackgroundRuntime() && <div className='mb-1 flex items-center gap-2 px-1 text-[9px] text-emerald-700'><span className='w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse' />后台续写中，可直接切屏</div>}
-                {!sending && !memoryStatus && !input.trim() && pendingRetryInput && <div className='mb-1 px-1 text-[9px] text-violet-600'>上次续写可能中断，直接点发送即可继续</div>}
+                {!sending && uncertainRetryMessage && <div className='mb-1 flex items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-[9px] leading-4 text-amber-700'>
+                    <span className='min-w-0 flex-1'>上一轮连接超时，但上游可能只是很慢。普通继续已锁住，避免重复请求。</span>
+                    <button
+                        type='button'
+                        onClick={() => void send(undefined, false, true)}
+                        className='shrink-0 rounded-full border border-amber-300 bg-white px-2 py-1 font-bold text-amber-700'
+                    >
+                        强制重试
+                    </button>
+                </div>}
+                {!sending && !uncertainRetryMessage && !memoryStatus && !input.trim() && pendingRetryInput && <div className='mb-1 px-1 text-[9px] text-violet-600'>上次续写可能中断，直接点发送即可继续</div>}
                 <div className='rounded-[22px] bg-white border border-slate-200 shadow-sm px-3 py-2'>
                     <textarea
                         value={input}
@@ -1531,7 +1641,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                         <button
                             type='button'
                             onClick={() => void send(undefined, true)}
-                            disabled={sending || actors.length === 0}
+                            disabled={sending || Boolean(uncertainRetryMessage) || actors.length === 0}
                             className='h-8 min-w-8 px-2 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 grid place-items-center text-[9px] font-bold active:scale-95 transition-transform disabled:opacity-30'
                             title='按当前节奏继续，不额外替你行动'
                             aria-label='继续当前剧情'
@@ -1565,7 +1675,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                         <button
                             type='button'
                             onClick={() => void send()}
-                            disabled={sending || (!input.trim() && !pendingRetryInput && !canWriteOpening)}
+                            disabled={sending || Boolean(uncertainRetryMessage) || (!input.trim() && !pendingRetryInput && !canWriteOpening)}
                             title={!input.trim() && pendingRetryInput ? '继续上次中断' : canWriteOpening && !input.trim() ? '让故事先开场' : '推进'}
                             className='story-send-button w-9 h-9 rounded-full bg-blue-500 text-white grid place-items-center shadow-sm active:scale-95 transition-transform disabled:bg-slate-300 disabled:text-white disabled:opacity-100'
                         >
