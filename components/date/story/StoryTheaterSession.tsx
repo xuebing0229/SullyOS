@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Archive, ArrowBendDownRight, ArrowClockwise, ArrowLeft, ArrowUp, Broadcast, CaretDown, CaretLeft, CaretRight, ChatCircleDots, Clock, Database, DownloadSimple, Eye, EyeSlash, FilmSlate, GearSix, HeartStraight, Key, MapPin, PencilSimple, SlidersHorizontal, Sparkle, SpinnerGap, Trash, X } from '@phosphor-icons/react';
+import { Archive, ArrowBendDownRight, ArrowClockwise, ArrowLeft, ArrowUp, Broadcast, CaretDown, ChatCircleDots, Clock, Database, DownloadSimple, Eye, EyeSlash, FilmSlate, GearSix, HeartStraight, Key, MapPin, PencilSimple, SlidersHorizontal, Sparkle, SpinnerGap, Trash, X } from '@phosphor-icons/react';
 import { useOS } from '../../../context/OSContext';
 import TokenImg from '../../os/TokenImg';
 import type { AppMemoryCandidate, CharacterProfile, Message, StoryTheaterEntry, StoryTheaterImageFrame, StoryTheaterMask, StoryTheaterPreset } from '../../../types';
@@ -88,8 +88,6 @@ const textFromHistory = (messages: Message[], identityName: string): string => b
     return `[${label}]\n${message.content}`;
 }).join('\n\n');
 
-const STORY_PAGE_SIZE = 10;
-
 const StoryRoundImage: React.FC<{ message: Message; busy: boolean; onRegenerate: () => void }> = ({ message, busy, onRegenerate }) => {
     const frame = message.metadata?.theaterImage as StoryTheaterImageFrame | undefined;
     if (!frame?.imageRef) return null;
@@ -98,14 +96,6 @@ const StoryRoundImage: React.FC<{ message: Message; busy: boolean; onRegenerate:
         <figcaption className='flex items-center gap-3 border-t border-slate-200 bg-white px-3 py-2.5'><span className='min-w-0 flex-1'><strong className='block text-[10px] text-slate-700'>本轮剧情配图</strong><span className='mt-0.5 block truncate text-[9px] text-slate-400'>{frame.engine || '内置生图引擎'}</span></span><button type='button' disabled={busy} onClick={onRegenerate} className='inline-flex shrink-0 items-center gap-1.5 rounded-full border border-slate-200 px-3 py-1.5 text-[9px] font-bold text-slate-500 disabled:opacity-40'>{busy ? <SpinnerGap size={12} className='animate-spin' /> : <ArrowClockwise size={12} />}重新生成</button></figcaption>
     </figure>;
 };
-
-const StoryPagination: React.FC<{ page: number; pageCount: number; onChange: (page: number) => void; className?: string }> = ({ page, pageCount, onChange, className = '' }) => (
-    <nav className={`${className} py-2 border-y border-slate-200 flex items-center justify-between`}>
-        <button disabled={page === 0} onClick={() => onChange(Math.max(0, page - 1))} className='w-9 h-9 rounded-full grid place-items-center disabled:opacity-20' aria-label='更早一页'><CaretLeft size={17} /></button>
-        <div className='text-center'><div className='text-[10px] font-bold text-slate-600'>第 {page + 1} / {pageCount} 页</div><div className='mt-0.5 text-[9px] text-slate-400'>每页最多 {STORY_PAGE_SIZE} 条内容</div></div>
-        <button disabled={page >= pageCount - 1} onClick={() => onChange(Math.min(pageCount - 1, page + 1))} className='w-9 h-9 rounded-full grid place-items-center disabled:opacity-20' aria-label='更新一页'><CaretRight size={17} /></button>
-    </nav>
-);
 
 const normalizeAffinityInput = (value: any, actor?: CharacterProfile): StoryAffinityInput | undefined => {
     if (!value || typeof value !== 'object') return undefined;
@@ -403,7 +393,6 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
     const [showAffinityInput, setShowAffinityInput] = useState(false);
     const [affinityDrafts, setAffinityDrafts] = useState<Record<string, AffinityDraft>>({});
     const [selectedAffinityActorId, setSelectedAffinityActorId] = useState('');
-    const [messagePage, setMessagePage] = useState(0);
     const [expandedArchivedIds, setExpandedArchivedIds] = useState<Set<number>>(() => new Set());
     const [exporting, setExporting] = useState(false);
     const [memoryCandidates, setMemoryCandidates] = useState<AppMemoryCandidate[]>([]);
@@ -600,19 +589,19 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
         const frame = requestAnimationFrame(() => bottomRef.current?.scrollIntoView({ block: 'end' }));
         return () => cancelAnimationFrame(frame);
     }, [streamingText]);
-    const pageCount = Math.max(1, Math.ceil(messages.length / STORY_PAGE_SIZE));
-    useEffect(() => { setMessagePage(Math.max(0, pageCount - 1)); }, [messages.length, pageCount]);
-    const pageMessages = useMemo(() => messages.slice(messagePage * STORY_PAGE_SIZE, (messagePage + 1) * STORY_PAGE_SIZE), [messagePage, messages]);
-    const pageArchivedIds = useMemo(() => pageMessages.filter(message => mirrorArchived(message, entry)).map(message => message.id), [entry, pageMessages]);
-    const allPageArchivesExpanded = pageArchivedIds.length > 0 && pageArchivedIds.every(id => expandedArchivedIds.has(id));
-    const togglePageArchives = useCallback(() => {
+    const archivedMessageIds = useMemo(
+        () => messages.filter(message => mirrorArchived(message, entry)).map(message => message.id),
+        [entry, messages],
+    );
+    const allArchivesExpanded = archivedMessageIds.length > 0 && archivedMessageIds.every(id => expandedArchivedIds.has(id));
+    const toggleAllArchives = useCallback(() => {
         setExpandedArchivedIds(current => {
             const next = new Set(current);
-            if (pageArchivedIds.every(id => next.has(id))) pageArchivedIds.forEach(id => next.delete(id));
-            else pageArchivedIds.forEach(id => next.add(id));
+            if (archivedMessageIds.every(id => next.has(id))) archivedMessageIds.forEach(id => next.delete(id));
+            else archivedMessageIds.forEach(id => next.add(id));
             return next;
         });
-    }, [pageArchivedIds]);
+    }, [archivedMessageIds]);
     const setArchiveExpanded = useCallback((messageId: number, open: boolean) => {
         setExpandedArchivedIds(current => {
             if (current.has(messageId) === open) return current;
@@ -1246,11 +1235,10 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                     <p className='mt-3 text-[9px] leading-5 text-slate-400'>小提示：生成正文后，长按楼层可编辑或删除；“预设”和“关系”浮钮都可以拖到顺手的位置。</p>
                 </section> : entry.writesToCharacterMemory && <div className='mb-8 py-3 border-y border-amber-200 text-center text-[11px] text-amber-700'>和朋友们已经分别相处了一段时间……</div>}
 
-                {pageCount > 1 && <StoryPagination className='mb-4' page={messagePage} pageCount={pageCount} onChange={setMessagePage} />}
-                {pageArchivedIds.length > 0 && <div className='mb-7 px-1 flex items-center justify-between gap-3 text-[9px] text-slate-400'><span>本页 {pageArchivedIds.length} 条归档原文 · 展开时才渲染正文</span><button onClick={togglePageArchives} className='shrink-0 px-3 py-1.5 rounded-full bg-white border border-slate-200 font-bold text-violet-600'>{allPageArchivesExpanded ? '全部收起' : '全部展开'}</button></div>}
+                {archivedMessageIds.length > 0 && <div className='mb-7 px-1 flex items-center justify-between gap-3 text-[9px] text-slate-400'><span>{archivedMessageIds.length} 条归档原文 · 默认折叠，整段上下滑动浏览</span><button onClick={toggleAllArchives} className='shrink-0 px-3 py-1.5 rounded-full bg-white border border-slate-200 font-bold text-violet-600'>{allArchivesExpanded ? '全部收起' : '全部展开'}</button></div>}
 
                 <div className='space-y-8'>
-                    {pageMessages.map(message => {
+                    {messages.map(message => {
                         const archived = mirrorArchived(message, entry);
                         if (archived) {
                             const archiveLabel = entry.writesToCharacterMemory
@@ -1287,7 +1275,6 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                         </div>
                     </article>}
                 </div>
-                {pageCount > 1 && <StoryPagination className='mt-8' page={messagePage} pageCount={pageCount} onChange={setMessagePage} />}
                 {archivedCount > 0 && <div className='mt-10 flex items-center justify-center gap-2 text-[9px] text-slate-400'><Archive size={13} />{archivedCount} 条旧内容已归档，仍会通过所选记忆方式参与续写</div>}
                 <div ref={bottomRef} className='h-6' />
             </div>
