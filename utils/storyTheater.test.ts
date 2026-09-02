@@ -209,6 +209,29 @@ describe('糯米机原生剧情预设边界', () => {
         expect(groups[1].description).toContain('1 条提示词');
     });
 
+    it('显式 group 元数据无需假分隔条也能保留原分组', () => {
+        const document: StoryTheaterPresetDocument = {
+            schema: 'sullyos.story-preset',
+            version: 1,
+            name: 'Ako metadata',
+            generation: { temperature: 1, topP: 0.98, frequencyPenalty: 0, presencePenalty: 0, maxTokens: 32000 },
+            assistantPrefill: '',
+            prompts: [
+                { id: 'p1', name: '说明一', enabled: false, role: 'system', content: 'a', group: '说明' },
+                { id: 'p2', name: '说明二', enabled: true, role: 'system', content: 'b', group: '说明' },
+                { id: 'p3', name: '人物规则', enabled: true, role: 'system', content: 'c', group: '人物塑造' },
+            ],
+        };
+
+        const groups = getStoryPresetPromptGroups(document);
+        expect(groups.map(group => group.label)).toEqual(['说明', '人物塑造']);
+        expect(groups[0].promptIds).toEqual(['p1', 'p2']);
+        expect(groups[1].promptIds).toEqual(['p3']);
+
+        const imported = parseStoryTheaterPreset(JSON.stringify(document), 'ako-metadata.json', 1);
+        expect(imported.document.prompts.map(prompt => prompt.group)).toEqual(['说明', '说明', '人物塑造']);
+    });
+
     it('拒绝其它应用的 prompt/completion JSON', () => {
         expect(() => parseStoryTheaterPreset(JSON.stringify({ prompts: [], prompt_order: [] }), 'foreign.json')).toThrow('只接受糯米机剧情预设');
         expect(() => parseStoryTheaterPreset(JSON.stringify({ model: 'x', messages: [] }), 'completion.json')).toThrow('只接受糯米机剧情预设');
