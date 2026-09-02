@@ -240,6 +240,9 @@ export function extractMcpImageCandidates(result: McpToolResult): McpImageCandid
     const visited = new WeakSet<object>();
     if (result.structuredContent !== undefined) walkStructuredImageValues(result.structuredContent, out, seenCandidates, visited);
     if (result.data !== undefined) walkStructuredImageValues(result.data, out, seenCandidates, visited);
+    // 部分 MCP SDK / 后台 jobs 会把真正的 structuredContent 再包一层放在 rawResult。
+    // 以前工具明明成功且服务端已经有图，客户端却可能因为只扫 data/structuredContent 而报“没拿到图”。
+    if (result.rawResult !== undefined) walkStructuredImageValues(result.rawResult, out, seenCandidates, visited);
     if (result.rawText) scanTextForConservativeUrls(result.rawText, out, seenCandidates);
     return out;
 }
