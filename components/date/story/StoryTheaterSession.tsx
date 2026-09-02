@@ -73,7 +73,6 @@ import {
     MEETING_CONTINUE_DISPLAY_TEXT,
 } from '../../../utils/meetingContinue';
 
-const STORY_UNCERTAIN_RECOVERY_MS = 10 * 60 * 1000;
 
 interface Props {
     entry: StoryTheaterEntry;
@@ -1078,25 +1077,6 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 .filter(message => message.metadata?.source === 'story_theater')
                 .sort((a, b) => a.id - b.id);
             const latest = before[before.length - 1];
-            const latestRequestUncertain = Boolean(
-                latest?.role === 'user'
-                && latest.metadata?.theaterRequestState === 'uncertain'
-                && !latest.metadata?.theaterArchived
-            );
-            const uncertainFailedAt = Number(latest?.metadata?.theaterRequestFailedAt || 0);
-            const uncertainStillCooling = latestRequestUncertain
-                && (!uncertainFailedAt || Date.now() - uncertainFailedAt < STORY_UNCERTAIN_RECOVERY_MS);
-            if (uncertainStillCooling && !rerollTarget) {
-                addToast('上一轮正在自动观察期，不需要你判断它死没死；为避免重复请求，这段时间不会再发“继续”。', 'info');
-                return;
-            }
-            if (latestRequestUncertain && !uncertainStillCooling && latest?.id) {
-                await DB.updateMessageMetadata(latest.id, previous => ({
-                    ...previous,
-                    theaterRequestState: 'stale',
-                    theaterRequestStaleAt: Date.now(),
-                }));
-            }
             const isReroll = Boolean(rerollTarget && latest?.id === rerollTarget.id && latest.role === 'assistant' && !mirrorArchived(latest, entry));
             partialIsReroll = isReroll;
             partialRerollTarget = rerollTarget;
@@ -1405,14 +1385,14 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 await DB.updateMessageMetadata(activeUserMessageId, previous => ({
                     ...previous,
                     ...(activeRequestKey ? { theaterRequestKey: activeRequestKey } : {}),
-                    theaterRequestState: isAmbiguousTransportFailure ? 'uncertain' : 'failed',
+                    theaterRequestState: 'failed',
                     theaterRequestFailedAt: Date.now(),
                     theaterRequestError: message.slice(0, 300),
                 }));
                 await loadMessages();
             }
             if (isAmbiguousTransportFailure) {
-                addToast('连接超时/断开后已进入自动观察期：不需要你判断上游死没死。观察期内锁住“继续”；若 10 分钟仍没有结果，会自动视为失联并恢复重试。', 'info');
+                addToast('连接已经实际断开；这一轮现在可以立即重试。单纯“模型很慢”不会再被当成超时报错；若极端情况下旧结果晚到，同一轮 request key 会阻止重复正文。', 'error');
             } else {
                 addToast(
                     isOpaqueBrowserFailure
@@ -1436,37 +1416,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
 
     const archivedCount = messages.filter(message => mirrorArchived(message, entry)).length;
     const pendingRetryInput = getPendingStoryRetryInput(messages);
-    const latestStoryMessage = messages[messages.length - 1];
-    const uncertainRetryMessage = latestStoryMessage?.role === 'user'
-        && latestStoryMessage.metadata?.theaterRequestState === 'uncertain'
-        ? latestStoryMessage
-        : null;
     const canWriteOpening = messages.length === 0 && entry.openingMode === 'assistant';
-
-    useEffect(() => {
-        if (!uncertainRetryMessage) return;
-        const failedAt = Number(uncertainRetryMessage.metadata?.theaterRequestFailedAt || 0);
-        if (!failedAt) return;
-        const remaining = STORY_UNCERTAIN_RECOVERY_MS - (Date.now() - failedAt);
-        const markStale = async () => {
-            await DB.updateMessageMetadata(uncertainRetryMessage.id, previous => {
-                if (previous.theaterRequestState !== 'uncertain') return previous;
-                return {
-                    ...previous,
-                    theaterRequestState: 'stale',
-                    theaterRequestStaleAt: Date.now(),
-                };
-            });
-            await loadMessages();
-            addToast('上一轮已超过自动观察期且仍未回收结果，现在可以重新续写。', 'info');
-        };
-        if (remaining <= 0) {
-            void markStale();
-            return;
-        }
-        const timer = setTimeout(() => void markStale(), remaining);
-        return () => clearTimeout(timer);
-    }, [addToast, loadMessages, uncertainRetryMessage]);
     const filledAffinityActorIds = actors.filter(actor => {
         const draft = affinityDrafts[actor.id];
         return Boolean(draft && (draft.delta !== 0 || draft.reason.trim()));
@@ -1649,10 +1599,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             <div className='max-w-2xl mx-auto'>
                 {memoryStatus && <div className='mb-1 flex items-center gap-2 px-1 text-[9px] text-violet-600'><SpinnerGap size={12} className='animate-spin' />{memoryStatus}</div>}
                 {sending && isNativeStoryBackgroundRuntime() && <div className='mb-1 flex items-center gap-2 px-1 text-[9px] text-emerald-700'><span className='w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse' />后台续写中，可直接切屏</div>}
-                {!sending && uncertainRetryMessage && <div className='mb-1 rounded-xl border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-[9px] leading-4 text-amber-700'>
-                    上一轮连接状态不确定，正在自动观察；你不用判断。最多等待 10 分钟，期间不会重复发请求，若仍无结果会自动解锁。
-                </div>}
-                {!sending && !uncertainRetryMessage && !memoryStatus && !input.trim() && pendingRetryInput && <div className='mb-1 px-1 text-[9px] text-violet-600'>上次续写可能中断，直接点发送即可继续</div>}
+                {!sending && !uncertainRetryMessage && !memoryStatus && !input.trim() && pendingRetryInput && <div className='mb-1 px-1 text-[9px] text-violet-600'>上次续写已断开，可以直接点发送重试</div>}
                 <div className='rounded-[22px] bg-white border border-slate-200 shadow-sm px-3 py-2'>
                     <textarea
                         value={input}
@@ -1672,7 +1619,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                         <button
                             type='button'
                             onClick={() => void send(undefined, true)}
-                            disabled={sending || Boolean(uncertainRetryMessage) || actors.length === 0}
+                            disabled={sending || actors.length === 0}
                             className='h-8 min-w-8 px-2 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 grid place-items-center text-[9px] font-bold active:scale-95 transition-transform disabled:opacity-30'
                             title='按当前节奏继续，不额外替你行动'
                             aria-label='继续当前剧情'
@@ -1706,7 +1653,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                         <button
                             type='button'
                             onClick={() => void send()}
-                            disabled={sending || Boolean(uncertainRetryMessage) || (!input.trim() && !pendingRetryInput && !canWriteOpening)}
+                            disabled={sending || (!input.trim() && !pendingRetryInput && !canWriteOpening)}
                             title={!input.trim() && pendingRetryInput ? '继续上次中断' : canWriteOpening && !input.trim() ? '让故事先开场' : '推进'}
                             className='story-send-button w-9 h-9 rounded-full bg-blue-500 text-white grid place-items-center shadow-sm active:scale-95 transition-transform disabled:bg-slate-300 disabled:text-white disabled:opacity-100'
                         >
