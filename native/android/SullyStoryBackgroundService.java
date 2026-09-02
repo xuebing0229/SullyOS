@@ -18,6 +18,7 @@ import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.net.HttpURLConnection;
+import java.net.SocketException;
 import java.net.SocketTimeoutException;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
@@ -482,6 +483,14 @@ public class SullyStoryBackgroundService extends Service {
                 ? "首字等待超时（" + Math.max(1L, Math.round(firstByteTimeoutMs / 1000.0)) + " 秒），已停止当前线路"
                 : "剧情后台请求超时（" + Math.max(1L, Math.round(timeoutMs / 1000.0)) + " 秒）";
             throw new RouteFailure(0, message, committed, streamedContent.toString());
+        } catch (SocketException socketError) {
+            boolean committed = streamedContent.length() > 0;
+            String rawMessage = socketError.getMessage() == null ? "" : socketError.getMessage();
+            String message = committed
+                ? "剧情后台流式连接在正文生成中被系统或网关断开"
+                : "剧情后台连接在首字前被系统或网关断开";
+            if (!rawMessage.isEmpty()) message += "（" + rawMessage + "）";
+            throw new RouteFailure(0, message, committed, streamedContent.toString());
         } catch (Exception error) {
             throw new RouteFailure(0, error.getMessage() == null ? "剧情后台网络请求失败" : error.getMessage(), !streamedContent.toString().isEmpty(), streamedContent.toString());
         } finally {
@@ -523,30 +532,47 @@ public class SullyStoryBackgroundService extends Service {
         String id = "";
         String role = "assistant";
         String finishReason = null;
-        try (BufferedReader reader = new BufferedReader(new InputStreamReader(input, StandardCharsets.UTF_8))) {
+        boolean terminal = false;
+
+        // 这里故意不让 BufferedReader 自己 close 底层 socket：
+        // HttpURLConnection 由 executeRoute 的 finally 统一 disconnect。
+        // 某些 Android / 中转组合在 finish_reason 后立刻 close reader，会在已经收完整文时
+        // 反而抛 "Software caused connection abort"，把一次成功生成误判成失败。
+        BufferedReader reader = new BufferedReader(new InputStreamReader(input, StandardCharsets.UTF_8));
+        try {
             while (true) {
                 // content 一旦出现，就和前台 streamCommitMode='content' 一样正式锁定当前线路；
                 // 此后只受整轮 hard timeout 约束，不会再因为首字等待去切故障转移。
                 connection.setReadTimeout(nextReadTimeout(hardDeadlineMs, firstVisibleDeadlineMs, content.length() > 0));
                 String line = reader.readLine();
-                if (line == null) break;
+                if (line == null) {
+                    terminal = true; // 正常 EOF
+                    break;
+                }
                 raw.append(line).append('\n');
                 String trimmed = line.trim();
                 if (!trimmed.startsWith("data:")) continue;
                 String payload = trimmed.substring(5).trim();
                 if (payload.isEmpty()) continue;
-                if ("[DONE]".equals(payload)) break;
+                if ("[DONE]".equals(payload)) {
+                    terminal = true;
+                    break;
+                }
+
                 JSONObject chunk;
                 try { chunk = new JSONObject(payload); }
                 catch (Exception ignored) { continue; }
+
                 if (first == null) first = chunk;
                 if (chunk.has("usage") && !chunk.isNull("usage")) usage = chunk.optJSONObject("usage");
                 if (model.isEmpty()) model = chunk.optString("model", "");
                 if (id.isEmpty()) id = chunk.optString("id", "");
+
                 JSONArray choices = chunk.optJSONArray("choices");
                 if (choices == null || choices.length() == 0) continue;
                 JSONObject choice = choices.optJSONObject(0);
                 if (choice == null) continue;
+
                 JSONObject delta = choice.optJSONObject("delta");
                 JSONObject message = choice.optJSONObject("message");
                 if (delta != null) {
@@ -560,12 +586,23 @@ public class SullyStoryBackgroundService extends Service {
                     String r = message.optString("role", "");
                     if (!r.isEmpty()) role = r;
                 }
+
                 if (choice.has("finish_reason") && !choice.isNull("finish_reason")) {
                     finishReason = choice.optString("finish_reason", null);
-                    if (finishReason != null && !finishReason.isEmpty()) break;
+                    if (finishReason != null && !finishReason.isEmpty()) {
+                        // finish_reason 本身就是 OpenAI-compatible 流的终止信号。
+                        // 不再为了等一个可能永远不来的 [DONE] 继续挂 socket。
+                        terminal = true;
+                        break;
+                    }
                 }
             }
+        } catch (SocketException socketError) {
+            // 部分 Android 网络栈 / 代理会在流已经给出 finish_reason 后，
+            // 紧接着用 connection abort / reset 结束 TCP。正文已完整时应按成功收尾。
+            if (!terminal || content.length() == 0) throw socketError;
         }
+
         JSONObject response = assembledResponse(id, model, role, content.toString(), finishReason, usage);
         return new SseResult(raw.toString(), response, content.toString());
     }
