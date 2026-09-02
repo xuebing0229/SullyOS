@@ -413,6 +413,8 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
     const sendLock = useRef(false);
     const streamingTextRef = useRef('');
     const archiveLock = useRef(false);
+    const scrollContainerRef = useRef<HTMLElement>(null);
+    const autoFollowStreamRef = useRef(true);
     const bottomRef = useRef<HTMLDivElement>(null);
     const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
     const longPressOrigin = useRef<{ x: number; y: number } | null>(null);
@@ -456,6 +458,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
         setMemoryCardBusy(false);
         streamingTextRef.current = '';
         setStreamingText('');
+        autoFollowStreamRef.current = true;
     }, [entry.id]);
 
     useEffect(() => {
@@ -583,12 +586,31 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             setMutatingMessage(false);
         }
     }, [addToast, deletingMessage, entry.writesToCharacterMemory, loadMessages, mutatingMessage, relatedMessageIds]);
-    useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' }); }, [messages.length, sending]);
+    const scrollStoryToBottom = useCallback((behavior: ScrollBehavior = 'auto') => {
+        const container = scrollContainerRef.current;
+        if (!container) return;
+        container.scrollTo({ top: container.scrollHeight, behavior });
+    }, []);
+
+    const handleStoryScroll = useCallback((event: React.UIEvent<HTMLElement>) => {
+        const element = event.currentTarget;
+        const distanceFromBottom = element.scrollHeight - element.scrollTop - element.clientHeight;
+        // 用户离开底部后，流式正文继续生成但不再夺走阅读位置；
+        // 自己滑回底部附近时才恢复跟随。
+        autoFollowStreamRef.current = distanceFromBottom <= 96;
+    }, []);
+
     useEffect(() => {
-        if (!streamingText) return;
-        const frame = requestAnimationFrame(() => bottomRef.current?.scrollIntoView({ block: 'end' }));
+        if (!autoFollowStreamRef.current) return;
+        const frame = requestAnimationFrame(() => scrollStoryToBottom('smooth'));
         return () => cancelAnimationFrame(frame);
-    }, [streamingText]);
+    }, [messages.length, sending, scrollStoryToBottom]);
+
+    useEffect(() => {
+        if (!streamingText || !autoFollowStreamRef.current) return;
+        const frame = requestAnimationFrame(() => scrollStoryToBottom('auto'));
+        return () => cancelAnimationFrame(frame);
+    }, [streamingText, scrollStoryToBottom]);
     const archivedMessageIds = useMemo(
         () => messages.filter(message => mirrorArchived(message, entry)).map(message => message.id),
         [entry, messages],
@@ -1225,7 +1247,11 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             />
         )}
 
-        <main className='story-page-scroll flex-1 overflow-y-auto px-5 py-7'>
+        <main
+            ref={scrollContainerRef}
+            onScroll={handleStoryScroll}
+            className='story-page-scroll flex-1 overflow-y-auto px-5 py-7'
+        >
             <div className='max-w-2xl mx-auto'>
                 {messages.length === 0 ? <section className='py-10 border-y border-slate-200'>
                     <div className='text-[9px] tracking-[.25em] uppercase font-bold text-violet-500'>Opening note</div>
