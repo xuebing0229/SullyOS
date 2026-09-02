@@ -1,4 +1,4 @@
-import type { APIConfig, CharacterProfile, Message, StoryTheaterEntry, StoryTheaterImageFrame, UserProfile } from '../types';
+import type { APIConfig, ApiPreset, CharacterProfile, Message, StoryTheaterEntry, StoryTheaterImageFrame, UserProfile } from '../types';
 import { resolveApiExecutionPlan, executeOpenAiChatPlan } from './apiFailover';
 import { storyTheaterThreadId } from './storyTheater';
 import { callMcpTool, getMcpUseNativeTools } from './mcpClient';
@@ -19,7 +19,10 @@ import {
 import { persistMcpGeneratedImages } from './mcpImagePersistence';
 
 interface GenerateStoryImageInput {
+    /** 当前主 API；只作为旧数据/未单独选择规划器时的兜底。 */
     apiConfig: APIConfig;
+    /** 已按本剧情“快速规划模型”解析好的独立规划 API。 */
+    plannerApiConfig?: APIConfig;
     entry: StoryTheaterEntry;
     actors: CharacterProfile[];
     userProfile: UserProfile;
@@ -28,6 +31,27 @@ interface GenerateStoryImageInput {
 }
 
 const compact = (value?: string): string => (value || '').replace(/\s+/g, ' ').trim();
+
+export const resolveStoryImagePlannerApiConfig = (
+    entry: StoryTheaterEntry,
+    fallbackApi: APIConfig,
+    presets: ApiPreset[],
+): APIConfig => {
+    const presetId = String(entry.imageGeneration?.plannerApiPresetId || '').trim();
+    if (!presetId) return fallbackApi;
+
+    const preset = presets.find(item => item.id === presetId);
+    if (!preset) return fallbackApi;
+
+    const configuredModel = String(entry.imageGeneration?.plannerModel || '').trim();
+    return {
+        ...fallbackApi,
+        ...preset.config,
+        model: configuredModel || preset.config.model,
+        // 规划器只返回一次工具调用，不需要占用流式连接。
+        stream: false,
+    };
+};
 
 const isBuiltinImageTool = (hit: ResolvedMcpTool): boolean =>
     hit.server.builtin === true
@@ -116,10 +140,11 @@ ${transcript}
 export async function generateStoryTheaterImage(input: GenerateStoryImageInput): Promise<StoryTheaterImageFrame> {
     if (!input.actors.length) throw new Error('剧情没有可用于配图的出场角色。');
 
+    const plannerApiConfig = input.plannerApiConfig || input.apiConfig;
     const imageTools = resolveStoryImageTools(input.actors);
     const toolNames = imageTools.tools.map(tool => tool.function.name);
     const nativeBody = {
-        model: input.apiConfig.model,
+        model: plannerApiConfig.model,
         messages: [
             { role: 'system', content: buildPlannerInstruction(input, toolNames) },
             { role: 'user', content: '请为上面最新一轮剧情生成插图。' },
@@ -132,7 +157,8 @@ export async function generateStoryTheaterImage(input: GenerateStoryImageInput):
     };
 
     const runPlanner = async (body: Record<string, any>) => executeOpenAiChatPlan({
-        plan: resolveApiExecutionPlan('chat', input.apiConfig, true),
+        // 用户明确选的是“规划器快速模型”，这里固定走这一条，不借主聊天/剧情故障转移改线。
+        plan: resolveApiExecutionPlan('chat', plannerApiConfig, false),
         body,
         meta: { appName: '剧情剧场', purpose: '剧情自动配图规划' },
         directMaxRetries: 1,
