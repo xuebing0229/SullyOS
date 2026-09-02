@@ -214,6 +214,12 @@ export const normalizeStoryTheater = (entry: StoryTheaterEntry): StoryTheaterEnt
         characterIds: Array.isArray(entry.characterIds) ? entry.characterIds.filter(Boolean) : [],
         imageGeneration: entry.imageGeneration ? {
             enabled: entry.imageGeneration.enabled === true,
+            ...(String(entry.imageGeneration.plannerApiPresetId || '').trim()
+                ? { plannerApiPresetId: String(entry.imageGeneration.plannerApiPresetId).trim() }
+                : {}),
+            ...(String(entry.imageGeneration.plannerModel || '').trim()
+                ? { plannerModel: String(entry.imageGeneration.plannerModel).trim() }
+                : {}),
             stylePrompt: String(entry.imageGeneration.stylePrompt || ''),
             negativePrompt: String(entry.imageGeneration.negativePrompt || ''),
             width: Math.max(256, Math.min(2048, Number(entry.imageGeneration.width) || 1216)),
