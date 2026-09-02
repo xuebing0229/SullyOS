@@ -17,7 +17,7 @@ const gradlePath = path.join(root, 'android', 'app', 'build.gradle');
 await Promise.all([access(mainPath), access(manifestPath), access(gradlePath)]);
 await mkdir(pluginDir, { recursive: true });
 
-for (const name of ['SullyStoryBackgroundPlugin.java', 'SullyStoryBackgroundService.java']) {
+for (const name of ['SullyStoryBackgroundPlugin.java', 'SullyStoryBackgroundService.java', 'SullyStoryKeepAliveService.java']) {
   const source = await readFile(path.join(root, 'native', 'android', name), 'utf8');
   await writeFile(path.join(pluginDir, name), source.replaceAll('__APP_ID__', appId));
 }
@@ -54,6 +54,15 @@ if (!manifest.includes('SullyStoryBackgroundService')) {
   manifest = manifest.replace('</application>', [
     '        <service',
     '            android:name=".plugins.SullyStoryBackgroundService"',
+    '            android:exported="false"',
+    '            android:foregroundServiceType="dataSync" />',
+    '    </application>',
+  ].join('\n'));
+}
+if (!manifest.includes('SullyStoryKeepAliveService')) {
+  manifest = manifest.replace('</application>', [
+    '        <service',
+    '            android:name=".plugins.SullyStoryKeepAliveService"',
     '            android:exported="false"',
     '            android:foregroundServiceType="dataSync" />',
     '    </application>',
