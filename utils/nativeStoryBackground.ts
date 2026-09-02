@@ -78,6 +78,7 @@ export interface NativeStoryCompletionOptions {
   body: Record<string, any>;
   meta?: Record<string, any>;
   onPromptTokens?: (tokens: number) => void;
+  onStreamText?: (fullText: string) => void;
 }
 
 const readPending = (): PendingMap => {
@@ -150,10 +151,14 @@ const checkJob = async (jobId: string): Promise<NativeStoryJob | null> => {
   return result?.job || null;
 };
 
-const waitForTerminal = async (jobId: string): Promise<NativeStoryJob> => {
+const waitForTerminal = async (
+  jobId: string,
+  onStreamText?: (fullText: string) => void,
+): Promise<NativeStoryJob> => {
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let resumeHandle: { remove: () => Promise<void> } | null = null;
+  let lastPartial = '';
 
   return new Promise<NativeStoryJob>((resolve, reject) => {
     const finish = (fn: () => void) => {
@@ -172,6 +177,11 @@ const waitForTerminal = async (jobId: string): Promise<NativeStoryJob> => {
         if (!job) {
           finish(() => reject(new Error('剧情后台任务记录不存在')));
           return;
+        }
+        const partial = String(job.partialContent || '');
+        if (partial && partial !== lastPartial) {
+          lastPartial = partial;
+          onStreamText?.(partial);
         }
         if (job.status === 'succeeded' || job.status === 'failed' || job.status === 'cancelled') {
           finish(() => resolve(job));
@@ -282,7 +292,7 @@ export const executeStoryCompletionInNativeBackground = async (
   }
 
   if (job.status === 'queued' || job.status === 'running') {
-    job = await waitForTerminal(jobId);
+    job = await waitForTerminal(jobId, options.onStreamText);
   }
 
   let parsed: any | undefined;
