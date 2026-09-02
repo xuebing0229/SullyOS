@@ -4214,12 +4214,6 @@ const Chat: React.FC = () => {
                             suppressEntranceAnimation={suppressEntranceAnimation}
                             isPending={false}
                             pendingIndicator={osTheme.chatPendingIndicator !== false}
-                            textToneColors={{
-                                enabled: osTheme.chatTextToneColorsEnabled === true,
-                                narration: osTheme.chatNarrationColor,
-                                dialogue: osTheme.chatDialogueColor,
-                                action: osTheme.chatActionColor,
-                            }}
                             onMcdSendCart={handleMcdSendCart}
                             onMcdCandidate={handleMcdCandidate}
                             onResolveTransfer={handleResolveTransfer}
@@ -4341,12 +4335,6 @@ const Chat: React.FC = () => {
                                     bubbleVariant={osTheme.chatBubbleStyle}
                                     messageSpacing={osTheme.chatMessageSpacing}
                                     showTimestamp={osTheme.chatShowTimestamp}
-                                    textToneColors={{
-                                        enabled: osTheme.chatTextToneColorsEnabled === true,
-                                        narration: osTheme.chatNarrationColor,
-                                        dialogue: osTheme.chatDialogueColor,
-                                        action: osTheme.chatActionColor,
-                                    }}
                                     thinkingChainOptions={thinkingChainOptions}
                                 />
                             </div>
