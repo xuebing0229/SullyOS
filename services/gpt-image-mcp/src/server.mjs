@@ -1,4 +1,3 @@
-import { timingSafeEqual } from "node:crypto";
 import { access } from "node:fs/promises";
 import express from "express";
 import { z } from "zod";
@@ -18,15 +17,15 @@ import {
   resolvePublicImagePath,
   saveGeneratedImage
 } from "./storage.mjs";
+import {
+  createBearerTenantRegistry,
+  tenantChildPath,
+  tenantConfigPath
+} from "./tenant-auth.mjs";
 
 const SERVICE_NAME = "sullyos-gpt-image-mcp";
 const SERVICE_VERSION = "1.1.0";
 
-const runtimeStore = createRuntimeConfigStore({
-  filePath: staticConfig.runtimeConfigFile,
-  defaults: bootstrapRuntimeConfig,
-  allowInsecureUpstream: staticConfig.allowInsecureUpstream
-});
 
 function log(level, event, fields = {}) {
   console.log(JSON.stringify({
@@ -47,20 +46,75 @@ function safeErrorLogFields(error) {
   };
 }
 
-function secureEquals(actual, expected) {
-  const left = Buffer.from(actual);
-  const right = Buffer.from(expected);
-  return left.length === right.length && timingSafeEqual(left, right);
+const tenantRegistry = createBearerTenantRegistry({
+  primaryToken: staticConfig.mcpBearerToken
+});
+const tenantContexts = new Map();
+const jobBaseDir = process.env.IMAGE_JOBS_DIR || "/var/lib/sullyos-image-jobs/gpt";
+
+function publicBaseForTenant(tenant) {
+  return tenant.primary
+    ? staticConfig.publicImageBaseUrl
+    : staticConfig.publicImageBaseUrl + "/t/" + tenant.id;
 }
 
-function requireBearer(req, res, next) {
-  const match = (req.get("authorization") || "").match(/^Bearer\s+(.+)$/i);
-  const supplied = match?.[1]?.trim() || "";
-  if (!supplied || !secureEquals(supplied, staticConfig.mcpBearerToken)) {
+async function createTenantContext(tenant) {
+  const runtimeStore = createRuntimeConfigStore({
+    filePath: tenantConfigPath(staticConfig.runtimeConfigFile, tenant),
+    defaults: tenant.primary
+      ? bootstrapRuntimeConfig
+      : { ...bootstrapRuntimeConfig, apiKey: "" },
+    allowInsecureUpstream: staticConfig.allowInsecureUpstream
+  });
+  const imageDir = tenantChildPath(staticConfig.imageDir, tenant);
+  await initializeImageStorage(imageDir);
+  await runtimeStore.load();
+
+  const context = {
+    tenant,
+    runtimeStore,
+    imageDir,
+    publicBaseUrl: publicBaseForTenant(tenant),
+    imageJobs: null
+  };
+  context.imageJobs = await createBackgroundJobService({
+    ...backgroundJobOptionsFromEnv({
+      defaultDir: tenantChildPath(jobBaseDir, tenant),
+      defaultTool: GPT_IMAGE_TOOL_NAME,
+      executeTool: (toolName, args, jobContext) =>
+        executeMcpTool(context, toolName, args, jobContext),
+      logger: console
+    }),
+    dataDir: tenantChildPath(jobBaseDir, tenant),
+    authToken: tenant.token
+  });
+  return context;
+}
+
+function getTenantContext(tenant) {
+  if (!tenant) return Promise.reject(new Error("Unknown image tenant"));
+  const existing = tenantContexts.get(tenant.id);
+  if (existing) return existing;
+  const created = createTenantContext(tenant).catch(error => {
+    tenantContexts.delete(tenant.id);
+    throw error;
+  });
+  tenantContexts.set(tenant.id, created);
+  return created;
+}
+
+async function requireBearer(req, res, next) {
+  const tenant = tenantRegistry.resolveRequest(req);
+  if (!tenant) {
     res.setHeader("WWW-Authenticate", 'Bearer realm="sullyos-gpt-image-mcp"');
     return res.status(401).json({ error: "unauthorized" });
   }
-  next();
+  try {
+    req.imageTenant = await getTenantContext(tenant);
+    next();
+  } catch (error) {
+    next(error);
+  }
 }
 
 function methodNotAllowed(res) {
@@ -78,16 +132,16 @@ function serializeGeneration(task) {
   return next;
 }
 
-async function materializeGeneratedImage(generated) {
+async function materializeGeneratedImage(generated, tenantContext) {
   if (generated.imageUrl) {
     return { imageUrl: generated.imageUrl, saved: null };
   }
   const saved = await saveGeneratedImage({
-    imageDir: staticConfig.imageDir,
+    imageDir: tenantContext.imageDir,
     buffer: generated.imageBuffer,
     format: generated.format,
     ttlMs: staticConfig.imageTtlMs,
-    publicBaseUrl: staticConfig.publicImageBaseUrl
+    publicBaseUrl: tenantContext.publicBaseUrl
   });
   return { imageUrl: saved.url, saved };
 }
@@ -101,9 +155,9 @@ const gptImageInputShape = {
   output_format: z.enum(["png", "jpeg", "webp"]).optional().default("png")
 };
 const gptImageArgumentsSchema = z.object(gptImageInputShape).strict();
-async function executeGptImageGeneration(rawArgs, { runtimeOverride, forcePersist = false } = {}) {
+async function executeGptImageGeneration(rawArgs, tenantContext, { runtimeOverride, forcePersist = false } = {}) {
   const args = gptImageArgumentsSchema.parse(rawArgs);
-  const runtime = runtimeOverride ? structuredClone(runtimeOverride) : await runtimeStore.load();
+  const runtime = runtimeOverride ? structuredClone(runtimeOverride) : await tenantContext.runtimeStore.load();
   const effectiveRuntime = forcePersist ? { ...runtime, imageDelivery: "proxy" } : runtime;
   const generated = await serializeGeneration(() => generateUpstreamImage({
     config: effectiveRuntime,
@@ -112,8 +166,9 @@ async function executeGptImageGeneration(rawArgs, { runtimeOverride, forcePersis
     maxImageBytes: staticConfig.maxImageBytes,
     maxResponseBytes: staticConfig.maxUpstreamResponseBytes
   }));
-  const { imageUrl, saved } = await materializeGeneratedImage(generated);
+  const { imageUrl, saved } = await materializeGeneratedImage(generated, tenantContext);
   log("info", "image_generated", {
+    tenantId: tenantContext.tenant.id,
     correlationId: generated.correlationId, mode: runtime.mode,
     upstreamHost: new URL(runtime.baseUrl).host, model: runtime.model,
     size: args.size, quality: args.quality,
@@ -125,22 +180,22 @@ async function executeGptImageGeneration(rawArgs, { runtimeOverride, forcePersis
     content: [{ type: "text", text: ["Image generated successfully.", `Image URL: ${imageUrl}`, `Model: ${runtime.model}`, `Size: ${args.size}`, ...(saved ? [`Expires at: ${saved.expiresAt}`] : []), "Show the image to the user and continue speaking in character."].join("\n") }]
   };
 }
-async function executeMcpTool(toolName, args, context = {}) {
+async function executeMcpTool(tenantContext, toolName, args, context = {}) {
   if (toolName !== GPT_IMAGE_TOOL_NAME) {
     return { success: false, error: "Unknown tool" };
   }
-  return executeGptImageGeneration(args, {
+  return executeGptImageGeneration(args, tenantContext, {
     forcePersist: Boolean(context.jobId)
   });
 }
-function createMcpServer() {
+function createMcpServer(tenantContext) {
   const server = new McpServer({ name: SERVICE_NAME, version: SERVICE_VERSION });
   server.registerTool(GPT_IMAGE_TOOL_NAME, {
     title: "GPT Image Generate",
     description: "Generate one general-purpose image with the configured GPT/OpenAI-compatible image API.",
     inputSchema: gptImageInputShape
   }, async args => {
-    try { return await executeMcpTool(GPT_IMAGE_TOOL_NAME, args); }
+    try { return await executeMcpTool(tenantContext, GPT_IMAGE_TOOL_NAME, args); }
     catch (error) {
       log("error", "generation_failed", safeErrorLogFields(error));
       return { isError: true, content: [{ type: "text", text: `Image generation failed: ${error?.message || String(error)}` }] };
@@ -148,29 +203,28 @@ function createMcpServer() {
   });
   return server;
 }
-await initializeImageStorage(staticConfig.imageDir);
-await runtimeStore.load();
-const imageJobs = await createBackgroundJobService({
-  ...backgroundJobOptionsFromEnv({
-    defaultDir: process.env.IMAGE_JOBS_DIR || "/var/lib/sullyos-image-jobs/gpt",
-    defaultTool: GPT_IMAGE_TOOL_NAME,
-    executeTool: executeMcpTool,
-    logger: console
-  }),
-  authToken: staticConfig.mcpBearerToken
-});
-const initiallyRemoved = await cleanupExpiredImages(
-  staticConfig.imageDir,
-  staticConfig.imageTtlMs
-);
+const primaryTenant = tenantRegistry.resolve(staticConfig.mcpBearerToken);
+const primaryContext = await getTenantContext(primaryTenant);
+let initiallyRemoved = 0;
+for (const tenantId of tenantRegistry.listTenantIds()) {
+  const tenant = tenantRegistry.resolveId(tenantId);
+  initiallyRemoved += await cleanupExpiredImages(
+    tenantChildPath(staticConfig.imageDir, tenant),
+    staticConfig.imageTtlMs
+  );
+}
 if (initiallyRemoved) log("info", "startup_cleanup", { removed: initiallyRemoved });
 
 const cleanupTimer = setInterval(async () => {
   try {
-    const removedImages = await cleanupExpiredImages(
-      staticConfig.imageDir,
-      staticConfig.imageTtlMs
-    );
+    let removedImages = 0;
+    for (const tenantId of tenantRegistry.listTenantIds()) {
+      const tenant = tenantRegistry.resolveId(tenantId);
+      removedImages += await cleanupExpiredImages(
+        tenantChildPath(staticConfig.imageDir, tenant),
+        staticConfig.imageTtlMs
+      );
+    }
     if (removedImages) log("info", "scheduled_image_cleanup", { removed: removedImages });
   } catch (error) {
     log("error", "cleanup_failed", safeErrorLogFields(error));
@@ -194,8 +248,13 @@ app.use((req, res, next) => {
   next();
 });
 app.use(async (req, res, next) => {
+  const pathname = new URL(req.url || "/", "http://127.0.0.1").pathname;
+  if (pathname !== "/jobs" && !pathname.startsWith("/jobs/")) return next();
+  const tenant = tenantRegistry.resolveRequest(req);
+  if (!tenant) return res.status(401).json({ error: "unauthorized" });
   try {
-    if (await imageJobs.handle(req, res)) return;
+    const context = await getTenantContext(tenant);
+    if (await context.imageJobs.handle(req, res)) return;
     next();
   } catch (error) {
     next(error);
@@ -211,15 +270,17 @@ app.get("/healthz", (req, res) => {
 app.get("/config", requireBearer, async (req, res, next) => {
   try {
     res.setHeader("Cache-Control", "no-store");
-    res.json(runtimeStore.toPublic(await runtimeStore.load()));
+    const store = req.imageTenant.runtimeStore;
+    res.json(store.toPublic(await store.load()));
   } catch (error) { next(error); }
 });
 
 app.put("/config", requireBearer, async (req, res, next) => {
   try {
-    const updated = await runtimeStore.update(req.body);
+    const store = req.imageTenant.runtimeStore;
+    const updated = await store.update(req.body);
     res.setHeader("Cache-Control", "no-store");
-    res.json(runtimeStore.toPublic(updated));
+    res.json(store.toPublic(updated));
   } catch (error) {
     if (error?.code === "REVISION_CONFLICT") {
       return res.status(409).json({
@@ -234,7 +295,7 @@ app.put("/config", requireBearer, async (req, res, next) => {
 
 app.post("/config/test", requireBearer, async (req, res, next) => {
   try {
-    const preview = await runtimeStore.preview(req.body || {});
+    const preview = await req.imageTenant.runtimeStore.preview(req.body || {});
     if ((req.body?.mode || "validate") === "validate") {
       return res.json({
         ok: true,
@@ -263,7 +324,7 @@ app.post("/config/test", requireBearer, async (req, res, next) => {
         maxResponseBytes: staticConfig.maxUpstreamResponseBytes
       })
     );
-    const { imageUrl, saved } = await materializeGeneratedImage(generated);
+    const { imageUrl, saved } = await materializeGeneratedImage(generated, req.imageTenant);
     res.json({
       ok: true,
       message: "A real upstream image was generated successfully",
@@ -273,18 +334,30 @@ app.post("/config/test", requireBearer, async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
-app.get("/images/:fileName", async (req, res) => {
-  const filePath = resolvePublicImagePath(staticConfig.imageDir, req.params.fileName);
+async function sendTenantImage(res, imageDir, fileName) {
+  const filePath = resolvePublicImagePath(imageDir, fileName);
   if (!filePath) return res.sendStatus(404);
   try { await access(filePath); } catch { return res.sendStatus(404); }
   res.setHeader("Cache-Control", "public, max-age=3600, immutable");
   res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
   return res.sendFile(filePath);
+}
+app.get("/images/:fileName", async (req, res) =>
+  sendTenantImage(res, staticConfig.imageDir, req.params.fileName)
+);
+app.get("/t/:tenantId/images/:fileName", async (req, res) => {
+  const tenant = tenantRegistry.resolveId(req.params.tenantId);
+  if (!tenant || tenant.primary) return res.sendStatus(404);
+  return sendTenantImage(
+    res,
+    tenantChildPath(staticConfig.imageDir, tenant),
+    req.params.fileName
+  );
 });
 
 app.post("/mcp", requireBearer, async (req, res) => {
   res.setHeader("Cache-Control", "no-store");
-  const mcpServer = createMcpServer();
+  const mcpServer = createMcpServer(req.imageTenant);
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
   try {
     await mcpServer.connect(transport);
@@ -317,7 +390,7 @@ app.use((error, req, res, next) => {
 });
 
 const httpServer = app.listen(staticConfig.port, staticConfig.host, async () => {
-  const runtime = await runtimeStore.load();
+  const runtime = await primaryContext.runtimeStore.load();
   log("info", "server_started", {
     host: staticConfig.host,
     port: staticConfig.port,
@@ -325,7 +398,8 @@ const httpServer = app.listen(staticConfig.port, staticConfig.host, async () => 
     upstreamHost: new URL(runtime.baseUrl).host,
     mode: runtime.mode,
     model: runtime.model,
-    imageDir: staticConfig.imageDir
+    imageDir: staticConfig.imageDir,
+    tenantCount: tenantRegistry.size
   });
 });
 
@@ -337,7 +411,10 @@ httpServer.on("error", (error) => {
 async function shutdown(signal) {
   log("info", "shutdown_started", { signal });
   clearInterval(cleanupTimer);
-  await imageJobs.stop();
+  const contexts = await Promise.allSettled([...tenantContexts.values()]);
+  await Promise.allSettled(contexts
+    .filter(item => item.status === "fulfilled")
+    .map(item => item.value.imageJobs.stop()));
   httpServer.close((error) => process.exit(error ? 1 : 0));
 }
 process.on("SIGINT", () => void shutdown("SIGINT"));
