@@ -58,7 +58,7 @@ import { incrementDigestRound, runCognitiveDigestion } from '../../../utils/memo
 import StoryQuickPresetPanel from './StoryQuickPresetPanel';
 import { StoryAppearanceButton, useStoryTheaterAppearance } from './StoryTheaterTheme';
 import { shareOrDownloadFile } from '../../../utils/shareExport';
-import { generateStoryTheaterImage } from '../../../utils/storyTheaterImage';
+import { generateStoryTheaterImage, resolveStoryImagePlannerApiConfig } from '../../../utils/storyTheaterImage';
 import StoryImageSettingsButton from './StoryImageSettings';
 import AppMemoryCandidatePanel from '../../AppMemoryCandidatePanel';
 import { generateAppMemoryCandidates } from '../../../utils/appMemoryBridge';
@@ -365,7 +365,7 @@ const StoryOutput: React.FC<{ content: string; onChoose?: (text: string) => void
 };
 
 const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, onEdit, onOpenVectorMemory, onEntryChange }) => {
-    const { characters, userProfile, groups, apiConfig, realtimeConfig, memoryPalaceConfig, remoteVectorConfig, updateCharacter, addToast, registerBackHandler } = useOS();
+    const { characters, userProfile, groups, apiConfig, apiPresets, realtimeConfig, memoryPalaceConfig, remoteVectorConfig, updateCharacter, addToast, registerBackHandler } = useOS();
     const appearance = useStoryTheaterAppearance();
     const threadId = storyTheaterThreadId(entry.id);
     const actors = useMemo(() => characters.filter(char => entry.characterIds.includes(char.id)), [characters, entry.characterIds]);
@@ -443,7 +443,15 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             const rows = (await DB.getMessagesByCharId(threadId, true))
                 .filter(item => item.metadata?.source === 'story_theater' && item.id <= message.id)
                 .sort((a, b) => a.id - b.id);
-            const frame = await generateStoryTheaterImage({ apiConfig, entry, actors, userProfile, userName: promptIdentityName, messages: rows });
+            const frame = await generateStoryTheaterImage({
+                apiConfig,
+                plannerApiConfig: resolveStoryImagePlannerApiConfig(entry, apiConfig, apiPresets),
+                entry,
+                actors,
+                userProfile,
+                userName: promptIdentityName,
+                messages: rows,
+            });
             await DB.updateMessageMetadata(message.id, previous => ({ ...previous, theaterImage: frame }));
             await loadMessages();
             addToast('本轮配图已重新生成', 'success');
@@ -454,7 +462,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             await releaseNativeStoryKeepAlive(imageKeepAliveLease);
             setRegeneratingImageId(null);
         }
-    }, [actors, addToast, apiConfig, entry, loadMessages, promptIdentityName, regeneratingImageId, threadId, userProfile]);
+    }, [actors, addToast, apiConfig, apiPresets, entry, loadMessages, promptIdentityName, regeneratingImageId, threadId, userProfile]);
     useEffect(() => {
         setContextTokens(0);
         setContextTokensExact(false);
@@ -1227,7 +1235,15 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                     const imageRows = (await DB.getMessagesByCharId(threadId, true))
                         .filter(message => message.metadata?.source === 'story_theater')
                         .sort((a, b) => a.id - b.id);
-                    const frame = await generateStoryTheaterImage({ apiConfig, entry, actors, userProfile, userName: promptIdentityName, messages: imageRows });
+                    const frame = await generateStoryTheaterImage({
+                        apiConfig,
+                        plannerApiConfig: resolveStoryImagePlannerApiConfig(entry, apiConfig, apiPresets),
+                        entry,
+                        actors,
+                        userProfile,
+                        userName: promptIdentityName,
+                        messages: imageRows,
+                    });
                     await DB.updateMessageMetadata(assistantMessageId, previous => ({ ...previous, theaterImage: frame }));
                     await loadMessages();
                 } catch (imageError: any) {
@@ -1306,7 +1322,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             setSending(false);
             setRerollingId(null);
         }
-    }, [actors, addToast, affinityDrafts, affinityEnabled, apiConfig, appearance.textToneEnabled, applyActorMemoryPipeline, archiveIfNeeded, buildActorContexts, buildMaskMemoryContext, callCompletion, effectivePreset, entry, independentRecall, input, loadMessages, mask, promptIdentityName, saveCentralAndMirrors, selectedBooks, threadId, userProfile]);
+    }, [actors, addToast, affinityDrafts, affinityEnabled, apiConfig, apiPresets, appearance.textToneEnabled, applyActorMemoryPipeline, archiveIfNeeded, buildActorContexts, buildMaskMemoryContext, callCompletion, effectivePreset, entry, independentRecall, input, loadMessages, mask, promptIdentityName, saveCentralAndMirrors, selectedBooks, threadId, userProfile]);
 
     // 新版 Android 后台只保活原来的 WebView fetch，不再创建可恢复的原生 API 任务。
 
