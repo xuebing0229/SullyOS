@@ -1275,10 +1275,17 @@ export const parseStoryDisplayBlocks = (content: string): StoryDisplayBlock[] =>
     }
     if (cursor < source.length) {
         const tail = source.slice(cursor);
-        const unclosedTheater = /<mini_theater\b[^>]*>([\s\S]*)$/i.exec(tail);
-        if (unclosedTheater) {
-            if (unclosedTheater.index > 0) push('story', tail.slice(0, unclosedTheater.index));
-            pushTheater(unclosedTheater[1], DISPLAY_BLOCK_META.mini_theater.title);
+        // 流式中断时最后一个顶层 XML 很可能来不及闭合。
+        // 以前只容忍 mini_theater，导致 <backstage> / <worldline> / <affinity_panel>
+        // 一旦截在半路就整段掉回“正文”，看起来像格式全丢。这里按同一套顶层协议
+        // 容忍最后一个未闭合区块：已有内容仍按正确栏目展示，原始消息本身完全不改。
+        const unclosedTopLevel = /<(scene_header|story_text|backstage|mind_weather|worldline|world_line|shot_debts|mini_theater|reply_choices|affinity_panel)\b[^>]*>([\s\S]*)$/i.exec(tail);
+        if (unclosedTopLevel) {
+            if (unclosedTopLevel.index > 0) push('story', tail.slice(0, unclosedTopLevel.index));
+            const tag = unclosedTopLevel[1].toLowerCase();
+            const meta = DISPLAY_BLOCK_META[tag] || { kind: 'other' as const };
+            if (meta.kind === 'theater') pushTheater(unclosedTopLevel[2], meta.title);
+            else push(meta.kind, unclosedTopLevel[2], meta.title);
         } else {
             push('story', tail);
         }
