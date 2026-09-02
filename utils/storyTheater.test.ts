@@ -488,6 +488,31 @@ describe('剧情沙盒辅助逻辑', () => {
         expect(normalizeStoryTheater({ ...legacy, archiveAfter: 4, archiveKeepRecent: 99 }).archiveKeepRecent).toBe(3);
     });
 
+    it('归一化剧情时保留独立配图规划器 API 与模型选择', () => {
+        const entry = createStoryTheaterDraft(1);
+        const normalized = normalizeStoryTheater({
+            ...entry,
+            imageGeneration: {
+                enabled: true,
+                plannerApiPresetId: 'planner-preset',
+                plannerModel: 'gemini-2.5-flash',
+                stylePrompt: 'cinematic',
+                negativePrompt: '',
+                width: 1216,
+                height: 832,
+                userAnchor: '',
+                characterAnchors: {},
+            },
+        });
+
+        expect(normalized.imageGeneration).toMatchObject({
+            enabled: true,
+            plannerApiPresetId: 'planner-preset',
+            plannerModel: 'gemini-2.5-flash',
+            stylePrompt: 'cinematic',
+        });
+    });
+
     it('回复落地后只归档最旧部分，并且不会拆散一轮对话', () => {
         const rows = Array.from({ length: 40 }, (_, index) => ({
             id: index + 1,
