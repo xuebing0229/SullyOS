@@ -1143,6 +1143,20 @@ const DISPLAY_TAG_LABELS: Record<string, string> = {
     trust: '信任', security: '安全感', possessive_pull: '占有拉力', emotional_pressure: '情绪压强', repair_will: '修复意愿', state_note: '关系合力',
 };
 
+/**
+ * red / fracture / surge 是 <voice> 里的“视觉强调词”，不是独立栏目。
+ * 原预设会把它们嵌在心声小作文内部；若按普通标签转成“危险信号 / 裂纹 / 情绪峰值”，
+ * 一篇心声就会被前端硬拆成好几行。展示层应只保留其正文，继续归在同一条“心声”里。
+ */
+const INLINE_STORY_DISPLAY_TAGS = new Set(['red', 'fracture', 'surge']);
+
+/** 前端只允许这些协议字段触发“新栏目”。普通正文里出现“短句：内容”不能误拆。 */
+export const STORY_DISPLAY_FIELD_LABELS = new Set(
+    Object.entries(DISPLAY_TAG_LABELS)
+        .filter(([tag]) => !INLINE_STORY_DISPLAY_TAGS.has(tag))
+        .map(([, label]) => label),
+);
+
 const HIDDEN_STORY_DISPLAY_TAGS = new Set(['u_score', 'u_delta', 'u_note']);
 
 const decodeStoryCodePoint = (match: string, code: string, radix: number): string => {
@@ -1227,7 +1241,7 @@ const formatTaggedStoryFragment = (fragment: string): string => {
             const inner = body.trim();
             if (!inner) return '';
             if (HIDDEN_STORY_DISPLAY_TAGS.has(tag)) return '';
-            if (tag === 'story_text' || tag === 'text') return inner;
+            if (tag === 'story_text' || tag === 'text' || INLINE_STORY_DISPLAY_TAGS.has(tag)) return inner;
             return label ? `\n${label}：${inner}\n` : `\n${inner}\n`;
         });
     }
