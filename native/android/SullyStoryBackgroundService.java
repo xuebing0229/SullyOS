@@ -28,6 +28,20 @@ import java.util.Comparator;
 import java.util.Locale;
 import org.json.JSONArray;
 import org.json.JSONObject;
+import java.io.IOException;
+import java.io.InterruptedIOException;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import okhttp3.Call;
+import okhttp3.MediaType;
+import okhttp3.OkHttpClient;
+import okhttp3.Request;
+import okhttp3.RequestBody;
+import okhttp3.Response;
+import okhttp3.ResponseBody;
+import okio.BufferedSource;
 
 public class SullyStoryBackgroundService extends Service {
     public static final String ACTION_RUN = "SULLY_STORY_BACKGROUND_RUN";
@@ -393,31 +407,22 @@ public class SullyStoryBackgroundService extends Service {
             || lower.contains("审核");
     }
 
-    private static int readTimeoutUntil(long deadlineMs, String reason) throws SocketTimeoutException {
-        long remaining = deadlineMs - System.currentTimeMillis();
-        if (remaining <= 0L) throw new SocketTimeoutException(reason);
-        return (int) Math.max(1L, Math.min((long) Integer.MAX_VALUE, remaining));
-    }
-
-    private static int nextReadTimeout(long hardDeadlineMs, long firstVisibleDeadlineMs, boolean committed) throws SocketTimeoutException {
-        if (!committed && firstVisibleDeadlineMs > 0L) {
-            return readTimeoutUntil(Math.min(hardDeadlineMs, firstVisibleDeadlineMs), "story-first-visible");
-        }
-        return readTimeoutUntil(hardDeadlineMs, "story-hard-timeout");
-    }
-
     private RouteResult executeRoute(String jobId, JSONObject route, JSONObject baseBody, long timeoutMs) throws RouteFailure {
-        HttpURLConnection connection = null;
         StringBuilder streamedContent = new StringBuilder();
         long attemptStartedAt = System.currentTimeMillis();
         long firstByteTimeoutMs = Math.max(0L, Math.min(300_000L, route.optLong("firstByteTimeoutMs", 0L)));
         long firstVisibleDeadlineMs = firstByteTimeoutMs > 0L ? attemptStartedAt + firstByteTimeoutMs : 0L;
-        long hardDeadlineMs = attemptStartedAt + timeoutMs;
+        AtomicBoolean visibleContent = new AtomicBoolean(false);
+        AtomicBoolean firstVisibleTimedOut = new AtomicBoolean(false);
+        ScheduledExecutorService firstVisibleTimer = null;
+        Call call = null;
+
         try {
             String baseUrl = route.optString("baseUrl", "").replaceAll("/+$", "");
             if (!(baseUrl.startsWith("https://") || baseUrl.startsWith("http://"))) {
                 throw new RouteFailure(0, "API 地址无效", false, "");
             }
+
             JSONObject body = new JSONObject(baseBody.toString());
             body.put("model", route.optString("model", body.optString("model", "")));
             if (body.has("temperature") && route.has("temperature") && !route.isNull("temperature")) {
@@ -434,203 +439,188 @@ public class SullyStoryBackgroundService extends Service {
                 body.remove("stream_options");
             }
 
-            URL url = new URL(baseUrl + "/chat/completions");
-            connection = (HttpURLConnection) url.openConnection();
-            connection.setRequestMethod("POST");
-            connection.setDoOutput(true);
-            connection.setUseCaches(false);
-            connection.setInstanceFollowRedirects(true);
-            connection.setConnectTimeout((int) Math.min(20_000L, timeoutMs));
-            // 这里不能把“首字等待”只当成 socket 静默超时：
-            // SSE 可能先持续吐 reasoning / heartbeat，但用户要求的是“第一段可见正文”。
-            // 因此 read timeout 每次都按绝对 deadline 的剩余时间重算，直到正文真正出现。
-            connection.setReadTimeout(nextReadTimeout(hardDeadlineMs, firstVisibleDeadlineMs, false));
-            connection.setRequestProperty("Content-Type", "application/json");
-            connection.setRequestProperty("Accept", stream ? "text/event-stream, application/json" : "application/json, text/event-stream");
-            connection.setRequestProperty("Authorization", "Bearer " + route.optString("apiKey", "sk-none"));
-            // 不复用旧的 keep-alive socket：部分 Android / 中转组合会把长 SSE 复用到半死连接，
-            // 表现就是生成一半后 Software caused connection abort。
-            connection.setRequestProperty("Connection", "close");
-            connection.setRequestProperty("Cache-Control", "no-cache");
-            connection.setRequestProperty("Accept-Encoding", "identity");
-            connection.setRequestProperty("User-Agent", "SullyOS-StoryBackground/1.0");
-            byte[] requestBytes = body.toString().getBytes(StandardCharsets.UTF_8);
-            connection.setFixedLengthStreamingMode(requestBytes.length);
-            try (java.io.OutputStream out = connection.getOutputStream()) {
-                out.write(requestBytes);
-                out.flush();
+            // HttpURLConnection 在部分 Android 机型 / 中转上会把长 SSE 读到一半后直接
+            // "Software caused connection abort"。这里改用 OkHttp 自己的连接池、HTTP/2
+            // 与流式 source；已出正文后绝不自动重发，避免重复扣费和两条回复拼接。
+            OkHttpClient client = new OkHttpClient.Builder()
+                .connectTimeout(Math.min(20_000L, timeoutMs), TimeUnit.MILLISECONDS)
+                .writeTimeout(Math.min(20_000L, timeoutMs), TimeUnit.MILLISECONDS)
+                .readTimeout(0L, TimeUnit.MILLISECONDS)
+                .callTimeout(timeoutMs, TimeUnit.MILLISECONDS)
+                .retryOnConnectionFailure(true)
+                .build();
+
+            Request request = new Request.Builder()
+                .url(baseUrl + "/chat/completions")
+                .header("Authorization", "Bearer " + route.optString("apiKey", "sk-none"))
+                .header("Accept", stream ? "text/event-stream, application/json" : "application/json, text/event-stream")
+                .header("Cache-Control", "no-cache")
+                .header("User-Agent", "SullyOS-StoryBackground/2.0")
+                .post(RequestBody.create(body.toString(), MediaType.get("application/json; charset=utf-8")))
+                .build();
+
+            call = client.newCall(request);
+            final Call activeCall = call;
+            if (firstByteTimeoutMs > 0L) {
+                long delayMs = Math.max(1L, firstVisibleDeadlineMs - System.currentTimeMillis());
+                firstVisibleTimer = Executors.newSingleThreadScheduledExecutor();
+                firstVisibleTimer.schedule(() -> {
+                    if (!visibleContent.get()) {
+                        firstVisibleTimedOut.set(true);
+                        activeCall.cancel();
+                    }
+                }, delayMs, TimeUnit.MILLISECONDS);
             }
 
-            // 写请求正文也可能花掉首字等待时间，所以真正等响应前再按剩余 deadline 校正一次。
-            connection.setReadTimeout(nextReadTimeout(hardDeadlineMs, firstVisibleDeadlineMs, false));
-            int status = connection.getResponseCode();
-            InputStream input = status >= 400 ? connection.getErrorStream() : connection.getInputStream();
-            if (input == null) throw new RouteFailure(status, "API 返回空响应 (HTTP " + status + ")", false, "");
-            String contentType = connection.getContentType();
-            boolean sse = stream || (contentType != null && contentType.toLowerCase(Locale.ROOT).contains("text/event-stream"));
-
-            String raw;
-            JSONObject response;
-            if (sse) {
-                SseResult parsed = readSse(input, streamedContent, connection, firstVisibleDeadlineMs, hardDeadlineMs);
-                raw = parsed.raw;
-                if (status >= 400) {
-                    throw new RouteFailure(status, errorMessage(raw, status), !streamedContent.toString().isEmpty(), streamedContent.toString());
+            try (Response http = call.execute()) {
+                int status = http.code();
+                ResponseBody responseBody = http.body();
+                if (responseBody == null) {
+                    throw new RouteFailure(status, "API 返回空响应 (HTTP " + status + ")", false, "");
                 }
-                response = parsed.response;
-            } else {
-                raw = readAll(input, connection, firstVisibleDeadlineMs, hardDeadlineMs);
-                if (status >= 400) throw new RouteFailure(status, errorMessage(raw, status), false, "");
-                try {
-                    response = new JSONObject(raw);
-                } catch (Exception parseError) {
-                    if (raw.trim().startsWith("data:")) {
-                        SseResult parsed = parseSseText(raw);
-                        response = parsed.response;
-                        streamedContent.append(parsed.content);
-                    } else {
-                        throw new RouteFailure(status, "API 返回了无效 JSON (HTTP " + status + ")", false, "");
+
+                String contentType = http.header("Content-Type", "");
+                boolean sse = status < 400 && (stream || contentType.toLowerCase(Locale.ROOT).contains("text/event-stream"));
+                String raw;
+                JSONObject response;
+
+                if (sse) {
+                    SseResult parsed = readSse(responseBody.source(), streamedContent, visibleContent);
+                    raw = parsed.raw;
+                    response = parsed.response;
+                } else {
+                    raw = responseBody.string();
+                    if (status >= 400) {
+                        throw new RouteFailure(status, errorMessage(raw, status), false, "");
+                    }
+                    try {
+                        response = new JSONObject(raw);
+                    } catch (Exception parseError) {
+                        if (raw.trim().startsWith("data:")) {
+                            SseResult parsed = parseSseText(raw);
+                            response = parsed.response;
+                            streamedContent.append(parsed.content);
+                            if (!parsed.content.isEmpty()) visibleContent.set(true);
+                        } else {
+                            throw new RouteFailure(status, "API 返回了无效 JSON (HTTP " + status + ")", false, "");
+                        }
                     }
                 }
-            }
 
-            if (response == null) throw new RouteFailure(status, "API 没有返回可用结果", false, "");
-            JSONObject usage = response.optJSONObject("usage");
-            return new RouteResult(
-                status,
-                response,
-                usage == null ? 0 : usage.optInt("prompt_tokens", 0),
-                usage == null ? 0 : usage.optInt("completion_tokens", 0),
-                usage == null ? 0 : usage.optInt("total_tokens", 0)
-            );
+                if (response == null) throw new RouteFailure(status, "API 没有返回可用结果", false, "");
+                JSONObject usage = response.optJSONObject("usage");
+                return new RouteResult(
+                    status,
+                    response,
+                    usage == null ? 0 : usage.optInt("prompt_tokens", 0),
+                    usage == null ? 0 : usage.optInt("completion_tokens", 0),
+                    usage == null ? 0 : usage.optInt("total_tokens", 0)
+                );
+            }
         } catch (RouteFailure failure) {
             throw failure;
-        } catch (SocketTimeoutException timeout) {
+        } catch (IOException networkError) {
             boolean committed = streamedContent.length() > 0;
-            boolean firstVisibleTimedOut = !committed && firstByteTimeoutMs > 0L
-                && ("story-first-visible".equals(timeout.getMessage()) || System.currentTimeMillis() >= firstVisibleDeadlineMs - 50L);
-            String message = firstVisibleTimedOut
-                ? "首字等待超时（" + Math.max(1L, Math.round(firstByteTimeoutMs / 1000.0)) + " 秒），已停止当前线路"
-                : "剧情后台请求超时（" + Math.max(1L, Math.round(timeoutMs / 1000.0)) + " 秒）";
-            throw new RouteFailure(0, message, committed, streamedContent.toString());
-        } catch (SocketException socketError) {
-            boolean committed = streamedContent.length() > 0;
-            String rawMessage = socketError.getMessage() == null ? "" : socketError.getMessage();
-            String message = committed
-                ? "剧情后台流式连接在正文生成中被系统或网关断开"
-                : "剧情后台连接在首字前被系统或网关断开";
+            String rawMessage = networkError.getMessage() == null ? "" : networkError.getMessage();
+
+            if (!committed && firstVisibleTimedOut.get()) {
+                throw new RouteFailure(
+                    0,
+                    "首字等待超时（" + Math.max(1L, Math.round(firstByteTimeoutMs / 1000.0)) + " 秒），已停止当前线路",
+                    false,
+                    ""
+                );
+            }
+
+            boolean hardTimeout = networkError instanceof InterruptedIOException
+                || rawMessage.toLowerCase(Locale.ROOT).contains("timeout");
+            String message;
+            if (hardTimeout) {
+                message = "剧情后台请求超时（" + Math.max(1L, Math.round(timeoutMs / 1000.0)) + " 秒）";
+            } else if (committed) {
+                message = "剧情后台 OkHttp 流式连接在正文生成中被上游或网络中断";
+            } else {
+                message = "剧情后台 OkHttp 连接在首字前失败";
+            }
             if (!rawMessage.isEmpty()) message += "（" + rawMessage + "）";
             throw new RouteFailure(0, message, committed, streamedContent.toString());
         } catch (Exception error) {
-            throw new RouteFailure(0, error.getMessage() == null ? "剧情后台网络请求失败" : error.getMessage(), !streamedContent.toString().isEmpty(), streamedContent.toString());
+            throw new RouteFailure(
+                0,
+                error.getMessage() == null ? "剧情后台网络请求失败" : error.getMessage(),
+                streamedContent.length() > 0,
+                streamedContent.toString()
+            );
         } finally {
-            if (connection != null) connection.disconnect();
+            if (firstVisibleTimer != null) firstVisibleTimer.shutdownNow();
+            // 只在异常路径取消；正常 try-with-resources 会自己收尾。
+            if (call != null && !call.isExecuted()) call.cancel();
         }
-    }
-
-    private static String readAll(
-        InputStream input,
-        HttpURLConnection connection,
-        long firstBodyDeadlineMs,
-        long hardDeadlineMs
-    ) throws Exception {
-        StringBuilder out = new StringBuilder();
-        boolean gotBody = false;
-        try (BufferedReader reader = new BufferedReader(new InputStreamReader(input, StandardCharsets.UTF_8))) {
-            while (true) {
-                connection.setReadTimeout(nextReadTimeout(hardDeadlineMs, firstBodyDeadlineMs, gotBody));
-                String line = reader.readLine();
-                if (line == null) break;
-                gotBody = true;
-                out.append(line).append('\n');
-            }
-        }
-        return out.toString().trim();
     }
 
     private static SseResult readSse(
-        InputStream input,
+        BufferedSource source,
         StringBuilder content,
-        HttpURLConnection connection,
-        long firstVisibleDeadlineMs,
-        long hardDeadlineMs
+        AtomicBoolean visibleContent
     ) throws Exception {
         StringBuilder raw = new StringBuilder();
-        JSONObject first = null;
         JSONObject usage = null;
         String model = "";
         String id = "";
         String role = "assistant";
         String finishReason = null;
-        boolean terminal = false;
 
-        // 这里故意不让 BufferedReader 自己 close 底层 socket：
-        // HttpURLConnection 由 executeRoute 的 finally 统一 disconnect。
-        // 某些 Android / 中转组合在 finish_reason 后立刻 close reader，会在已经收完整文时
-        // 反而抛 "Software caused connection abort"，把一次成功生成误判成失败。
-        BufferedReader reader = new BufferedReader(new InputStreamReader(input, StandardCharsets.UTF_8));
-        try {
-            while (true) {
-                // content 一旦出现，就和前台 streamCommitMode='content' 一样正式锁定当前线路；
-                // 此后只受整轮 hard timeout 约束，不会再因为首字等待去切故障转移。
-                connection.setReadTimeout(nextReadTimeout(hardDeadlineMs, firstVisibleDeadlineMs, content.length() > 0));
-                String line = reader.readLine();
-                if (line == null) {
-                    terminal = true; // 正常 EOF
-                    break;
-                }
-                raw.append(line).append('\n');
-                String trimmed = line.trim();
-                if (!trimmed.startsWith("data:")) continue;
-                String payload = trimmed.substring(5).trim();
-                if (payload.isEmpty()) continue;
-                if ("[DONE]".equals(payload)) {
-                    terminal = true;
-                    break;
-                }
+        while (true) {
+            String line = source.readUtf8Line();
+            if (line == null) break;
+            raw.append(line).append('\n');
 
-                JSONObject chunk;
-                try { chunk = new JSONObject(payload); }
-                catch (Exception ignored) { continue; }
+            String trimmed = line.trim();
+            if (!trimmed.startsWith("data:")) continue;
+            String payload = trimmed.substring(5).trim();
+            if (payload.isEmpty()) continue;
+            if ("[DONE]".equals(payload)) break;
 
-                if (first == null) first = chunk;
-                if (chunk.has("usage") && !chunk.isNull("usage")) usage = chunk.optJSONObject("usage");
-                if (model.isEmpty()) model = chunk.optString("model", "");
-                if (id.isEmpty()) id = chunk.optString("id", "");
-
-                JSONArray choices = chunk.optJSONArray("choices");
-                if (choices == null || choices.length() == 0) continue;
-                JSONObject choice = choices.optJSONObject(0);
-                if (choice == null) continue;
-
-                JSONObject delta = choice.optJSONObject("delta");
-                JSONObject message = choice.optJSONObject("message");
-                if (delta != null) {
-                    Object piece = delta.opt("content");
-                    if (piece instanceof String) content.append((String) piece);
-                    String r = delta.optString("role", "");
-                    if (!r.isEmpty()) role = r;
-                } else if (message != null) {
-                    String piece = message.optString("content", "");
-                    if (!piece.isEmpty()) content.append(piece);
-                    String r = message.optString("role", "");
-                    if (!r.isEmpty()) role = r;
-                }
-
-                if (choice.has("finish_reason") && !choice.isNull("finish_reason")) {
-                    finishReason = choice.optString("finish_reason", null);
-                    if (finishReason != null && !finishReason.isEmpty()) {
-                        // finish_reason 本身就是 OpenAI-compatible 流的终止信号。
-                        // 不再为了等一个可能永远不来的 [DONE] 继续挂 socket。
-                        terminal = true;
-                        break;
-                    }
-                }
+            JSONObject chunk;
+            try {
+                chunk = new JSONObject(payload);
+            } catch (Exception ignored) {
+                continue;
             }
-        } catch (SocketException socketError) {
-            // 部分 Android 网络栈 / 代理会在流已经给出 finish_reason 后，
-            // 紧接着用 connection abort / reset 结束 TCP。正文已完整时应按成功收尾。
-            if (!terminal || content.length() == 0) throw socketError;
+
+            if (chunk.has("usage") && !chunk.isNull("usage")) usage = chunk.optJSONObject("usage");
+            if (model.isEmpty()) model = chunk.optString("model", "");
+            if (id.isEmpty()) id = chunk.optString("id", "");
+
+            JSONArray choices = chunk.optJSONArray("choices");
+            if (choices == null || choices.length() == 0) continue;
+            JSONObject choice = choices.optJSONObject(0);
+            if (choice == null) continue;
+
+            JSONObject delta = choice.optJSONObject("delta");
+            JSONObject message = choice.optJSONObject("message");
+            String piece = "";
+            if (delta != null) {
+                Object value = delta.opt("content");
+                if (value instanceof String) piece = (String) value;
+                String r = delta.optString("role", "");
+                if (!r.isEmpty()) role = r;
+            } else if (message != null) {
+                piece = message.optString("content", "");
+                String r = message.optString("role", "");
+                if (!r.isEmpty()) role = r;
+            }
+
+            if (!piece.isEmpty()) {
+                content.append(piece);
+                visibleContent.set(true);
+            }
+
+            if (choice.has("finish_reason") && !choice.isNull("finish_reason")) {
+                finishReason = choice.optString("finish_reason", null);
+                // finish_reason 已经说明本轮完整结束，不强求额外 [DONE]。
+                if (finishReason != null && !finishReason.isEmpty()) break;
+            }
         }
 
         JSONObject response = assembledResponse(id, model, role, content.toString(), finishReason, usage);
