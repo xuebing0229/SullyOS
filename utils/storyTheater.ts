@@ -1150,10 +1150,24 @@ const DISPLAY_TAG_LABELS: Record<string, string> = {
  */
 const INLINE_STORY_DISPLAY_TAGS = new Set(['red', 'fracture', 'surge']);
 
-/** 前端只允许这些协议字段触发“新栏目”。普通正文里出现“短句：内容”不能误拆。 */
+/**
+ * 这些是“容器标签”，负责把一组字段包在一起，本身不是 UI 栏目。
+ * 例如 <secret> 里面已经有 <owner>/<hidden>，再渲染一个“秘密：”只会制造空壳行；
+ * <debt>/<world_event>/<true_monologue> 同理。
+ */
+const CONTAINER_STORY_DISPLAY_TAGS = new Set([
+    'mind_weather',
+    'secret',
+    'true_monologue',
+    'world_event',
+    'debt',
+    'affinity_person',
+]);
+
+/** 前端只允许这些协议叶子字段触发“新栏目”。普通正文里出现“短句：内容”不能误拆。 */
 export const STORY_DISPLAY_FIELD_LABELS = new Set(
     Object.entries(DISPLAY_TAG_LABELS)
-        .filter(([tag]) => !INLINE_STORY_DISPLAY_TAGS.has(tag))
+        .filter(([tag]) => !INLINE_STORY_DISPLAY_TAGS.has(tag) && !CONTAINER_STORY_DISPLAY_TAGS.has(tag))
         .map(([, label]) => label),
 );
 
@@ -1241,7 +1255,12 @@ const formatTaggedStoryFragment = (fragment: string): string => {
             const inner = body.trim();
             if (!inner) return '';
             if (HIDDEN_STORY_DISPLAY_TAGS.has(tag)) return '';
-            if (tag === 'story_text' || tag === 'text' || INLINE_STORY_DISPLAY_TAGS.has(tag)) return inner;
+            if (
+                tag === 'story_text'
+                || tag === 'text'
+                || INLINE_STORY_DISPLAY_TAGS.has(tag)
+                || CONTAINER_STORY_DISPLAY_TAGS.has(tag)
+            ) return inner;
             return label ? `\n${label}：${inner}\n` : `\n${inner}\n`;
         });
     }
