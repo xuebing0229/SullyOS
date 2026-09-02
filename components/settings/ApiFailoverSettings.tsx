@@ -313,30 +313,35 @@ const ApiFailoverSettings: React.FC<Props> = ({ addToast }) => {
                                 </div>
                             </div>
 
-                            <button
-                                type="button"
-                                onClick={() =>
-                                    toggleGroup(
-                                        group.scope,
-                                        !group.enabled,
-                                    )
-                                }
-                                className="shrink-0 appearance-none border-0 bg-transparent p-0"
-                                aria-label={`${effectiveEnabled ? '关闭' : '开启'}${group.name}线路故障转移`}
-                                aria-pressed={effectiveEnabled}
-                            >
-                                <span className={`flex h-6 w-10 items-center rounded-full p-1 transition-colors ${
-                                    effectiveEnabled
-                                        ? 'bg-emerald-500'
-                                        : 'bg-slate-200'
-                                }`}>
-                                    <span className={`h-4 w-4 rounded-full bg-white shadow-sm transition-transform ${
-                                        effectiveEnabled
-                                            ? 'translate-x-4'
-                                            : ''
-                                    }`} />
+                            <div className="flex shrink-0 items-center gap-2">
+                                <span className="text-[9px] text-slate-400">
+                                    {group.scope === 'story' ? '备用回退' : '回退'}
                                 </span>
-                            </button>
+                                <button
+                                    type="button"
+                                    onClick={() =>
+                                        toggleGroup(
+                                            group.scope,
+                                            !group.enabled,
+                                        )
+                                    }
+                                    className="appearance-none border-0 bg-transparent p-0"
+                                    aria-label={`${effectiveEnabled ? '关闭' : '开启'}${group.name}备用回退`}
+                                    aria-pressed={effectiveEnabled}
+                                >
+                                    <span className={`flex h-6 w-10 items-center rounded-full p-1 transition-colors ${
+                                        effectiveEnabled
+                                            ? 'bg-emerald-500'
+                                            : 'bg-slate-200'
+                                    }`}>
+                                        <span className={`h-4 w-4 rounded-full bg-white shadow-sm transition-transform ${
+                                            effectiveEnabled
+                                                ? 'translate-x-4'
+                                                : ''
+                                        }`} />
+                                    </span>
+                                </button>
+                            </div>
                         </div>
 
                         {group.enabled && !analysis.canEnable && (
