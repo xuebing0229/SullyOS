@@ -410,6 +410,105 @@ ${briefs}
     return post;
 }
 
+
+export interface ReplyToUserMomentCommentOptions {
+    postId: string;
+    userCommentId: string;
+    characters: CharacterProfile[];
+    userProfile: UserProfile;
+    apiConfig: APIConfig;
+    settings: MomentsSettings;
+}
+
+/**
+ * 用户在角色朋友圈下新评论后，让原动态作者单独判断要不要顺手回复。
+ * 用户评论先落库；这里即使 API 失败，也不会撤销用户已经发出的评论。
+ */
+export async function maybeReplyToUserMomentComment(options: ReplyToUserMomentCommentOptions): Promise<SocialComment | null> {
+    const post = (await loadMomentPosts()).find(item => item.id === options.postId);
+    if (!post || post.authorType !== 'character' || !post.authorCharId) return null;
+
+    const author = options.characters.find(char => char.id === post.authorCharId);
+    if (!author || !options.settings.invitedCharIds.includes(author.id)) return null;
+
+    const userComment = (post.comments || []).find(comment => comment.id === options.userCommentId);
+    if (!userComment || userComment.authorType !== 'user') return null;
+
+    // 防止重复触发或重复提交时给同一条用户评论回两次。
+    if ((post.comments || []).some(comment => (
+        comment.authorCharId === author.id
+        && comment.replyToCommentId === userComment.id
+    ))) return null;
+
+    const briefs = await participantBriefs([author], options.userProfile);
+    const thread = (post.comments || []).slice(-12).map(comment => {
+        const reply = comment.replyToName ? ` 回复 ${comment.replyToName}` : '';
+        return `${comment.authorName}${reply}：${comment.content}`;
+    }).join('\n');
+
+    const prompt = `${options.settings.generationPreset || DEFAULT_MOMENTS_PRESET}
+
+现在不是生成新朋友圈，而是判断原动态作者会不会回复用户刚刚留下的一条评论。
+
+原动态作者：${author.name}（ID=${author.id}）
+朋友圈正文：${post.content || '（无文字）'}
+地点：${post.location?.visible ? post.location.label || '未填写' : '未显示'}
+
+当前评论区：
+${thread || '（暂无其他评论）'}
+
+用户刚评论：
+${userComment.authorName}：${userComment.content}
+
+${briefs}
+
+请严格按 ${author.name} 本人的性格与当前语境判断：
+- 不强制回复每一条；如果只是普通附和、无需接话，可以不回。
+- 如果用户在提问、调侃、挑衅、接梗、延续话题，或角色按性格会自然接一句，可以回复。
+- 回复必须像朋友圈评论区里顺手打的一句，简短、自然，不写解释性旁白，不替用户说话。
+- 最多 100 字。
+
+只输出以下两种 JSON 之一：
+{"reply":true,"content":"角色回复"}
+{"reply":false,"content":""}`;
+
+    const result = await callMomentsDirector(options.apiConfig, prompt);
+    if (result?.reply !== true) return null;
+    const content = String(result?.content || '').trim().slice(0, 100);
+    if (!content) return null;
+
+    // API 返回期间评论区可能又有变化，落库前重新取最新版本，避免覆盖新评论。
+    const latest = (await loadMomentPosts()).find(item => item.id === options.postId);
+    if (!latest) return null;
+    const latestUserComment = (latest.comments || []).find(comment => comment.id === options.userCommentId);
+    if (!latestUserComment || latestUserComment.authorType !== 'user') return null;
+    if ((latest.comments || []).some(comment => (
+        comment.authorCharId === author.id
+        && comment.replyToCommentId === latestUserComment.id
+    ))) return null;
+
+    const createdAt = Date.now();
+    const reply: SocialComment = {
+        id: `mc_reply_${createdAt}_${Math.random().toString(36).slice(2, 6)}`,
+        authorName: author.name,
+        authorAvatar: author.avatar,
+        content,
+        likes: 0,
+        isCharacter: true,
+        authorType: 'character',
+        authorCharId: author.id,
+        replyToCommentId: latestUserComment.id,
+        replyToName: latestUserComment.authorName,
+        timestamp: createdAt,
+    };
+
+    await updateMomentAndSyncedCards({
+        ...latest,
+        comments: [...(latest.comments || []), reply],
+    });
+    return reply;
+}
+
 export async function syncMomentToPrivateChat(post: SocialPost, targets: CharacterProfile[]): Promise<SocialPost> {
     const ids: Record<string, number> = { ...(post.syncedMessageIds || {}) };
     for (const char of targets) {
