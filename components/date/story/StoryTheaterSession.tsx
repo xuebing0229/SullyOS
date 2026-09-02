@@ -310,7 +310,7 @@ const StoryOutput: React.FC<{ content: string; onChoose?: (text: string) => void
                                                 : segment.kind === 'psychology'
                                                     ? appearance.psychologyColor
                                                     : appearance.narrationColor,
-                                            ...(segment.kind === 'action' ? { fontStyle: 'italic' } : {}),
+                                            ...(segment.kind === 'psychology' ? { fontStyle: 'italic' } : {}),
                                         }}
                                     >
                                         {segment.text}
