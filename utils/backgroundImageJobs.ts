@@ -53,6 +53,13 @@ export interface LocalBackgroundImageJob {
     token: string;
 
     charId: string;
+    /** 普通聊天沿用 chat；剧情剧场的图片要挂回指定正文楼层，不能当普通聊天图片落库。 */
+    ownerType?: 'chat' | 'story-theater';
+    storyTheaterTarget?: {
+        entryId: string;
+        messageId: number;
+        title: string;
+    };
     toolName: string;
     toolArgs: Record<string, any>;
     afterGenerateAction: AfterGenerateAction;
@@ -261,6 +268,18 @@ const sanitizeLoadedJob = (
             ),
         token: raw.token,
         charId: raw.charId,
+        ownerType: raw.ownerType === 'story-theater' ? 'story-theater' : 'chat',
+        storyTheaterTarget: raw.ownerType === 'story-theater'
+            && raw.storyTheaterTarget
+            && typeof raw.storyTheaterTarget.entryId === 'string'
+            && Number.isFinite(raw.storyTheaterTarget.messageId)
+            && typeof raw.storyTheaterTarget.title === 'string'
+            ? {
+                entryId: raw.storyTheaterTarget.entryId,
+                messageId: Number(raw.storyTheaterTarget.messageId),
+                title: raw.storyTheaterTarget.title,
+            }
+            : undefined,
         toolName: raw.toolName,
         toolArgs: clone(raw.toolArgs),
         afterGenerateAction: raw.afterGenerateAction === 'inspect' ? 'inspect' : 'none',
@@ -610,6 +629,8 @@ const dispatchJobEvent = (
                     clientRequestId: job.clientRequestId,
                     afterGenerateAction: job.afterGenerateAction,
                     inspectStatus: job.inspectStatus,
+                    ownerType: job.ownerType || 'chat',
+                    storyTheaterTarget: job.storyTheaterTarget,
                 },
             },
         ),
@@ -634,6 +655,7 @@ const hasFailureMessage = (
 export const persistBackgroundImageFailureMessage = async (
     job: LocalBackgroundImageJob,
 ): Promise<boolean> => {
+    if (job.ownerType === 'story-theater') return false;
     const recent = await DB.getRecentMessagesByCharId(job.charId, 200);
     if (hasFailureMessage(recent, job)) return false;
 
@@ -687,28 +709,34 @@ const hasAlreadyPersisted = (
             ?.backgroundImageClientRequestId
             === localJob.clientRequestId,
     );
+const buildMcpResultFromRemoteJob = (
+    remoteJob: RemoteImageJob,
+): McpToolResult => {
+    const result = remoteJob.result || {};
+    const content = Array.isArray(result.content) ? result.content : [];
+    const rawText = content
+        .filter((part: any) => part?.type === 'text' && typeof part.text === 'string')
+        .map((part: any) => part.text)
+        .join('\n')
+        .trim();
+    return {
+        success: true,
+        data: result.structuredContent ?? result,
+        structuredContent: result.structuredContent,
+        content,
+        rawText,
+        rawResult: result,
+    };
+};
+
 const applySucceededJob = async (
     localJob: LocalBackgroundImageJob,
     remoteJob: RemoteImageJob,
 ): Promise<void> => {
-    const characters =
-        await DB.getAllCharacters();
-
-    const character = characters.find(
-        item => item.id === localJob.charId,
+    const recentMessages = await DB.getMessagesByCharId(
+        localJob.charId,
+        true,
     );
-
-    if (!character) {
-        throw new Error(
-            '后台图片对应的角色已不存在',
-        );
-    }
-
-    const recentMessages =
-        await DB.getRecentMessagesByCharId(
-            localJob.charId,
-            500,
-        );
 
     if (
         hasAlreadyPersisted(
@@ -720,69 +748,145 @@ const applySucceededJob = async (
         const updated = updateJob(
             localJob.id,
             {
-                remoteJobId:
-                    remoteJob.id,
+                remoteJobId: remoteJob.id,
                 status: 'succeeded',
                 resultAppliedAt: now(),
                 lastError: undefined,
             },
         );
-
-        if (updated) {
-            dispatchJobEvent(
-                'completed',
-                updated,
-            );
-        }
+        if (updated) dispatchJobEvent('completed', updated);
         return;
     }
 
-    const result = remoteJob.result || {};
+    const mcpResult = buildMcpResultFromRemoteJob(remoteJob);
 
-    const mcpResult: McpToolResult = {
-        success: true,
-        data:
-            result.structuredContent
-            ?? result,
-        structuredContent:
-            result.structuredContent,
-        content:
-            Array.isArray(result.content)
-                ? result.content
-                : [],
-        rawResult: result,
-    };
+    if (
+        localJob.ownerType === 'story-theater'
+        && localJob.storyTheaterTarget
+    ) {
+        const target = recentMessages.find(
+            message =>
+                message.id
+                === localJob.storyTheaterTarget!.messageId,
+        );
+        if (!target || target.role !== 'assistant') {
+            throw new Error(
+                '剧情配图完成了，但对应的正文楼层已不存在',
+            );
+        }
 
-    const outcome =
-        await persistMcpGeneratedImages({
+        // meeting-cg 只把二进制 + 相册记录落库，不额外制造普通聊天图片消息。
+        // persistMcpGeneratedImages 实际只需要 owner 的 id/name；剧情线程本身就是独立 owner。
+        const galleryOwner = {
+            id: localJob.charId,
+            name:
+                localJob.storyTheaterTarget.title
+                || '剧情剧场',
+        } as CharacterProfile;
+
+        const outcome = await persistMcpGeneratedImages({
             result: mcpResult,
-            char:
-                character as CharacterProfile,
+            char: galleryOwner,
             server: {
                 id: localJob.serverId,
                 name: localJob.serverName,
             },
-            toolName:
-                localJob.toolName,
-            toolArgs:
-                localJob.toolArgs,
+            toolName: localJob.toolName,
+            toolArgs: localJob.toolArgs,
             recentMessages,
-            extraMessageMetadata: {
-                backgroundImageJobId:
-                    remoteJob.id,
-                backgroundImageClientRequestId:
-                    localJob.clientRequestId,
-                backgroundGenerated:
-                    true,
-            },
+            ownerType: 'meeting-cg',
+            allowTemporaryUrlFallback: false,
             extraGallerySourceMeta: {
+                source: 'story-theater',
+                theaterId:
+                    localJob.storyTheaterTarget.entryId,
+                theaterTitle:
+                    localJob.storyTheaterTarget.title,
                 backgroundImageJobId:
                     remoteJob.id,
                 backgroundImageClientRequestId:
                     localJob.clientRequestId,
             },
-            imageBillingCapture: localJob.imageBillingCapture,
+            imageBillingCapture:
+                localJob.imageBillingCapture,
         });
+
+        const asset = outcome.assets[0];
+        if (!asset) {
+            throw new Error(
+                outcome.errors[0]
+                || '后台任务完成，但没有找到可挂回剧情的图片结果',
+            );
+        }
+
+        await DB.updateMessageMetadata(
+            target.id,
+            previous => ({
+                ...previous,
+                backgroundImageJobId:
+                    remoteJob.id,
+                backgroundImageClientRequestId:
+                    localJob.clientRequestId,
+                backgroundGenerated: true,
+                theaterImage: {
+                    imageRef: asset.blobRef,
+                    galleryImageId:
+                        asset.galleryImageId,
+                    prompt: asset.prompt,
+                    engine: asset.engine,
+                    generatedAt:
+                        asset.createdAt,
+                },
+            }),
+        );
+
+        const updated = updateJob(
+            localJob.id,
+            {
+                remoteJobId: remoteJob.id,
+                status: 'succeeded',
+                resultAppliedAt: now(),
+                lastError: undefined,
+            },
+        );
+        if (updated) dispatchJobEvent('completed', updated);
+        return;
+    }
+
+    const characters = await DB.getAllCharacters();
+    const character = characters.find(
+        item => item.id === localJob.charId,
+    );
+    if (!character) {
+        throw new Error('后台图片对应的角色已不存在');
+    }
+
+    const outcome = await persistMcpGeneratedImages({
+        result: mcpResult,
+        char: character as CharacterProfile,
+        server: {
+            id: localJob.serverId,
+            name: localJob.serverName,
+        },
+        toolName: localJob.toolName,
+        toolArgs: localJob.toolArgs,
+        recentMessages,
+        extraMessageMetadata: {
+            backgroundImageJobId:
+                remoteJob.id,
+            backgroundImageClientRequestId:
+                localJob.clientRequestId,
+            backgroundGenerated: true,
+        },
+        extraGallerySourceMeta: {
+            backgroundImageJobId:
+                remoteJob.id,
+            backgroundImageClientRequestId:
+                localJob.clientRequestId,
+        },
+        imageBillingCapture:
+            localJob.imageBillingCapture,
+    });
 
     if (
         outcome.persisted <= 0
@@ -797,20 +901,13 @@ const applySucceededJob = async (
     const updated = updateJob(
         localJob.id,
         {
-            remoteJobId:
-                remoteJob.id,
+            remoteJobId: remoteJob.id,
             status: 'succeeded',
             resultAppliedAt: now(),
             lastError: undefined,
         },
     );
-
-    if (updated) {
-        dispatchJobEvent(
-            'completed',
-            updated,
-        );
-    }
+    if (updated) dispatchJobEvent('completed', updated);
 };
 
 const reconcileOne = async (
@@ -1094,6 +1191,12 @@ export async function callMcpToolWithBackgroundImage(
     args: Record<string, any>,
     context: {
         charId: string;
+        ownerType?: 'chat' | 'story-theater';
+        storyTheaterTarget?: {
+            entryId: string;
+            messageId: number;
+            title: string;
+        };
     },
 ): Promise<McpToolResult> {
     const { afterGenerateAction, cleanedArgs } = parseImageToolClientOptions(args);
@@ -1142,6 +1245,14 @@ export async function callMcpToolWithBackgroundImage(
         token:
             String(server.token || ''),
         charId: context.charId,
+        ownerType:
+            context.ownerType === 'story-theater'
+                ? 'story-theater'
+                : 'chat',
+        storyTheaterTarget:
+            context.ownerType === 'story-theater'
+                ? context.storyTheaterTarget
+                : undefined,
         toolName,
         toolArgs: clone(cleanedArgs),
         afterGenerateAction,
