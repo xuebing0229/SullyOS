@@ -21,6 +21,18 @@ extra JSON body, and response URL/base64 paths. It does not execute user-supplie
 Runtime configuration is stored as a mode-0600 JSON file. `GET /config` never returns the
 full upstream API key. Omitting `apiKey` on `PUT /config` keeps the old key.
 
+## Multi-user token isolation
+
+The service can authorize multiple SullyOS clients without sharing their image-provider credentials.
+
+- `MCP_BEARER_TOKEN` is the primary/owner token and keeps the existing legacy data paths.
+- Add friend/device tokens with `MCP_EXTRA_BEARER_TOKENS` (comma/space separated), or `MCP_BEARER_TOKENS_JSON`.
+- Every extra token receives its own runtime config file, temporary image directory, and background-job store.
+- Extra tenants never inherit the primary bootstrap upstream API key; they must save their own key from SullyOS settings.
+- Token namespaces are derived from a one-way SHA-256 hash; raw tokens are never used as directory names.
+
+Adding or removing authorized tokens requires updating the service environment and restarting the service. Existing primary-token data needs no migration.
+
 ## Local development
 
 ```bash
