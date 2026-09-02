@@ -515,6 +515,32 @@ describe('剧场输出展示解析', () => {
         expect(block?.text).not.toContain('情绪峰值：');
     });
 
+    it('结构容器不会再伪装成秘密、独白、事件或未结事项栏目', () => {
+        const backstage = parseStoryDisplayBlocks(
+            '<backstage><secret><owner>祁连云</owner><hidden>他已经知道真相</hidden></secret><true_monologue><owner>祁连云</owner><voice>我不想让你走。</voice></true_monologue></backstage>',
+        ).find(item => item.kind === 'backstage');
+        expect(backstage?.text).toContain('主体：祁连云');
+        expect(backstage?.text).toContain('隐藏事实：他已经知道真相');
+        expect(backstage?.text).toContain('心声：我不想让你走。');
+        expect(backstage?.text).not.toContain('秘密：');
+        expect(backstage?.text).not.toContain('真正的独白：');
+
+        const world = parseStoryDisplayBlocks(
+            '<worldline><world_event><scope>赌场</scope><change>保安开始换班</change></world_event></worldline>',
+        ).find(item => item.kind === 'worldline');
+        expect(world?.text).toContain('影响范围：赌场');
+        expect(world?.text).toContain('变化：保安开始换班');
+        expect(world?.text).not.toContain('事件：');
+
+        const debts = parseStoryDisplayBlocks(
+            '<shot_debts><debt><origin>他撒了谎</origin><unpaid>账目会对不上</unpaid><trigger>下一次核账</trigger></debt></shot_debts>',
+        ).find(item => item.kind === 'debts');
+        expect(debts?.text).toContain('起因：他撒了谎');
+        expect(debts?.text).toContain('尚未偿还：账目会对不上');
+        expect(debts?.text).toContain('触发条件：下一次核账');
+        expect(debts?.text).not.toContain('未结事项：');
+    });
+
     it('旧版关系温度仍只展示原先允许的角色侧记录', () => {
         const visible = parseStoryDisplayBlocks('<affinity_panel><c_score>62</c_score><c_delta>+2</c_delta><c_note>他主动留下</c_note><u_score>77</u_score><u_delta>-3</u_delta><u_note>用户自己的说明</u_note><relation_note>仍有余温</relation_note><relation_fragment>他把门留了一条缝。</relation_fragment></affinity_panel>')
             .map(block => block.text)
