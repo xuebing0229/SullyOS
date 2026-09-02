@@ -707,6 +707,25 @@ export const buildStoryMiniTheaterReminder = (
 };
 
 /** 兼容旧沙盒覆盖：只要暗格或镜头债任一开关仍在，就统一为连续的组合模块。 */
+/**
+ * 剧情正文三色只是一层显示约定：模型继续写正常小说，
+ * 但用稳定、可解析的最小格式区分旁白 / 对白 / 心理。
+ * 关闭三色时完全不注入，避免无谓干预用户自己的预设。
+ */
+export const buildStoryTextToneFormatReminder = (enabled: boolean): string => {
+    if (!enabled) return '';
+    return [
+        '### 剧情正文三色格式协议（仅作用于 <story_text> 主正文）',
+        '- 继续按当前预设正常写小说，不要为了着色改变文风、节奏、视角或措辞。',
+        '- 【对白】人物真实说出口的话必须使用成对引号包住；优先使用中文引号“……”或「……」。',
+        '- 【心理】只有人物未说出口、只存在于其内心的直接心理活动，才使用一对单星号 *……* 包住。',
+        '- 【旁白】人物动作、神态、环境、镜头、外部事件、叙述说明全部写普通正文，不加星号；动作不属于“心理”。',
+        '- 不要输出“旁白：”“对白：”“心理：”之类分类标签；不要使用 **……** 代替心理标记。',
+        '- 每段心理的单星号必须成对闭合。若一段同时包含动作与心理，动作留在星号外，只有未说出口的心理放在星号内。',
+        '- 这些格式只用于 <story_text> 正文；幕后、关系面板、小剧场等结构化模块继续严格遵守它们自己的标签协议。',
+    ].join('\n');
+};
+
 export const buildStoryBackstageAftermathReminder = (document: StoryTheaterPresetDocument): string => {
     const backstage = document.prompts.find(prompt => prompt.id === 'nmj-v48-backstage');
     const legacyDebts = document.prompts.find(prompt => prompt.id === 'nmj-v61-shot-debts');
