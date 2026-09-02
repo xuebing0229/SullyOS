@@ -1,4 +1,3 @@
-import { timingSafeEqual } from "node:crypto";
 import { access } from "node:fs/promises";
 import path from "node:path";
 import express from "express";
@@ -23,20 +22,14 @@ import {
   resolvePublicImagePath,
   saveGeneratedImage
 } from "./storage.mjs";
+import {
+  createBearerTenantRegistry,
+  tenantChildPath,
+  tenantConfigPath
+} from "./tenant-auth.mjs";
 
 const SERVICE_NAME = "novelai-compatible-image-mcp";
 const SERVICE_VERSION = "0.5.0";
-const runtimeStore = createNovelRuntimeConfigStore({
-  filePath: staticConfig.runtimeConfigFile,
-  bootstrap: bootstrapRuntimeConfig,
-  allowInsecureUpstream: staticConfig.allowInsecureUpstream
-});
-const referenceStore = createReferenceStore({
-  directory: path.join(staticConfig.imageDir, "references")
-});
-const vibeEncodingCache = createVibeEncodingCache({
-  directory: path.join(staticConfig.imageDir, "vibe-cache")
-});
 
 function log(level, event, fields = {}) {
   console.log(JSON.stringify({ time: new Date().toISOString(), level, service: SERVICE_NAME, event, ...fields }));
@@ -54,18 +47,86 @@ function safeErrorLogFields(error) {
     } : {})
   };
 }
-function secureEquals(actual, expected) {
-  const left = Buffer.from(actual); const right = Buffer.from(expected);
-  return left.length === right.length && timingSafeEqual(left, right);
+const tenantRegistry = createBearerTenantRegistry({
+  primaryToken: staticConfig.mcpBearerToken
+});
+const tenantContexts = new Map();
+const jobBaseDir = process.env.IMAGE_JOBS_DIR || "/var/lib/sullyos-image-jobs/novelai";
+
+function publicBaseForTenant(tenant) {
+  return tenant.primary
+    ? staticConfig.publicBaseUrl
+    : staticConfig.publicBaseUrl + "/t/" + tenant.id;
 }
-function requireBearer(req, res, next) {
-  const match = (req.get("authorization") || "").match(/^Bearer\s+(.+)$/i);
-  const supplied = match?.[1]?.trim() || "";
-  if (!supplied || !secureEquals(supplied, staticConfig.mcpBearerToken)) {
+
+async function createTenantContext(tenant) {
+  const imageDir = tenantChildPath(staticConfig.imageDir, tenant);
+  const runtimeStore = createNovelRuntimeConfigStore({
+    filePath: tenantConfigPath(staticConfig.runtimeConfigFile, tenant),
+    bootstrap: tenant.primary
+      ? bootstrapRuntimeConfig
+      : { ...bootstrapRuntimeConfig, apiKey: "" },
+    allowInsecureUpstream: staticConfig.allowInsecureUpstream
+  });
+  const referenceStore = createReferenceStore({
+    directory: path.join(imageDir, "references")
+  });
+  const vibeEncodingCache = createVibeEncodingCache({
+    directory: path.join(imageDir, "vibe-cache")
+  });
+
+  await initializeImageStorage(imageDir);
+  await referenceStore.initialize();
+  await vibeEncodingCache.initialize();
+  await runtimeStore.load();
+
+  const context = {
+    tenant,
+    imageDir,
+    publicBaseUrl: publicBaseForTenant(tenant),
+    runtimeStore,
+    referenceStore,
+    vibeEncodingCache,
+    imageJobs: null
+  };
+  context.imageJobs = await createBackgroundJobService({
+    ...backgroundJobOptionsFromEnv({
+      defaultDir: tenantChildPath(jobBaseDir, tenant),
+      defaultTool: NOVELAI_TOOL_NAME,
+      executeTool: (toolName, args, jobContext) =>
+        executeMcpTool(context, toolName, args, jobContext),
+      logger: console
+    }),
+    dataDir: tenantChildPath(jobBaseDir, tenant),
+    authToken: tenant.token
+  });
+  return context;
+}
+
+function getTenantContext(tenant) {
+  if (!tenant) return Promise.reject(new Error("Unknown image tenant"));
+  const existing = tenantContexts.get(tenant.id);
+  if (existing) return existing;
+  const created = createTenantContext(tenant).catch(error => {
+    tenantContexts.delete(tenant.id);
+    throw error;
+  });
+  tenantContexts.set(tenant.id, created);
+  return created;
+}
+
+async function requireBearer(req, res, next) {
+  const tenant = tenantRegistry.resolveRequest(req);
+  if (!tenant) {
     res.setHeader("WWW-Authenticate", 'Bearer realm="novelai-compatible-image-mcp"');
     return res.status(401).json({ error: "unauthorized" });
   }
-  next();
+  try {
+    req.imageTenant = await getTenantContext(tenant);
+    next();
+  } catch (error) {
+    next(error);
+  }
 }
 function methodNotAllowed(res) {
   return res.status(405).json({ jsonrpc: "2.0", error: { code: -32000, message: "Method not allowed. Use Streamable HTTP POST." }, id: null });
@@ -74,14 +135,14 @@ let generationTail = Promise.resolve();
 function serializeGeneration(task) {
   const next = generationTail.then(task, task); generationTail = next.catch(() => {}); return next;
 }
-async function materialize(generated) {
+async function materialize(generated, tenantContext) {
   if (generated.imageUrl) return { imageUrl: generated.imageUrl, saved: null };
   const saved = await saveGeneratedImage({
-    imageDir: staticConfig.imageDir,
+    imageDir: tenantContext.imageDir,
     buffer: generated.imageBuffer,
     format: generated.format,
     ttlMs: staticConfig.imageTtlMs,
-    publicBaseUrl: staticConfig.publicBaseUrl
+    publicBaseUrl: tenantContext.publicBaseUrl
   });
   return { imageUrl: saved.url, saved };
 }
@@ -109,16 +170,16 @@ const novelAiInputShape = {
   vibe_reference_information_extracted: z.number().min(0).max(1).optional().default(1)
 };
 const novelAiArgumentsSchema = z.object(novelAiInputShape).strict();
-async function effectiveUpstreamConfig(runtimeOverride, { forcePersist = false } = {}) {
-  const runtime = runtimeOverride ? structuredClone(runtimeOverride) : await runtimeStore.load();
+async function effectiveUpstreamConfig(tenantContext, runtimeOverride, { forcePersist = false } = {}) {
+  const runtime = runtimeOverride ? structuredClone(runtimeOverride) : await tenantContext.runtimeStore.load();
   const config = toUpstreamConfig(runtime, staticConfig);
   if (forcePersist) config.upstreamImageDelivery = "proxy";
   if (!config.upstreamApiKey && config.upstreamAuthHeader) throw new Error("The upstream API key has not been configured");
   return { runtime, config };
 }
-async function executeNovelAiGeneration(rawArgs, { runtimeOverride, forcePersist = false } = {}) {
+async function executeNovelAiGeneration(rawArgs, tenantContext, { runtimeOverride, forcePersist = false } = {}) {
   const args = novelAiArgumentsSchema.parse(normalizeNovelAiToolArguments(rawArgs));
-  const { runtime, config } = await effectiveUpstreamConfig(runtimeOverride, { forcePersist });
+  const { runtime, config } = await effectiveUpstreamConfig(tenantContext, runtimeOverride, { forcePersist });
   const upstreamModel = args.model === "curated"
     ? config.upstreamModelCurated
     : config.upstreamModelFull;
@@ -147,7 +208,7 @@ async function executeNovelAiGeneration(rawArgs, { runtimeOverride, forcePersist
   if (referenceSpecs.length) {
     if (!isNovelAiV45Model(upstreamModel)) throw new Error("NovelAI Precise Reference is only supported by V4.5 Full/Curated models");
     preciseReference = await Promise.all(referenceSpecs.map(async reference => {
-      const stored = await referenceStore.readImage(reference.id);
+      const stored = await tenantContext.referenceStore.readImage(reference.id);
       if (!stored) throw new Error(`The ${reference.label} reference image is missing on the MCP server. Reopen its settings and sync it again.`);
       return { imageBuffer: stored.buffer, type: reference.type, strength: reference.strength, fidelity: reference.fidelity };
     }));
@@ -156,9 +217,9 @@ async function executeNovelAiGeneration(rawArgs, { runtimeOverride, forcePersist
   let vibeTransfer = null;
   let vibeEncodingCached = null;
   if (args.vibe_reference_id) {
-    const stored = await referenceStore.readImage(args.vibe_reference_id);
+    const stored = await tenantContext.referenceStore.readImage(args.vibe_reference_id);
     if (!stored) throw new Error("The Vibe reference image is missing on the MCP server. Reopen Vibe library and sync it again.");
-    const encoded = await vibeEncodingCache.getOrCreate({
+    const encoded = await tenantContext.vibeEncodingCache.getOrCreate({
       slotId: args.vibe_reference_id,
       imageSha256: stored.metadata.sha256,
       modelId: upstreamModel,
@@ -188,8 +249,9 @@ async function executeNovelAiGeneration(rawArgs, { runtimeOverride, forcePersist
     if (preciseReference && /(400|422|director_reference|reference.*unsupported|unknown field)/i.test(String(error?.message || ""))) throw new Error(preciseReferenceUnsupportedMessage());
     throw error;
   }
-  const { imageUrl, saved } = await materialize(generated);
+  const { imageUrl, saved } = await materialize(generated, tenantContext);
   log("info", "image_generated", {
+    tenantId: tenantContext.tenant.id,
     correlationId: generated.requestId, profile: runtime.profile,
     upstreamHost: new URL(runtime.baseUrl).host, modelPreset: args.model,
     upstreamModel: request.modelId, size: args.size, seed: generated.seed,
@@ -206,22 +268,22 @@ async function executeNovelAiGeneration(rawArgs, { runtimeOverride, forcePersist
     content: [{ type: "text", text: ["Image generated successfully.", `Image URL: ${imageUrl}`, `Seed: ${generated.seed}`, `Model: ${request.modelId}`, `Size: ${request.dimensions.width}x${request.dimensions.height}`, ...(saved ? [`Expires at: ${saved.expiresAt}`] : []), "Show the image to the user and continue speaking in character."].join("\n") }]
   };
 }
-async function executeMcpTool(toolName, args, context = {}) {
+async function executeMcpTool(tenantContext, toolName, args, context = {}) {
   if (toolName !== NOVELAI_TOOL_NAME) {
     return { success: false, error: "Unknown tool" };
   }
-  return executeNovelAiGeneration(args, {
+  return executeNovelAiGeneration(args, tenantContext, {
     forcePersist: Boolean(context.jobId)
   });
 }
-function createMcpServer() {
+function createMcpServer(tenantContext) {
   const server = new McpServer({ name: SERVICE_NAME, version: SERVICE_VERSION });
   server.registerTool(NOVELAI_TOOL_NAME, {
     title: "NovelAI Generate Image",
     description: "Generate one anime/illustration image through the configured NovelAI-compatible API.",
     inputSchema: novelAiInputShape
   }, async args => {
-    try { return await executeMcpTool(NOVELAI_TOOL_NAME, args); }
+    try { return await executeMcpTool(tenantContext, NOVELAI_TOOL_NAME, args); }
     catch (error) {
       log("error", "generation_failed", safeErrorLogFields(error));
       return { isError: true, content: [{ type: "text", text: `Image generation failed: ${error?.message || String(error)}` }] };
@@ -229,24 +291,27 @@ function createMcpServer() {
   });
   return server;
 }
-await initializeImageStorage(staticConfig.imageDir);
-await referenceStore.initialize();
-await vibeEncodingCache.initialize();
-await runtimeStore.load();
-const imageJobs = await createBackgroundJobService({
-  ...backgroundJobOptionsFromEnv({
-    defaultDir: process.env.IMAGE_JOBS_DIR || "/var/lib/sullyos-image-jobs/novelai",
-    defaultTool: NOVELAI_TOOL_NAME,
-    executeTool: executeMcpTool,
-    logger: console
-  }),
-  authToken: staticConfig.mcpBearerToken
-});
-const initiallyRemoved = await cleanupExpiredImages(staticConfig.imageDir, staticConfig.imageTtlMs);
+const primaryTenant = tenantRegistry.resolve(staticConfig.mcpBearerToken);
+const primaryContext = await getTenantContext(primaryTenant);
+let initiallyRemoved = 0;
+for (const tenantId of tenantRegistry.listTenantIds()) {
+  const tenant = tenantRegistry.resolveId(tenantId);
+  initiallyRemoved += await cleanupExpiredImages(
+    tenantChildPath(staticConfig.imageDir, tenant),
+    staticConfig.imageTtlMs
+  );
+}
 if (initiallyRemoved) log("info", "startup_cleanup", { removed: initiallyRemoved });
 const cleanupTimer = setInterval(async () => {
   try {
-    const removedImages = await cleanupExpiredImages(staticConfig.imageDir, staticConfig.imageTtlMs);
+    let removedImages = 0;
+    for (const tenantId of tenantRegistry.listTenantIds()) {
+      const tenant = tenantRegistry.resolveId(tenantId);
+      removedImages += await cleanupExpiredImages(
+        tenantChildPath(staticConfig.imageDir, tenant),
+        staticConfig.imageTtlMs
+      );
+    }
     if (removedImages) log("info", "scheduled_image_cleanup", { removed: removedImages });
   } catch (error) { log("error", "cleanup_failed", safeErrorLogFields(error)); }
 }, 3_600_000);
@@ -265,8 +330,13 @@ app.use((req, res, next) => {
   next();
 });
 app.use(async (req, res, next) => {
+  const pathname = new URL(req.url || "/", "http://127.0.0.1").pathname;
+  if (pathname !== "/jobs" && !pathname.startsWith("/jobs/")) return next();
+  const tenant = tenantRegistry.resolveRequest(req);
+  if (!tenant) return res.status(401).json({ error: "unauthorized" });
   try {
-    if (await imageJobs.handle(req, res)) return;
+    const context = await getTenantContext(tenant);
+    if (await context.imageJobs.handle(req, res)) return;
     next();
   } catch (error) {
     next(error);
@@ -280,18 +350,18 @@ function setReferenceHeaders(res, metadata) {
   res.setHeader("X-Reference-Updated-At", String(metadata.updatedAt));
 }
 app.head("/references/:slotId", requireBearer, async (req, res, next) => {
-  try { const metadata = await referenceStore.getMetadata(req.params.slotId); if (!metadata) return res.sendStatus(404); setReferenceHeaders(res, metadata); return res.sendStatus(200); } catch (error) { next(error); }
+  try { const metadata = await req.imageTenant.referenceStore.getMetadata(req.params.slotId); if (!metadata) return res.sendStatus(404); setReferenceHeaders(res, metadata); return res.sendStatus(200); } catch (error) { next(error); }
 });
 app.get("/references/:slotId", requireBearer, async (req, res, next) => {
-  try { const metadata = await referenceStore.getMetadata(req.params.slotId); if (!metadata) return res.sendStatus(404); setReferenceHeaders(res, metadata); return res.json(metadata); } catch (error) { next(error); }
+  try { const metadata = await req.imageTenant.referenceStore.getMetadata(req.params.slotId); if (!metadata) return res.sendStatus(404); setReferenceHeaders(res, metadata); return res.json(metadata); } catch (error) { next(error); }
 });
 app.put("/references/:slotId", requireBearer, express.raw({ type: "image/png", limit: "20mb" }), async (req, res, next) => {
   try {
     if (!Buffer.isBuffer(req.body)) return res.status(415).json({ error: "unsupported_media_type", message: "Content-Type must be image/png" });
-    const before = await referenceStore.getMetadata(req.params.slotId);
-    const result = await referenceStore.put(req.params.slotId, req.body, req.get("X-Reference-Sha256") || "");
+    const before = await req.imageTenant.referenceStore.getMetadata(req.params.slotId);
+    const result = await req.imageTenant.referenceStore.put(req.params.slotId, req.body, req.get("X-Reference-Sha256") || "");
     if (before?.sha256 && before.sha256 !== result.metadata.sha256) {
-      await vibeEncodingCache.removeBySlotId(req.params.slotId);
+      await req.imageTenant.vibeEncodingCache.removeBySlotId(req.params.slotId);
     }
     setReferenceHeaders(res, result.metadata);
     return res.status(result.existed ? 200 : 201).json(result.metadata);
@@ -300,20 +370,28 @@ app.put("/references/:slotId", requireBearer, express.raw({ type: "image/png", l
 app.delete("/references/:slotId", requireBearer, async (req, res, next) => {
   try {
     if (req.query.purgeVibeCache === "1") {
-      await vibeEncodingCache.removeBySlotId(req.params.slotId);
+      await req.imageTenant.vibeEncodingCache.removeBySlotId(req.params.slotId);
     }
-    await referenceStore.remove(req.params.slotId);
+    await req.imageTenant.referenceStore.remove(req.params.slotId);
     return res.sendStatus(204);
   } catch (error) { next(error); }
 });
 
 
 app.get("/config", requireBearer, async (req, res, next) => {
-  try { res.setHeader("Cache-Control", "no-store"); res.json(runtimeStore.toPublic(await runtimeStore.load())); }
+  try {
+    const store = req.imageTenant.runtimeStore;
+    res.setHeader("Cache-Control", "no-store");
+    res.json(store.toPublic(await store.load()));
+  }
   catch (error) { next(error); }
 });
 app.put("/config", requireBearer, async (req, res, next) => {
-  try { res.setHeader("Cache-Control", "no-store"); res.json(runtimeStore.toPublic(await runtimeStore.update(req.body))); }
+  try {
+    const store = req.imageTenant.runtimeStore;
+    res.setHeader("Cache-Control", "no-store");
+    res.json(store.toPublic(await store.update(req.body)));
+  }
   catch (error) {
     if (error?.code === "REVISION_CONFLICT") return res.status(409).json({ error: "revision_conflict", message: error.message, currentRevision: error.currentRevision });
     next(error);
@@ -321,8 +399,8 @@ app.put("/config", requireBearer, async (req, res, next) => {
 });
 app.post("/models", requireBearer, async (req, res, next) => {
   try {
-    const runtime = await runtimeStore.preview(req.body || {});
-    const { config } = await effectiveUpstreamConfig(runtime);
+    const runtime = await req.imageTenant.runtimeStore.preview(req.body || {});
+    const { config } = await effectiveUpstreamConfig(req.imageTenant, runtime);
     const configuredModels = [...new Set([runtime.modelFull, runtime.modelCurated].filter(Boolean))];
     const url = `${config.upstreamBaseUrl}${config.upstreamModelsPath}`;
     const response = await fetch(url, {
@@ -348,8 +426,8 @@ app.post("/models", requireBearer, async (req, res, next) => {
 });
 app.post("/config/test", requireBearer, async (req, res, next) => {
   try {
-    const runtime = await runtimeStore.preview(req.body || {});
-    const { config } = await effectiveUpstreamConfig(runtime);
+    const runtime = await req.imageTenant.runtimeStore.preview(req.body || {});
+    const { config } = await effectiveUpstreamConfig(req.imageTenant, runtime);
     if ((req.body?.mode || "validate") === "validate") {
       return res.json({
         ok: true,
@@ -371,22 +449,34 @@ app.post("/config/test", requireBearer, async (req, res, next) => {
       config
     });
     const generated = await serializeGeneration(() => generateUpstreamImage({ config, request }));
-    const { imageUrl, saved } = await materialize(generated);
+    const { imageUrl, saved } = await materialize(generated, req.imageTenant);
     res.json({ ok: true, message: "A real upstream image was generated successfully", imageUrl, ...(saved ? { expiresAt: saved.expiresAt } : {}) });
   } catch (error) { next(error); }
 });
 
-app.get("/images/:fileName", async (req, res) => {
-  const filePath = resolvePublicImagePath(staticConfig.imageDir, req.params.fileName);
+async function sendTenantImage(res, imageDir, fileName) {
+  const filePath = resolvePublicImagePath(imageDir, fileName);
   if (!filePath) return res.sendStatus(404);
   try { await access(filePath); } catch { return res.sendStatus(404); }
   res.setHeader("Cache-Control", "public, max-age=3600, immutable");
   res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
   return res.sendFile(filePath);
+}
+app.get("/images/:fileName", async (req, res) =>
+  sendTenantImage(res, staticConfig.imageDir, req.params.fileName)
+);
+app.get("/t/:tenantId/images/:fileName", async (req, res) => {
+  const tenant = tenantRegistry.resolveId(req.params.tenantId);
+  if (!tenant || tenant.primary) return res.sendStatus(404);
+  return sendTenantImage(
+    res,
+    tenantChildPath(staticConfig.imageDir, tenant),
+    req.params.fileName
+  );
 });
 app.post("/mcp", requireBearer, async (req, res) => {
   res.setHeader("Cache-Control", "no-store");
-  const mcpServer = createMcpServer();
+  const mcpServer = createMcpServer(req.imageTenant);
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
   try { await mcpServer.connect(transport); await transport.handleRequest(req, res, req.body); }
   catch (error) {
@@ -406,21 +496,25 @@ app.use((error, req, res, next) => {
 });
 
 const httpServer = app.listen(staticConfig.port, staticConfig.host, async () => {
-  const runtime = await runtimeStore.load();
+  const runtime = await primaryContext.runtimeStore.load();
   log("info", "server_started", {
     host: staticConfig.host,
     port: staticConfig.port,
     publicBaseUrl: staticConfig.publicBaseUrl,
     profile: runtime.profile,
     upstreamHost: new URL(runtime.baseUrl).host,
-    imageDir: staticConfig.imageDir
+    imageDir: staticConfig.imageDir,
+    tenantCount: tenantRegistry.size
   });
 });
 httpServer.on("error", (error) => { log("fatal", "server_start_failed", safeErrorLogFields(error)); process.exit(1); });
 async function shutdown(signal) {
   log("info", "shutdown_started", { signal });
   clearInterval(cleanupTimer);
-  await imageJobs.stop();
+  const contexts = await Promise.allSettled([...tenantContexts.values()]);
+  await Promise.allSettled(contexts
+    .filter(item => item.status === "fulfilled")
+    .map(item => item.value.imageJobs.stop()));
   httpServer.close((error) => process.exit(error ? 1 : 0));
 }
 process.on("SIGINT", () => void shutdown("SIGINT"));
