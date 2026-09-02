@@ -2165,6 +2165,13 @@ export interface StoryTheaterMask {
 /** 每条剧情独立的配图偏好；接口、模型与计费仍复用“内置生图引擎”。 */
 export interface StoryTheaterImageConfig {
     enabled: boolean;
+    /**
+     * 剧情配图“规划器”专用 API 预设。它只负责读正文、选生图工具/参考图与画面，
+     * 真正出图仍走内置 GPT Image / NovelAI。缺省时沿用当前聊天 API，兼容旧数据。
+     */
+    plannerApiPresetId?: string;
+    /** 同一 API 预设含多个模型时，剧情配图规划器单独使用的快速模型。 */
+    plannerModel?: string;
     stylePrompt?: string;
     negativePrompt?: string;
     width: number;
