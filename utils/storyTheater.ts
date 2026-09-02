@@ -706,7 +706,6 @@ export const buildStoryMiniTheaterReminder = (
     ].join('\n');
 };
 
-/** 兼容旧沙盒覆盖：只要暗格或镜头债任一开关仍在，就统一为连续的组合模块。 */
 /**
  * 剧情正文三色只是一层显示约定：模型继续写正常小说，
  * 但用稳定、可解析的最小格式区分旁白 / 对白 / 心理。
@@ -726,6 +725,7 @@ export const buildStoryTextToneFormatReminder = (enabled: boolean): string => {
     ].join('\n');
 };
 
+/** 兼容旧沙盒覆盖：只要暗格或镜头债任一开关仍在，就统一为连续的组合模块。 */
 export const buildStoryBackstageAftermathReminder = (document: StoryTheaterPresetDocument): string => {
     const backstage = document.prompts.find(prompt => prompt.id === 'nmj-v48-backstage');
     const legacyDebts = document.prompts.find(prompt => prompt.id === 'nmj-v61-shot-debts');
