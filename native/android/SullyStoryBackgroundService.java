@@ -34,6 +34,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import okhttp3.Call;
 import okhttp3.MediaType;
 import okhttp3.OkHttpClient;
@@ -326,6 +327,7 @@ public class SullyStoryBackgroundService extends Service {
                     job.put("status", "succeeded");
                     job.put("statusCode", result.statusCode);
                     job.put("responseJson", result.response.toString());
+                    job.remove("partialContent");
                     if (result.promptTokens > 0) job.put("promptTokens", result.promptTokens);
                     if (result.completionTokens > 0) job.put("completionTokens", result.completionTokens);
                     if (result.totalTokens > 0) job.put("totalTokens", result.totalTokens);
@@ -412,9 +414,14 @@ public class SullyStoryBackgroundService extends Service {
         long attemptStartedAt = System.currentTimeMillis();
         long firstByteTimeoutMs = Math.max(0L, Math.min(300_000L, route.optLong("firstByteTimeoutMs", 0L)));
         long firstVisibleDeadlineMs = firstByteTimeoutMs > 0L ? attemptStartedAt + firstByteTimeoutMs : 0L;
+
         AtomicBoolean visibleContent = new AtomicBoolean(false);
         AtomicBoolean firstVisibleTimedOut = new AtomicBoolean(false);
+        AtomicBoolean idleTimedOut = new AtomicBoolean(false);
+        AtomicLong lastStreamActivityAt = new AtomicLong(attemptStartedAt);
+
         ScheduledExecutorService firstVisibleTimer = null;
+        ScheduledExecutorService idleWatchdog = null;
         Call call = null;
 
         try {
@@ -439,14 +446,13 @@ public class SullyStoryBackgroundService extends Service {
                 body.remove("stream_options");
             }
 
-            // HttpURLConnection 在部分 Android 机型 / 中转上会把长 SSE 读到一半后直接
-            // "Software caused connection abort"。这里改用 OkHttp 自己的连接池、HTTP/2
-            // 与流式 source；已出正文后绝不自动重发，避免重复扣费和两条回复拼接。
             OkHttpClient client = new OkHttpClient.Builder()
                 .connectTimeout(Math.min(20_000L, timeoutMs), TimeUnit.MILLISECONDS)
                 .writeTimeout(Math.min(20_000L, timeoutMs), TimeUnit.MILLISECONDS)
                 .readTimeout(0L, TimeUnit.MILLISECONDS)
-                .callTimeout(timeoutMs, TimeUnit.MILLISECONDS)
+                // 不能把 timeoutMs 当“整轮总时长”。长篇流式只要一直在吐数据就应该继续写完，
+                // 否则 240 秒一到会把正常生成硬切成半篇。
+                .callTimeout(0L, TimeUnit.MILLISECONDS)
                 .retryOnConnectionFailure(true)
                 .build();
 
@@ -455,12 +461,13 @@ public class SullyStoryBackgroundService extends Service {
                 .header("Authorization", "Bearer " + route.optString("apiKey", "sk-none"))
                 .header("Accept", stream ? "text/event-stream, application/json" : "application/json, text/event-stream")
                 .header("Cache-Control", "no-cache")
-                .header("User-Agent", "SullyOS-StoryBackground/2.0")
+                .header("User-Agent", "SullyOS-StoryBackground/2.1")
                 .post(RequestBody.create(body.toString(), MediaType.get("application/json; charset=utf-8")))
                 .build();
 
             call = client.newCall(request);
             final Call activeCall = call;
+
             if (firstByteTimeoutMs > 0L) {
                 long delayMs = Math.max(1L, firstVisibleDeadlineMs - System.currentTimeMillis());
                 firstVisibleTimer = Executors.newSingleThreadScheduledExecutor();
@@ -471,6 +478,18 @@ public class SullyStoryBackgroundService extends Service {
                     }
                 }, delayMs, TimeUnit.MILLISECONDS);
             }
+
+            // timeoutMs 现在表示“流连续这么久完全没有活动才判死”，而不是总生成时长。
+            // 只要上游还在持续吐 SSE，长篇可以超过 4 分钟继续生成到真正结束。
+            idleWatchdog = Executors.newSingleThreadScheduledExecutor();
+            idleWatchdog.scheduleAtFixedRate(() -> {
+                if (!visibleContent.get()) return;
+                long idleFor = System.currentTimeMillis() - lastStreamActivityAt.get();
+                if (idleFor >= timeoutMs) {
+                    idleTimedOut.set(true);
+                    activeCall.cancel();
+                }
+            }, 5_000L, 5_000L, TimeUnit.MILLISECONDS);
 
             try (Response http = call.execute()) {
                 int status = http.code();
@@ -485,7 +504,13 @@ public class SullyStoryBackgroundService extends Service {
                 JSONObject response;
 
                 if (sse) {
-                    SseResult parsed = readSse(responseBody.source(), streamedContent, visibleContent);
+                    SseResult parsed = readSse(
+                        responseBody.source(),
+                        streamedContent,
+                        visibleContent,
+                        lastStreamActivityAt,
+                        jobId
+                    );
                     raw = parsed.raw;
                     response = parsed.response;
                 } else {
@@ -532,16 +557,18 @@ public class SullyStoryBackgroundService extends Service {
                 );
             }
 
-            boolean hardTimeout = networkError instanceof InterruptedIOException
-                || rawMessage.toLowerCase(Locale.ROOT).contains("timeout");
-            String message;
-            if (hardTimeout) {
-                message = "剧情后台请求超时（" + Math.max(1L, Math.round(timeoutMs / 1000.0)) + " 秒）";
-            } else if (committed) {
-                message = "剧情后台 OkHttp 流式连接在正文生成中被上游或网络中断";
-            } else {
-                message = "剧情后台 OkHttp 连接在首字前失败";
+            if (committed && idleTimedOut.get()) {
+                throw new RouteFailure(
+                    0,
+                    "剧情后台流连续 " + Math.max(1L, Math.round(timeoutMs / 1000.0)) + " 秒没有任何新数据，已判定连接失活",
+                    true,
+                    streamedContent.toString()
+                );
             }
+
+            String message = committed
+                ? "剧情后台 OkHttp 流式连接在正文生成中被上游或网络中断"
+                : "剧情后台 OkHttp 连接在首字前失败";
             if (!rawMessage.isEmpty()) message += "（" + rawMessage + "）";
             throw new RouteFailure(0, message, committed, streamedContent.toString());
         } catch (Exception error) {
@@ -553,15 +580,16 @@ public class SullyStoryBackgroundService extends Service {
             );
         } finally {
             if (firstVisibleTimer != null) firstVisibleTimer.shutdownNow();
-            // 只在异常路径取消；正常 try-with-resources 会自己收尾。
-            if (call != null && !call.isExecuted()) call.cancel();
+            if (idleWatchdog != null) idleWatchdog.shutdownNow();
         }
     }
 
-    private static SseResult readSse(
+    private SseResult readSse(
         BufferedSource source,
         StringBuilder content,
-        AtomicBoolean visibleContent
+        AtomicBoolean visibleContent,
+        AtomicLong lastStreamActivityAt,
+        String jobId
     ) throws Exception {
         StringBuilder raw = new StringBuilder();
         JSONObject usage = null;
@@ -569,10 +597,14 @@ public class SullyStoryBackgroundService extends Service {
         String id = "";
         String role = "assistant";
         String finishReason = null;
+        long lastPersistAt = 0L;
 
         while (true) {
             String line = source.readUtf8Line();
             if (line == null) break;
+
+            long now = System.currentTimeMillis();
+            lastStreamActivityAt.set(now);
             raw.append(line).append('\n');
 
             String trimmed = line.trim();
@@ -614,12 +646,34 @@ public class SullyStoryBackgroundService extends Service {
             if (!piece.isEmpty()) {
                 content.append(piece);
                 visibleContent.set(true);
+
+                // 原生后台每隔约 0.8 秒把已收到正文落盘。
+                // 前台还开着时可以实时读出来；切屏后 WebView 暂停也没关系，回来会追上当前进度。
+                if (now - lastPersistAt >= 800L) {
+                    JSONObject liveJob = readJobFile(this, jobId);
+                    if (liveJob != null && "running".equals(liveJob.optString("status"))) {
+                        liveJob.put("partialContent", content.toString());
+                        liveJob.put("updatedAt", now);
+                        writeJobFile(this, liveJob);
+                    }
+                    lastPersistAt = now;
+                }
             }
 
             if (choice.has("finish_reason") && !choice.isNull("finish_reason")) {
                 finishReason = choice.optString("finish_reason", null);
-                // finish_reason 已经说明本轮完整结束，不强求额外 [DONE]。
                 if (finishReason != null && !finishReason.isEmpty()) break;
+            }
+        }
+
+        // 最后一批不足 0.8 秒也补一次，避免恢复前台时少看到结尾。
+        if (content.length() > 0) {
+            long now = System.currentTimeMillis();
+            JSONObject liveJob = readJobFile(this, jobId);
+            if (liveJob != null && "running".equals(liveJob.optString("status"))) {
+                liveJob.put("partialContent", content.toString());
+                liveJob.put("updatedAt", now);
+                writeJobFile(this, liveJob);
             }
         }
 
