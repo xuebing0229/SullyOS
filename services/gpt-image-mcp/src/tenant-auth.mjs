@@ -75,6 +75,10 @@ export function createBearerTenantRegistry({
       const match = String(raw || "").match(/^Bearer\s+(.+)$/i);
       return match ? this.resolve(match[1]) : null;
     },
+    resolveId(id) {
+      const match = records.find(record => record.id === String(id || ""));
+      return match ? { ...match } : null;
+    },
     listTenantIds() {
       return records.map(record => record.id);
     }
