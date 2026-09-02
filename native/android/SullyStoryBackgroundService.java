@@ -413,7 +413,10 @@ public class SullyStoryBackgroundService extends Service {
         StringBuilder streamedContent = new StringBuilder();
         long attemptStartedAt = System.currentTimeMillis();
         long firstByteTimeoutMs = Math.max(0L, Math.min(300_000L, route.optLong("firstByteTimeoutMs", 0L)));
-        long firstVisibleDeadlineMs = firstByteTimeoutMs > 0L ? attemptStartedAt + firstByteTimeoutMs : 0L;
+        // 故障转移线路用用户配置的首字等待；直连没有该值时，也不能无限挂死。
+        // 直连退回到本轮 timeoutMs 作为“首个可见正文”的兜底等待，而不是整轮总时长。
+        long firstVisibleWaitMs = firstByteTimeoutMs > 0L ? firstByteTimeoutMs : timeoutMs;
+        long firstVisibleDeadlineMs = attemptStartedAt + firstVisibleWaitMs;
 
         AtomicBoolean visibleContent = new AtomicBoolean(false);
         AtomicBoolean firstVisibleTimedOut = new AtomicBoolean(false);
@@ -468,7 +471,7 @@ public class SullyStoryBackgroundService extends Service {
             call = client.newCall(request);
             final Call activeCall = call;
 
-            if (firstByteTimeoutMs > 0L) {
+            {
                 long delayMs = Math.max(1L, firstVisibleDeadlineMs - System.currentTimeMillis());
                 firstVisibleTimer = Executors.newSingleThreadScheduledExecutor();
                 firstVisibleTimer.schedule(() -> {
@@ -551,7 +554,7 @@ public class SullyStoryBackgroundService extends Service {
             if (!committed && firstVisibleTimedOut.get()) {
                 throw new RouteFailure(
                     0,
-                    "首字等待超时（" + Math.max(1L, Math.round(firstByteTimeoutMs / 1000.0)) + " 秒），已停止当前线路",
+                    "首字等待超时（" + Math.max(1L, Math.round(firstVisibleWaitMs / 1000.0)) + " 秒），已停止当前线路",
                     false,
                     ""
                 );
@@ -592,6 +595,7 @@ public class SullyStoryBackgroundService extends Service {
         String jobId
     ) throws Exception {
         StringBuilder raw = new StringBuilder();
+        StringBuilder reasoning = new StringBuilder();
         JSONObject usage = null;
         String model = "";
         String id = "";
@@ -634,11 +638,44 @@ public class SullyStoryBackgroundService extends Service {
             String piece = "";
             if (delta != null) {
                 Object value = delta.opt("content");
-                if (value instanceof String) piece = (String) value;
+                if (value instanceof String) {
+                    piece = (String) value;
+                } else if (value instanceof JSONArray) {
+                    JSONArray blocks = (JSONArray) value;
+                    StringBuilder visible = new StringBuilder();
+                    for (int i = 0; i < blocks.length(); i++) {
+                        JSONObject block = blocks.optJSONObject(i);
+                        if (block == null) continue;
+                        String type = block.optString("type", "");
+                        if ("text".equals(type)) visible.append(block.optString("text", ""));
+                        else if ("thinking".equals(type)) reasoning.append(block.optString("thinking", ""));
+                    }
+                    piece = visible.toString();
+                }
+                Object rr = delta.has("reasoning_content") ? delta.opt("reasoning_content")
+                    : delta.has("reasoning") ? delta.opt("reasoning")
+                    : delta.opt("thinking");
+                if (rr instanceof String) reasoning.append((String) rr);
                 String r = delta.optString("role", "");
                 if (!r.isEmpty()) role = r;
             } else if (message != null) {
-                piece = message.optString("content", "");
+                Object value = message.opt("content");
+                if (value instanceof String) {
+                    piece = (String) value;
+                } else if (value instanceof JSONArray) {
+                    JSONArray blocks = (JSONArray) value;
+                    StringBuilder visible = new StringBuilder();
+                    for (int i = 0; i < blocks.length(); i++) {
+                        JSONObject block = blocks.optJSONObject(i);
+                        if (block == null) continue;
+                        if ("text".equals(block.optString("type", ""))) visible.append(block.optString("text", ""));
+                    }
+                    piece = visible.toString();
+                }
+                Object rr = message.has("reasoning_content") ? message.opt("reasoning_content")
+                    : message.has("reasoning") ? message.opt("reasoning")
+                    : message.opt("thinking");
+                if (rr instanceof String) reasoning.append((String) rr);
                 String r = message.optString("role", "");
                 if (!r.isEmpty()) role = r;
             }
@@ -677,12 +714,13 @@ public class SullyStoryBackgroundService extends Service {
             }
         }
 
-        JSONObject response = assembledResponse(id, model, role, content.toString(), finishReason, usage);
+        JSONObject response = assembledResponse(id, model, role, content.toString(), reasoning.toString(), finishReason, usage);
         return new SseResult(raw.toString(), response, content.toString());
     }
 
     private static SseResult parseSseText(String rawText) throws Exception {
         StringBuilder content = new StringBuilder();
+        StringBuilder reasoning = new StringBuilder();
         JSONObject usage = null;
         String model = "";
         String id = "";
@@ -706,19 +744,39 @@ public class SullyStoryBackgroundService extends Service {
             JSONObject message = choice.optJSONObject("message");
             if (delta != null) {
                 Object piece = delta.opt("content");
-                if (piece instanceof String) content.append((String) piece);
+                if (piece instanceof String) {
+                    content.append((String) piece);
+                } else if (piece instanceof JSONArray) {
+                    JSONArray blocks = (JSONArray) piece;
+                    for (int i = 0; i < blocks.length(); i++) {
+                        JSONObject block = blocks.optJSONObject(i);
+                        if (block == null) continue;
+                        if ("text".equals(block.optString("type", ""))) content.append(block.optString("text", ""));
+                        else if ("thinking".equals(block.optString("type", ""))) reasoning.append(block.optString("thinking", ""));
+                    }
+                }
+                Object rr = delta.has("reasoning_content") ? delta.opt("reasoning_content")
+                    : delta.has("reasoning") ? delta.opt("reasoning")
+                    : delta.opt("thinking");
+                if (rr instanceof String) reasoning.append((String) rr);
                 String r = delta.optString("role", "");
                 if (!r.isEmpty()) role = r;
             } else if (message != null) {
-                content.append(message.optString("content", ""));
+                Object piece = message.opt("content");
+                if (piece instanceof String) content.append((String) piece);
+                Object rr = message.has("reasoning_content") ? message.opt("reasoning_content")
+                    : message.has("reasoning") ? message.opt("reasoning")
+                    : message.opt("thinking");
+                if (rr instanceof String) reasoning.append((String) rr);
             }
             if (choice.has("finish_reason") && !choice.isNull("finish_reason")) finishReason = choice.optString("finish_reason", null);
         }
-        return new SseResult(rawText, assembledResponse(id, model, role, content.toString(), finishReason, usage), content.toString());
+        return new SseResult(rawText, assembledResponse(id, model, role, content.toString(), reasoning.toString(), finishReason, usage), content.toString());
     }
 
-    private static JSONObject assembledResponse(String id, String model, String role, String content, String finishReason, JSONObject usage) throws Exception {
+    private static JSONObject assembledResponse(String id, String model, String role, String content, String reasoning, String finishReason, JSONObject usage) throws Exception {
         JSONObject message = new JSONObject().put("role", role).put("content", content);
+        if (reasoning != null && !reasoning.isEmpty()) message.put("reasoning_content", reasoning);
         JSONObject choice = new JSONObject().put("index", 0).put("message", message);
         if (finishReason == null) choice.put("finish_reason", JSONObject.NULL);
         else choice.put("finish_reason", finishReason);
