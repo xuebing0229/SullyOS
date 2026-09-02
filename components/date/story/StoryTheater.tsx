@@ -31,7 +31,7 @@ interface Props {
 type View = 'list' | 'editor' | 'session' | 'preset' | 'masks' | 'vectors';
 
 const StoryTheaterContent: React.FC<Props> = ({ onClose }) => {
-    const { characters, userProfile, addToast, remoteVectorConfig } = useOS();
+    const { characters, userProfile, addToast, remoteVectorConfig, registerBackHandler } = useOS();
     const [view, setView] = useState<View>('list');
     const [entries, setEntries] = useState<StoryTheaterEntry[]>([]);
     const [customPresets, setCustomPresets] = useState<StoryTheaterPreset[]>([]);
@@ -52,6 +52,42 @@ const StoryTheaterContent: React.FC<Props> = ({ onClose }) => {
     }, []);
 
     useEffect(() => { void reload(); }, [reload]);
+
+    useEffect(() => {
+        return registerBackHandler(() => {
+            // session 内部还有自己的弹层 / 楼层导航，交给 StoryTheaterSession 先处理。
+            if (view === 'session') return false;
+
+            if (deletingEntry) {
+                if (!deletingStory) setDeletingEntry(null);
+                return true;
+            }
+
+            if (view === 'vectors') {
+                setView(activeEntry ? 'session' : 'list');
+                return true;
+            }
+            if (view === 'masks') {
+                setView(activeEntry ? 'editor' : 'list');
+                return true;
+            }
+            if (view === 'preset') {
+                setView(activeEntry ? 'editor' : 'list');
+                return true;
+            }
+            if (view === 'editor') {
+                setView(activeEntry && entries.some(item => item.id === activeEntry.id) ? 'session' : 'list');
+                return true;
+            }
+
+            // 文游列表再按一次，才真正回到上一级“见面”界面。
+            if (view === 'list') {
+                onClose();
+                return true;
+            }
+            return false;
+        });
+    }, [activeEntry, deletingEntry, deletingStory, entries, onClose, registerBackHandler, view]);
 
     const importPreset = useCallback(async (file: File): Promise<StoryTheaterPreset | null> => {
         try {
