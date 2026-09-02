@@ -15,6 +15,7 @@ import {
     generateRoleMoment,
     loadMomentPosts,
     loadMomentsSettings,
+    maybeReplyToUserMomentComment,
     saveMomentsSettings,
     updateMomentAndSyncedCards,
 } from '../utils/moments';
@@ -295,6 +296,19 @@ const MomentsApp: React.FC = () => {
         await updateMomentAndSyncedCards(updated);
         setPosts(prev => prev.map(x => x.id === updated.id ? updated : x));
         setCommentTarget(null); setCommentText('');
+
+        if (updated.authorType === 'character' && updated.authorCharId) {
+            void maybeReplyToUserMomentComment({
+                postId: updated.id,
+                userCommentId: comment.id,
+                characters,
+                userProfile,
+                apiConfig,
+                settings,
+            }).catch(err => {
+                addToast(`角色回复生成失败：${err?.message || '未知错误'}`, 'error');
+            });
+        }
     };
 
     const removePost = async (post: SocialPost) => {
