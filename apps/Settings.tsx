@@ -920,6 +920,11 @@ const Settings: React.FC = () => {
   const [statusMsg, setStatusMsg] = useState('');
   const [testingApi, setTestingApi] = useState(false);
   const [testApiResult, setTestApiResult] = useState<string | null>(null);
+  const [presetLatencyTests, setPresetLatencyTests] = useState<Record<string, {
+      status: 'testing' | 'success' | 'error';
+      elapsedMs?: number;
+      message?: string;
+  }>>({});
   const importInputRef = useRef<HTMLInputElement>(null);
   const avatarModelBackupInputRef = useRef<HTMLInputElement>(null);
   const refreshAvatarModelInventory = useCallback(async () => {
@@ -1236,6 +1241,105 @@ const Settings: React.FC = () => {
     updateApiConfig({ visionApi: next });
     setVisionStatusMsg('已保存');
     setTimeout(() => setVisionStatusMsg(''), 2000);
+  };
+
+  const formatApiLatency = (elapsedMs: number) => {
+      if (elapsedMs < 1000) return `${Math.max(0, Math.round(elapsedMs))}ms`;
+      return `${(elapsedMs / 1000).toFixed(elapsedMs < 10000 ? 2 : 1)}s`;
+  };
+
+  const runApiLatencyTest = async (config: {
+      baseUrl: string;
+      apiKey: string;
+      model: string;
+      stream?: boolean;
+  }) => {
+      const baseUrl = normalizeApiBaseUrl(config.baseUrl);
+      const apiKey = normalizeApiCredential(config.apiKey);
+      const model = normalizeApiModel(config.model);
+      if (!baseUrl || !apiKey || !model) throw new Error('URL、Key 或 Model 不完整');
+
+      const startedAt = performance.now();
+      const res = await fetch(`${baseUrl}/chat/completions`, {
+          method: 'POST',
+          headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${apiKey}`,
+          },
+          body: JSON.stringify({
+              model,
+              messages: [{ role: 'user', content: 'Hi' }],
+              max_tokens: 5,
+              stream: config.stream === true,
+          }),
+      });
+
+      if (!res.ok) {
+          const text = await res.text().catch(() => '');
+          throw new Error(`HTTP ${res.status}${text ? `: ${text.slice(0, 100)}` : ''}`);
+      }
+
+      // safeResponseJson 同时兼容普通 JSON 和 SSE；只发 5 token，完整耗时基本就是一次真实短回复的响应速度。
+      const data = await safeResponseJson(res);
+      const reply = extractContent(data);
+      return { elapsedMs: performance.now() - startedAt, reply };
+  };
+
+  const testPresetModelLatency = async (preset: typeof apiPresets[0], model: string) => {
+      const key = `${preset.id}::${model}`;
+      if (presetLatencyTests[key]?.status === 'testing') return;
+
+      const startedAt = performance.now();
+      setPresetLatencyTests(prev => ({
+          ...prev,
+          [key]: { status: 'testing' },
+      }));
+
+      try {
+          const result = await runApiLatencyTest({
+              baseUrl: preset.config.baseUrl,
+              apiKey: preset.config.apiKey,
+              model,
+              stream: preset.config.stream === true,
+          });
+          setPresetLatencyTests(prev => ({
+              ...prev,
+              [key]: { status: 'success', elapsedMs: result.elapsedMs },
+          }));
+      } catch (error: any) {
+          setPresetLatencyTests(prev => ({
+              ...prev,
+              [key]: {
+                  status: 'error',
+                  elapsedMs: performance.now() - startedAt,
+                  message: error?.message || '连接失败',
+              },
+          }));
+      }
+  };
+
+  const handleTestCurrentApi = async () => {
+      if (!localUrl.trim() || !localKey.trim() || !localModel.trim() || testingApi) return;
+      setTestingApi(true);
+      setTestApiResult(null);
+      const startedAt = performance.now();
+      try {
+          const result = await runApiLatencyTest({
+              baseUrl: localUrl,
+              apiKey: localKey,
+              model: localModel,
+              stream: localStream,
+          });
+          setTestApiResult(
+              `✅ 连接成功 · ${formatApiLatency(result.elapsedMs)} — 模型回复: "${result.reply.slice(0, 30)}"`,
+          );
+      } catch (error: any) {
+          setTestApiResult(
+              `❌ 连接失败 · ${formatApiLatency(performance.now() - startedAt)}: ${error?.message || '未知错误'}`,
+          );
+      } finally {
+          setTestingApi(false);
+      }
   };
 
   const handleTestVisionApi = async () => {
@@ -2505,6 +2609,8 @@ const Settings: React.FC = () => {
                                                 const modelActive =
                                                     activePresetId === preset.id
                                                     && normalizeApiModel(apiConfig.model) === normalizeApiModel(item.model);
+                                                const latencyKey = `${preset.id}::${item.model}`;
+                                                const latencyTest = presetLatencyTests[latencyKey];
                                                 return (
                                                     <div key={item.model} className={`flex items-center gap-2 rounded-lg border px-2.5 py-1.5 ${
                                                         modelActive
@@ -2521,6 +2627,37 @@ const Settings: React.FC = () => {
                                                         >
                                                             {item.model}
                                                             {modelActive && <span className="ml-1 font-sans text-[8px]">· 当前</span>}
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            onClick={(event) => {
+                                                                event.stopPropagation();
+                                                                void testPresetModelLatency(preset, item.model);
+                                                            }}
+                                                            disabled={latencyTest?.status === 'testing'}
+                                                            aria-label={`测试 ${item.model} 响应速度`}
+                                                            title={
+                                                                latencyTest?.status === 'success'
+                                                                    ? `本次响应耗时 ${formatApiLatency(latencyTest.elapsedMs || 0)}，点按重新测试`
+                                                                    : latencyTest?.status === 'error'
+                                                                        ? `${latencyTest.message || '测速失败'}${typeof latencyTest.elapsedMs === 'number' ? ` · ${formatApiLatency(latencyTest.elapsedMs)}` : ''}`
+                                                                        : '发送一个极短请求测试当前响应耗时'
+                                                            }
+                                                            className={`shrink-0 rounded-lg px-2 py-1 text-[9px] font-bold transition-colors active:scale-95 disabled:opacity-60 ${
+                                                                latencyTest?.status === 'success'
+                                                                    ? 'bg-sky-50 text-sky-600 hover:bg-sky-100'
+                                                                    : latencyTest?.status === 'error'
+                                                                        ? 'bg-red-50 text-red-500 hover:bg-red-100'
+                                                                        : 'bg-slate-100 text-slate-400 hover:bg-slate-200'
+                                                            }`}
+                                                        >
+                                                            {latencyTest?.status === 'testing'
+                                                                ? '测速中…'
+                                                                : latencyTest?.status === 'success'
+                                                                    ? formatApiLatency(latencyTest.elapsedMs || 0)
+                                                                    : latencyTest?.status === 'error'
+                                                                        ? `失败${typeof latencyTest.elapsedMs === 'number' ? ` ${formatApiLatency(latencyTest.elapsedMs)}` : ''}`
+                                                                        : '测速'}
                                                         </button>
                                                         <button
                                                             type="button"
@@ -2565,7 +2702,7 @@ const Settings: React.FC = () => {
                         })}
                     </div>
                     <p className="text-[9px] text-slate-300 mt-1.5 pl-1 leading-relaxed">
-                        一条预设共用 URL / Key；点模型直接切换。价格只属于对应模型，不会串到同预设里的其它模型。
+                        一条预设共用 URL / Key；点模型直接切换。“测速”会发一个极短请求并把本次耗时标在模型旁边，不会切换当前模型。价格只属于对应模型，不会串到同预设里的其它模型。
                     </p>
                 </div>
             )}
@@ -2670,36 +2807,7 @@ const Settings: React.FC = () => {
                 )}
 
                 <button
-                    onClick={async () => {
-                        if (!localUrl.trim() || !localKey.trim() || !localModel.trim()) return;
-                        setTestingApi(true);
-                        setTestApiResult(null);
-                        try {
-                            const res = await fetch(`${localUrl.trim().replace(/\/+$/, '')}/chat/completions`, {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${localKey.trim()}` },
-                                body: JSON.stringify({
-                                    model: localModel.trim(),
-                                    messages: [{ role: 'user', content: 'Hi' }],
-                                    max_tokens: 5,
-                                    stream: localStream,
-                                }),
-                            });
-                            if (res.ok) {
-                                // 走 safeResponseJson —— 它能透明把 SSE 流响应拼成普通 chat/completion 结构
-                                const data = await safeResponseJson(res);
-                                const reply = extractContent(data);
-                                setTestApiResult(`✅ 连接成功 — 模型回复: "${reply.slice(0, 30)}"`);
-                            } else {
-                                const text = await res.text().catch(() => '');
-                                setTestApiResult(`❌ HTTP ${res.status}: ${text.slice(0, 100)}`);
-                            }
-                        } catch (err: any) {
-                            setTestApiResult(`❌ 连接失败: ${err.message}`);
-                        } finally {
-                            setTestingApi(false);
-                        }
-                    }}
+                    onClick={() => { void handleTestCurrentApi(); }}
                     disabled={testingApi || !localUrl.trim() || !localKey.trim() || !localModel.trim()}
                     className={`w-full py-2.5 rounded-2xl font-bold text-sm border mt-2 active:scale-95 transition-all ${
                         testingApi || !localUrl.trim() || !localKey.trim() || !localModel.trim()
