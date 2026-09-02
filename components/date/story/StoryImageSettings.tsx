@@ -25,10 +25,17 @@ const fallback = (entry: StoryTheaterEntry): StoryTheaterImageConfig => ({
 const Toggle: React.FC<{ value: boolean; onChange: (value: boolean) => void }> = ({ value, onChange }) => <button type='button' aria-pressed={value} onClick={() => onChange(!value)} className={`relative h-7 w-12 shrink-0 rounded-full transition ${value ? 'bg-violet-600' : 'bg-slate-200'}`}><span className={`absolute top-1 h-5 w-5 rounded-full bg-white shadow transition ${value ? 'left-6' : 'left-1'}`} /></button>;
 
 const StoryImageSettingsButton: React.FC<Props> = ({ entry, onChange, triggerLabel, triggerClassName }) => {
-    const { addToast, characters, userProfile } = useOS();
+    const { addToast, characters, userProfile, registerBackHandler } = useOS();
     const [open, setOpen] = useState(false);
     const [draft, setDraft] = useState<StoryTheaterImageConfig>(() => fallback(entry));
     useEffect(() => { if (open) setDraft(fallback(entry)); }, [entry, open]);
+    useEffect(() => {
+        if (!open) return;
+        return registerBackHandler(() => {
+            setOpen(false);
+            return true;
+        });
+    }, [open, registerBackHandler]);
     const settings = loadBuiltinImageSettings();
     const preferred = settings.preferredEngine;
     const ready = Boolean(preferred && settings.engines[preferred].enabled && getBuiltinImageMcpServers().some(server => server.enabled && (server.tools || []).length > 0));
