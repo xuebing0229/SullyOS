@@ -20,8 +20,6 @@ jobs:
       CI: 'true'
       CLOUDFLARE_ACCOUNT_ID: 7387e6c44835b53fc5a77d9fc3d4d201
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      VITE_UMAMI_SCRIPT_URL: ${{ vars.UMAMI_SCRIPT_URL }}
-      VITE_UMAMI_WEBSITE_ID: ${{ vars.UMAMI_WEBSITE_ID }}
 
     steps:
       - name: Checkout master
