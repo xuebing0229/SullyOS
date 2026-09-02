@@ -2,6 +2,7 @@ import type { APIConfig, ApiPreset, CharacterProfile, Message, StoryTheaterEntry
 import { resolveApiExecutionPlan, executeOpenAiChatPlan } from './apiFailover';
 import { storyTheaterThreadId } from './storyTheater';
 import { callMcpTool, getMcpUseNativeTools } from './mcpClient';
+import { callMcpToolWithBackgroundImage } from './backgroundImageJobs';
 import {
     buildMcpOpenAITools,
     buildMcpRejectedToolsFallbackBody,
@@ -28,6 +29,16 @@ interface GenerateStoryImageInput {
     userProfile: UserProfile;
     userName: string;
     messages: Message[];
+    /** 要把本次配图挂回的剧情正文楼层。存在时优先走可恢复后台 /jobs。 */
+    targetMessageId?: number;
+}
+
+export interface StoryTheaterImageGenerationResult {
+    frame?: StoryTheaterImageFrame;
+    queued?: {
+        localJobId: string;
+        clientRequestId: string;
+    };
 }
 
 const compact = (value?: string): string => (value || '').replace(/\s+/g, ' ').trim();
@@ -137,7 +148,7 @@ ${transcript}
 目标画幅：${config?.width || 1216}×${config?.height || 832}。剧情剧场只补充这些场景要求，其余模型/预设/参考图策略遵循主聊天现有生图工具与 schema。请直接调用一个工具。`;
 };
 
-export async function generateStoryTheaterImage(input: GenerateStoryImageInput): Promise<StoryTheaterImageFrame> {
+export async function generateStoryTheaterImage(input: GenerateStoryImageInput): Promise<StoryTheaterImageGenerationResult> {
     if (!input.actors.length) throw new Error('剧情没有可用于配图的出场角色。');
 
     const plannerApiConfig = input.plannerApiConfig || input.apiConfig;
@@ -218,9 +229,36 @@ export async function generateStoryTheaterImage(input: GenerateStoryImageInput):
         userProfile: input.userProfile,
     });
 
-    const result = await callMcpTool(selected.server, selected.toolName, preparedArgs);
+    const result = input.targetMessageId
+        ? await callMcpToolWithBackgroundImage(
+            selected.server,
+            selected.toolName,
+            preparedArgs,
+            {
+                charId: storyTheaterThreadId(input.entry.id),
+                ownerType: 'story-theater',
+                storyTheaterTarget: {
+                    entryId: input.entry.id,
+                    messageId: input.targetMessageId,
+                    title: input.entry.title || '剧情剧场',
+                },
+            },
+        )
+        : await callMcpTool(selected.server, selected.toolName, preparedArgs);
     if (!result.success) throw new Error(result.error || '剧情配图生成失败');
 
+    // 新版内置生图服务会先把任务交给服务器 /jobs。此时“成功”表示已可靠接单，
+    // 不是“没有图”；全局后台任务监视器会在完成后把图片挂回 targetMessageId。
+    if (result.backgroundJob) {
+        return {
+            queued: {
+                localJobId: result.backgroundJob.localJobId,
+                clientRequestId: result.backgroundJob.clientRequestId,
+            },
+        };
+    }
+
+    // 老服务不支持 /jobs 时，callMcpToolWithBackgroundImage 会安全回退到原直连路径。
     const galleryOwner: CharacterProfile = {
         ...input.actors[0],
         id: storyTheaterThreadId(input.entry.id),
@@ -247,10 +285,12 @@ export async function generateStoryTheaterImage(input: GenerateStoryImageInput):
     const asset = outcome.assets[0];
     if (!asset) throw new Error(outcome.errors[0] || '剧情配图保存到本机与相册失败');
     return {
-        imageRef: asset.blobRef,
-        galleryImageId: asset.galleryImageId,
-        prompt: asset.prompt,
-        engine: asset.engine,
-        generatedAt: asset.createdAt,
+        frame: {
+            imageRef: asset.blobRef,
+            galleryImageId: asset.galleryImageId,
+            prompt: asset.prompt,
+            engine: asset.engine,
+            generatedAt: asset.createdAt,
+        },
     };
 }
