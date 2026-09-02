@@ -26,6 +26,8 @@ export type ApiFailoverScope = 'chat' | 'emotion';
 
 export interface ApiFailoverMember {
     presetId: string;
+    /** Selected model inside the preset. Legacy entries omit this and use preset.config.model. */
+    model?: string;
     enabled: boolean;
     /**
      * 主聊天线路愿意等待“首次有效输出”的时间。0 / undefined = 不单独限制。
@@ -191,8 +193,10 @@ export function normalizeApiFailoverGroup(
 
     for (const item of Array.isArray(input?.members) ? input!.members! : []) {
         const presetId = String(item?.presetId || '').trim();
-        if (!presetId || seen.has(presetId)) continue;
-        seen.add(presetId);
+        const model = String(item?.model || '').trim();
+        const identity = `${presetId}\u0000${model}`;
+        if (!presetId || seen.has(identity)) continue;
+        seen.add(identity);
         const firstByteTimeoutMs = scope === 'chat'
             ? finiteInt(
                 item?.firstByteTimeoutMs,
@@ -203,6 +207,7 @@ export function normalizeApiFailoverGroup(
             : 0;
         members.push({
             presetId,
+            ...(model ? { model } : {}),
             enabled: item?.enabled !== false,
             ...(firstByteTimeoutMs > 0
                 ? { firstByteTimeoutMs }
@@ -644,7 +649,11 @@ function breakerKey(
     scope: ApiFailoverScope,
     route: ResolvedApiRoute,
 ): string {
-    return `${scope}:${route.presetId}`;
+    return [
+        scope,
+        route.presetId,
+        route.api.model.trim(),
+    ].join(':');
 }
 
 function getRouteBreaker(
