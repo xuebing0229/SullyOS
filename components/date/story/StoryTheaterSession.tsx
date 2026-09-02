@@ -62,10 +62,10 @@ import StoryImageSettingsButton from './StoryImageSettings';
 import AppMemoryCandidatePanel from '../../AppMemoryCandidatePanel';
 import { generateAppMemoryCandidates } from '../../../utils/appMemoryBridge';
 import {
+    acquireNativeStoryKeepAlive,
     clearPendingNativeStoryJob,
-    executeStoryCompletionInNativeBackground,
-    getPendingNativeStoryJob,
     isNativeStoryBackgroundRuntime,
+    releaseNativeStoryKeepAlive,
 } from '../../../utils/nativeStoryBackground';
 import {
     buildStoryContinueInstruction,
@@ -680,49 +680,46 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             ...generationSettings,
         };
 
+        // Android 后台只开前台服务 + WakeLock 保活；模型请求本身仍走已经验证稳定的
+        // WebView safeFetchJson/fetch SSE。不要再把同一请求改写成另一套原生 HTTP 客户端，
+        // 否则会出现 HttpURLConnection/OkHttp 独有的 Software caused connection abort。
+        let keepAliveLease: string | null = null;
         if (background && isNativeStoryBackgroundRuntime()) {
             try {
-                const data = await executeStoryCompletionInNativeBackground({
-                    ownerKey: background.ownerKey,
-                    title: background.title,
-                    plan,
-                    body: requestBody,
-                    meta: background.meta,
-                    onPromptTokens,
-                    onStreamText,
-                });
-                const content = extractContent(data).trim();
-                if (!content) throw new Error(describeEmptyStoryCompletion(data));
-                return content;
-            } catch (error: any) {
-                const partial = String(error?.partialContent || '').trim();
-                if (partial && onStreamText) onStreamText(partial);
-                throw error;
+                // 顺手清掉旧版“原生直连任务”的残留记录，避免升级后幽灵恢复。
+                await clearPendingNativeStoryJob(background.ownerKey);
+                keepAliveLease = await acquireNativeStoryKeepAlive(background.ownerKey, background.title);
+            } catch (keepAliveError) {
+                console.warn('[StoryTheater] native keepalive unavailable; continuing with browser fetch', keepAliveError);
             }
         }
 
-        const { value: data } = await executeOpenAiChatPlan({
-            plan,
-            body: requestBody,
-            meta: {
-                appId: 'date',
-                appName: '剧情剧场',
-                purpose: '剧情续写',
-            },
-            directMaxRetries: 2,
-            forceStream: wantsStream,
-            // 剧情正文按“首个可见正文字符”承诺线路：首字前可以故障转移，
-            // 首字一旦已经展示，后续断流也绝不换线路，避免两条线路各写半篇。
-            streamCommitMode: wantsStream ? 'content' : 'activity',
-            streamHooks: wantsStream ? {
-                onDelta: (_delta, fullText) => onStreamText?.(fullText),
-            } : undefined,
-        });
-        const reportedPromptTokens = Number(data?.usage?.prompt_tokens);
-        if (Number.isFinite(reportedPromptTokens) && reportedPromptTokens > 0) onPromptTokens?.(reportedPromptTokens);
-        const content = extractContent(data).trim();
-        if (!content) throw new Error(describeEmptyStoryCompletion(data));
-        return content;
+        try {
+            const { value: data } = await executeOpenAiChatPlan({
+                plan,
+                body: requestBody,
+                meta: {
+                    appId: 'date',
+                    appName: '剧情剧场',
+                    purpose: '剧情续写',
+                },
+                directMaxRetries: 2,
+                forceStream: wantsStream,
+                // 剧情正文按“首个可见正文字符”承诺线路：首字前可以故障转移，
+                // 首字一旦已经展示，后续断流也绝不换线路，避免两条线路各写半篇。
+                streamCommitMode: wantsStream ? 'content' : 'activity',
+                streamHooks: wantsStream ? {
+                    onDelta: (_delta, fullText) => onStreamText?.(fullText),
+                } : undefined,
+            });
+            const reportedPromptTokens = Number(data?.usage?.prompt_tokens);
+            if (Number.isFinite(reportedPromptTokens) && reportedPromptTokens > 0) onPromptTokens?.(reportedPromptTokens);
+            const content = extractContent(data).trim();
+            if (!content) throw new Error(describeEmptyStoryCompletion(data));
+            return content;
+        } finally {
+            await releaseNativeStoryKeepAlive(keepAliveLease);
+        }
     }, [apiConfig, entry.omitSamplingParams]);
 
     const saveCentralAndMirrors = useCallback(async (role: 'user' | 'assistant', content: string, centralMetadata: Record<string, unknown> = {}): Promise<number> => {
@@ -1130,25 +1127,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
         }
     }, [actors, addToast, affinityDrafts, affinityEnabled, apiConfig, appearance.textToneEnabled, applyActorMemoryPipeline, archiveIfNeeded, buildActorContexts, buildMaskMemoryContext, callCompletion, effectivePreset, entry, independentRecall, input, loadMessages, mask, promptIdentityName, saveCentralAndMirrors, selectedBooks, threadId, userProfile]);
 
-    useEffect(() => {
-        if (!isNativeStoryBackgroundRuntime() || sending || sendLock.current) return;
-        const pending = getPendingNativeStoryJob(`story-turn:${entry.id}`);
-        if (!pending) return;
-
-        let cancelled = false;
-        void (async () => {
-            let rerollTarget: Message | undefined;
-            const rerollTargetId = Number(pending.meta?.rerollTargetId || 0);
-            if (rerollTargetId > 0) {
-                const rows = (await DB.getMessagesByCharId(threadId, true))
-                    .filter(message => message.metadata?.source === 'story_theater');
-                rerollTarget = rows.find(message => message.id === rerollTargetId);
-            }
-            if (!cancelled) void send(rerollTarget);
-        })();
-
-        return () => { cancelled = true; };
-    }, [entry.id, send, sending, threadId]);
+    // 新版 Android 后台只保活原来的 WebView fetch，不再创建可恢复的原生 API 任务。
 
     const archivedCount = messages.filter(message => mirrorArchived(message, entry)).length;
     const pendingRetryInput = getPendingStoryRetryInput(messages);
