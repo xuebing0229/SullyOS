@@ -367,7 +367,15 @@ async function readBodyWithStreaming(
         consumeLines();
         if (pending.trim()) emit(asm.feedLine(pending.trim()));
         const assembled = asm.finish();
-        if (assembled) return assembled;
+        if (assembled) {
+            // HTTP 200 / reader.done 只能说明连接结束，不能说明模型完整结束。
+            // 没看到 [DONE] 或 finish_reason 时保留已经收到的正文，但显式标记为“不完整流”；
+            // 剧情剧场会把它当作截断而不是普通成功，避免半句话悄悄落库。
+            if (!sawTerminalEvent) {
+                assembled._sullyStreamIncomplete = true;
+            }
+            return assembled;
+        }
         // 一个 chunk 都没解析出来 → 按原始文本兜底（保留原 preview 报错行为）
     }
     return parseRawBodyText(raw, response.status, contentType);
