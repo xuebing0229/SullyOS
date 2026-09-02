@@ -39,6 +39,8 @@ for (const permission of [
   'android.permission.POST_NOTIFICATIONS',
   'android.permission.FOREGROUND_SERVICE',
   'android.permission.FOREGROUND_SERVICE_DATA_SYNC',
+  // 长剧情切屏 / 熄屏时保持 CPU 继续读 SSE，避免系统在流中途挂起 socket。
+  'android.permission.WAKE_LOCK',
 ]) {
   if (!manifest.includes(permission)) {
     manifest = manifest.replace(
