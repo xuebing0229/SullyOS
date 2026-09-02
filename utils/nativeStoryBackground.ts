@@ -53,6 +53,8 @@ interface SullyStoryBackgroundPlugin {
   submit(options: { spec: Record<string, any> }): Promise<{ job: NativeStoryJob }>;
   status(options: { jobId: string }): Promise<{ job: NativeStoryJob | null }>;
   remove(options: { jobId: string }): Promise<void>;
+  acquireKeepAlive(options: { leaseId: string; title?: string }): Promise<void>;
+  releaseKeepAlive(options: { leaseId: string }): Promise<void>;
 }
 
 const NativeStoryBackground = registerPlugin<SullyStoryBackgroundPlugin>('SullyStoryBackground');
@@ -121,6 +123,35 @@ export const getPendingNativeStoryJob = (ownerKey: string): PendingNativeStoryJo
 
 export const isNativeStoryBackgroundRuntime = (): boolean =>
   Capacitor.isNativePlatform() && Capacitor.getPlatform() === 'android';
+
+const makeKeepAliveLeaseId = (ownerKey: string): string => {
+  const safeOwner = String(ownerKey || 'story').replace(/[^A-Za-z0-9:_-]/g, '_').slice(0, 80);
+  return `storykeep:${safeOwner}:${Date.now().toString(36)}`;
+};
+
+/**
+ * Android 后台只负责“保住进程 + WakeLock”，绝不再自己直连模型 API。
+ * 真正的 completion 仍走前台已经验证稳定的 safeFetchJson/fetch SSE 链路。
+ */
+export const acquireNativeStoryKeepAlive = async (
+  ownerKey: string,
+  title?: string,
+): Promise<string | null> => {
+  if (!isNativeStoryBackgroundRuntime()) return null;
+  const leaseId = makeKeepAliveLeaseId(ownerKey);
+  await NativeStoryBackground.acquireKeepAlive({
+    leaseId,
+    title: String(title || '剧情'),
+  });
+  return leaseId;
+};
+
+export const releaseNativeStoryKeepAlive = async (
+  leaseId: string | null | undefined,
+): Promise<void> => {
+  if (!leaseId || !isNativeStoryBackgroundRuntime()) return;
+  await NativeStoryBackground.releaseKeepAlive({ leaseId }).catch(() => undefined);
+};
 
 const makeJobId = (): string => {
   const random = (() => {
