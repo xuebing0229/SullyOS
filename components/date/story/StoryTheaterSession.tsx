@@ -73,6 +73,8 @@ import {
     MEETING_CONTINUE_DISPLAY_TEXT,
 } from '../../../utils/meetingContinue';
 
+const STORY_UNCERTAIN_RECOVERY_MS = 10 * 60 * 1000;
+
 interface Props {
     entry: StoryTheaterEntry;
     preset: StoryTheaterPreset;
@@ -810,6 +812,8 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                     purpose: '剧情续写',
                 },
                 directMaxRetries: 2,
+                // 单线路剧情不再把“首字慢”误判成失败；连接只要还活着就继续等待。
+                disableDirectFirstVisibleTimeout: true,
                 forceStream: wantsStream,
                 // 剧情正文按“首个可见正文字符”承诺线路：首字前可以故障转移，
                 // 首字一旦已经展示，后续断流也绝不换线路，避免两条线路各写半篇。
@@ -1047,7 +1051,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
         }
     }, [addToast, apiConfig, callCompletion, entry, loadMessages, mask.name, memoryPalaceConfig, onEntryChange, threadId]);
 
-    const send = useCallback(async (rerollTarget?: Message, continueRequested = false, forceUncertainRetry = false) => {
+    const send = useCallback(async (rerollTarget?: Message, continueRequested = false) => {
         if (sendLock.current || actors.length === 0) return;
         sendLock.current = true;
         streamingTextRef.current = '';
@@ -1079,9 +1083,19 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 && latest.metadata?.theaterRequestState === 'uncertain'
                 && !latest.metadata?.theaterArchived
             );
-            if (latestRequestUncertain && !rerollTarget && !forceUncertainRetry) {
-                addToast('上一轮只是连接超时/断开，无法确认上游是否已经停止；已先锁住继续，避免重复生成和重复扣费。', 'info');
+            const uncertainFailedAt = Number(latest?.metadata?.theaterRequestFailedAt || 0);
+            const uncertainStillCooling = latestRequestUncertain
+                && (!uncertainFailedAt || Date.now() - uncertainFailedAt < STORY_UNCERTAIN_RECOVERY_MS);
+            if (uncertainStillCooling && !rerollTarget) {
+                addToast('上一轮正在自动观察期，不需要你判断它死没死；为避免重复请求，这段时间不会再发“继续”。', 'info');
                 return;
+            }
+            if (latestRequestUncertain && !uncertainStillCooling && latest?.id) {
+                await DB.updateMessageMetadata(latest.id, previous => ({
+                    ...previous,
+                    theaterRequestState: 'stale',
+                    theaterRequestStaleAt: Date.now(),
+                }));
             }
             const isReroll = Boolean(rerollTarget && latest?.id === rerollTarget.id && latest.role === 'assistant' && !mirrorArchived(latest, entry));
             partialIsReroll = isReroll;
@@ -1091,11 +1105,10 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             const typedText = input.trim();
             const rerollIndex = isReroll ? before.findIndex(message => message.id === rerollTarget?.id) : -1;
             const previousUser = rerollIndex > 0 ? [...before.slice(0, rerollIndex)].reverse().find(message => message.role === 'user') : undefined;
-            const forcedRetryText = forceUncertainRetry && latestRequestUncertain ? String(latest?.content || '').trim() : '';
             const assistantOpening = !isReroll && !continueRequested && before.length === 0 && entry.openingMode === 'assistant' && !typedText;
             const text = isReroll
                 ? (previousUser?.content.trim() || openingPrompt)
-                : (forcedRetryText || (continueRequested ? MEETING_CONTINUE_DISPLAY_TEXT : (typedText || getPendingStoryRetryInput(before) || (assistantOpening ? openingPrompt : ''))));
+                : (continueRequested ? MEETING_CONTINUE_DISPLAY_TEXT : (typedText || getPendingStoryRetryInput(before) || (assistantOpening ? openingPrompt : '')));
             if (!text) return;
             const retry = !isReroll && latest?.role === 'user' && latest.content === text;
             activeRequestKey = isReroll && rerollTarget
@@ -1399,7 +1412,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 await loadMessages();
             }
             if (isAmbiguousTransportFailure) {
-                addToast('连接超时/断开，但上游是否仍在生成无法确认。已锁住这一轮的普通“继续”，避免重复输出和重复扣费；确定要重发时请点“强制重试”。', 'info');
+                addToast('连接超时/断开后已进入自动观察期：不需要你判断上游死没死。观察期内锁住“继续”；若 10 分钟仍没有结果，会自动视为失联并恢复重试。', 'info');
             } else {
                 addToast(
                     isOpaqueBrowserFailure
@@ -1429,6 +1442,31 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
         ? latestStoryMessage
         : null;
     const canWriteOpening = messages.length === 0 && entry.openingMode === 'assistant';
+
+    useEffect(() => {
+        if (!uncertainRetryMessage) return;
+        const failedAt = Number(uncertainRetryMessage.metadata?.theaterRequestFailedAt || 0);
+        if (!failedAt) return;
+        const remaining = STORY_UNCERTAIN_RECOVERY_MS - (Date.now() - failedAt);
+        const markStale = async () => {
+            await DB.updateMessageMetadata(uncertainRetryMessage.id, previous => {
+                if (previous.theaterRequestState !== 'uncertain') return previous;
+                return {
+                    ...previous,
+                    theaterRequestState: 'stale',
+                    theaterRequestStaleAt: Date.now(),
+                };
+            });
+            await loadMessages();
+            addToast('上一轮已超过自动观察期且仍未回收结果，现在可以重新续写。', 'info');
+        };
+        if (remaining <= 0) {
+            void markStale();
+            return;
+        }
+        const timer = setTimeout(() => void markStale(), remaining);
+        return () => clearTimeout(timer);
+    }, [addToast, loadMessages, uncertainRetryMessage]);
     const filledAffinityActorIds = actors.filter(actor => {
         const draft = affinityDrafts[actor.id];
         return Boolean(draft && (draft.delta !== 0 || draft.reason.trim()));
@@ -1611,15 +1649,8 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             <div className='max-w-2xl mx-auto'>
                 {memoryStatus && <div className='mb-1 flex items-center gap-2 px-1 text-[9px] text-violet-600'><SpinnerGap size={12} className='animate-spin' />{memoryStatus}</div>}
                 {sending && isNativeStoryBackgroundRuntime() && <div className='mb-1 flex items-center gap-2 px-1 text-[9px] text-emerald-700'><span className='w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse' />后台续写中，可直接切屏</div>}
-                {!sending && uncertainRetryMessage && <div className='mb-1 flex items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-[9px] leading-4 text-amber-700'>
-                    <span className='min-w-0 flex-1'>上一轮连接超时，但上游可能只是很慢。普通继续已锁住，避免重复请求。</span>
-                    <button
-                        type='button'
-                        onClick={() => void send(undefined, false, true)}
-                        className='shrink-0 rounded-full border border-amber-300 bg-white px-2 py-1 font-bold text-amber-700'
-                    >
-                        强制重试
-                    </button>
+                {!sending && uncertainRetryMessage && <div className='mb-1 rounded-xl border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-[9px] leading-4 text-amber-700'>
+                    上一轮连接状态不确定，正在自动观察；你不用判断。最多等待 10 分钟，期间不会重复发请求，若仍无结果会自动解锁。
                 </div>}
                 {!sending && !uncertainRetryMessage && !memoryStatus && !input.trim() && pendingRetryInput && <div className='mb-1 px-1 text-[9px] text-violet-600'>上次续写可能中断，直接点发送即可继续</div>}
                 <div className='rounded-[22px] bg-white border border-slate-200 shadow-sm px-3 py-2'>
