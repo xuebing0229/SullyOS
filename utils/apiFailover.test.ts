@@ -24,7 +24,15 @@ const api = (
 });
 
 const presets: ApiPreset[] = [
-    { id: 'a', name: 'A', config: api('https://a.example/v1') },
+    {
+        id: 'a',
+        name: 'A',
+        config: api('https://a.example/v1'),
+        models: [
+            { model: 'gemini-3.1-pro-preview' },
+            { model: '[B]gemini-3.1-pro-preview' },
+        ],
+    },
     { id: 'b', name: 'B', config: api('https://b.example/v1') },
     { id: 'c', name: 'C', config: api('https://c.example/v1', 'claude-sonnet') },
 ];
@@ -241,6 +249,43 @@ describe('plan resolution', () => {
 });
 
 describe('failover execution', () => {
+    it('treats two models under one preset as two independent routes', async () => {
+        const samePresetGroup = {
+            ...createDefaultApiFailoverGroup('chat'),
+            enabled: true,
+            members: [
+                { presetId: 'a', model: 'gemini-3.1-pro-preview', enabled: true },
+                { presetId: 'a', model: '[B]gemini-3.1-pro-preview', enabled: true },
+            ],
+            updatedAt: 3,
+        };
+        const samePresetPlan = resolveApiExecutionPlanWithData(
+            'chat',
+            api('https://direct.example/v1'),
+            [samePresetGroup],
+            presets,
+            true,
+        );
+        const calls: string[] = [];
+        const result = await runApiFailover({
+            plan: samePresetPlan,
+            execute: async route => {
+                calls.push(route.api.model);
+                if (route.api.model === 'gemini-3.1-pro-preview') {
+                    throw new TypeError('Failed to fetch');
+                }
+                return 'same-site-backup';
+            },
+        });
+
+        expect(calls).toEqual([
+            'gemini-3.1-pro-preview',
+            '[B]gemini-3.1-pro-preview',
+        ]);
+        expect(result.route.presetId).toBe('a');
+        expect(result.route.api.model).toBe('[B]gemini-3.1-pro-preview');
+    });
+
     it('calls a failed route once and immediately switches to backup', async () => {
         const calls: string[] = [];
         const result = await runApiFailover({

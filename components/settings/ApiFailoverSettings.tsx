@@ -17,6 +17,7 @@ import {
     listActiveApiRouteCooldowns,
     type ApiRouteCooldownEntry,
 } from '../../utils/apiFailoverRouteCooldown';
+import { getApiPresetModelEntries } from '../../utils/apiPresetModels';
 
 interface Props {
     addToast: (
@@ -26,6 +27,30 @@ interface Props {
 }
 
 const SCOPES: ApiFailoverScope[] = ['chat', 'emotion'];
+
+interface RouteOption {
+    key: string;
+    presetId: string;
+    presetName: string;
+    model: string;
+}
+
+const routeChoiceValue = (presetId: string, model: string): string =>
+    JSON.stringify([presetId, model]);
+
+const parseRouteChoiceValue = (
+    value: string,
+): { presetId: string; model: string } | null => {
+    try {
+        const parsed = JSON.parse(value);
+        if (!Array.isArray(parsed) || parsed.length !== 2) return null;
+        const presetId = String(parsed[0] || '').trim();
+        const model = String(parsed[1] || '').trim();
+        return presetId && model ? { presetId, model } : null;
+    } catch {
+        return null;
+    }
+};
 
 function initialGroups(): ApiFailoverGroup[] {
     const loaded = loadApiFailoverGroups();
@@ -70,6 +95,35 @@ const ApiFailoverSettings: React.FC<Props> = ({ addToast }) => {
         [apiPresets],
     );
 
+    const routeOptions = useMemo<RouteOption[]>(
+        () => apiPresets.flatMap(preset =>
+            getApiPresetModelEntries(preset).map(item => ({
+                key: routeChoiceValue(preset.id, item.model),
+                presetId: preset.id,
+                presetName: preset.name || '未命名预设',
+                model: item.model,
+            })),
+        ),
+        [apiPresets],
+    );
+
+    const resolvedMemberModel = (
+        presetId: string,
+        model?: string,
+    ): string => String(
+        model
+        || presetMap.get(presetId)?.config.model
+        || '',
+    ).trim();
+
+    const memberRouteKey = (
+        presetId: string,
+        model?: string,
+    ): string => routeChoiceValue(
+        presetId,
+        resolvedMemberModel(presetId, model),
+    );
+
     const persist = (next: ApiFailoverGroup[]) => {
         const stamped = next.map(group => ({
             ...group,
@@ -93,20 +147,20 @@ const ApiFailoverSettings: React.FC<Props> = ({ addToast }) => {
         }));
     };
 
-    const unusedPresetIds = (group: ApiFailoverGroup) => {
+    const unusedRouteOptions = (group: ApiFailoverGroup) => {
         const used = new Set(
-            group.members.map(member => member.presetId),
+            group.members.map(member =>
+                memberRouteKey(member.presetId, member.model),
+            ),
         );
-        return apiPresets
-            .filter(preset => !used.has(preset.id))
-            .map(preset => preset.id);
+        return routeOptions.filter(option => !used.has(option.key));
     };
 
     const addRoute = (scope: ApiFailoverScope) => {
         const group = groups.find(item => item.scope === scope)!;
-        const presetId = unusedPresetIds(group)[0];
-        if (!presetId) {
-            addToast('没有可添加的其他 API 预设', 'info');
+        const option = unusedRouteOptions(group)[0];
+        if (!option) {
+            addToast('没有可添加的其他预设模型线路', 'info');
             return;
         }
 
@@ -114,7 +168,11 @@ const ApiFailoverSettings: React.FC<Props> = ({ addToast }) => {
             ...current,
             members: [
                 ...current.members,
-                { presetId, enabled: true },
+                {
+                    presetId: option.presetId,
+                    model: option.model,
+                    enabled: true,
+                },
             ],
         }));
     };
@@ -122,13 +180,19 @@ const ApiFailoverSettings: React.FC<Props> = ({ addToast }) => {
     const replaceRoute = (
         scope: ApiFailoverScope,
         index: number,
-        presetId: string,
+        value: string,
     ) => {
+        const next = parseRouteChoiceValue(value);
+        if (!next) return;
         updateGroup(scope, current => ({
             ...current,
             members: current.members.map((member, currentIndex) =>
                 currentIndex === index
-                    ? { ...member, presetId }
+                    ? {
+                        ...member,
+                        presetId: next.presetId,
+                        model: next.model,
+                    }
                     : member
             ),
         }));
@@ -186,14 +250,16 @@ const ApiFailoverSettings: React.FC<Props> = ({ addToast }) => {
     };
 
     return (
-        <div className="space-y-4">
-            <div className="rounded-2xl border border-amber-100 bg-amber-50/70 p-3 text-[10px] leading-relaxed text-amber-700">
-                第一版只作用于本地模式的主聊天和情绪评估。
-                Instant Push 仍只使用第一线路；情绪评估线路可混用不同模型，按顺序尝试。
+        <div className="space-y-3">
+            <div className="rounded-2xl border border-slate-200/70 bg-white px-4 py-3 shadow-sm">
+                <div className="text-[11px] font-bold text-slate-600">故障转移线路</div>
+                <p className="mt-1 text-[10px] leading-relaxed text-slate-400">
+                    现在每一条线路都由“API 预设 + 具体模型”组成；同一个站点的不同模型可以分别加入并排序。
+                </p>
             </div>
 
-            <div className="rounded-xl border border-sky-100 bg-sky-50 p-2 text-[10px] text-sky-700">
-                每条线路只真实请求一次。请求失败就立即停止当前线路并尝试下一条；失败线路固定冷却 3 分钟。主聊天还可为每条线路单独设置“首字等待”，超时会先取消旧请求再切线，避免后台继续生成造成重复计费。
+            <div className="rounded-2xl bg-slate-50/90 px-4 py-3 text-[10px] leading-relaxed text-slate-500">
+                请求失败会先停止当前线路再切到下一条，失败线路冷却 3 分钟。主聊天还可以给每条线路单独设置首字等待；Instant Push 仍只使用第一线路。
             </div>
 
             {cooldowns.length > 0 && (
@@ -222,7 +288,7 @@ const ApiFailoverSettings: React.FC<Props> = ({ addToast }) => {
                 return (
                     <section
                         key={group.scope}
-                        className="rounded-2xl border border-slate-100 bg-white/70 p-4 space-y-3"
+                        className="rounded-[22px] border border-slate-200/80 bg-white p-4 shadow-sm space-y-3"
                     >
                         <div className="flex items-center justify-between gap-3">
                             <div className="min-w-0">
@@ -271,34 +337,93 @@ const ApiFailoverSettings: React.FC<Props> = ({ addToast }) => {
                             </div>
                         )}
 
-                        <div className="space-y-2">
+                        <div className="space-y-2.5">
                             {group.members.map((member, index) => {
-                                const preset =
-                                    presetMap.get(member.presetId);
+                                const preset = presetMap.get(member.presetId);
                                 const memberAnalysis = analysis.members[index];
                                 const issueLabel = apiFailoverIssueLabel(memberAnalysis?.issue);
-                                const candidates = apiPresets.filter(
-                                    item =>
-                                        item.id === member.presetId
-                                        || !group.members.some(
-                                            existing =>
-                                                existing.presetId
-                                                === item.id,
+                                const currentValue = memberRouteKey(
+                                    member.presetId,
+                                    member.model,
+                                );
+                                const usedByOtherRows = new Set(
+                                    group.members
+                                        .filter((_, currentIndex) => currentIndex !== index)
+                                        .map(existing =>
+                                            memberRouteKey(
+                                                existing.presetId,
+                                                existing.model,
+                                            ),
                                         ),
+                                );
+                                const candidates = routeOptions.filter(
+                                    option =>
+                                        option.key === currentValue
+                                        || !usedByOtherRows.has(option.key),
+                                );
+                                const currentIsKnown = routeOptions.some(
+                                    option => option.key === currentValue,
+                                );
+                                const selectedModel = resolvedMemberModel(
+                                    member.presetId,
+                                    member.model,
                                 );
 
                                 return (
                                     <div
-                                        key={`${member.presetId}-${index}`}
-                                        className="flex items-center gap-2 rounded-xl border border-slate-100 bg-slate-50/80 p-2"
+                                        key={`${member.presetId}-${selectedModel}-${index}`}
+                                        className={`rounded-2xl border p-3 transition-colors ${
+                                            index === 0
+                                                ? 'border-primary/20 bg-primary/5'
+                                                : 'border-slate-100 bg-slate-50/70'
+                                        }`}
                                     >
-                                        <div className="w-6 shrink-0 text-center text-[11px] font-bold text-slate-400">
-                                            {index + 1}
+                                        <div className="mb-2 flex items-center justify-between gap-2">
+                                            <div className="flex min-w-0 items-center gap-2">
+                                                <span className={`shrink-0 rounded-full px-2 py-0.5 text-[9px] font-bold ${
+                                                    index === 0
+                                                        ? 'bg-primary/10 text-primary'
+                                                        : 'bg-white text-slate-400'
+                                                }`}>
+                                                    {index === 0 ? '主线路' : `备用 ${index}`}
+                                                </span>
+                                                <span className="truncate text-[10px] text-slate-400">
+                                                    {preset?.name || '预设已缺失'}
+                                                </span>
+                                            </div>
+                                            <div className="flex shrink-0 items-center gap-1">
+                                                <button
+                                                    type="button"
+                                                    disabled={index === 0}
+                                                    onClick={() => moveRoute(group.scope, index, -1)}
+                                                    className="h-7 w-7 rounded-full bg-white text-[11px] text-slate-400 shadow-sm disabled:opacity-25"
+                                                    aria-label="上移"
+                                                >
+                                                    ↑
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    disabled={index === group.members.length - 1}
+                                                    onClick={() => moveRoute(group.scope, index, 1)}
+                                                    className="h-7 w-7 rounded-full bg-white text-[11px] text-slate-400 shadow-sm disabled:opacity-25"
+                                                    aria-label="下移"
+                                                >
+                                                    ↓
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => removeRoute(group.scope, index)}
+                                                    className="h-7 w-7 rounded-full bg-white text-[12px] text-rose-400 shadow-sm"
+                                                    aria-label="删除线路"
+                                                >
+                                                    ×
+                                                </button>
+                                            </div>
                                         </div>
 
-                                        <div className="min-w-0 flex-1">
+                                        <div className="relative">
                                             <select
-                                                value={member.presetId}
+                                                value={currentValue}
                                                 onChange={event =>
                                                     replaceRoute(
                                                         group.scope,
@@ -306,120 +431,80 @@ const ApiFailoverSettings: React.FC<Props> = ({ addToast }) => {
                                                         event.target.value,
                                                     )
                                                 }
-                                                className={`w-full min-w-0 rounded-lg border px-2 py-2 text-xs ${
-                                                    preset
-                                                        ? 'border-slate-200 bg-white text-slate-700'
+                                                className={`w-full appearance-none rounded-xl border bg-white px-3 py-2.5 pr-8 text-[11px] font-medium outline-none transition-colors ${
+                                                    preset && currentIsKnown
+                                                        ? 'border-slate-200 text-slate-700 focus:border-primary/40'
                                                         : 'border-rose-200 bg-rose-50 text-rose-600'
                                                 }`}
                                             >
-                                                {!preset && (
-                                                    <option value={member.presetId}>
-                                                        已缺失：{member.presetId}
+                                                {!currentIsKnown && (
+                                                    <option value={currentValue}>
+                                                        {preset
+                                                            ? `${preset.name} · ${selectedModel || '模型已缺失'}`
+                                                            : `已缺失：${member.presetId}`}
                                                     </option>
                                                 )}
-                                                {candidates.map(item => (
+                                                {candidates.map(option => (
                                                     <option
-                                                        key={item.id}
-                                                        value={item.id}
+                                                        key={option.key}
+                                                        value={option.key}
                                                     >
-                                                        {item.name} · {item.config.model}
+                                                        {option.presetName} · {option.model}
                                                     </option>
                                                 ))}
                                             </select>
-                                            {issueLabel && (
-                                                <div className="mt-1 break-words text-[9px] leading-tight text-rose-500">
-                                                    {issueLabel}
-                                                </div>
-                                            )}
-                                            {group.scope === 'chat' && (
-                                                <label className="mt-1.5 flex items-center gap-1.5 text-[9px] text-slate-400">
-                                                    <span className="shrink-0">首字最多等</span>
-                                                    <input
-                                                        type="number"
-                                                        min={0}
-                                                        max={300}
-                                                        step={1}
-                                                        value={Math.round((member.firstByteTimeoutMs || 0) / 1000)}
-                                                        onChange={event => {
-                                                            const seconds = Math.max(
-                                                                0,
-                                                                Math.min(
-                                                                    300,
-                                                                    Math.round(Number(event.target.value) || 0),
-                                                                ),
-                                                            );
-                                                            updateGroup(
-                                                                group.scope,
-                                                                current => ({
-                                                                    ...current,
-                                                                    members: current.members.map((item, currentIndex) =>
-                                                                        currentIndex === index
-                                                                            ? {
-                                                                                ...item,
-                                                                                ...(seconds > 0
-                                                                                    ? { firstByteTimeoutMs: seconds * 1000 }
-                                                                                    : { firstByteTimeoutMs: undefined }),
-                                                                            }
-                                                                            : item
-                                                                    ),
-                                                                }),
-                                                            );
-                                                        }}
-                                                        className="w-14 rounded-md border border-slate-200 bg-white px-1.5 py-1 text-center text-[10px] text-slate-600"
-                                                        aria-label={`${preset?.name || '线路'}首字等待秒数`}
-                                                    />
-                                                    <span className="shrink-0">秒</span>
-                                                    <span className="text-[8px] text-slate-300">0=不限</span>
-                                                </label>
-                                            )}
+                                            <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[10px] text-slate-300">
+                                                ▾
+                                            </span>
                                         </div>
 
-                                        <button
-                                            type="button"
-                                            disabled={index === 0}
-                                            onClick={() =>
-                                                moveRoute(
-                                                    group.scope,
-                                                    index,
-                                                    -1,
-                                                )
-                                            }
-                                            className="shrink-0 rounded-lg px-2 py-1.5 text-xs text-slate-400 disabled:opacity-20"
-                                            aria-label="上移"
-                                        >
-                                            ↑
-                                        </button>
-                                        <button
-                                            type="button"
-                                            disabled={
-                                                index
-                                                === group.members.length - 1
-                                            }
-                                            onClick={() =>
-                                                moveRoute(
-                                                    group.scope,
-                                                    index,
-                                                    1,
-                                                )
-                                            }
-                                            className="shrink-0 rounded-lg px-2 py-1.5 text-xs text-slate-400 disabled:opacity-20"
-                                            aria-label="下移"
-                                        >
-                                            ↓
-                                        </button>
-                                        <button
-                                            type="button"
-                                            onClick={() =>
-                                                removeRoute(
-                                                    group.scope,
-                                                    index,
-                                                )
-                                            }
-                                            className="shrink-0 rounded-lg px-2 py-1.5 text-xs text-rose-400"
-                                            aria-label="删除线路"
-                                        >
-                                            ×
-                                        </button>
+                                        {issueLabel && (
+                                            <div className="mt-1.5 break-words text-[9px] leading-tight text-rose-500">
+                                                {issueLabel}
+                                            </div>
+                                        )}
+
+                                        {group.scope === 'chat' && (
+                                            <label className="mt-2 flex items-center gap-1.5 text-[9px] text-slate-400">
+                                                <span className="shrink-0">首字最多等</span>
+                                                <input
+                                                    type="number"
+                                                    min={0}
+                                                    max={300}
+                                                    step={1}
+                                                    value={Math.round((member.firstByteTimeoutMs || 0) / 1000)}
+                                                    onChange={event => {
+                                                        const seconds = Math.max(
+                                                            0,
+                                                            Math.min(
+                                                                300,
+                                                                Math.round(Number(event.target.value) || 0),
+                                                            ),
+                                                        );
+                                                        updateGroup(
+                                                            group.scope,
+                                                            current => ({
+                                                                ...current,
+                                                                members: current.members.map((item, currentIndex) =>
+                                                                    currentIndex === index
+                                                                        ? {
+                                                                            ...item,
+                                                                            ...(seconds > 0
+                                                                                ? { firstByteTimeoutMs: seconds * 1000 }
+                                                                                : { firstByteTimeoutMs: undefined }),
+                                                                        }
+                                                                        : item
+                                                                ),
+                                                            }),
+                                                        );
+                                                    }}
+                                                    className="w-14 rounded-lg border border-slate-200 bg-white px-1.5 py-1 text-center text-[10px] text-slate-600 outline-none focus:border-primary/30"
+                                                    aria-label={`${preset?.name || '线路'}首字等待秒数`}
+                                                />
+                                                <span className="shrink-0">秒</span>
+                                                <span className="text-[8px] text-slate-300">0 = 不限</span>
+                                            </label>
+                                        )}
                                     </div>
                                 );
                             })}
@@ -428,12 +513,10 @@ const ApiFailoverSettings: React.FC<Props> = ({ addToast }) => {
                         <button
                             type="button"
                             onClick={() => addRoute(group.scope)}
-                            disabled={
-                                unusedPresetIds(group).length === 0
-                            }
-                            className="w-full rounded-xl border border-dashed border-slate-200 py-2.5 text-[11px] font-bold text-slate-500 disabled:opacity-40"
+                            disabled={unusedRouteOptions(group).length === 0}
+                            className="w-full rounded-xl border border-dashed border-primary/25 bg-primary/5 py-2.5 text-[11px] font-bold text-primary transition-all active:scale-[0.99] disabled:border-slate-200 disabled:bg-slate-50 disabled:text-slate-300"
                         >
-                            + 添加备用预设
+                            + 添加备用线路
                         </button>
 
                         <button
@@ -443,13 +526,13 @@ const ApiFailoverSettings: React.FC<Props> = ({ addToast }) => {
                                     advanced ? null : group.scope,
                                 )
                             }
-                            className="text-[10px] text-slate-400"
+                            className="rounded-lg px-2 py-1 text-[10px] text-slate-400 transition-colors hover:bg-slate-50 hover:text-slate-500"
                         >
-                            {advanced ? '收起高级策略' : '高级策略'}
+                            {advanced ? '收起高级策略 ↑' : '高级策略 ↓'}
                         </button>
 
                         {advanced && (
-                            <div className="grid grid-cols-2 gap-3 rounded-xl bg-slate-50 p-3">
+                            <div className="grid grid-cols-2 gap-3 rounded-2xl border border-slate-100 bg-slate-50/80 p-3">
                                 <label className="col-span-2 text-[10px] text-slate-500">
                                     单次超时（秒）
                                     <input
@@ -474,7 +557,7 @@ const ApiFailoverSettings: React.FC<Props> = ({ addToast }) => {
                                                 }),
                                             )
                                         }
-                                        className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-2 py-2 text-xs"
+                                        className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs outline-none focus:border-primary/30"
                                     />
                                 </label>
 
@@ -486,10 +569,9 @@ const ApiFailoverSettings: React.FC<Props> = ({ addToast }) => {
                                                 推荐保持开启，避免工具/思考参数不兼容
                                             </span>
                                         </span>
-                                        <input
-                                            type="checkbox"
-                                            checked={group.policy.strictSameModel}
-                                            onChange={event =>
+                                        <button
+                                            type="button"
+                                            onClick={() =>
                                                 updateGroup(
                                                     group.scope,
                                                     current => ({
@@ -497,12 +579,27 @@ const ApiFailoverSettings: React.FC<Props> = ({ addToast }) => {
                                                         policy: {
                                                             ...current.policy,
                                                             strictSameModel:
-                                                                event.target.checked,
+                                                                !current.policy.strictSameModel,
                                                         },
                                                     }),
                                                 )
                                             }
-                                        />
+                                            className="shrink-0 appearance-none border-0 bg-transparent p-0"
+                                            aria-pressed={group.policy.strictSameModel}
+                                            aria-label="只允许同模型家族"
+                                        >
+                                            <span className={`flex h-6 w-10 items-center rounded-full p-1 transition-colors ${
+                                                group.policy.strictSameModel
+                                                    ? 'bg-emerald-500'
+                                                    : 'bg-slate-200'
+                                            }`}>
+                                                <span className={`h-4 w-4 rounded-full bg-white shadow-sm transition-transform ${
+                                                    group.policy.strictSameModel
+                                                        ? 'translate-x-4'
+                                                        : ''
+                                                }`} />
+                                            </span>
+                                        </button>
                                     </label>
                                 )}
                             </div>
@@ -518,7 +615,7 @@ const ApiFailoverSettings: React.FC<Props> = ({ addToast }) => {
                     setCooldowns([]);
                     addToast('已清除所有线路的三分钟冷却状态', 'success');
                 }}
-                className="w-full rounded-xl bg-slate-100 py-2.5 text-[11px] font-bold text-slate-600"
+                className="w-full rounded-xl bg-slate-100/80 py-2.5 text-[11px] font-bold text-slate-500 transition-colors active:scale-[0.99]"
             >
                 清除线路冷却状态
             </button>
