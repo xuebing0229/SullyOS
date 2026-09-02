@@ -149,7 +149,7 @@ const STORY_THEME_CSS = `
 .story-theme-dark .text-rose-800, .story-theme-dark .text-rose-700, .story-theme-dark .text-rose-600, .story-theme-dark .text-rose-500 { color: #f4a8bd !important; }
 .story-theme-dark .border-rose-200, .story-theme-dark .border-rose-200\\/70 { border-color: rgba(244, 168, 189, .28) !important; }
 .story-theme .story-safe-header { padding-top: max(1.25rem, var(--safe-top)); }
-.story-theme .story-safe-footer { padding-bottom: calc(var(--safe-bottom) + 12px); }
+.story-theme .story-safe-footer { padding-bottom: calc(var(--safe-bottom) + 6px); }
 .story-theme .story-safe-sheet { padding-bottom: calc(var(--safe-bottom) + 18px); }
 .story-theme .story-quick-preset { bottom: calc(var(--safe-bottom) + 112px); }
 .story-theme .story-page-scroll { overscroll-behavior-y: contain; -webkit-overflow-scrolling: touch; }
@@ -166,7 +166,7 @@ const STORY_THEME_CSS = `
   font-size: 8px;
   letter-spacing: .24em;
 }
-body.ios-keyboard-open .story-theme .story-safe-footer { padding-bottom: 12px !important; }
+body.ios-keyboard-open .story-theme .story-safe-footer { padding-bottom: 6px !important; }
 body.ios-keyboard-open .story-theme .story-safe-sheet { padding-bottom: 18px !important; }
 body.ios-keyboard-open .story-theme .story-quick-preset { bottom: 112px !important; }
 @media (prefers-reduced-motion: reduce) {
@@ -210,7 +210,7 @@ export const useStoryTheaterAppearance = (): StoryAppearance => {
     return context?.appearance || DEFAULT_APPEARANCE;
 };
 
-export const StoryAppearanceButton: React.FC<{ className?: string }> = ({ className = '' }) => {
+export const StoryAppearanceButton: React.FC<{ className?: string; triggerLabel?: string }> = ({ className = '', triggerLabel }) => {
     const context = useContext(StoryThemeContext);
     const { registerBackHandler } = useOS();
     const [open, setOpen] = useState(false);
@@ -253,8 +253,15 @@ export const StoryAppearanceButton: React.FC<{ className?: string }> = ({ classN
     const { appearance, setColor, setDecor, setTextToneEnabled, setTextToneColor, setFirstLineIndent } = context;
 
     return <>
-        <button type='button' onClick={() => setOpen(true)} className={`w-9 h-9 rounded-full grid place-items-center ${className}`} title='剧情外观' aria-label='剧情外观'>
+        <button
+            type='button'
+            onClick={() => setOpen(true)}
+            className={triggerLabel ? className : `w-9 h-9 rounded-full grid place-items-center ${className}`}
+            title='剧情外观'
+            aria-label='剧情外观'
+        >
             <Palette size={18} weight={appearance.decor === 'cinema' ? 'fill' : 'regular'} />
+            {triggerLabel && <span className='min-w-0 flex-1 text-left'>{triggerLabel}</span>}
         </button>
         {open && createPortal(<div
             className={`story-theme story-theme-${appearance.color} story-decor-${appearance.decor} fixed inset-0 z-[90] flex items-end sm:items-center justify-center overflow-y-auto overscroll-contain`}
