@@ -10,6 +10,7 @@ import android.os.Build;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.IBinder;
+import android.os.PowerManager;
 import androidx.core.app.NotificationCompat;
 import java.io.BufferedReader;
 import java.io.File;
@@ -38,6 +39,7 @@ public class SullyStoryBackgroundService extends Service {
     private HandlerThread workerThread;
     private Handler worker;
     private boolean pumping = false;
+    private PowerManager.WakeLock wakeLock;
 
     private static File jobsDir(Context context) {
         File dir = new File(context.getFilesDir(), "story-background-jobs");
@@ -121,6 +123,15 @@ public class SullyStoryBackgroundService extends Service {
         super.onCreate();
         createChannels();
         startForeground(SERVICE_NOTIFICATION_ID, buildServiceNotification("剧情正在后台续写，可放心切屏"));
+        try {
+            PowerManager power = (PowerManager) getSystemService(Context.POWER_SERVICE);
+            if (power != null) {
+                wakeLock = power.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, getPackageName() + ":story-background");
+                wakeLock.setReferenceCounted(false);
+                // 单轮 hard timeout 最大 10 分钟；多留一分钟给落盘与通知，避免永久持锁。
+                wakeLock.acquire(11L * 60L * 1000L);
+            }
+        } catch (Exception ignored) { }
         workerThread = new HandlerThread("SullyStoryBackground");
         workerThread.start();
         worker = new Handler(workerThread.getLooper());
@@ -136,10 +147,18 @@ public class SullyStoryBackgroundService extends Service {
         return START_STICKY;
     }
 
+    private void releaseWakeLock() {
+        try {
+            if (wakeLock != null && wakeLock.isHeld()) wakeLock.release();
+        } catch (Exception ignored) { }
+        wakeLock = null;
+    }
+
     @Override
     public void onDestroy() {
         if (worker != null) worker.removeCallbacksAndMessages(null);
         if (workerThread != null) workerThread.quitSafely();
+        releaseWakeLock();
         super.onDestroy();
     }
 
@@ -240,6 +259,7 @@ public class SullyStoryBackgroundService extends Service {
             }
         } finally {
             pumping = false;
+            releaseWakeLock();
             stopForeground(true);
             stopSelf();
         }
@@ -418,6 +438,8 @@ public class SullyStoryBackgroundService extends Service {
             connection = (HttpURLConnection) url.openConnection();
             connection.setRequestMethod("POST");
             connection.setDoOutput(true);
+            connection.setUseCaches(false);
+            connection.setInstanceFollowRedirects(true);
             connection.setConnectTimeout((int) Math.min(20_000L, timeoutMs));
             // 这里不能把“首字等待”只当成 socket 静默超时：
             // SSE 可能先持续吐 reasoning / heartbeat，但用户要求的是“第一段可见正文”。
@@ -426,9 +448,17 @@ public class SullyStoryBackgroundService extends Service {
             connection.setRequestProperty("Content-Type", "application/json");
             connection.setRequestProperty("Accept", stream ? "text/event-stream, application/json" : "application/json, text/event-stream");
             connection.setRequestProperty("Authorization", "Bearer " + route.optString("apiKey", "sk-none"));
+            // 不复用旧的 keep-alive socket：部分 Android / 中转组合会把长 SSE 复用到半死连接，
+            // 表现就是生成一半后 Software caused connection abort。
+            connection.setRequestProperty("Connection", "close");
+            connection.setRequestProperty("Cache-Control", "no-cache");
+            connection.setRequestProperty("Accept-Encoding", "identity");
+            connection.setRequestProperty("User-Agent", "SullyOS-StoryBackground/1.0");
             byte[] requestBytes = body.toString().getBytes(StandardCharsets.UTF_8);
+            connection.setFixedLengthStreamingMode(requestBytes.length);
             try (java.io.OutputStream out = connection.getOutputStream()) {
                 out.write(requestBytes);
+                out.flush();
             }
 
             // 写请求正文也可能花掉首字等待时间，所以真正等响应前再按剩余 deadline 校正一次。
