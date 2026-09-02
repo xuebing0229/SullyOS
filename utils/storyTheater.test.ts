@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { CharacterProfile, Message, StoryTheaterPreset, UserProfile } from '../types';
+import type { CharacterProfile, Message, StoryTheaterPreset, StoryTheaterPresetDocument, UserProfile } from '../types';
 import { STORY_PRESET_SIMPLE_CHOICES } from '../components/date/story/StoryPresetMaker';
 import {
     appendStoryAffinityInput,
@@ -183,6 +183,30 @@ describe('糯米机原生剧情预设边界', () => {
         expect(resolved.prompts.find(prompt => prompt.id === 'nmj-v3-pov-third')).toMatchObject({ enabled: true });
         expect(resolved.prompts.find(prompt => prompt.id === 'nmj-v3-pov-third')?.content).toContain('本条与“第二人称”误同时开启时，本条优先');
         expect(resolved.prompts.find(prompt => prompt.id === 'nmj-v616-silent-preflight')?.enabled).toBe(true);
+    });
+
+    it('导入型大型预设按空分隔条恢复原分组，不把分隔条当提示词展示', () => {
+        const document: StoryTheaterPresetDocument = {
+            schema: 'sullyos.story-preset',
+            version: 1,
+            name: 'Ako',
+            generation: { temperature: 1, topP: 0.98, frequencyPenalty: 0, presencePenalty: 0, maxTokens: 32000 },
+            assistantPrefill: '',
+            prompts: [
+                { id: 'ako-group-01', name: '━━ 说明 ━━', enabled: false, role: 'system', content: '' },
+                { id: 'p1', name: '说明一', enabled: false, role: 'system', content: 'a' },
+                { id: 'p2', name: '说明二', enabled: true, role: 'system', content: 'b' },
+                { id: 'ako-group-02', name: '━━ 人物塑造 ━━', enabled: false, role: 'system', content: '' },
+                { id: 'p3', name: '人物规则', enabled: true, role: 'system', content: 'c' },
+            ],
+        };
+
+        const groups = getStoryPresetPromptGroups(document);
+        expect(groups.map(group => group.label)).toEqual(['说明', '人物塑造']);
+        expect(groups[0].promptIds).toEqual(['ako-group-01', 'p1', 'p2']);
+        expect(groups[1].promptIds).toEqual(['ako-group-02', 'p3']);
+        expect(groups[0].description).toContain('2 条提示词');
+        expect(groups[1].description).toContain('1 条提示词');
     });
 
     it('拒绝其它应用的 prompt/completion JSON', () => {
