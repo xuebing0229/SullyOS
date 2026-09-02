@@ -18,6 +18,7 @@ import {
 } from '../../../utils/storyTheater';
 import StoryMaskBox from './StoryMaskBox';
 import StoryPresetMaker from './StoryPresetMaker';
+import StoryPresetStitcher from './StoryPresetStitcher';
 import StoryTheaterEditor from './StoryTheaterEditor';
 import StoryTheaterSession from './StoryTheaterSession';
 import StoryVectorMemoryPanel from './StoryVectorMemoryPanel';
@@ -28,7 +29,7 @@ interface Props {
     onClose: () => void;
 }
 
-type View = 'list' | 'editor' | 'session' | 'preset' | 'masks' | 'vectors';
+type View = 'list' | 'editor' | 'session' | 'preset' | 'stitch' | 'masks' | 'vectors';
 
 const StoryTheaterContent: React.FC<Props> = ({ onClose }) => {
     const { characters, userProfile, addToast, remoteVectorConfig, registerBackHandler } = useOS();
@@ -73,6 +74,10 @@ const StoryTheaterContent: React.FC<Props> = ({ onClose }) => {
             }
             if (view === 'preset') {
                 setView(activeEntry ? 'editor' : 'list');
+                return true;
+            }
+            if (view === 'stitch') {
+                setView('list');
                 return true;
             }
             if (view === 'editor') {
@@ -123,6 +128,15 @@ const StoryTheaterContent: React.FC<Props> = ({ onClose }) => {
         setCustomPresets(current => [next, ...current.filter(item => item.id !== next.id)]);
         setEditingPreset(next);
         addToast('剧情预设已保存', 'success');
+    }, [addToast]);
+
+    const saveStitchedPreset = useCallback(async (next: StoryTheaterPreset) => {
+        if (next.builtIn) return;
+        await DB.saveStoryTheaterPreset(next);
+        setCustomPresets(current => [next, ...current.filter(item => item.id !== next.id)]);
+        setEditingPreset(next);
+        setView('list');
+        addToast(`已保存新剧情预设「${next.name}」`, 'success');
     }, [addToast]);
 
     const copyPreset = useCallback(async (copy: StoryTheaterPreset) => {
@@ -214,6 +228,12 @@ const StoryTheaterContent: React.FC<Props> = ({ onClose }) => {
         setView('editor');
     }, []);
 
+    if (view === 'stitch') return <StoryPresetStitcher
+        presets={presets}
+        onBack={() => setView('list')}
+        onSave={saveStitchedPreset}
+    />;
+
     if (view === 'preset' && editingPreset) return <StoryPresetMaker key={editingPreset.id}
         preset={editingPreset}
         onBack={() => setView(activeEntry ? 'editor' : 'list')}
@@ -293,7 +313,7 @@ const StoryTheaterContent: React.FC<Props> = ({ onClose }) => {
                 </section>
 
                 <section className='pt-6 border-t border-slate-200'>
-                    <div className='flex items-center justify-between'><div><div className='text-[9px] tracking-[.22em] uppercase font-bold text-violet-500'>Native presets</div><h2 className='mt-1 text-lg font-semibold'>糯米机预设制作器</h2></div><div className='flex gap-2'><button onClick={() => importInput.current?.click()} className='w-10 h-10 rounded-full bg-white border border-slate-200 grid place-items-center'><UploadSimple size={17} /></button><button onClick={() => { setEditingPreset(createBlankStoryPreset()); setView('preset'); }} className='w-10 h-10 rounded-full bg-white border border-slate-200 grid place-items-center'><Plus size={17} /></button></div></div>
+                    <div className='flex items-center justify-between'><div><div className='text-[9px] tracking-[.22em] uppercase font-bold text-violet-500'>Native presets</div><h2 className='mt-1 text-lg font-semibold'>糯米机预设制作器</h2></div><div className='flex gap-2'><button onClick={() => setView('stitch')} className='h-10 px-3 rounded-full bg-white border border-violet-200 text-violet-700 text-[10px] font-bold grid place-items-center'>缝合台</button><button onClick={() => importInput.current?.click()} className='w-10 h-10 rounded-full bg-white border border-slate-200 grid place-items-center'><UploadSimple size={17} /></button><button onClick={() => { setEditingPreset(createBlankStoryPreset()); setView('preset'); }} className='w-10 h-10 rounded-full bg-white border border-slate-200 grid place-items-center'><Plus size={17} /></button></div></div>
                     <p className='mt-2 text-[10px] leading-5 text-slate-500'>仅导入与导出 <code>sullyos.story-preset</code>。不接受其它应用的 completion JSON，也不保留其字段或运行逻辑。</p>
                     <input ref={importInput} type='file' accept='.json,application/json' className='hidden' onChange={async event => { const file = event.target.files?.[0]; event.currentTarget.value = ''; if (file) await importPreset(file); }} />
                     <div className='mt-4 divide-y divide-slate-200'>{presets.map(preset => <div key={preset.id} className='flex items-center gap-2'><button onClick={() => { setEditingPreset(preset); setView('preset'); }} className='min-w-0 flex-1 py-3 flex items-center gap-3 text-left'><span className={`w-2 h-2 rounded-full ${preset.builtIn ? 'bg-amber-400' : 'bg-violet-500'}`} /><span className='min-w-0 flex-1 text-xs font-semibold truncate'>{preset.name}</span><span className='text-[9px] text-slate-400'>{preset.builtIn ? '内置只读' : `${preset.document.prompts.length} 条`}</span></button><button onClick={() => { void downloadStoryPreset(preset); }} className='w-9 h-9 shrink-0 rounded-full grid place-items-center text-slate-400' title={`导出 ${preset.name}`}><DownloadSimple size={15} /></button></div>)}</div>
