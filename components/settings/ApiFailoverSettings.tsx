@@ -17,6 +17,7 @@ import {
     listActiveApiRouteCooldowns,
     type ApiRouteCooldownEntry,
 } from '../../utils/apiFailoverRouteCooldown';
+import { getApiPresetModelEntries } from '../../utils/apiPresetModels';
 
 interface Props {
     addToast: (
@@ -26,6 +27,30 @@ interface Props {
 }
 
 const SCOPES: ApiFailoverScope[] = ['chat', 'emotion'];
+
+interface RouteOption {
+    key: string;
+    presetId: string;
+    presetName: string;
+    model: string;
+}
+
+const routeChoiceValue = (presetId: string, model: string): string =>
+    JSON.stringify([presetId, model]);
+
+const parseRouteChoiceValue = (
+    value: string,
+): { presetId: string; model: string } | null => {
+    try {
+        const parsed = JSON.parse(value);
+        if (!Array.isArray(parsed) || parsed.length !== 2) return null;
+        const presetId = String(parsed[0] || '').trim();
+        const model = String(parsed[1] || '').trim();
+        return presetId && model ? { presetId, model } : null;
+    } catch {
+        return null;
+    }
+};
 
 function initialGroups(): ApiFailoverGroup[] {
     const loaded = loadApiFailoverGroups();
@@ -70,6 +95,35 @@ const ApiFailoverSettings: React.FC<Props> = ({ addToast }) => {
         [apiPresets],
     );
 
+    const routeOptions = useMemo<RouteOption[]>(
+        () => apiPresets.flatMap(preset =>
+            getApiPresetModelEntries(preset).map(item => ({
+                key: routeChoiceValue(preset.id, item.model),
+                presetId: preset.id,
+                presetName: preset.name || '未命名预设',
+                model: item.model,
+            })),
+        ),
+        [apiPresets],
+    );
+
+    const resolvedMemberModel = (
+        presetId: string,
+        model?: string,
+    ): string => String(
+        model
+        || presetMap.get(presetId)?.config.model
+        || '',
+    ).trim();
+
+    const memberRouteKey = (
+        presetId: string,
+        model?: string,
+    ): string => routeChoiceValue(
+        presetId,
+        resolvedMemberModel(presetId, model),
+    );
+
     const persist = (next: ApiFailoverGroup[]) => {
         const stamped = next.map(group => ({
             ...group,
@@ -93,20 +147,20 @@ const ApiFailoverSettings: React.FC<Props> = ({ addToast }) => {
         }));
     };
 
-    const unusedPresetIds = (group: ApiFailoverGroup) => {
+    const unusedRouteOptions = (group: ApiFailoverGroup) => {
         const used = new Set(
-            group.members.map(member => member.presetId),
+            group.members.map(member =>
+                memberRouteKey(member.presetId, member.model),
+            ),
         );
-        return apiPresets
-            .filter(preset => !used.has(preset.id))
-            .map(preset => preset.id);
+        return routeOptions.filter(option => !used.has(option.key));
     };
 
     const addRoute = (scope: ApiFailoverScope) => {
         const group = groups.find(item => item.scope === scope)!;
-        const presetId = unusedPresetIds(group)[0];
-        if (!presetId) {
-            addToast('没有可添加的其他 API 预设', 'info');
+        const option = unusedRouteOptions(group)[0];
+        if (!option) {
+            addToast('没有可添加的其他预设模型线路', 'info');
             return;
         }
 
@@ -114,7 +168,11 @@ const ApiFailoverSettings: React.FC<Props> = ({ addToast }) => {
             ...current,
             members: [
                 ...current.members,
-                { presetId, enabled: true },
+                {
+                    presetId: option.presetId,
+                    model: option.model,
+                    enabled: true,
+                },
             ],
         }));
     };
@@ -122,13 +180,19 @@ const ApiFailoverSettings: React.FC<Props> = ({ addToast }) => {
     const replaceRoute = (
         scope: ApiFailoverScope,
         index: number,
-        presetId: string,
+        value: string,
     ) => {
+        const next = parseRouteChoiceValue(value);
+        if (!next) return;
         updateGroup(scope, current => ({
             ...current,
             members: current.members.map((member, currentIndex) =>
                 currentIndex === index
-                    ? { ...member, presetId }
+                    ? {
+                        ...member,
+                        presetId: next.presetId,
+                        model: next.model,
+                    }
                     : member
             ),
         }));
