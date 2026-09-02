@@ -5,16 +5,20 @@ import type {
     ResolvedApiRoute,
 } from './apiFailover';
 import { isSameCoreModel } from './apiCallLog';
+import { apiPresetHasModel } from './apiPresetModels';
 
 export type ApiFailoverMemberIssue =
     | 'disabled'
     | 'missing_preset'
+    | 'missing_model'
     | 'invalid_config'
+    | 'duplicate_route'
     | 'incompatible_model';
 
 export interface ApiFailoverMemberAnalysis {
     member: ApiFailoverMember;
     preset?: ApiPreset;
+    model?: string;
     issue?: ApiFailoverMemberIssue;
     compatible: boolean;
     route?: ResolvedApiRoute;
@@ -38,6 +42,13 @@ function validApiConfig(
     );
 }
 
+function selectedModel(
+    member: ApiFailoverMember,
+    preset: ApiPreset,
+): string {
+    return String(member.model || preset.config.model || '').trim();
+}
+
 export function analyzeApiFailoverGroup(
     group: ApiFailoverGroup,
     presets: ApiPreset[],
@@ -49,7 +60,9 @@ export function analyzeApiFailoverGroup(
     const valid: Array<{
         member: ApiFailoverMember;
         preset: ApiPreset;
+        model: string;
     }> = [];
+    const seenRoutes = new Set<string>();
 
     for (const member of group.members) {
         if (!member.enabled) {
@@ -71,36 +84,68 @@ export function analyzeApiFailoverGroup(
             continue;
         }
 
-        if (!validApiConfig(preset.config)) {
+        const model = selectedModel(member, preset);
+        const api = {
+            ...preset.config,
+            model,
+        };
+
+        if (!validApiConfig(api)) {
             members.push({
                 member,
                 preset,
+                model,
                 issue: 'invalid_config',
                 compatible: false,
             });
             continue;
         }
 
-        valid.push({ member, preset });
+        if (member.model && !apiPresetHasModel(preset, model)) {
+            members.push({
+                member,
+                preset,
+                model,
+                issue: 'missing_model',
+                compatible: false,
+            });
+            continue;
+        }
+
+        const routeIdentity = `${preset.id}\u0000${model}`;
+        if (seenRoutes.has(routeIdentity)) {
+            members.push({
+                member,
+                preset,
+                model,
+                issue: 'duplicate_route',
+                compatible: false,
+            });
+            continue;
+        }
+        seenRoutes.add(routeIdentity);
+
+        valid.push({ member, preset, model });
         members.push({
             member,
             preset,
+            model,
             compatible: true,
         });
     }
 
-    const anchor = valid[0]?.preset.config.model || '';
+    const anchor = valid[0]?.model || '';
     const routes: ResolvedApiRoute[] = [];
 
     for (const entry of members) {
-        if (!entry.preset || entry.issue) continue;
+        if (!entry.preset || !entry.model || entry.issue) continue;
 
         const compatible =
             !group.policy.strictSameModel
             || routes.length === 0
             || isSameCoreModel(
                 anchor,
-                entry.preset.config.model,
+                entry.model,
             );
 
         if (!compatible) {
@@ -113,7 +158,10 @@ export function analyzeApiFailoverGroup(
             presetId: entry.preset.id,
             presetName:
                 entry.preset.name || '未命名预设',
-            api: entry.preset.config,
+            api: {
+                ...entry.preset.config,
+                model: entry.model,
+            },
             routeIndex: routes.length,
             ...(entry.member.firstByteTimeoutMs
                 ? { firstByteTimeoutMs: entry.member.firstByteTimeoutMs }
@@ -145,8 +193,12 @@ export function apiFailoverIssueLabel(
     switch (issue) {
         case 'missing_preset':
             return '预设已缺失';
+        case 'missing_model':
+            return '这个模型已不在预设中';
         case 'invalid_config':
             return 'URL 或模型未填写';
+        case 'duplicate_route':
+            return '这条预设 + 模型已重复';
         case 'incompatible_model':
             return '与第一线路模型不兼容';
         case 'disabled':
