@@ -2237,6 +2237,8 @@ export interface StoryTheaterPresetPrompt {
     enabled: boolean;
     role: 'system' | 'user' | 'assistant';
     content: string;
+    /** 外部原生预设可直接保存真实分组名；仅供编辑/快捷面板使用，不发送给模型。 */
+    group?: string;
     /** marker 由发送器替换为角色/世界书/用户/场景/历史，不把占位条目当普通正文。 */
     marker?: 'characters' | 'world_before' | 'user' | 'world_after' | 'scenario' | 'examples' | 'history';
 }
