@@ -375,7 +375,7 @@ const StoryOutput: React.FC<{ content: string; onChoose?: (text: string) => void
 };
 
 const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, onEdit, onOpenVectorMemory, onEntryChange }) => {
-    const { characters, userProfile, groups, apiConfig, realtimeConfig, memoryPalaceConfig, remoteVectorConfig, updateCharacter, addToast } = useOS();
+    const { characters, userProfile, groups, apiConfig, realtimeConfig, memoryPalaceConfig, remoteVectorConfig, updateCharacter, addToast, registerBackHandler } = useOS();
     const appearance = useStoryTheaterAppearance();
     const threadId = storyTheaterThreadId(entry.id);
     const actors = useMemo(() => characters.filter(char => entry.characterIds.includes(char.id)), [characters, entry.characterIds]);
@@ -468,6 +468,58 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
         streamingTextRef.current = '';
         setStreamingText('');
     }, [entry.id]);
+
+    useEffect(() => {
+        return registerBackHandler(() => {
+            // Android 返回键遵循“最上层先退”的顺序，不再直接把整个文游 App 关掉。
+            if (editingMessage) {
+                if (!mutatingMessage) {
+                    setEditingMessage(null);
+                    setEditDraft('');
+                }
+                return true;
+            }
+            if (deletingMessage) {
+                if (!mutatingMessage) setDeletingMessage(null);
+                return true;
+            }
+            if (messageMenu) {
+                setMessageMenu(null);
+                return true;
+            }
+            if (showMemoryCards) {
+                setShowMemoryCards(false);
+                return true;
+            }
+            if (showAffinityInput) {
+                setShowAffinityInput(false);
+                return true;
+            }
+            if (showQuickPreset) {
+                setShowQuickPreset(false);
+                return true;
+            }
+            if (showHeaderMenu) {
+                setShowHeaderMenu(false);
+                return true;
+            }
+
+            // 没有弹层时才离开当前剧情，回到文游剧情列表。
+            onBack();
+            return true;
+        });
+    }, [
+        deletingMessage,
+        editingMessage,
+        messageMenu,
+        mutatingMessage,
+        onBack,
+        registerBackHandler,
+        showAffinityInput,
+        showHeaderMenu,
+        showMemoryCards,
+        showQuickPreset,
+    ]);
     const patchAffinityDraft = useCallback((characterId: string, patch: Partial<AffinityDraft>) => {
         setAffinityDrafts(current => ({
             ...current,
