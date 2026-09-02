@@ -1,0 +1,61 @@
+name: Image MCP CI
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - "services/gpt-image-mcp/**"
+      - "services/novelai-image-mcp/**"
+      - ".github/workflows/image-mcp-ci.yml"
+  pull_request:
+    branches:
+      - master
+    paths:
+      - "services/gpt-image-mcp/**"
+      - "services/novelai-image-mcp/**"
+      - ".github/workflows/image-mcp-ci.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: image-mcp-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  service-test:
+    name: ${{ matrix.service }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        service:
+          - gpt-image-mcp
+          - novelai-image-mcp
+
+    defaults:
+      run:
+        working-directory: services/${{ matrix.service }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: services/${{ matrix.service }}/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Syntax check
+        run: npm run check
+
+      - name: Tests
+        run: npm test
