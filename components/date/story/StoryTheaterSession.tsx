@@ -778,6 +778,20 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
         }
 
         let completionSucceeded = false;
+        const completionStartedAt = Date.now();
+        let streamedChars = 0;
+        let firstVisibleMs: number | null = null;
+        const attemptTrace: Array<Record<string, unknown>> = [];
+        const safeRouteLabel = (route: any): string => {
+            const rawBaseUrl = String(route?.api?.baseUrl || '');
+            let host = rawBaseUrl;
+            try { host = new URL(rawBaseUrl).host || rawBaseUrl; } catch { /* keep raw base URL */ }
+            return [
+                route?.presetName || route?.presetId || 'direct',
+                host || 'unknown-host',
+                route?.api?.model || 'unknown-model',
+            ].join(' @ ');
+        };
         try {
             const { value: data } = await executeOpenAiChatPlan({
                 plan,
@@ -792,8 +806,25 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 // 剧情正文按“首个可见正文字符”承诺线路：首字前可以故障转移，
                 // 首字一旦已经展示，后续断流也绝不换线路，避免两条线路各写半篇。
                 streamCommitMode: wantsStream ? 'content' : 'activity',
+                onAttempt: attempt => {
+                    attemptTrace.push({
+                        preset: attempt.presetName || attempt.presetId,
+                        route: `${Number(attempt.routeIndex) + 1}/${attempt.routeCount}`,
+                        phase: attempt.phase,
+                        durationMs: attempt.durationMs,
+                        kind: attempt.classification?.kind,
+                        status: attempt.classification?.status,
+                        message: attempt.classification?.message,
+                    });
+                },
                 streamHooks: wantsStream ? {
-                    onDelta: (_delta, fullText) => onStreamText?.(fullText),
+                    onDelta: (_delta, fullText) => {
+                        streamedChars = fullText.length;
+                        if (firstVisibleMs === null && fullText.length > 0) {
+                            firstVisibleMs = Date.now() - completionStartedAt;
+                        }
+                        onStreamText?.(fullText);
+                    },
                 } : undefined,
             });
             const reportedPromptTokens = Number(data?.usage?.prompt_tokens);
@@ -802,6 +833,38 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             if (!content) throw new Error(describeEmptyStoryCompletion(data));
             completionSucceeded = true;
             return content;
+        } catch (completionError: any) {
+            const elapsedMs = Date.now() - completionStartedAt;
+            const nav = typeof navigator !== 'undefined' ? navigator as any : undefined;
+            const connection = nav?.connection || nav?.mozConnection || nav?.webkitConnection;
+            const diagnostics = {
+                errorName: completionError?.name || 'Error',
+                errorMessage: String(completionError?.message || completionError),
+                elapsedMs,
+                streamedChars,
+                firstVisibleMs,
+                online: typeof navigator !== 'undefined' ? navigator.onLine : undefined,
+                visibility: typeof document !== 'undefined' ? document.visibilityState : undefined,
+                effectiveType: connection?.effectiveType,
+                downlink: connection?.downlink,
+                saveData: connection?.saveData,
+                nativeKeepAlive: Boolean(background && isNativeStoryBackgroundRuntime()),
+                imageGenerationEnabled: entry.imageGeneration?.enabled === true,
+                imageStageStarted: false,
+                planMode: plan.mode,
+                routes: plan.routes.map(safeRouteLabel),
+                attempts: attemptTrace,
+            };
+            // 单独打一条纯文本诊断，确保“应用日志”导出时即使对象参数被截掉，
+            // 也能直接看到这次剧情 SSE 断在哪里；不包含 API Key / 请求正文。
+            console.error(
+                '[StoryTheater] transport diagnostic\n'
+                + JSON.stringify(diagnostics, null, 2),
+            );
+            try {
+                completionError.storyTransportDiagnostics = diagnostics;
+            } catch { /* frozen errors are fine */ }
+            throw completionError;
         } finally {
             // 自动配图开启时，先申请下一张保活 lease，再释放正文 lease。
             // 两张 lease 有短暂重叠，避免 App 已在后台时正文刚结束就被系统冻结，
@@ -1179,7 +1242,16 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             if (entry.writesToCharacterMemory) void applyActorMemoryPipeline();
             else void archiveIfNeeded();
         } catch (error: any) {
-            console.error('[StoryTheater] send failed', error);
+            const storyDiagnostics = error?.storyTransportDiagnostics;
+            if (storyDiagnostics) {
+                console.error(
+                    '[StoryTheater] send failed with transport diagnostics\n'
+                    + JSON.stringify(storyDiagnostics, null, 2),
+                    error,
+                );
+            } else {
+                console.error('[StoryTheater] send failed', error);
+            }
 
             const committedPartial = (partialStreamText || streamingTextRef.current).trim();
             if (committedPartial) {
