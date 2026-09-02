@@ -7,20 +7,36 @@ import { useOS } from '../../../context/OSContext';
 export type StoryColorMode = 'light' | 'dark';
 export type StoryDecorMode = 'plain' | 'cinema';
 
-interface StoryAppearance {
+export interface StoryAppearance {
     color: StoryColorMode;
     decor: StoryDecorMode;
+    textToneEnabled: boolean;
+    narrationColor: string;
+    dialogueColor: string;
+    actionColor: string;
+    firstLineIndent: boolean;
 }
 
 interface StoryThemeContextValue {
     appearance: StoryAppearance;
     setColor: (value: StoryColorMode) => void;
     setDecor: (value: StoryDecorMode) => void;
+    setTextToneEnabled: (value: boolean) => void;
+    setTextToneColor: (kind: 'narration' | 'dialogue' | 'action', value: string) => void;
+    setFirstLineIndent: (value: boolean) => void;
 }
 
 const STORAGE_KEY = STORY_THEATER_APPEARANCE_STORAGE_KEY;
 const STORY_APPEARANCE_HISTORY_KEY = '__sullyStoryAppearance';
-const DEFAULT_APPEARANCE: StoryAppearance = { color: 'light', decor: 'plain' };
+const DEFAULT_APPEARANCE: StoryAppearance = {
+    color: 'light',
+    decor: 'plain',
+    textToneEnabled: true,
+    narrationColor: '#334155',
+    dialogueColor: '#d97757',
+    actionColor: '#8b5cf6',
+    firstLineIndent: true,
+};
 const StoryThemeContext = createContext<StoryThemeContextValue | null>(null);
 
 function readAppearance(): StoryAppearance {
@@ -31,6 +47,11 @@ function readAppearance(): StoryAppearance {
         return {
             color: value.color === 'dark' ? 'dark' : 'light',
             decor: value.decor === 'cinema' ? 'cinema' : 'plain',
+            textToneEnabled: value.textToneEnabled !== false,
+            narrationColor: typeof value.narrationColor === 'string' && /^#[0-9a-f]{6}$/i.test(value.narrationColor) ? value.narrationColor : DEFAULT_APPEARANCE.narrationColor,
+            dialogueColor: typeof value.dialogueColor === 'string' && /^#[0-9a-f]{6}$/i.test(value.dialogueColor) ? value.dialogueColor : DEFAULT_APPEARANCE.dialogueColor,
+            actionColor: typeof value.actionColor === 'string' && /^#[0-9a-f]{6}$/i.test(value.actionColor) ? value.actionColor : DEFAULT_APPEARANCE.actionColor,
+            firstLineIndent: value.firstLineIndent !== false,
         };
     } catch {
         return DEFAULT_APPEARANCE;
@@ -161,6 +182,16 @@ export const StoryTheaterThemeProvider: React.FC<React.PropsWithChildren> = ({ c
         appearance,
         setColor: color => setAppearance(current => ({ ...current, color })),
         setDecor: decor => setAppearance(current => ({ ...current, decor })),
+        setTextToneEnabled: textToneEnabled => setAppearance(current => ({ ...current, textToneEnabled })),
+        setTextToneColor: (kind, colorValue) => setAppearance(current => ({
+            ...current,
+            ...(kind === 'narration'
+                ? { narrationColor: colorValue }
+                : kind === 'dialogue'
+                    ? { dialogueColor: colorValue }
+                    : { actionColor: colorValue }),
+        })),
+        setFirstLineIndent: firstLineIndent => setAppearance(current => ({ ...current, firstLineIndent })),
     }), [appearance]);
 
     return <StoryThemeContext.Provider value={value}>
@@ -169,6 +200,11 @@ export const StoryTheaterThemeProvider: React.FC<React.PropsWithChildren> = ({ c
             {children}
         </div>
     </StoryThemeContext.Provider>;
+};
+
+export const useStoryTheaterAppearance = (): StoryAppearance => {
+    const context = useContext(StoryThemeContext);
+    return context?.appearance || DEFAULT_APPEARANCE;
 };
 
 export const StoryAppearanceButton: React.FC<{ className?: string }> = ({ className = '' }) => {
@@ -211,7 +247,7 @@ export const StoryAppearanceButton: React.FC<{ className?: string }> = ({ classN
         };
     }, [closePanel, open, registerBackHandler]);
     if (!context) return null;
-    const { appearance, setColor, setDecor } = context;
+    const { appearance, setColor, setDecor, setTextToneEnabled, setTextToneColor, setFirstLineIndent } = context;
 
     return <>
         <button type='button' onClick={() => setOpen(true)} className={`w-9 h-9 rounded-full grid place-items-center ${className}`} title='剧情外观' aria-label='剧情外观'>
@@ -237,6 +273,81 @@ export const StoryAppearanceButton: React.FC<{ className?: string }> = ({ classN
                 <div className='mt-5 min-h-0 overflow-y-auto overscroll-contain border-t border-slate-200'>
                     <div className='py-4 flex items-center gap-3'><span className='text-xs font-semibold w-16'>明暗</span><div className='min-w-0 flex-1 grid grid-cols-2 p-1 rounded-xl bg-slate-200'><button onClick={() => setColor('light')} className={`py-2 rounded-lg text-[10px] font-bold flex items-center justify-center gap-1.5 ${appearance.color === 'light' ? 'bg-white text-violet-700 shadow-sm' : 'text-slate-500'}`}><Sun size={14} />浅色</button><button onClick={() => setColor('dark')} className={`py-2 rounded-lg text-[10px] font-bold flex items-center justify-center gap-1.5 ${appearance.color === 'dark' ? 'bg-white text-violet-700 shadow-sm' : 'text-slate-500'}`}><Moon size={14} />深色</button></div></div>
                     <div className='py-4 border-t border-slate-200 flex items-center gap-3'><span className='text-xs font-semibold w-16'>装饰</span><div className='min-w-0 flex-1 grid grid-cols-2 p-1 rounded-xl bg-slate-200'><button onClick={() => setDecor('plain')} className={`py-2 rounded-lg text-[10px] font-bold flex items-center justify-center gap-1.5 ${appearance.decor === 'plain' ? 'bg-white text-violet-700 shadow-sm' : 'text-slate-500'}`}><SquaresFour size={14} />素雅</button><button onClick={() => setDecor('cinema')} className={`py-2 rounded-lg text-[10px] font-bold flex items-center justify-center gap-1.5 ${appearance.decor === 'cinema' ? 'bg-white text-violet-700 shadow-sm' : 'text-slate-500'}`}><Sparkle size={14} />花里胡哨</button></div></div>
+
+                    <section className='py-4 border-t border-slate-200'>
+                        <div className='flex items-start justify-between gap-4'>
+                            <div className='min-w-0'>
+                                <div className='text-xs font-semibold'>正文排版</div>
+                                <p className='mt-1 text-[9px] leading-4 text-slate-400'>这里就是剧情剧场自己的正文显示设置，不影响普通聊天，也不会改模型原文。</p>
+                            </div>
+                            <button
+                                type='button'
+                                onClick={() => setFirstLineIndent(!appearance.firstLineIndent)}
+                                className={`shrink-0 px-3 py-2 rounded-xl text-[9px] font-bold border ${appearance.firstLineIndent ? 'bg-violet-100 border-violet-200 text-violet-700' : 'bg-white border-slate-200 text-slate-400'}`}
+                                aria-pressed={appearance.firstLineIndent}
+                            >
+                                首行缩进 {appearance.firstLineIndent ? '开' : '关'}
+                            </button>
+                        </div>
+
+                        <div className='mt-4 rounded-2xl border border-slate-200 bg-white p-3'>
+                            <div className='flex items-center justify-between gap-3'>
+                                <div>
+                                    <div className='text-[10px] font-bold text-slate-700'>旁白 / 对白 / 动作·心理 三色</div>
+                                    <div className='mt-0.5 text-[9px] leading-4 text-slate-400'>对白识别 「」『』“”‘’ 和英文双引号；动作/心理识别单星号 *……*。</div>
+                                </div>
+                                <button
+                                    type='button'
+                                    onClick={() => setTextToneEnabled(!appearance.textToneEnabled)}
+                                    className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${appearance.textToneEnabled ? 'bg-violet-500' : 'bg-slate-300'}`}
+                                    aria-pressed={appearance.textToneEnabled}
+                                >
+                                    <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-all ${appearance.textToneEnabled ? 'left-[22px]' : 'left-0.5'}`} />
+                                </button>
+                            </div>
+
+                            <p
+                                className='mt-3 font-serif text-[12px] leading-6'
+                                style={{ textIndent: appearance.firstLineIndent ? '2em' : undefined }}
+                            >
+                                <span style={{ color: appearance.textToneEnabled ? appearance.narrationColor : undefined }}>他把杯子推到你面前，停了一瞬。</span>
+                                <span style={{ color: appearance.textToneEnabled ? appearance.dialogueColor : undefined }}>“先喝一口。”</span>
+                                <em style={{ color: appearance.textToneEnabled ? appearance.actionColor : undefined }}>其实他比看上去更紧张。</em>
+                            </p>
+                        </div>
+
+                        {([
+                            ['旁白', 'narration', appearance.narrationColor],
+                            ['对白', 'dialogue', appearance.dialogueColor],
+                            ['动作 / 心理', 'action', appearance.actionColor],
+                        ] as const).map(([label, kind, colorValue]) => (
+                            <label key={kind} className='mt-3 flex items-center gap-3 rounded-2xl border border-slate-200 bg-white px-3 py-2.5'>
+                                <input
+                                    type='color'
+                                    value={colorValue}
+                                    onChange={event => setTextToneColor(kind, event.target.value)}
+                                    className='h-9 w-11 shrink-0 cursor-pointer rounded-xl border border-slate-200 bg-white p-1'
+                                    aria-label={`${label}颜色`}
+                                />
+                                <span className='min-w-0 flex-1 text-[10px] font-bold text-slate-600'>{label}</span>
+                                <code className='text-[9px] text-slate-400'>{colorValue.toUpperCase()}</code>
+                            </label>
+                        ))}
+
+                        <button
+                            type='button'
+                            onClick={() => {
+                                setTextToneEnabled(true);
+                                setTextToneColor('narration', DEFAULT_APPEARANCE.narrationColor);
+                                setTextToneColor('dialogue', DEFAULT_APPEARANCE.dialogueColor);
+                                setTextToneColor('action', DEFAULT_APPEARANCE.actionColor);
+                                setFirstLineIndent(true);
+                            }}
+                            className='mt-3 w-full rounded-xl border border-slate-200 bg-slate-50 py-2.5 text-[10px] font-bold text-slate-500'
+                        >
+                            恢复推荐排版
+                        </button>
+                    </section>
                 </div>
             </div>
         </div>, document.body)}
