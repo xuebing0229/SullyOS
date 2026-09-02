@@ -45,6 +45,7 @@ import { buildApiPresetConfig } from '../utils/apiPresetConfig';
 import { configFromPreset, findActivePresetId, type PresetSwitchPatch } from '../utils/apiPresetSwitch';
 import { backfillUnpricedCallsForPreset } from '../utils/apiCostBackfill';
 import {
+    ensureApiPresetModel,
     getApiPresetModelEntries,
     getApiPresetPricing,
     setApiPresetDefaultModel,
@@ -554,6 +555,8 @@ const Settings: React.FC = () => {
   const [pricingDraft, setPricingDraft] = useState<ApiPricing | undefined>(undefined);
   const [selectedPresetId, setSelectedPresetId] = useState<string | null>(null);
   const [selectedPresetName, setSelectedPresetName] = useState('');
+  const [addingModelPresetId, setAddingModelPresetId] = useState<string | null>(null);
+  const [addingModelDraft, setAddingModelDraft] = useState('');
   const [editingPresetId, setEditingPresetId] = useState<string | null>(null);
   const [editPresetName, setEditPresetName] = useState('');
   const [editPresetUrl, setEditPresetUrl] = useState('');
@@ -989,6 +992,10 @@ const Settings: React.FC = () => {
       () => apiPresets.find(preset => preset.id === selectedPresetId) || null,
       [apiPresets, selectedPresetId],
   );
+  const addingModelPreset = useMemo(
+      () => apiPresets.find(preset => preset.id === addingModelPresetId) || null,
+      [apiPresets, addingModelPresetId],
+  );
 
   const buildCurrentApiPresetConfig = useCallback(
       () => buildApiPresetConfig({
@@ -1023,6 +1030,60 @@ const Settings: React.FC = () => {
       void ActiveMsgClient.refreshApiCredentialsForPendingTasks({ ...apiConfig, ...patch });
       // MiniMax / AceStep settings are NOT overwritten by presets.
       addToast(`已加载配置: ${preset.name} · ${runtimePreset.config.model}`, 'info');
+  };
+
+  const closeModelPicker = () => {
+      setShowModelModal(false);
+      setAddingModelPresetId(null);
+      setAddingModelDraft('');
+      setModelFilter('');
+  };
+
+  const saveModelToPreset = (preset: typeof apiPresets[0], rawModel: string) => {
+      const model = normalizeApiModel(rawModel);
+      if (!model) {
+          addToast('请输入或选择模型名称', 'error');
+          return;
+      }
+      const existing = getApiPresetModelEntries(preset).some(item => item.model === model);
+      if (existing) {
+          addToast(`「${preset.name}」里已经有这个模型了`, 'info');
+          closeModelPicker();
+          return;
+      }
+      const updated = ensureApiPresetModel(preset, model);
+      updateApiPreset(preset.id, { models: updated.models });
+      addToast(`已把 ${model} 添加到「${preset.name}」`, 'success');
+      closeModelPicker();
+  };
+
+  const openAddModelPicker = async (preset: typeof apiPresets[0]) => {
+      setAddingModelPresetId(preset.id);
+      setAddingModelDraft('');
+      setModelFilter('');
+      setAvailableModels([]);
+      setIsLoadingModels(true);
+      try {
+          const baseUrl = normalizeApiBaseUrl(preset.config.baseUrl);
+          const apiKey = normalizeApiCredential(preset.config.apiKey);
+          if (!baseUrl) throw new Error('这条预设还没有 URL');
+          const response = await fetch(`${baseUrl}/models`, {
+              method: 'GET',
+              headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+          });
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          const data = await safeResponseJson(response);
+          const models = extractModelIds(data);
+          setAvailableModels(models);
+          if (models.length === 0) {
+              addToast('站点没有返回模型列表，也可以手动输入模型名', 'info');
+          }
+      } catch (error: any) {
+          addToast(`模型列表获取失败，可以手动输入：${error?.message || '未知错误'}`, 'info');
+      } finally {
+          setIsLoadingModels(false);
+          setShowModelModal(true);
+      }
   };
 
   const openEditPreset = (preset: typeof apiPresets[0]) => {
@@ -2489,8 +2550,16 @@ const Settings: React.FC = () => {
                                             })}
                                         </div>
                                     ) : (
-                                        <p className="mt-2 text-[9px] text-slate-300">还没有保存模型；在下方选择 Model 后点“保存到预设”即可加入。</p>
+                                        <p className="mt-2 text-[9px] text-slate-300">还没有保存模型。</p>
                                     )}
+                                    <button
+                                        type="button"
+                                        onClick={() => { void openAddModelPicker(preset); }}
+                                        disabled={isLoadingModels && addingModelPresetId === preset.id}
+                                        className="mt-2 w-full rounded-lg border border-dashed border-primary/25 bg-primary/5 px-3 py-2 text-[10px] font-bold text-primary transition-all hover:bg-primary/10 active:scale-[0.99] disabled:opacity-50"
+                                    >
+                                        {isLoadingModels && addingModelPresetId === preset.id ? '正在获取模型…' : '+ 添加模型'}
+                                    </button>
                                 </div>
                             );
                         })}
@@ -3997,25 +4066,35 @@ const Settings: React.FC = () => {
           </div>
       </Modal>
 
-      {/* 模型选择 Modal */}
-      <Modal isOpen={showModelModal} title="选择模型" onClose={() => setShowModelModal(false)}>
+      {/* 模型选择 Modal：普通模式切当前模型；从预设卡片进入时直接给该预设添加模型。 */}
+      <Modal
+        isOpen={showModelModal}
+        title={addingModelPreset ? `给「${addingModelPreset.name}」添加模型` : '选择模型'}
+        onClose={closeModelPicker}
+      >
         {(() => {
             const { filtered, commonPrefix } = modelPickerView;
+            const pickerModel = addingModelPreset ? addingModelDraft : localModel;
             return (
                 <div className="space-y-3 p-1">
+                    {addingModelPreset && (
+                        <p className="text-[10px] text-slate-400 px-1 leading-relaxed">
+                            这里选中的模型会直接加入这条站点预设，共用它现有的 URL / Key；加入后再单独设置价格即可。
+                        </p>
+                    )}
                     <div className="flex gap-2">
                         <input
                             type="text"
-                            value={localModel}
-                            onChange={(e) => setLocalModel(e.target.value)}
+                            value={pickerModel}
+                            onChange={(e) => addingModelPreset ? setAddingModelDraft(e.target.value) : setLocalModel(e.target.value)}
                             placeholder="手动输入模型名称..."
                             className="flex-1 bg-white/50 border border-slate-200/60 rounded-xl px-4 py-2.5 text-sm font-mono focus:outline-primary focus:bg-white transition-all"
                         />
                         <button
-                            onClick={() => setShowModelModal(false)}
+                            onClick={() => addingModelPreset ? saveModelToPreset(addingModelPreset, addingModelDraft) : closeModelPicker()}
                             className="px-4 py-2.5 bg-primary text-white text-sm font-bold rounded-xl active:scale-95 transition-all"
                         >
-                            确定
+                            {addingModelPreset ? '添加' : '确定'}
                         </button>
                     </div>
                     {availableModels.length > 0 && (
@@ -4047,11 +4126,17 @@ const Settings: React.FC = () => {
                     <div className="max-h-[40vh] overflow-y-auto no-scrollbar space-y-2">
                         {filtered.length > 0 ? filtered.map(m => {
                             const suffix = commonPrefix && m.startsWith(commonPrefix) ? m.slice(commonPrefix.length) : m;
-                            const selected = m === localModel;
+                            const selected = m === pickerModel;
                             return (
                                 <button
                                     key={m}
-                                    onClick={() => { setLocalModel(m); setShowModelModal(false); }}
+                                    onClick={() => {
+                                        if (addingModelPreset) saveModelToPreset(addingModelPreset, m);
+                                        else {
+                                            setLocalModel(m);
+                                            closeModelPicker();
+                                        }
+                                    }}
                                     title={m}
                                     className={`w-full text-left px-4 py-3 rounded-xl text-sm font-mono flex justify-between items-start gap-2 ${selected ? 'bg-primary/10 text-primary font-bold ring-1 ring-primary/20' : 'bg-slate-50 text-slate-600 hover:bg-slate-100'}`}
                                 >
