@@ -131,14 +131,16 @@ const makeJobId = (): string => {
   return `storybg_${Date.now().toString(36)}_${random}`;
 };
 
-const toNativeRoutes = (plan: ApiExecutionPlan): NativeStoryRoute[] =>
+const toNativeRoutes = (plan: ApiExecutionPlan, forceStream = false): NativeStoryRoute[] =>
   plan.routes.map(route => ({
     presetId: route.presetId,
     presetName: route.presetName,
     baseUrl: route.api.baseUrl,
     apiKey: route.api.apiKey || 'sk-none',
     model: route.api.model,
-    stream: route.api.stream === true,
+    // 剧情正文前台本来就会 forceStream=true；转交原生后台后必须保持同一请求语义。
+    // 否则 API 预设里 stream=false 会让后台退化成整段非流式，长正文很容易在响应完成前读超时。
+    stream: forceStream || route.api.stream === true,
     ...(route.api.temperature != null ? { temperature: route.api.temperature } : {}),
     ...(route.firstByteTimeoutMs ? { firstByteTimeoutMs: route.firstByteTimeoutMs } : {}),
   }));
@@ -244,7 +246,7 @@ export const executeStoryCompletionInNativeBackground = async (
 
   if (!job || (job.status !== 'queued' && job.status !== 'running' && job.status !== 'succeeded' && job.status !== 'failed')) {
     jobId = makeJobId();
-    const routes = toNativeRoutes(options.plan);
+    const routes = toNativeRoutes(options.plan, options.body.stream === true);
     const timeoutMs = options.plan.group?.policy.timeoutMs ?? 240_000;
     // 先记本地 pending，再把任务交给原生层：即使用户恰好在 submit 返回前
     // 切屏/系统冻结 WebView，回来也知道这一轮有后台任务需要接回。
