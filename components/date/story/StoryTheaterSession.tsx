@@ -54,7 +54,7 @@ import {
 import { processNewMessagesWithAutoArchive } from '../../../utils/memoryPalace/autoArchive';
 import { incrementDigestRound, runCognitiveDigestion } from '../../../utils/memoryPalace';
 import StoryQuickPresetPanel from './StoryQuickPresetPanel';
-import { StoryAppearanceButton } from './StoryTheaterTheme';
+import { StoryAppearanceButton, useStoryTheaterAppearance } from './StoryTheaterTheme';
 import { shareOrDownloadFile } from '../../../utils/shareExport';
 import { generateStoryTheaterImage } from '../../../utils/storyTheaterImage';
 import StoryImageSettingsButton from './StoryImageSettings';
@@ -229,6 +229,35 @@ const mergeDisplayGroupsByTitle = (groups: DisplayGroup[]): DisplayGroup[] => gr
     return result;
 }, []);
 
+type StoryToneKind = 'narration' | 'dialogue' | 'action';
+
+interface StoryToneSegment {
+    kind: StoryToneKind;
+    text: string;
+}
+
+const splitStoryToneSegments = (text: string): StoryToneSegment[] => {
+    const source = String(text || '');
+    const pattern = /(\*(?!\*)[^*\n]+?\*|「[^」\n]*」|『[^』\n]*』|“[^”\n]*”|‘[^’\n]*’|"[^"\n]*")/g;
+    const segments: StoryToneSegment[] = [];
+    let cursor = 0;
+    let match: RegExpExecArray | null;
+
+    while ((match = pattern.exec(source)) !== null) {
+        if (match.index > cursor) segments.push({ kind: 'narration', text: source.slice(cursor, match.index) });
+        const token = match[0];
+        if (token.startsWith('*') && token.endsWith('*')) {
+            segments.push({ kind: 'action', text: token.slice(1, -1) });
+        } else {
+            segments.push({ kind: 'dialogue', text: token });
+        }
+        cursor = match.index + token.length;
+    }
+
+    if (cursor < source.length) segments.push({ kind: 'narration', text: source.slice(cursor) });
+    return segments.length > 0 ? segments : [{ kind: 'narration', text: source }];
+};
+
 const StorySceneRelationships: React.FC<{ inputs: StoryAffinityInput[] }> = ({ inputs }) => <div className='mt-4 pt-4 border-t border-violet-100'>
     <div className='flex items-center gap-2 text-[9px] font-bold text-slate-400'><HeartStraight size={13} weight='fill' className='text-rose-400' />本轮 U→C 关系变化</div>
     <div className='mt-2 divide-y divide-rose-100'>{inputs.map((input, index) => {
@@ -240,6 +269,7 @@ const StorySceneRelationships: React.FC<{ inputs: StoryAffinityInput[] }> = ({ i
 </div>;
 
 const StoryOutput: React.FC<{ content: string; onChoose?: (text: string) => void; affinityInputs?: StoryAffinityInput[] }> = ({ content, onChoose, affinityInputs = [] }) => {
+    const appearance = useStoryTheaterAppearance();
     const blocks = parseStoryDisplayBlocks(content);
     const relationshipSceneIndex = blocks.findIndex(block => block.kind === 'scene');
     const hasScene = relationshipSceneIndex >= 0;
@@ -264,7 +294,29 @@ const StoryOutput: React.FC<{ content: string; onChoose?: (text: string) => void
                     .filter(Boolean);
                 return <div key={index} className='space-y-2.5'>
                     {paragraphs.map((paragraph, paragraphIndex) => (
-                        <p key={paragraphIndex} className='font-serif text-[15px] leading-8 text-slate-800 whitespace-pre-wrap'>{paragraph}</p>
+                        <p
+                            key={paragraphIndex}
+                            className='font-serif text-[15px] leading-8 text-slate-800 whitespace-pre-wrap'
+                            style={{ textIndent: appearance.firstLineIndent ? '2em' : undefined }}
+                        >
+                            {appearance.textToneEnabled
+                                ? splitStoryToneSegments(paragraph).map((segment, segmentIndex) => (
+                                    <span
+                                        key={segmentIndex}
+                                        style={{
+                                            color: segment.kind === 'dialogue'
+                                                ? appearance.dialogueColor
+                                                : segment.kind === 'action'
+                                                    ? appearance.actionColor
+                                                    : appearance.narrationColor,
+                                            ...(segment.kind === 'action' ? { fontStyle: 'italic' } : {}),
+                                        }}
+                                    >
+                                        {segment.text}
+                                    </span>
+                                ))
+                                : paragraph}
+                        </p>
                     ))}
                 </div>;
             }
