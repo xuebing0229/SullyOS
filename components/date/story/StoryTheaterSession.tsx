@@ -19,6 +19,7 @@ import {
     buildStoryHistory,
     buildStoryIdentityGuard,
     buildStoryMiniTheaterReminder,
+    buildStoryTextToneFormatReminder,
     buildStoryWorldbookScanMessages,
     buildTheaterPersona,
     buildTheaterWorldbookSlots,
@@ -229,7 +230,7 @@ const mergeDisplayGroupsByTitle = (groups: DisplayGroup[]): DisplayGroup[] => gr
     return result;
 }, []);
 
-type StoryToneKind = 'narration' | 'dialogue' | 'action';
+type StoryToneKind = 'narration' | 'dialogue' | 'psychology';
 
 interface StoryToneSegment {
     kind: StoryToneKind;
@@ -247,7 +248,7 @@ const splitStoryToneSegments = (text: string): StoryToneSegment[] => {
         if (match.index > cursor) segments.push({ kind: 'narration', text: source.slice(cursor, match.index) });
         const token = match[0];
         if (token.startsWith('*') && token.endsWith('*')) {
-            segments.push({ kind: 'action', text: token.slice(1, -1) });
+            segments.push({ kind: 'psychology', text: token.slice(1, -1) });
         } else {
             segments.push({ kind: 'dialogue', text: token });
         }
@@ -306,8 +307,8 @@ const StoryOutput: React.FC<{ content: string; onChoose?: (text: string) => void
                                         style={{
                                             color: segment.kind === 'dialogue'
                                                 ? appearance.dialogueColor
-                                                : segment.kind === 'action'
-                                                    ? appearance.actionColor
+                                                : segment.kind === 'psychology'
+                                                    ? appearance.psychologyColor
                                                     : appearance.narrationColor,
                                             ...(segment.kind === 'action' ? { fontStyle: 'italic' } : {}),
                                         }}
@@ -373,6 +374,7 @@ const StoryOutput: React.FC<{ content: string; onChoose?: (text: string) => void
 
 const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, onEdit, onOpenVectorMemory, onEntryChange }) => {
     const { characters, userProfile, groups, apiConfig, realtimeConfig, memoryPalaceConfig, remoteVectorConfig, updateCharacter, addToast } = useOS();
+    const appearance = useStoryTheaterAppearance();
     const threadId = storyTheaterThreadId(entry.id);
     const actors = useMemo(() => characters.filter(char => entry.characterIds.includes(char.id)), [characters, entry.characterIds]);
     const memoryActors = useMemo(() => {
@@ -986,6 +988,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             });
             const miniTheaterReminder = buildStoryMiniTheaterReminder(effectivePreset.document, promptIdentityName, actors.map(actor => actor.name));
             const backstageAftermathReminder = buildStoryBackstageAftermathReminder(effectivePreset.document);
+            const textToneFormatReminder = buildStoryTextToneFormatReminder(appearance.textToneEnabled);
             const multiAffinityGuide = affinityEnabled ? buildStoryMultiAffinityGuide(actors.map(actor => ({ id: actor.id, name: actor.name }))) : '';
             const affinityAwarenessReminder = affinityInputs.map(item => buildStoryAffinityAwarenessReminder(item, item.characterName || '当前角色')).filter(Boolean).join('\n\n');
             const identityGuard = buildStoryIdentityGuard(effectivePreset.document, promptIdentityName, actors.map(actor => actor.name));
@@ -995,6 +998,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 ...(promptEntry.writesToCharacterMemory ? [{ role: 'system' as const, content: REAL_COMPANION_MEMORY_GUARD }] : []),
                 ...(backstageAftermathReminder ? [{ role: 'system' as const, content: backstageAftermathReminder }] : []),
                 ...(miniTheaterReminder ? [{ role: 'system' as const, content: miniTheaterReminder }] : []),
+                ...(textToneFormatReminder ? [{ role: 'system' as const, content: textToneFormatReminder }] : []),
                 ...(multiAffinityGuide ? [{ role: 'system' as const, content: multiAffinityGuide }] : []),
                 ...(affinityEnabled ? [{ role: 'system' as const, content: RELATIONSHIP_TEXTURE_GUIDE }] : []),
                 ...(affinityAwarenessReminder ? [{ role: 'system' as const, content: affinityAwarenessReminder }] : []),
@@ -1123,7 +1127,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             setSending(false);
             setRerollingId(null);
         }
-    }, [actors, addToast, affinityDrafts, affinityEnabled, apiConfig, applyActorMemoryPipeline, archiveIfNeeded, buildActorContexts, buildMaskMemoryContext, callCompletion, effectivePreset, entry, independentRecall, input, loadMessages, mask, promptIdentityName, saveCentralAndMirrors, selectedBooks, threadId, userProfile]);
+    }, [actors, addToast, affinityDrafts, affinityEnabled, apiConfig, appearance.textToneEnabled, applyActorMemoryPipeline, archiveIfNeeded, buildActorContexts, buildMaskMemoryContext, callCompletion, effectivePreset, entry, independentRecall, input, loadMessages, mask, promptIdentityName, saveCentralAndMirrors, selectedBooks, threadId, userProfile]);
 
     useEffect(() => {
         if (!isNativeStoryBackgroundRuntime() || sending || sendLock.current) return;
