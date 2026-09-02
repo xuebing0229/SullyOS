@@ -1060,40 +1060,101 @@ export async function executeOpenAiChatPlan(
                 }
                 : {}),
         };
-        const value = await safeFetchJson(
-            `${baseUrl}/chat/completions`,
-            {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    Authorization:
-                        `Bearer ${route.api.apiKey || 'sk-none'}`,
-                },
-                body: JSON.stringify(body),
-                signal: options.signal,
-            },
-            options.directMaxRetries ?? 2,
-            options.directTimeoutMs ?? 0,
-            directMeta,
-            options.streamHooks,
-        );
-        const requestId = createRequestId();
-        return {
-            value,
-            route,
-            requestId,
-            attempts: [{
-                requestId,
-                presetId: route.presetId,
-                presetName: route.presetName,
-                routeIndex: 0,
-                routeCount: 1,
-                attempt: 1,
-                phase: 'success',
-                startedAt,
-                durationMs: Date.now() - startedAt,
-            }],
+
+        // 流式正文不能再把“240 秒请求超时”当整轮总时长。
+        // 直连线路只在首个可见正文前使用 watchdog；一旦开始持续出字，就允许一直写到 finish_reason/[DONE]。
+        const routeAbort = new AbortController();
+        const forwardAbort = () => {
+            if (!routeAbort.signal.aborted) {
+                routeAbort.abort((options.signal as any)?.reason);
+            }
         };
+        if (options.signal?.aborted) forwardAbort();
+        else options.signal?.addEventListener('abort', forwardAbort, { once: true });
+
+        const firstVisibleTimeoutMs = body.stream
+            ? Math.max(
+                1,
+                route.firstByteTimeoutMs
+                    || options.directTimeoutMs
+                    || options.plan.group?.policy.timeoutMs
+                    || DEFAULT_API_FAILOVER_POLICY.timeoutMs,
+            )
+            : 0;
+        let firstVisibleTimer: ReturnType<typeof setTimeout> | null = null;
+        let firstVisibleTimedOut = false;
+        const markFirstResponse = () => {
+            if (firstVisibleTimer) {
+                clearTimeout(firstVisibleTimer);
+                firstVisibleTimer = null;
+            }
+        };
+        if (body.stream && firstVisibleTimeoutMs > 0) {
+            firstVisibleTimer = setTimeout(() => {
+                firstVisibleTimedOut = true;
+                if (!routeAbort.signal.aborted) {
+                    routeAbort.abort(
+                        new Error(`first visible timeout ${firstVisibleTimeoutMs}ms`),
+                    );
+                }
+            }, firstVisibleTimeoutMs);
+        }
+
+        try {
+            const value = await safeFetchJson(
+                `${baseUrl}/chat/completions`,
+                {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        Authorization:
+                            `Bearer ${route.api.apiKey || 'sk-none'}`,
+                    },
+                    body: JSON.stringify(body),
+                    signal: routeAbort.signal,
+                },
+                options.directMaxRetries ?? 2,
+                // 非流式沿用旧总超时；流式由首字 watchdog 管“启动”，正文开始后不设总时长上限。
+                body.stream ? 0 : (options.directTimeoutMs ?? 0),
+                directMeta,
+                body.stream
+                    ? wrapStreamHooks(
+                        options.streamHooks,
+                        () => {},
+                        markFirstResponse,
+                        true,
+                        options.streamCommitMode || 'activity',
+                    )
+                    : options.streamHooks,
+            );
+            const requestId = createRequestId();
+            return {
+                value,
+                route,
+                requestId,
+                attempts: [{
+                    requestId,
+                    presetId: route.presetId,
+                    presetName: route.presetName,
+                    routeIndex: 0,
+                    routeCount: 1,
+                    attempt: 1,
+                    phase: 'success',
+                    startedAt,
+                    durationMs: Date.now() - startedAt,
+                }],
+            };
+        } catch (error) {
+            if (firstVisibleTimedOut) {
+                throw new Error(
+                    `首字等待超时（${Math.round(firstVisibleTimeoutMs / 1000)} 秒），已停止当前线路`,
+                );
+            }
+            throw error;
+        } finally {
+            markFirstResponse();
+            options.signal?.removeEventListener('abort', forwardAbort);
+        }
     }
 
     return runApiFailover({
@@ -1170,8 +1231,12 @@ export async function executeOpenAiChatPlan(
                         signal: routeAbort.signal,
                     },
                     0,
-                    options.plan.group?.policy.timeoutMs
-                        ?? DEFAULT_API_FAILOVER_POLICY.timeoutMs,
+                    // 流式正文的 timeoutMs 不能是整轮总时长；首字前已有 firstResponseTimer。
+                    // 正文一旦开始，就让 fetch 自己持续读到正常结束，避免长篇在固定秒数被腰斩。
+                    body.stream
+                        ? 0
+                        : (options.plan.group?.policy.timeoutMs
+                            ?? DEFAULT_API_FAILOVER_POLICY.timeoutMs),
                     meta,
                     wrapStreamHooks(
                         options.streamHooks,
