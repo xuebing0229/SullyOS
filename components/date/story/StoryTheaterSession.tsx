@@ -37,6 +37,7 @@ import {
     makeStoryTheaterFileName,
     memoryTimestampForCharacter,
     parseStoryDisplayBlocks,
+    STORY_DISPLAY_FIELD_LABELS,
     REAL_COMPANION_MEMORY_GUARD,
     RELATIONSHIP_TEXTURE_GUIDE,
     resolveStoryTheaterMask,
@@ -151,14 +152,15 @@ const splitDisplayLines = (text: string): DisplayLine[] => {
 
     for (const row of rows) {
         const match = row.match(/^([^：:]{1,20})[：:]\s*(.*)$/);
-        if (match) {
-            result.push({ label: match[1].trim(), value: match[2].trim() });
+        const label = match?.[1]?.trim() || '';
+        if (match && STORY_DISPLAY_FIELD_LABELS.has(label)) {
+            result.push({ label, value: match[2].trim() });
             continue;
         }
 
-        // 没有出现新的“栏目名：”就视为上一栏的续行。
-        // 这样 true_monologue / voice / red / surge 等栏目内部即使主动换行，
-        // 也不会被前端错误拆成一个新的“记录”栏目。
+        // 只有协议里真实存在的字段名才允许开新栏。
+        // 普通心声正文即使自己写出“我知道：……”之类冒号句，也继续并回上一栏；
+        // red / fracture / surge 则在解析层作为 <voice> 内联强调，不再单独拆栏。
         const previous = result[result.length - 1];
         if (previous) {
             previous.value = previous.value ? `${previous.value}\n${row}` : row;
