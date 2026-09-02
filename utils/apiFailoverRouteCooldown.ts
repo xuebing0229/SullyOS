@@ -53,7 +53,7 @@ const sanitizeEntry = (value: unknown): ApiRouteCooldownEntry | null => {
   const raw = value as any;
   if (
     typeof raw.key !== 'string'
-    || (raw.scope !== 'chat' && raw.scope !== 'emotion')
+    || (raw.scope !== 'chat' && raw.scope !== 'story' && raw.scope !== 'emotion')
     || typeof raw.presetId !== 'string'
     || typeof raw.presetName !== 'string'
     || typeof raw.baseUrl !== 'string'

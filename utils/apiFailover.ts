@@ -22,7 +22,7 @@ import {
 export const API_FAILOVER_STORAGE_KEY = 'os_api_failover_groups_v1';
 const API_PRESETS_STORAGE_KEY = 'os_api_presets';
 
-export type ApiFailoverScope = 'chat' | 'emotion';
+export type ApiFailoverScope = 'chat' | 'story' | 'emotion';
 
 export interface ApiFailoverMember {
     presetId: string;
@@ -158,14 +158,19 @@ export function createDefaultApiFailoverGroup(
 ): ApiFailoverGroup {
     return {
         id: `failover_${scope}`,
-        name: scope === 'chat' ? '主聊天' : '情绪评估',
+        name:
+            scope === 'chat'
+                ? '主聊天'
+                : scope === 'story'
+                    ? '剧情'
+                    : '情绪评估',
         scope,
         enabled: false,
         members: [],
         policy: {
             ...DEFAULT_API_FAILOVER_POLICY,
-            // 情绪评估只发普通文本 completion，没有工具协议/思考参数
-            // 的跨模型兼容问题，本来就应允许不同模型相互回退。
+            // 主聊天带工具协议，默认限制同模型家族；剧情和情绪都是普通 completion，
+            // 允许用户按自己的模型偏好混合备用线路。
             strictSameModel: scope === 'chat',
         },
         updatedAt: Date.now(),
@@ -197,7 +202,7 @@ export function normalizeApiFailoverGroup(
         const identity = `${presetId}\u0000${model}`;
         if (!presetId || seen.has(identity)) continue;
         seen.add(identity);
-        const firstByteTimeoutMs = scope === 'chat'
+        const firstByteTimeoutMs = scope !== 'emotion'
             ? finiteInt(
                 item?.firstByteTimeoutMs,
                 0,
@@ -231,12 +236,11 @@ export function normalizeApiFailoverGroup(
             ),
             consecutiveFailureThreshold: 1,
             cooldownMs: API_FAILOVER_ROUTE_FAILURE_COOLDOWN_MS,
-            // 旧版把主聊天的“同模型安全栏”误用到情绪线路，
-            // 已保存的 true 也必须在读取时纠正，否则老用户仍会被卡住。
-            strictSameModel: scope === 'emotion'
-                ? false
-                : input?.policy?.strictSameModel
-                    ?? DEFAULT_API_FAILOVER_POLICY.strictSameModel,
+            // 剧情/情绪不使用主聊天工具协议，读取时强制允许跨模型回退。
+            strictSameModel: scope === 'chat'
+                ? input?.policy?.strictSameModel
+                    ?? DEFAULT_API_FAILOVER_POLICY.strictSameModel
+                : false,
         },
         updatedAt: Number(input?.updatedAt) || Date.now(),
     };
@@ -249,7 +253,7 @@ export function loadApiFailoverGroups(): ApiFailoverGroup[] {
             localStorage.getItem(API_FAILOVER_STORAGE_KEY) || '[]',
         );
         if (!Array.isArray(parsed)) return [];
-        return (['chat', 'emotion'] as ApiFailoverScope[])
+        return (['chat', 'story', 'emotion'] as ApiFailoverScope[])
             .map(scope => {
                 const found = parsed.find(item => item?.scope === scope);
                 return found
@@ -264,7 +268,7 @@ export function loadApiFailoverGroups(): ApiFailoverGroup[] {
 
 export function saveApiFailoverGroups(groups: ApiFailoverGroup[]): void {
     if (typeof localStorage === 'undefined') return;
-    const normalized = (['chat', 'emotion'] as ApiFailoverScope[])
+    const normalized = (['chat', 'story', 'emotion'] as ApiFailoverScope[])
         .map(scope => {
             const found = groups.find(group => group.scope === scope);
             return normalizeApiFailoverGroup(
@@ -338,9 +342,15 @@ export function resolveApiExecutionPlanWithData(
         };
     }
 
-    const rawGroup = groups.find(
-        group => group.scope === scope && group.enabled,
+    const configuredGroup = groups.find(
+        group => group.scope === scope,
     );
+    const rawGroup =
+        scope === 'story'
+            ? configuredGroup
+            : configuredGroup?.enabled
+                ? configuredGroup
+                : undefined;
     if (!rawGroup) {
         return {
             mode: 'direct',
@@ -358,6 +368,25 @@ export function resolveApiExecutionPlanWithData(
 
     const group = normalizeApiFailoverGroup(rawGroup, scope);
     const analysis = analyzeApiFailoverGroup(group, presets);
+
+    // 剧情线路与主聊天解耦：只要配置了第一线路，即使“回退”开关关闭，
+    // 剧情也固定使用自己的第一线路；没有配置时才继续沿用当前 API。
+    if (scope === 'story' && !group.enabled) {
+        const selected = analysis.routes[0] || directRoute;
+        return {
+            mode: 'direct',
+            scope,
+            primaryApi: selected.api,
+            routes: [{ ...selected, routeIndex: 0 }],
+            group,
+            cacheIdentity: [
+                'direct-story-route-v1',
+                selected.presetId,
+                selected.api.baseUrl?.trim().replace(/\/+$/, ''),
+                selected.api.model,
+            ].join('|'),
+        };
+    }
 
     if (!analysis.canEnable) {
         const selected = analysis.routes[0] || directRoute;

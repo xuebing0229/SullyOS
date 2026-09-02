@@ -671,7 +671,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
         background?: { ownerKey: string; title: string; meta?: Record<string, any> },
     ): Promise<string> => {
         const generationSettings = prepareStoryGenerationSettings(settings, entry.omitSamplingParams === true);
-        const plan = resolveApiExecutionPlan('chat', apiConfig, true);
+        const plan = resolveApiExecutionPlan('story', apiConfig, true);
         const wantsStream = Boolean(onStreamText);
         const requestBody = {
             model: apiConfig.model,

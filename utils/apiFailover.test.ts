@@ -213,6 +213,63 @@ describe('plan resolution', () => {
         expect(resolved.cacheIdentity).not.toContain('key-');
     });
 
+    it('uses the configured story primary even when story failover is off', () => {
+        const storyGroup = {
+            ...createDefaultApiFailoverGroup('story'),
+            enabled: false,
+            members: [
+                { presetId: 'c', enabled: true, firstByteTimeoutMs: 12_000 },
+            ],
+            updatedAt: 11,
+        };
+
+        const resolved = resolveApiExecutionPlanWithData(
+            'story',
+            api('https://direct.example/v1', 'gemini-3.1-pro-preview'),
+            [storyGroup],
+            presets,
+            true,
+        );
+
+        expect(resolved.mode).toBe('direct');
+        expect(resolved.scope).toBe('story');
+        expect(resolved.routes[0]).toMatchObject({
+            presetId: 'c',
+            api: {
+                baseUrl: 'https://c.example/v1',
+                model: 'claude-sonnet',
+            },
+            firstByteTimeoutMs: 12_000,
+        });
+    });
+
+    it('lets story failover mix model families independently from chat', () => {
+        const storyGroup = {
+            ...createDefaultApiFailoverGroup('story'),
+            enabled: true,
+            members: [
+                { presetId: 'a', enabled: true },
+                { presetId: 'c', enabled: true },
+            ],
+            updatedAt: 12,
+        };
+
+        const resolved = resolveApiExecutionPlanWithData(
+            'story',
+            api('https://direct.example/v1'),
+            [storyGroup],
+            presets,
+            true,
+        );
+
+        expect(resolved.mode).toBe('failover');
+        expect(resolved.routes.map(route => route.api.model)).toEqual([
+            'gemini-3.1-pro-preview',
+            'claude-sonnet',
+        ]);
+        expect(resolved.group?.policy.strictSameModel).toBe(false);
+    });
+
     it('changes cache identity when group order changes', () => {
         const first = {
             ...createDefaultApiFailoverGroup('chat'),

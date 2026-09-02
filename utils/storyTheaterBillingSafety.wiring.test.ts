@@ -38,6 +38,11 @@ describe('story theater billing safety wiring', () => {
         expect(interceptorSource).not.toContain('回退原请求重发');
     });
 
+    it('uses the independent story route scope instead of the main chat route', () => {
+        expect(storySource).toContain("resolveApiExecutionPlan('story', apiConfig, true)");
+        expect(storySource).not.toContain("resolveApiExecutionPlan('chat', apiConfig, true)");
+    });
+
     it('labels story requests and wires same-endpoint evidence into CORS diagnostics', () => {
         const interceptorSource = sliceBetween(osContextSource, 'const patchedFetch = async', 'window.fetch = patchedFetch;');
 
