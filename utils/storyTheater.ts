@@ -607,6 +607,22 @@ const STORY_PRESET_GROUP_SPECS = [
 
 export const isStoryPresetSectionMarker = (prompt: StoryTheaterPresetPrompt): boolean => /^nmj-v6[45]-section-.+-(start|end)$/.test(prompt.id);
 
+/**
+ * 外部大型预设在转成糯米机原生格式时，可以用一个“关闭 + 空内容”的分隔项保留原分组。
+ * 目前 Ako 转换器使用 ako-group-XX / “━━ 分组名 ━━”；这里把它识别成 UI 分组骨架，
+ * 分隔项本身不会出现在提示词编辑列表，也不会被发送给模型。
+ */
+export const isImportedStoryPresetGroupMarker = (prompt: StoryTheaterPresetPrompt): boolean => Boolean(
+    !prompt.marker
+    && prompt.enabled === false
+    && !prompt.content.trim()
+    && (/^ako-group-\d+$/i.test(prompt.id) || /^━━\s*.+?\s*━━$/.test(prompt.name.trim()))
+);
+
+const importedStoryPresetGroupLabel = (prompt: StoryTheaterPresetPrompt): string => (
+    prompt.name.trim().replace(/^━━\s*/, '').replace(/\s*━━$/, '').trim() || '导入分组'
+);
+
 export const isProtectedStoryPrompt = (prompt: StoryTheaterPresetPrompt): boolean => Boolean(
     prompt.marker || prompt.id === 'nmj-v64-section-sources-start' || prompt.id === 'nmj-v64-section-sources-end'
     || ['charDescription', 'charPersonality', 'worldInfoBefore', 'personaDescription', 'worldInfoAfter', 'scenario', 'dialogueExamples', 'chatHistory'].includes(prompt.id)
@@ -632,11 +648,39 @@ export const getStoryPresetPromptGroups = (document: StoryTheaterPresetDocument)
             protected: 'protected' in spec && spec.protected === true,
         });
     }
+
     let cursor = 0;
     while (cursor < prompts.length) {
         if (claimed.has(cursor)) { cursor += 1; continue; }
+
         const startIndex = cursor;
-        while (cursor + 1 < prompts.length && !claimed.has(cursor + 1)) cursor += 1;
+        const importedMarker = isImportedStoryPresetGroupMarker(prompts[startIndex]);
+        if (importedMarker) {
+            cursor += 1;
+            while (
+                cursor < prompts.length
+                && !claimed.has(cursor)
+                && !isImportedStoryPresetGroupMarker(prompts[cursor])
+            ) cursor += 1;
+            const endIndex = cursor - 1;
+            const promptCount = Math.max(0, endIndex - startIndex);
+            groups.push({
+                key: `imported:${prompts[startIndex].id}`,
+                label: importedStoryPresetGroupLabel(prompts[startIndex]),
+                description: `导入预设原分组 · ${promptCount} 条提示词`,
+                promptIds: prompts.slice(startIndex, endIndex + 1).map(prompt => prompt.id),
+                startIndex,
+                endIndex,
+                protected: false,
+            });
+            continue;
+        }
+
+        while (
+            cursor + 1 < prompts.length
+            && !claimed.has(cursor + 1)
+            && !isImportedStoryPresetGroupMarker(prompts[cursor + 1])
+        ) cursor += 1;
         const endIndex = cursor;
         groups.push({
             key: `custom:${prompts[startIndex]?.id || startIndex}`,
