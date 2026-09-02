@@ -433,7 +433,7 @@ const ApiFailoverSettings: React.FC<Props> = ({ addToast }) => {
                                                 }
                                                 className={`w-full appearance-none rounded-xl border bg-white px-3 py-2.5 pr-8 text-[11px] font-medium outline-none transition-colors ${
                                                     preset && currentIsKnown
-                                                        ? 'border-slate-200 text-slate-650 focus:border-primary/40'
+                                                        ? 'border-slate-200 text-slate-700 focus:border-primary/40'
                                                         : 'border-rose-200 bg-rose-50 text-rose-600'
                                                 }`}
                                             >
