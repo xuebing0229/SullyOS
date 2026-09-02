@@ -428,7 +428,18 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
     const regenerateStoryImage = useCallback(async (message: Message) => {
         if (regeneratingImageId !== null) return;
         setRegeneratingImageId(message.id);
+        let imageKeepAliveLease: string | null = null;
         try {
+            if (isNativeStoryBackgroundRuntime()) {
+                try {
+                    imageKeepAliveLease = await acquireNativeStoryKeepAlive(
+                        `story-image:${entry.id}:manual:${message.id}`,
+                        `${entry.title} · 配图`,
+                    );
+                } catch (keepAliveError) {
+                    console.warn('[StoryTheater] image keepalive unavailable; continuing in foreground', keepAliveError);
+                }
+            }
             const rows = (await DB.getMessagesByCharId(threadId, true))
                 .filter(item => item.metadata?.source === 'story_theater' && item.id <= message.id)
                 .sort((a, b) => a.id - b.id);
@@ -440,6 +451,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             console.error('[StoryTheater] image regeneration failed', error);
             addToast(`重新生成失败：${error?.message || error}`, 'error');
         } finally {
+            await releaseNativeStoryKeepAlive(imageKeepAliveLease);
             setRegeneratingImageId(null);
         }
     }, [actors, addToast, apiConfig, entry, loadMessages, promptIdentityName, regeneratingImageId, threadId, userProfile]);
@@ -734,7 +746,12 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
         settings?: Partial<StoryGenerationSettings>,
         onPromptTokens?: (tokens: number) => void,
         onStreamText?: (fullText: string) => void,
-        background?: { ownerKey: string; title: string; meta?: Record<string, any> },
+        background?: {
+            ownerKey: string;
+            title: string;
+            meta?: Record<string, any>;
+            beforeRelease?: () => Promise<void> | void;
+        },
     ): Promise<string> => {
         const generationSettings = prepareStoryGenerationSettings(settings, entry.omitSamplingParams === true);
         const plan = resolveApiExecutionPlan('story', apiConfig, true);
@@ -760,6 +777,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             }
         }
 
+        let completionSucceeded = false;
         try {
             const { value: data } = await executeOpenAiChatPlan({
                 plan,
@@ -782,8 +800,19 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             if (Number.isFinite(reportedPromptTokens) && reportedPromptTokens > 0) onPromptTokens?.(reportedPromptTokens);
             const content = extractContent(data).trim();
             if (!content) throw new Error(describeEmptyStoryCompletion(data));
+            completionSucceeded = true;
             return content;
         } finally {
+            // 自动配图开启时，先申请下一张保活 lease，再释放正文 lease。
+            // 两张 lease 有短暂重叠，避免 App 已在后台时正文刚结束就被系统冻结，
+            // 导致后面的规划器 / MCP 生图没机会启动。
+            if (completionSucceeded && background?.beforeRelease) {
+                try {
+                    await background.beforeRelease();
+                } catch (handoffError) {
+                    console.warn('[StoryTheater] keepalive handoff failed; continuing normally', handoffError);
+                }
+            }
             await releaseNativeStoryKeepAlive(keepAliveLease);
         }
     }, [apiConfig, entry.omitSamplingParams]);
@@ -965,6 +994,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
         const backgroundOwnerKey = `story-turn:${entry.id}`;
         let usedNativeBackground = false;
         let nativeCompletionReceived = false;
+        let automaticImageKeepAliveLease: string | null = null;
 
         try {
             const before = (await DB.getMessagesByCharId(threadId, true))
@@ -1097,6 +1127,15 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                     ...(affinityInputs.length > 0 ? { affinityInputs } : {}),
                     isContinueTurn,
                 },
+                beforeRelease: entry.imageGeneration?.enabled && isNativeStoryBackgroundRuntime()
+                    ? async () => {
+                        if (automaticImageKeepAliveLease) return;
+                        automaticImageKeepAliveLease = await acquireNativeStoryKeepAlive(
+                            `story-image:${entry.id}:auto`,
+                            `${entry.title} · 配图`,
+                        );
+                    }
+                    : undefined,
             });
             nativeCompletionReceived = usedNativeBackground;
             const content = prefill && !generated.startsWith(prefill) ? `${prefill}${generated}` : generated;
@@ -1132,6 +1171,8 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                     console.error('[StoryTheater] automatic image failed', imageError);
                     addToast(`正文已保存，但自动配图失败：${imageError?.message || imageError}`, 'error');
                 } finally {
+                    await releaseNativeStoryKeepAlive(automaticImageKeepAliveLease);
+                    automaticImageKeepAliveLease = null;
                     setMemoryStatus('');
                 }
             }
@@ -1187,6 +1228,8 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 'error',
             );
         } finally {
+            await releaseNativeStoryKeepAlive(automaticImageKeepAliveLease);
+            automaticImageKeepAliveLease = null;
             sendLock.current = false;
             setSending(false);
             setRerollingId(null);
