@@ -252,6 +252,47 @@ const splitStoryToneSegments = (text: string): StoryToneSegment[] => {
     return segments.length > 0 ? segments : [{ kind: 'narration', text: source }];
 };
 
+const isStandalonePsychologyLine = (line: string): boolean => /^\s*\*(?!\*)[^*\n]+?\*\s*$/.test(line);
+
+/**
+ * 模型常把连续心理活动写成：
+ * *第一句*
+ * *第二句*
+ * 中间只有单换行。对显示层来说它们已经是独立可见段落；
+ * 若仍塞在同一个 <p> 里，CSS text-indent 只会作用于第一行。
+ * 这里只把“整行都是单星号心理”的行拆成视觉段落，普通旁白/对白的单换行保持原样。
+ */
+export const splitStoryIndentedParagraphs = (text: string): string[] => {
+    const coarseParagraphs = String(text || '')
+        .trim()
+        .split(/\n[ \t]*\n+/)
+        .map(paragraph => paragraph.trim())
+        .filter(Boolean);
+    const result: string[] = [];
+
+    for (const paragraph of coarseParagraphs) {
+        const lines = paragraph.split(/\n/);
+        let buffer: string[] = [];
+        const flush = () => {
+            const value = buffer.join('\n').trim();
+            if (value) result.push(value);
+            buffer = [];
+        };
+
+        for (const line of lines) {
+            if (isStandalonePsychologyLine(line)) {
+                flush();
+                result.push(line.trim());
+            } else {
+                buffer.push(line);
+            }
+        }
+        flush();
+    }
+
+    return result;
+};
+
 const StorySceneRelationships: React.FC<{ inputs: StoryAffinityInput[] }> = ({ inputs }) => <div className='mt-4 pt-4 border-t border-violet-100'>
     <div className='flex items-center gap-2 text-[9px] font-bold text-slate-400'><HeartStraight size={13} weight='fill' className='text-rose-400' />本轮 U→C 关系变化</div>
     <div className='mt-2 divide-y divide-rose-100'>{inputs.map((input, index) => {
@@ -281,11 +322,7 @@ const StoryOutput: React.FC<{ content: string; onChoose?: (text: string) => void
         {blocks.map((block, index) => {
             const lines = splitDisplayLines(block.text);
             if (block.kind === 'story') {
-                const paragraphs = block.text
-                    .trim()
-                    .split(/\n[ \t]*\n+/)
-                    .map(paragraph => paragraph.trim())
-                    .filter(Boolean);
+                const paragraphs = splitStoryIndentedParagraphs(block.text);
                 return <div key={index} className='space-y-2.5'>
                     {paragraphs.map((paragraph, paragraphIndex) => (
                         <p
