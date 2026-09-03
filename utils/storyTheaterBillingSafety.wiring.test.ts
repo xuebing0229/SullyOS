@@ -64,8 +64,11 @@ describe('story theater billing safety wiring', () => {
         expect(nativeStoryManagerSource).toContain('.followSslRedirects(true)');
         expect(nativeStoryManagerSource).toContain('.followRedirects(true)');
         expect(nativeStoryManagerSource).toContain('.retryOnConnectionFailure(true)');
-        expect(nativeStoryInstallerSource).toContain('com.squareup.okhttp3:okhttp-jvm:5.5.0');
-        expect(nativeStoryInstallerSource).toContain('com.squareup.okhttp3:okhttp-sse:5.5.0');
+        expect(nativeStoryInstallerSource).toContain('okhttp-bom:5.1.0');
+        expect(nativeStoryInstallerSource).toContain('implementation "com.squareup.okhttp3:okhttp"');
+        expect(nativeStoryInstallerSource).toContain('implementation "com.squareup.okhttp3:okhttp-sse"');
+        expect(nativeStoryInstallerSource).not.toContain('okhttp-jvm:5.5.0');
+        expect(nativeStoryInstallerSource).not.toContain('okhttp-sse:5.5.0');
         expect(nativeStoryManagerSource).toContain('EventSources.createFactory(client).newEventSource');
         expect(nativeStoryManagerSource).toContain('activeSources.put(jobId, source)');
         expect(nativeStoryManagerSource).toContain('source.cancel()');
