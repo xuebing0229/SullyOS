@@ -13,6 +13,9 @@ const nativeStoryPluginSource = read('../native/android/SullyStoryBackgroundPlug
 const nativeStoryManagerSource = read('../native/android/SullyStoryGenerationManager.java');
 const nativeStoryKeepAliveSource = read('../native/android/SullyStoryKeepAliveService.java');
 const nativeStoryBridgeSource = read('./nativeStoryBackground.ts');
+const cloudStoryBridgeSource = read('./backgroundStoryJobs.ts');
+const amsgStoryJobsSource = read('../worker/amsg/src/storyJobs.ts');
+const amsgWorkerSource = read('../worker/amsg/src/index.ts');
 
 const sliceBetween = (source: string, startAnchor: string, endAnchor: string): string => {
     const start = source.indexOf(startAnchor);
@@ -23,7 +26,7 @@ const sliceBetween = (source: string, startAnchor: string, endAnchor: string): s
 
 describe('story theater billing safety wiring', () => {
     it('uses a synchronous mutex instead of React state as the send guard', () => {
-        const sendSource = sliceBetween(storySource, 'const send = useCallback', 'const archivedCount =');
+        const sendSource = sliceBetween(storySource, 'const send = useCallback', '// 云端 job / 旧 native job');
         const guard = sendSource.indexOf('if (sendLock.current || actors.length === 0) return;');
         const acquire = sendSource.indexOf('sendLock.current = true;');
         const release = sendSource.indexOf('sendLock.current = false;');
@@ -191,7 +194,21 @@ describe('story theater billing safety wiring', () => {
         expect(editorSource).toContain("update('omitSamplingParams', value)");
         expect(editorSource).toContain('默认关闭');
         expect(storySource).toContain('剧情请求被上游/网关断开');
-        expect(storySource).toContain("transport: useNativeEventSourceTransport ? 'native-eventsource' : 'webview-fetch'");
+        expect(storySource).toContain("'cloud-story-job'");
+        expect(storySource).toContain("executeStoryCompletionInCloudBackground");
+        expect(storySource).toContain("pendingCloudJob || await isCloudStoryJobsAvailable()");
+        expect(storySource).toContain("!useCloudStoryTransport");
+        expect(cloudStoryBridgeSource).toContain("clientRequestId");
+        expect(cloudStoryBridgeSource).toContain("/story-jobs/by-client/");
+        expect(cloudStoryBridgeSource).toContain("为避免重复扣费，本轮不会自动重发");
+        expect(cloudStoryBridgeSource).toContain("getPendingCloudStoryJob");
+        expect(amsgStoryJobsSource).toContain("CREATE TABLE IF NOT EXISTS story_jobs");
+        expect(amsgStoryJobsSource).toContain("PARTIAL_PERSIST_INTERVAL_MS");
+        expect(amsgStoryJobsSource).toContain("kickStory(userId, jobId)");
+        expect(amsgWorkerSource).toContain("async kickStory(userId: string, jobId: string)");
+        expect(amsgWorkerSource).toContain("await runStoryJob(this.env, story.userId, story.jobId)");
+        expect(amsgWorkerSource).toContain("storyJobs: true");
+        expect(amsgWorkerSource).toContain("storyTick: !!env.INSTANT_TICK");
         expect(interceptorSource).toContain('recentSuccessfulFetches.set(requestComparisonKey');
         expect(interceptorSource).toContain('summarizeFetchRequestBody((sendArgs[1] as any)?.body)');
         expect(interceptorSource).toContain('recentSuccessfulSameRequest: recentSuccess');
