@@ -534,6 +534,7 @@ const readStreamingResponse = async (
   let pending = '';
   let raw = '';
   let sawSse = false;
+  let sawDoneMarker = false;
   let lastPersistAt = 0;
   let lastPersistChars = 0;
 
@@ -556,6 +557,7 @@ const readStreamingResponse = async (
     if (!payload) return;
     if (payload === '[DONE]') {
       state.terminal = true;
+      sawDoneMarker = true;
       return;
     }
     let chunk: unknown;
@@ -575,10 +577,10 @@ const readStreamingResponse = async (
       const line = pending.slice(0, nl).replace(/\r$/, '');
       pending = pending.slice(nl + 1);
       await consumeLine(line);
-      if (state.terminal) break;
+      if (sawDoneMarker) break;
       nl = pending.indexOf('\n');
     }
-    if (state.terminal) {
+    if (sawDoneMarker) {
       try { await reader.cancel(); } catch {}
       break;
     }
@@ -610,9 +612,18 @@ const finalizeFailed = async (
   content = '',
   reasoningChars = 0,
 ): Promise<void> => {
+  // readStreamingResponse 会边收边把 partial 写进 D1。若 reader 本身抛异常，调用栈拿不到
+  // 当时的 state，但 D1 里已经有字；失败收尾必须先读最新行，绝不能拿启动时的 null 覆盖它。
+  const latest = await loadRowById(env.DB, row.user_id, row.job_id);
   const partialCipher = content
     ? await sealJson(env, row.user_id, row.job_id, 'partial', content)
-    : row.partial_cipher;
+    : latest?.partial_cipher ?? row.partial_cipher;
+  const visibleChars = content
+    ? content.length
+    : latest?.visible_chars ?? row.visible_chars ?? 0;
+  const keptReasoningChars = reasoningChars > 0
+    ? reasoningChars
+    : latest?.reasoning_chars ?? row.reasoning_chars ?? 0;
   await env.DB.prepare(
     `UPDATE story_jobs
      SET status = 'failed', partial_cipher = ?, error = ?, attempts_json = ?, reasoning_chars = ?, visible_chars = ?, updated_at = ?, completed_at = ?
@@ -621,8 +632,8 @@ const finalizeFailed = async (
     partialCipher,
     error.slice(0, 2000),
     JSON.stringify(attempts),
-    reasoningChars,
-    content.length,
+    keptReasoningChars,
+    visibleChars,
     now(),
     now(),
     row.user_id,
