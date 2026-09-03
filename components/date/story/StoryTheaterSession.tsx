@@ -879,13 +879,14 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
         const generationSettings = prepareStoryGenerationSettings(settings, entry.omitSamplingParams === true);
         const plan = resolveApiExecutionPlan('story', apiConfig, true);
         const wantsStreamPreview = Boolean(onStreamText);
+        // 剧情后台任务统一走流式传输：正文需要实时预览；事件盒总结虽然不展示增量，
+        // 但同样可能被 Gemini 的长思考拖过代理 read timeout。只要传了 background，
+        // 就让连接持续有 SSE 数据；真正的解析仍全部复用 safeApi。
+        const wantsStreamTransport = wantsStreamPreview || Boolean(background);
         const requestBody = {
             model: apiConfig.model,
             messages: payload,
-            // 正文不要再无脑强制 stream:true：不写 stream，让每条 API 线路按自己的
-            // 预设决定是否流式；总结/归档没有预览回调时则明确要求 stream:false。
-            // 这样 Gemini/特殊中转不会被强行塞进 OpenAI SSE，非流式也能正常拿整包正文。
-            ...(wantsStreamPreview ? {} : { stream: false }),
+            ...(wantsStreamTransport ? {} : { stream: false }),
             ...generationSettings,
         };
 
@@ -907,6 +908,9 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
         let completionSucceeded = false;
         const completionStartedAt = Date.now();
         let streamedChars = 0;
+        let reasoningChars = 0;
+        let firstBodyByteMs: number | null = null;
+        let firstActivityMs: number | null = null;
         let firstVisibleMs: number | null = null;
         const attemptTrace: Array<Record<string, unknown>> = [];
         const safeRouteLabel = (route: any): string => {
@@ -931,11 +935,9 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 directMaxRetries: 2,
                 // 单线路剧情不再把“首字慢”误判成失败；连接只要还活着就继续等待。
                 disableDirectFirstVisibleTimeout: true,
-                // 恢复 9/2 已验证可切屏的正文行为：只要当前调用需要实时正文预览，
-                // 就强制走流式，让 WebView 在后台持续收到数据；否则 Android 隐藏 WebView
-                // 容易把“长时间零字节的非流式请求”冻结/断开。
-                // 总结/归档没有 onStreamText，仍明确 stream:false，不受这里影响。
-                forceStream: wantsStreamPreview,
+                // 9/2 已验证的稳定路线：剧情侧长任务统一强制流式，让 WebView 在后台
+                // 持续收到数据；Gemini/特殊中转的流格式由 safeApi 统一归一化。
+                forceStream: wantsStreamTransport,
                 // 剧情正文按“首个可见正文字符”承诺线路：首字前可以故障转移，
                 // 首字一旦已经展示，后续断流也绝不换线路，避免两条线路各写半篇。
                 streamCommitMode: wantsStreamPreview ? 'content' : 'activity',
@@ -950,7 +952,16 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                         message: attempt.classification?.message,
                     });
                 },
-                streamHooks: wantsStreamPreview ? {
+                streamHooks: wantsStreamTransport ? {
+                    onFirstBodyByte: () => {
+                        if (firstBodyByteMs === null) firstBodyByteMs = Date.now() - completionStartedAt;
+                    },
+                    onFirstActivity: () => {
+                        if (firstActivityMs === null) firstActivityMs = Date.now() - completionStartedAt;
+                    },
+                    onReasoningDelta: (_delta, fullReasoning) => {
+                        reasoningChars = fullReasoning.length;
+                    },
                     onDelta: (_delta, fullText) => {
                         streamedChars = fullText.length;
                         if (firstVisibleMs === null && fullText.length > 0) {
@@ -996,6 +1007,9 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 errorMessage: String(completionError?.message || completionError),
                 elapsedMs,
                 streamedChars,
+                reasoningChars,
+                firstBodyByteMs,
+                firstActivityMs,
                 firstVisibleMs,
                 online: typeof navigator !== 'undefined' ? navigator.onLine : undefined,
                 visibility: typeof document !== 'undefined' ? document.visibilityState : undefined,
@@ -1153,7 +1167,10 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 summary = await callCompletion([
                     { role: 'system', content: '把剧场片段压缩成一只可长期常驻上下文的事件盒。使用第三人称，严格保留人物、因果、承诺、关系变化、未解决冲突和当前场景落点；不要评论写作，不要虚构片段外事实。控制在 800 字以内。' },
                     { role: 'user', content: `剧情：${entry.title}\n\n${transcript}` },
-                ], { temperature: 0.2, max_tokens: 1600 });
+                ], { temperature: 0.2, max_tokens: 1600 }, undefined, undefined, {
+                    ownerKey: `story-archive:${entry.id}`,
+                    title: `${entry.title} · 事件盒`,
+                });
             } else {
                 const embedding = memoryPalaceConfig.embedding;
                 const light = memoryPalaceConfig.lightLLM?.baseUrl ? memoryPalaceConfig.lightLLM : { baseUrl: apiConfig.baseUrl, apiKey: apiConfig.apiKey, model: apiConfig.model };

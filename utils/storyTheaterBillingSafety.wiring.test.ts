@@ -8,6 +8,9 @@ const read = (relative: string): string =>
 const storySource = read('../components/date/story/StoryTheaterSession.tsx');
 const editorSource = read('../components/date/story/StoryTheaterEditor.tsx');
 const osContextSource = read('../context/OSContext.tsx');
+const nativeStoryInstallerSource = read('../scripts/install-android-story-background.mjs');
+const nativeStoryPluginSource = read('../native/android/SullyStoryBackgroundPlugin.java');
+const nativeStoryBridgeSource = read('./nativeStoryBackground.ts');
 
 const sliceBetween = (source: string, startAnchor: string, endAnchor: string): string => {
     const start = source.indexOf(startAnchor);
@@ -42,10 +45,24 @@ describe('story theater billing safety wiring', () => {
         expect(storySource).toContain('acquireNativeStoryKeepAlive');
         expect(storySource).toContain('executeOpenAiChatPlan({');
         expect(storySource).toContain("transport: 'webview-fetch'");
-        expect(storySource).toContain('forceStream: wantsStreamPreview');
+        expect(storySource).toContain('forceStream: wantsStreamTransport');
+        expect(storySource).toContain('story-archive:');
         expect(storySource).not.toContain('executeStoryCompletionInNativeBackground');
         expect(storySource).not.toContain('getPendingNativeStoryJob');
         expect(storySource).not.toContain("transport: 'native-background'");
+    });
+
+    it('keeps native Android code limited to keepalive and protects the WebView renderer', () => {
+        expect(nativeStoryInstallerSource).toContain('SullyStoryKeepAliveService.java');
+        expect(nativeStoryInstallerSource).toContain('setRendererPriorityPolicy');
+        expect(nativeStoryInstallerSource).toContain('RENDERER_PRIORITY_IMPORTANT');
+        expect(nativeStoryInstallerSource).not.toContain("['SullyStoryBackgroundPlugin.java', 'SullyStoryBackgroundService.java'");
+        expect(nativeStoryInstallerSource).not.toContain('const okHttpDependency');
+        expect(nativeStoryPluginSource).not.toContain('void submit(');
+        expect(nativeStoryPluginSource).not.toContain('void status(');
+        expect(nativeStoryPluginSource).not.toContain('void remove(');
+        expect(nativeStoryBridgeSource).not.toContain('executeStoryCompletionInNativeBackground');
+        expect(nativeStoryBridgeSource).not.toContain('ApiExecutionPlan');
     });
 
     it('uses the independent story route scope instead of the main chat route', () => {
@@ -56,7 +73,7 @@ describe('story theater billing safety wiring', () => {
     it('labels story requests and wires same-endpoint evidence into CORS diagnostics', () => {
         const interceptorSource = sliceBetween(osContextSource, 'const patchedFetch = async', 'window.fetch = patchedFetch;');
 
-        expect(storySource).toContain("purpose: '剧情见面生成'");
+        expect(storySource).toContain("purpose: '剧情续写'");
         expect(storySource).toContain('prepareStoryGenerationSettings(settings, entry.omitSamplingParams === true)');
         expect(editorSource).toContain("value={draft.omitSamplingParams === true}");
         expect(editorSource).toContain("update('omitSamplingParams', value)");

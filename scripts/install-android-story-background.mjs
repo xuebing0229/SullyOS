@@ -1,4 +1,4 @@
-import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 const root = process.cwd();
@@ -17,10 +17,12 @@ const gradlePath = path.join(root, 'android', 'app', 'build.gradle');
 await Promise.all([access(mainPath), access(manifestPath), access(gradlePath)]);
 await mkdir(pluginDir, { recursive: true });
 
-for (const name of ['SullyStoryBackgroundPlugin.java', 'SullyStoryBackgroundService.java', 'SullyStoryKeepAliveService.java']) {
+for (const name of ['SullyStoryBackgroundPlugin.java', 'SullyStoryKeepAliveService.java']) {
   const source = await readFile(path.join(root, 'native', 'android', name), 'utf8');
   await writeFile(path.join(pluginDir, name), source.replaceAll('__APP_ID__', appId));
 }
+// 清掉 9/3 试验过的“原生直接请求模型”实现；新版只保留 WebView SSE + 原生保活。
+await rm(path.join(pluginDir, 'SullyStoryBackgroundService.java'), { force: true });
 
 let main = await readFile(mainPath, 'utf8');
 const importLine = `import ${appId}.plugins.SullyStoryBackgroundPlugin;`;
@@ -33,6 +35,26 @@ if (!main.includes('registerPlugin(SullyStoryBackgroundPlugin.class);')) {
     'registerPlugin(SullyStoryBackgroundPlugin.class);\n        super.onCreate(savedInstanceState);',
   );
 }
+
+const rendererPolicyMarker =
+  'setRendererPriorityPolicy(android.webkit.WebView.RENDERER_PRIORITY_IMPORTANT, false);';
+if (!main.includes(rendererPolicyMarker)) {
+  const anchor = 'super.onCreate(savedInstanceState);';
+  if (!main.includes(anchor)) throw new Error('MainActivity 缺少可用的 onCreate/super.onCreate');
+  main = main.replace(anchor, [
+    anchor,
+    '        // ForegroundService/WakeLock 保护的是 App 进程；WebView renderer 是独立进程。',
+    '        // 明确保持 renderer 为 IMPORTANT 且后台不可降级，避免切屏后 SSE 所在 renderer 被冻结。',
+    '        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O',
+    '            && bridge != null',
+    '            && bridge.getWebView() != null) {',
+    '            bridge.getWebView().setRendererPriorityPolicy(',
+    '                android.webkit.WebView.RENDERER_PRIORITY_IMPORTANT,',
+    '                false',
+    '            );',
+    '        }',
+  ].join('\n'));
+}
 await writeFile(mainPath, main);
 
 let manifest = await readFile(manifestPath, 'utf8');
@@ -40,7 +62,6 @@ for (const permission of [
   'android.permission.POST_NOTIFICATIONS',
   'android.permission.FOREGROUND_SERVICE',
   'android.permission.FOREGROUND_SERVICE_DATA_SYNC',
-  // 长剧情切屏 / 熄屏时保持 CPU 继续读 SSE，避免系统在流中途挂起 socket。
   'android.permission.WAKE_LOCK',
 ]) {
   if (!manifest.includes(permission)) {
@@ -50,15 +71,12 @@ for (const permission of [
     );
   }
 }
-if (!manifest.includes('SullyStoryBackgroundService')) {
-  manifest = manifest.replace('</application>', [
-    '        <service',
-    '            android:name=".plugins.SullyStoryBackgroundService"',
-    '            android:exported="false"',
-    '            android:foregroundServiceType="dataSync" />',
-    '    </application>',
-  ].join('\n'));
-}
+
+// 移除旧原生 completion service 的 manifest 残留。
+manifest = manifest.replace(
+  /\s*<service\s+android:name="\.plugins\.SullyStoryBackgroundService"[\s\S]*?\/>/g,
+  '',
+);
 if (!manifest.includes('SullyStoryKeepAliveService')) {
   manifest = manifest.replace('</application>', [
     '        <service',
@@ -70,14 +88,12 @@ if (!manifest.includes('SullyStoryKeepAliveService')) {
 }
 await writeFile(manifestPath, manifest);
 
-// Android 的 HttpURLConnection 在部分系统 / 中转组合下长 SSE 会稳定报
-// "Software caused connection abort"。剧情后台改用 OkHttp 原生长流客户端。
+// 旧原生直连曾为手写 SSE 注入 OkHttp；现在不再需要第二套 HTTP 栈。
 let gradle = await readFile(gradlePath, 'utf8');
-const okHttpDependency = 'implementation "com.squareup.okhttp3:okhttp:4.12.0"';
-if (!gradle.includes('com.squareup.okhttp3:okhttp')) {
-  if (!/dependencies\s*\{/.test(gradle)) throw new Error('无法定位 android/app/build.gradle dependencies');
-  gradle = gradle.replace(/dependencies\s*\{/, match => `${match}\n    ${okHttpDependency}`);
-  await writeFile(gradlePath, gradle);
-}
+gradle = gradle.replace(
+  /^\s*implementation\s+["']com\.squareup\.okhttp3:okhttp:4\.12\.0["']\s*$/gm,
+  '',
+);
+await writeFile(gradlePath, gradle);
 
-console.log('[SullyStoryBackground] Native foreground completion service installed (OkHttp SSE)');
+console.log('[SullyStoryBackground] WebView SSE keepalive installed (FGS + WakeLock + renderer priority)');
