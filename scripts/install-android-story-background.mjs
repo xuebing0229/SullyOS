@@ -76,7 +76,7 @@ gradle = gradle.replace(
   /^\s*implementation\s+["']com\.squareup\.okhttp3:(?:okhttp|okhttp-sse)(?::[^"']+)?["']\s*$/gm,
   '',
 );
-const sseDependency = 'implementation "com.squareup.okhttp3:okhttp-sse:4.12.0"';
+const sseDependency = 'implementation "com.squareup.okhttp3:okhttp-sse:5.5.0"';
 if (!gradle.includes('com.squareup.okhttp3:okhttp-sse')) {
   if (!/dependencies\s*\{/.test(gradle)) throw new Error('无法定位 android/app/build.gradle dependencies');
   gradle = gradle.replace(/dependencies\s*\{/, match => `${match}\n    ${sseDependency}`);
