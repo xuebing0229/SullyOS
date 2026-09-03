@@ -305,6 +305,7 @@ export const executeStoryCompletionInCloudBackground = async (
     if (!config) throw new Error('主动消息 Worker 尚未配置，不能使用剧情云端后台任务');
 
     let pending = getPendingCloudStoryJob(options.ownerKey);
+    const recoveringExistingPending = Boolean(pending);
     if (!pending) {
         pending = {
             jobId: makeJobId(),
@@ -324,15 +325,19 @@ export const executeStoryCompletionInCloudBackground = async (
     let job: CloudStoryJob | null = null;
 
     // 恢复时优先按 jobId / clientRequestId 找已有任务；只有服务端明确说不存在才允许 POST。
+    let lookupFailed = false;
     try {
         job = await getRemoteJobById(config, pending.jobId);
         if (!job) job = await getRemoteJobByClientId(config, pending.clientRequestId);
     } catch {
-        // 查询本身断网时不能据此判断“任务不存在”，继续走下面的 submit 时会有重复风险。
-        // 因此只有新建 pending 的这一轮允许直接提交；旧 pending 查询失败则继续轮询。
+        // 查询本身断网时不能据此判断“任务不存在”。
+        lookupFailed = true;
     }
 
-    if (!job) {
+    if (!job && recoveringExistingPending && lookupFailed) {
+        // 旧 pending 最危险：它可能已经在 Worker 里生成，只是手机此刻查不到。
+        // 绝不因为一次 GET 失败就再 POST；直接进入下面的恢复轮询。
+    } else if (!job) {
         const spec = {
             jobId: pending.jobId,
             clientRequestId: pending.clientRequestId,
@@ -355,7 +360,6 @@ export const executeStoryCompletionInCloudBackground = async (
             },
         };
 
-        let submitted = false;
         try {
             const { response, body } = await fetchJson(config, '/story-jobs', {
                 method: 'POST',
@@ -373,7 +377,6 @@ export const executeStoryCompletionInCloudBackground = async (
                 );
             }
             job = body?.job || null;
-            submitted = true;
         } catch (submitError: any) {
             // POST 的响应丢了 ≠ POST 没到。和后台生图一样只用同一个 clientRequestId 查账，
             // 不自动再 POST 一遍。
@@ -393,22 +396,25 @@ export const executeStoryCompletionInCloudBackground = async (
             }
         }
 
-        if (submitted && firstRoute) {
-            recordCloudApiCall({
-                id: logId,
-                route: 'cloud-story-job',
-                baseUrl: firstRoute.api.baseUrl,
-                model: firstRoute.api.model,
-                messages: options.body.messages,
-                meta: {
-                    appId: 'date',
-                    appName: '剧情剧场',
-                    purpose: '剧情续写',
-                    apiPresetId: firstRoute.presetId,
-                    apiPresetName: firstRoute.presetName,
-                },
-            });
-        }
+    }
+
+    // 无论是刚提交还是进程重启后重新发现的 job，都用同一个 id 补上 API 调用记录。
+    // DB 按 id 合并；重复写不会产生第二笔费用记录。
+    if (job && firstRoute) {
+        recordCloudApiCall({
+            id: logId,
+            route: 'cloud-story-job',
+            baseUrl: firstRoute.api.baseUrl,
+            model: firstRoute.api.model,
+            messages: options.body.messages,
+            meta: {
+                appId: 'date',
+                appName: '剧情剧场',
+                purpose: '剧情续写',
+                apiPresetId: firstRoute.presetId,
+                apiPresetName: firstRoute.presetName,
+            },
+        });
     }
 
     let lastPartial = '';
