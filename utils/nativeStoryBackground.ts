@@ -165,6 +165,7 @@ const makeJobId = (): string => {
 
 const toNativeRoutes = (
   plan: ApiExecutionPlan,
+  streamOverride?: boolean,
 ): NativeStoryRoute[] =>
   plan.routes.map(route => ({
     presetId: route.presetId,
@@ -172,13 +173,10 @@ const toNativeRoutes = (
     baseUrl: route.api.baseUrl,
     apiKey: route.api.apiKey || 'sk-none',
     model: route.api.model,
-    // Android 原生后台一律请求非流式整包。
-    // 这个项目已经在部分设备/中转上稳定复现 OkHttp SSE：
-    // 上游 30~40 秒内生成完成并扣费，但本地长流继续挂住，最后报
-    // "Software caused connection abort" / 首字等待超时。非流式避免这类
-    // “上游已完成、本地却读不到结尾”的假失败；若上游无视 stream:false
-    // 仍返回 SSE，原生服务仍会按 Content-Type 兼容解析。
-    stream: false,
+    // 正文没有显式 stream 值时跟随 API 预设。清酒这类代理对非流式有 120 秒
+    // Proxy Read Timeout，长剧情必须让上游持续吐流，否则模型只是慢一点就会 524。
+    // 总结/归档会显式传 stream:false，仍保持非流式。
+    stream: streamOverride ?? route.api.stream === true,
     ...(route.api.temperature != null ? { temperature: route.api.temperature } : {}),
     ...(route.firstByteTimeoutMs ? { firstByteTimeoutMs: route.firstByteTimeoutMs } : {}),
   }));
@@ -293,7 +291,10 @@ export const executeStoryCompletionInNativeBackground = async (
 
   if (!job || (job.status !== 'queued' && job.status !== 'running' && job.status !== 'succeeded' && job.status !== 'failed')) {
     jobId = makeJobId();
-    const routes = toNativeRoutes(options.plan);
+    const streamOverride = Object.prototype.hasOwnProperty.call(options.body, 'stream')
+      ? Boolean(options.body.stream)
+      : undefined;
+    const routes = toNativeRoutes(options.plan, streamOverride);
     const timeoutMs = options.plan.group?.policy.timeoutMs ?? 240_000;
     // 先记本地 pending，再把任务交给原生层：即使用户恰好在 submit 返回前
     // 切屏/系统冻结 WebView，回来也知道这一轮有后台任务需要接回。
