@@ -67,7 +67,7 @@ describe('story theater billing safety wiring', () => {
         expect(nativeStoryManagerSource).toContain('EventSources.createFactory(client).newEventSource');
         expect(nativeStoryManagerSource).toContain('activeSources.put(jobId, source)');
         expect(nativeStoryManagerSource).toContain('source.cancel()');
-        expect(nativeStoryInstallerSource).toContain('com.squareup.okhttp3:okhttp-sse:4.12.0');
+        expect(nativeStoryInstallerSource).toContain('com.squareup.okhttp3:okhttp-sse:5.5.0');
     });
 
     it('acquires foreground lifetime before launching generation and releases it in finally', () => {
