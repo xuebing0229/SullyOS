@@ -92,6 +92,26 @@ interface NativeStoryJob {
   foregroundReleasedAt?: number;
   foregroundFailureClass?: string;
   foregroundFailureMessage?: string;
+  appPausedAt?: number;
+  appStoppedAt?: number;
+  appStartedAt?: number;
+  appResumedAt?: number;
+  networkSnapshotAt?: number;
+  networkAvailableAt?: number;
+  networkLostAt?: number;
+  networkLosingAt?: number;
+  networkCapabilitiesChangedAt?: number;
+  linkPropertiesChangedAt?: number;
+  androidNetwork?: string;
+  networkTransports?: string[];
+  networkValidated?: boolean;
+  networkInternet?: boolean;
+  networkNotSuspended?: boolean;
+  networkMetered?: boolean;
+  networkInterface?: string;
+  connectivityObserverRegistered?: boolean;
+  connectivityObserverFailureClass?: string;
+  connectivityObserverFailureMessage?: string;
   networkEvents?: Array<Record<string, any>>;
   sseEvents?: number;
   reasoningChars?: number;
@@ -458,11 +478,41 @@ export const executeStoryCompletionInNativeBackground = async (
     foregroundReleasedAt: job.foregroundReleasedAt,
     foregroundFailureClass: job.foregroundFailureClass,
     foregroundFailureMessage: job.foregroundFailureMessage,
+    appPausedAt: job.appPausedAt,
+    appStoppedAt: job.appStoppedAt,
+    appStartedAt: job.appStartedAt,
+    appResumedAt: job.appResumedAt,
+    networkSnapshotAt: job.networkSnapshotAt,
+    networkAvailableAt: job.networkAvailableAt,
+    networkLostAt: job.networkLostAt,
+    networkLosingAt: job.networkLosingAt,
+    networkCapabilitiesChangedAt: job.networkCapabilitiesChangedAt,
+    linkPropertiesChangedAt: job.linkPropertiesChangedAt,
+    androidNetwork: job.androidNetwork,
+    networkTransports: job.networkTransports,
+    networkValidated: job.networkValidated,
+    networkInternet: job.networkInternet,
+    networkNotSuspended: job.networkNotSuspended,
+    networkMetered: job.networkMetered,
+    networkInterface: job.networkInterface,
+    connectivityObserverRegistered: job.connectivityObserverRegistered,
+    connectivityObserverFailureClass: job.connectivityObserverFailureClass,
+    connectivityObserverFailureMessage: job.connectivityObserverFailureMessage,
     foregroundRequestedMs: elapsedFromStart(job.foregroundRequestedAt),
     foregroundStartedMs: elapsedFromStart(job.foregroundStartedAt),
     foregroundFailedMs: elapsedFromStart(job.foregroundFailedAt),
     foregroundDestroyedMs: elapsedFromStart(job.foregroundDestroyedAt),
     foregroundReleasedMs: elapsedFromStart(job.foregroundReleasedAt),
+    appPausedMs: elapsedFromStart(job.appPausedAt),
+    appStoppedMs: elapsedFromStart(job.appStoppedAt),
+    appStartedMs: elapsedFromStart(job.appStartedAt),
+    appResumedMs: elapsedFromStart(job.appResumedAt),
+    networkSnapshotMs: elapsedFromStart(job.networkSnapshotAt),
+    networkAvailableMs: elapsedFromStart(job.networkAvailableAt),
+    networkLostMs: elapsedFromStart(job.networkLostAt),
+    networkLosingMs: elapsedFromStart(job.networkLosingAt),
+    networkCapabilitiesChangedMs: elapsedFromStart(job.networkCapabilitiesChangedAt),
+    linkPropertiesChangedMs: elapsedFromStart(job.linkPropertiesChangedAt),
     callStartMs: elapsedFromStart(job.callStartAt),
     openedMs: elapsedFromStart(job.openedAt),
     firstEventMs: elapsedFromStart(job.firstEventAt),
