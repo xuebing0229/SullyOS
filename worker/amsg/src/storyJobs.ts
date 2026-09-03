@@ -1,4 +1,3 @@
-import { DurableObject } from 'cloudflare:workers';
 import { constantTimeEqual } from './instantChat';
 
 type D1Prepared = {
@@ -15,7 +14,7 @@ export interface StoryJobsDb {
 export interface StoryTickNamespace {
   idFromName(name: string): unknown;
   get(id: unknown): {
-    kick(userId: string, jobId: string): Promise<unknown>;
+    kickStory(userId: string, jobId: string): Promise<unknown>;
   };
 }
 
@@ -23,7 +22,7 @@ export interface StoryJobsEnv {
   AMSG_MASTER_KEY: string;
   AMSG_SERVER_TOKEN?: string;
   DB: StoryJobsDb;
-  STORY_TICK?: StoryTickNamespace;
+  INSTANT_TICK?: StoryTickNamespace;
 }
 
 export interface StoryJobRoute {
@@ -88,7 +87,6 @@ const MAX_ROUTES = 8;
 const MAX_REQUEST_BYTES = 2_000_000;
 const PARTIAL_PERSIST_INTERVAL_MS = 900;
 const PARTIAL_PERSIST_CHAR_STEP = 512;
-const STORY_ALARM_KEY = 'storyJob';
 
 const jsonSize = (value: unknown): number => new TextEncoder().encode(JSON.stringify(value)).byteLength;
 const now = (): number => Date.now();
@@ -325,12 +323,12 @@ export const kickStoryTick = async (
   userId: string,
   jobId: string,
 ): Promise<StoryTickKickResult> => {
-  const ns = env.STORY_TICK;
+  const ns = env.INSTANT_TICK;
   if (!ns || typeof ns.get !== 'function' || typeof ns.idFromName !== 'function') {
     return { ok: false, reason: 'missing-binding' };
   }
   try {
-    await ns.get(ns.idFromName(`${userId}:${jobId}`)).kick(userId, jobId);
+    await ns.get(ns.idFromName(`story:${userId}:${jobId}`)).kickStory(userId, jobId);
     return { ok: true };
   } catch (error) {
     return { ok: false, reason: 'kick-failed', error };
@@ -774,25 +772,6 @@ export const runStoryJob = async (
   await finalizeFailed(env, liveRow, attempts, lastError);
 };
 
-export class StoryTickDO extends DurableObject<StoryJobsEnv> {
-  async kick(userId: string, jobId: string): Promise<void> {
-    await this.ctx.storage.put(STORY_ALARM_KEY, { userId, jobId });
-    if ((await this.ctx.storage.getAlarm()) === null) {
-      await this.ctx.storage.setAlarm(Date.now());
-    }
-  }
-
-  async alarm(): Promise<void> {
-    const task = await this.ctx.storage.get<{ userId: string; jobId: string }>(STORY_ALARM_KEY);
-    if (!task?.userId || !task.jobId) return;
-    try {
-      await runStoryJob(this.env, task.userId, task.jobId);
-    } finally {
-      await this.ctx.storage.delete(STORY_ALARM_KEY);
-    }
-  }
-}
-
 export const handleStoryJobsRequest = async (
   request: Request,
   env: StoryJobsEnv,
@@ -860,14 +839,14 @@ export const handleStoryJobsRequest = async (
             success: false,
             job: await publicJob(env, existing),
             error: {
-              code: 'STORY_TICK_MISSING',
-              message: '剧情后台任务需要更新主动消息 Worker：缺少 STORY_TICK Durable Object。',
+              code: 'INSTANT_TICK_STORY_MISSING',
+              message: '剧情后台任务需要更新主动消息 Worker：现有 INSTANT_TICK Durable Object 还不支持剧情任务。',
             },
           },
         };
       }
       if (!kicked.ok) {
-        console.warn('[amsg:story-job] STORY_TICK 叫醒失败，任务仍保留 queued', kicked.error);
+        console.warn('[amsg:story-job] INSTANT_TICK story 叫醒失败，任务仍保留 queued', kicked.error);
       }
     }
 
@@ -884,7 +863,7 @@ export const handleStoryJobsRequest = async (
     if (row?.status === 'queued') {
       const kicked = await kickStoryTick(env, userId, row.job_id);
       if (!kicked.ok && kicked.reason === 'kick-failed') {
-        console.warn('[amsg:story-job] status 时重叫 STORY_TICK 失败', kicked.error);
+        console.warn('[amsg:story-job] status 时重叫 INSTANT_TICK story 失败', kicked.error);
       }
     }
     return { status: 200, body: { success: true, job: row ? await publicJob(env, row) : null } };
