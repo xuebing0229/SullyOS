@@ -1,6 +1,7 @@
 package __APP_ID__.plugins;
 
 import android.app.Activity;
+import android.app.ActivityManager;
 import android.app.Application;
 import android.content.Context;
 import android.content.Intent;
@@ -10,6 +11,7 @@ import android.net.Network;
 import android.net.NetworkCapabilities;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.PowerManager;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
@@ -204,11 +206,15 @@ public final class SullyStoryGenerationManager {
         "sseEvents", "reasoningChars", "visibleChars", "streamFinishReason",
         "foregroundRequestedAt", "foregroundStartedAt", "foregroundFailedAt", "foregroundDestroyedAt",
         "foregroundReleasedAt", "foregroundFailureClass", "foregroundFailureMessage",
+        "wakeLockAcquiredAt", "wakeLockReleasedAt", "wakeLockFailedAt",
         "appPausedAt", "appStoppedAt", "appStartedAt", "appResumedAt",
         "networkSnapshotAt", "networkAvailableAt", "networkLostAt", "networkLosingAt",
         "networkCapabilitiesChangedAt", "linkPropertiesChangedAt",
         "androidNetwork", "networkTransports", "networkValidated", "networkInternet",
-        "networkNotSuspended", "networkMetered", "networkInterface",
+        "networkNotSuspended", "networkMetered", "networkInterface", "networkBlocked",
+        "restrictBackgroundStatus", "backgroundRestricted", "powerSaveMode", "deviceIdleMode",
+        "ignoringBatteryOptimizations",
+        "networkBlockedAt",
         "connectivityObserverRegistered", "connectivityObserverFailureClass", "connectivityObserverFailureMessage"
     };
 
@@ -217,24 +223,24 @@ public final class SullyStoryGenerationManager {
             ((Application) context).registerActivityLifecycleCallbacks(new Application.ActivityLifecycleCallbacks() {
                 @Override
                 public void onActivityPaused(Activity activity) {
-                    recordForRunningJobs("appPaused", "appPausedAt", null);
+                    recordForRunningJobs("appPaused", "appPausedAt", policyDetail());
                 }
 
                 @Override
                 public void onActivityStopped(Activity activity) {
                     if (!activity.isChangingConfigurations()) {
-                        recordForRunningJobs("appStopped", "appStoppedAt", null);
+                        recordForRunningJobs("appStopped", "appStoppedAt", policyDetail());
                     }
                 }
 
                 @Override
                 public void onActivityStarted(Activity activity) {
-                    recordForRunningJobs("appStarted", "appStartedAt", null);
+                    recordForRunningJobs("appStarted", "appStartedAt", policyDetail());
                 }
 
                 @Override
                 public void onActivityResumed(Activity activity) {
-                    recordForRunningJobs("appResumed", "appResumedAt", null);
+                    recordForRunningJobs("appResumed", "appResumedAt", policyDetail());
                 }
 
                 @Override public void onActivityCreated(Activity activity, Bundle state) {}
@@ -265,6 +271,29 @@ public final class SullyStoryGenerationManager {
                 @Override
                 public void onLost(Network network) {
                     recordForRunningJobs("networkLost", "networkLostAt", networkDetail(network, null, null));
+                }
+
+                @Override
+                public void onBlockedStatusChanged(Network network, boolean blocked) {
+                    JSONObject detail = networkDetail(
+                        network,
+                        connectivityManager.getNetworkCapabilities(network),
+                        connectivityManager.getLinkProperties(network)
+                    );
+                    try {
+                        detail.put("networkBlocked", blocked);
+                        JSONObject policy = policyDetail();
+                        java.util.Iterator<String> keys = policy.keys();
+                        while (keys.hasNext()) {
+                            String key = keys.next();
+                            detail.put(key, policy.opt(key));
+                        }
+                    } catch (Exception ignored) {}
+                    recordForRunningJobs(
+                        "networkBlockedStatusChanged",
+                        "networkBlockedAt",
+                        detail
+                    );
                 }
 
                 @Override
@@ -318,7 +347,7 @@ public final class SullyStoryGenerationManager {
                 "networkSnapshot",
                 "networkSnapshotAt",
                 false,
-                networkDetail(network, capabilities, linkProperties)
+                mergeJson(networkDetail(network, capabilities, linkProperties), policyDetail())
             );
         } catch (Throwable error) {
             JSONObject detail = new JSONObject();
@@ -328,6 +357,44 @@ public final class SullyStoryGenerationManager {
             } catch (Exception ignored) {}
             recordNetworkEvent(context, jobId, "networkSnapshotFailed", "networkSnapshotAt", false, detail);
         }
+    }
+
+    private JSONObject mergeJson(JSONObject left, JSONObject right) {
+        if (left == null) left = new JSONObject();
+        if (right == null) return left;
+        try {
+            java.util.Iterator<String> keys = right.keys();
+            while (keys.hasNext()) {
+                String key = keys.next();
+                left.put(key, right.opt(key));
+            }
+        } catch (Exception ignored) {}
+        return left;
+    }
+
+    private JSONObject policyDetail() {
+        JSONObject detail = new JSONObject();
+        try {
+            if (connectivityManager != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                detail.put("restrictBackgroundStatus", connectivityManager.getRestrictBackgroundStatus());
+            }
+            ActivityManager activityManager = (ActivityManager) context.getSystemService(Context.ACTIVITY_SERVICE);
+            if (activityManager != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                detail.put("backgroundRestricted", activityManager.isBackgroundRestricted());
+            }
+            PowerManager powerManager = (PowerManager) context.getSystemService(Context.POWER_SERVICE);
+            if (powerManager != null) {
+                detail.put("powerSaveMode", powerManager.isPowerSaveMode());
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    detail.put("deviceIdleMode", powerManager.isDeviceIdleMode());
+                    detail.put(
+                        "ignoringBatteryOptimizations",
+                        powerManager.isIgnoringBatteryOptimizations(context.getPackageName())
+                    );
+                }
+            }
+        } catch (Exception ignored) {}
+        return detail;
     }
 
     private void recordForRunningJobs(String event, String timeKey, JSONObject detail) {
@@ -417,11 +484,14 @@ public final class SullyStoryGenerationManager {
             "callStartAt", "networkEvents",
             "foregroundRequestedAt", "foregroundStartedAt", "foregroundFailedAt", "foregroundDestroyedAt",
             "foregroundReleasedAt", "foregroundFailureClass", "foregroundFailureMessage",
+            "wakeLockAcquiredAt", "wakeLockReleasedAt", "wakeLockFailedAt",
             "appPausedAt", "appStoppedAt", "appStartedAt", "appResumedAt",
             "networkSnapshotAt", "networkAvailableAt", "networkLostAt", "networkLosingAt",
             "networkCapabilitiesChangedAt", "linkPropertiesChangedAt",
             "androidNetwork", "networkTransports", "networkValidated", "networkInternet",
-            "networkNotSuspended", "networkMetered", "networkInterface",
+            "networkNotSuspended", "networkMetered", "networkInterface", "networkBlocked",
+            "restrictBackgroundStatus", "backgroundRestricted", "powerSaveMode", "deviceIdleMode",
+            "ignoringBatteryOptimizations", "networkBlockedAt",
             "connectivityObserverRegistered", "connectivityObserverFailureClass", "connectivityObserverFailureMessage",
             "sseEvents", "reasoningChars", "visibleChars", "streamFinishReason",
             "attempts"
