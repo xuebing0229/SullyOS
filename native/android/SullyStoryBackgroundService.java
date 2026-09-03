@@ -24,7 +24,6 @@ import java.net.SocketTimeoutException;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
-import java.util.Collections;
 import java.util.Comparator;
 import java.util.Locale;
 import org.json.JSONArray;
@@ -41,11 +40,11 @@ import java.util.concurrent.atomic.AtomicLong;
 import okhttp3.Call;
 import okhttp3.MediaType;
 import okhttp3.OkHttpClient;
-import okhttp3.Protocol;
 import okhttp3.Request;
 import okhttp3.RequestBody;
 import okhttp3.Response;
 import okhttp3.ResponseBody;
+import okio.BufferedSink;
 import okio.BufferedSource;
 
 public class SullyStoryBackgroundService extends Service {
@@ -512,25 +511,46 @@ public class SullyStoryBackgroundService extends Service {
                 .connectTimeout(Math.min(20_000L, timeoutMs), TimeUnit.MILLISECONDS)
                 .writeTimeout(Math.min(20_000L, timeoutMs), TimeUnit.MILLISECONDS)
                 .readTimeout(0L, TimeUnit.MILLISECONDS)
-                // 不能把 timeoutMs 当“整轮总时长”。长篇流式只要一直在吐数据就应该继续写完，
-                // 否则 240 秒一到会把正常生成硬切成半篇。
+                // 不能把 timeoutMs 当“整轮总时长”。长篇流式只要一直在吐数据就应该继续写完。
                 .callTimeout(0L, TimeUnit.MILLISECONDS)
-                // 部分 Android + 中转组合在 HTTP/2 长 SSE 上会出现
-                // "Software caused connection abort"。剧情后台是一请求一连接，
-                // 强制 HTTP/1.1 换稳定性，不影响接口语义，也不做任何自动 POST 重试。
-                .protocols(Collections.singletonList(Protocol.HTTP_1_1))
-                .retryOnConnectionFailure(false)
+                // 恢复 OkHttp 默认的 HTTP/2/HTTP/1.1 协商。强制 HTTP/1.1 后已经实测出现
+                // 约 10 秒的首字前 connection abort；默认协议下至少能稳定拿到前段 SSE。
+                //
+                // 允许连接建立阶段自恢复，但下面 RequestBody 标为 one-shot：
+                // 请求正文一旦开始发送，OkHttp 不会自动重放这个 POST，避免重复扣费。
+                .retryOnConnectionFailure(true)
                 .build();
+
+            final byte[] requestBytes = body.toString().getBytes(StandardCharsets.UTF_8);
+            RequestBody requestBody = new RequestBody() {
+                @Override
+                public MediaType contentType() {
+                    return MediaType.get("application/json; charset=utf-8");
+                }
+
+                @Override
+                public long contentLength() {
+                    return requestBytes.length;
+                }
+
+                @Override
+                public boolean isOneShot() {
+                    return true;
+                }
+
+                @Override
+                public void writeTo(BufferedSink sink) throws IOException {
+                    sink.write(requestBytes);
+                }
+            };
 
             Request request = new Request.Builder()
                 .url(baseUrl + "/chat/completions")
                 .header("Authorization", "Bearer " + route.optString("apiKey", "sk-none"))
                 .header("Accept", stream ? "text/event-stream, application/json" : "application/json, text/event-stream")
                 .header("Cache-Control", "no-cache")
-                // 长 SSE 禁用透明 gzip，减少某些中转/移动网络在分块解压时提前断流。
-                .header("Accept-Encoding", "identity")
-                .header("User-Agent", "SullyOS-StoryBackground/2.2")
-                .post(RequestBody.create(body.toString(), MediaType.get("application/json; charset=utf-8")))
+                .header("User-Agent", "SullyOS-StoryBackground/2.3")
+                .post(requestBody)
                 .build();
 
             call = client.newCall(request);
