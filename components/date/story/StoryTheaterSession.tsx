@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Archive, ArrowBendDownRight, ArrowClockwise, ArrowLeft, ArrowUp, Broadcast, CaretDown, ChatCircleDots, Clock, Database, DownloadSimple, Eye, EyeSlash, FilmSlate, GearSix, HeartStraight, Key, MapPin, PencilSimple, SlidersHorizontal, Sparkle, SpinnerGap, Trash, X } from '@phosphor-icons/react';
+import { Archive, ArrowBendDownRight, ArrowClockwise, ArrowLeft, ArrowUp, Broadcast, CaretDown, ChatCircleDots, Clock, Database, DownloadSimple, Eye, EyeSlash, FilmSlate, GearSix, GitBranch, HeartStraight, Key, MapPin, PencilSimple, SlidersHorizontal, Sparkle, SpinnerGap, Trash, X } from '@phosphor-icons/react';
 import { useOS } from '../../../context/OSContext';
 import TokenImg from '../../os/TokenImg';
 import type { AppMemoryCandidate, CharacterProfile, Message, StoryTheaterEntry, StoryTheaterImageFrame, StoryTheaterMask, StoryTheaterPreset } from '../../../types';
@@ -83,6 +83,7 @@ interface Props {
     onEdit: () => void;
     onOpenVectorMemory?: () => void;
     onEntryChange: (entry: StoryTheaterEntry) => Promise<void> | void;
+    onCreateBranch: (message: Message, title?: string) => Promise<void> | void;
 }
 
 const textFromHistory = (messages: Message[], identityName: string): string => buildStoryHistory(messages).map(message => {
@@ -381,7 +382,7 @@ const StoryOutput: React.FC<{ content: string; onChoose?: (text: string) => void
     </div>;
 };
 
-const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, onEdit, onOpenVectorMemory, onEntryChange }) => {
+const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, onEdit, onOpenVectorMemory, onEntryChange, onCreateBranch }) => {
     const { characters, userProfile, groups, apiConfig, apiPresets, realtimeConfig, memoryPalaceConfig, remoteVectorConfig, updateCharacter, addToast, registerBackHandler } = useOS();
     const appearance = useStoryTheaterAppearance();
     const threadId = storyTheaterThreadId(entry.id);
@@ -422,6 +423,9 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
     const [messageMenu, setMessageMenu] = useState<Message | null>(null);
     const [editingMessage, setEditingMessage] = useState<Message | null>(null);
     const [deletingMessage, setDeletingMessage] = useState<Message | null>(null);
+    const [branchingMessage, setBranchingMessage] = useState<Message | null>(null);
+    const [branchTitle, setBranchTitle] = useState('');
+    const [branching, setBranching] = useState(false);
     const [editDraft, setEditDraft] = useState('');
     const [mutatingMessage, setMutatingMessage] = useState(false);
     // React state does not update synchronously. A rapid double tap can enter send()
@@ -514,6 +518,9 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
         setMessageMenu(null);
         setEditingMessage(null);
         setDeletingMessage(null);
+        setBranchingMessage(null);
+        setBranchTitle('');
+        setBranching(false);
         setMemoryCandidates([]);
         setShowMemoryCards(false);
         setMemoryCardBusy(false);
@@ -526,6 +533,13 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
     useEffect(() => {
         return registerBackHandler(() => {
             // Android 返回键遵循“最上层先退”的顺序，不再直接把整个文游 App 关掉。
+            if (branchingMessage) {
+                if (!branching) {
+                    setBranchingMessage(null);
+                    setBranchTitle('');
+                }
+                return true;
+            }
             if (editingMessage) {
                 if (!mutatingMessage) {
                     setEditingMessage(null);
@@ -563,6 +577,8 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             return true;
         });
     }, [
+        branching,
+        branchingMessage,
         deletingMessage,
         editingMessage,
         messageMenu,
@@ -1631,7 +1647,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                                     </span>
                                     <CaretDown size={14} className='shrink-0 transition-transform group-open:rotate-180' />
                                 </summary>
-                                {isExpanded && <div className='pb-5 pl-7'>
+                                {isExpanded && <div {...pressHandlersFor(message)} className='pb-5 pl-7'>
                                     {message.role === 'user'
                                         ? <p className='text-sm leading-7 text-slate-600 whitespace-pre-wrap'>{message.content}</p>
                                         : <><StoryOutput content={message.content} affinityInputs={affinityInputsFromMessage(message, actors)} /><StoryRoundImage message={message} busy={regeneratingImageId === message.id} onRegenerate={() => void regenerateStoryImage(message)} /></>}
@@ -1874,7 +1890,33 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             <div className='story-safe-sheet w-full rounded-t-3xl bg-stone-100 px-5 pt-4 shadow-2xl' onClick={event => event.stopPropagation()}>
                 <div className='mx-auto mb-4 h-1 w-9 rounded-full bg-slate-300' />
                 <div className='flex items-start justify-between gap-4'><div><div className='text-[9px] tracking-[.18em] font-bold text-violet-500'>{messageMenu.role === 'user' ? '你的推进' : '剧场正文'}</div><p className='mt-1 max-w-[75vw] truncate text-xs text-slate-500'>{messageMenu.content.replace(/<[^>]+>/g, ' ').trim()}</p></div><button onClick={() => setMessageMenu(null)} className='w-8 h-8 rounded-full grid place-items-center text-slate-400'><X size={16} /></button></div>
-                <div className='mt-5 divide-y divide-slate-200 border-y border-slate-200'><button onClick={() => { setEditingMessage(messageMenu); setEditDraft(messageMenu.content); setMessageMenu(null); }} className='w-full py-4 flex items-center gap-3 text-left'><PencilSimple size={17} className='text-violet-600' /><span><strong className='block text-xs text-slate-700'>编辑这一层</strong><span className='block mt-0.5 text-[9px] text-slate-400'>{entry.writesToCharacterMemory ? '同步修改每位角色收到的镜像内容' : '只修改本剧情沙盒'}</span></span></button><button onClick={() => { setDeletingMessage(messageMenu); setMessageMenu(null); }} className='w-full py-4 flex items-center gap-3 text-left'><Trash size={17} className='text-rose-500' /><span><strong className='block text-xs text-rose-600'>删除这一层</strong><span className='block mt-0.5 text-[9px] text-slate-400'>不会自动删除相邻的推进或正文</span></span></button></div>
+                <div className='mt-5 divide-y divide-slate-200 border-y border-slate-200'><button onClick={() => { setEditingMessage(messageMenu); setEditDraft(messageMenu.content); setMessageMenu(null); }} className='w-full py-4 flex items-center gap-3 text-left'><PencilSimple size={17} className='text-violet-600' /><span><strong className='block text-xs text-slate-700'>编辑这一层</strong><span className='block mt-0.5 text-[9px] text-slate-400'>{entry.writesToCharacterMemory ? '同步修改每位角色收到的镜像内容' : '只修改本剧情沙盒'}</span></span></button><button onClick={() => { setBranchingMessage(messageMenu); setBranchTitle(''); setMessageMenu(null); }} className='w-full py-4 flex items-center gap-3 text-left'><GitBranch size={17} className='text-violet-600' /><span><strong className='block text-xs text-slate-700'>从这里建立分支</strong><span className='block mt-0.5 text-[9px] text-slate-400'>复制这一层及之前的剧情，之后两条世界线互不影响</span></span></button><button onClick={() => { setDeletingMessage(messageMenu); setMessageMenu(null); }} className='w-full py-4 flex items-center gap-3 text-left'><Trash size={17} className='text-rose-500' /><span><strong className='block text-xs text-rose-600'>删除这一层</strong><span className='block mt-0.5 text-[9px] text-slate-400'>不会自动删除相邻的推进或正文</span></span></button></div>
+            </div>
+        </div>}
+        {branchingMessage && <div className='fixed inset-0 z-[76] flex items-end bg-slate-900/30' onClick={() => { if (!branching) { setBranchingMessage(null); setBranchTitle(''); } }}>
+            <div className='story-safe-sheet w-full rounded-t-3xl bg-stone-100 px-5 pt-5 shadow-2xl' onClick={event => event.stopPropagation()}>
+                <div className='flex items-start justify-between gap-4'>
+                    <div><div className='text-[9px] tracking-[.18em] font-bold text-violet-500'>BRANCH TIMELINE</div><h2 className='mt-1 text-lg font-semibold'>从这一层建立新世界线</h2></div>
+                    <button disabled={branching} onClick={() => { setBranchingMessage(null); setBranchTitle(''); }} className='w-9 h-9 shrink-0 rounded-full grid place-items-center text-slate-400 disabled:opacity-30'><X size={17} /></button>
+                </div>
+                <p className='mt-3 text-[10px] leading-5 text-slate-500'>新分支会继承这一层以及之前的角色、身份、世界书、预设和剧情内容；原世界线完全不动。留空会自动命名为“{entry.branchFrom?.rootTitle || entry.title} · 分支 N”。</p>
+                {entry.writesToCharacterMemory && <p className='mt-2 rounded-xl bg-amber-50 px-3 py-2 text-[9px] leading-4 text-amber-700'>当前是“真实时间陪伴”。分支属于“如果当时……”的另一条可能性，因此新分支会自动切成虚构剧场，不再写回角色真实记忆。</p>}
+                <label className='mt-4 block'><span className='text-[9px] font-bold text-slate-500'>分支名称 · 可选</span><input autoFocus value={branchTitle} onChange={event => setBranchTitle(event.target.value)} placeholder='留空自动命名' className='mt-2 w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none' /></label>
+                <button
+                    disabled={branching}
+                    onClick={async () => {
+                        if (!branchingMessage || branching) return;
+                        setBranching(true);
+                        try {
+                            await onCreateBranch(branchingMessage, branchTitle.trim() || undefined);
+                        } finally {
+                            setBranching(false);
+                        }
+                    }}
+                    className='mt-4 h-12 w-full rounded-2xl bg-slate-900 text-xs font-bold text-white disabled:opacity-40'
+                >
+                    {branching ? <SpinnerGap size={17} className='mx-auto animate-spin' /> : '建立分支并进入'}
+                </button>
             </div>
         </div>}
         {editingMessage && <div className='fixed inset-0 z-[75] flex items-end overflow-y-auto overscroll-contain bg-slate-900/30' onClick={() => !mutatingMessage && setEditingMessage(null)}>
