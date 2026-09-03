@@ -931,9 +931,11 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 directMaxRetries: 2,
                 // 单线路剧情不再把“首字慢”误判成失败；连接只要还活着就继续等待。
                 disableDirectFirstVisibleTimeout: true,
-                // 正文不强制某一种协议：没显式 stream 时按当前 API 预设；
-                // 总结/归档上方明确写了 stream:false。
-                forceStream: false,
+                // 恢复 9/2 已验证可切屏的正文行为：只要当前调用需要实时正文预览，
+                // 就强制走流式，让 WebView 在后台持续收到数据；否则 Android 隐藏 WebView
+                // 容易把“长时间零字节的非流式请求”冻结/断开。
+                // 总结/归档没有 onStreamText，仍明确 stream:false，不受这里影响。
+                forceStream: wantsStreamPreview,
                 // 剧情正文按“首个可见正文字符”承诺线路：首字前可以故障转移，
                 // 首字一旦已经展示，后续断流也绝不换线路，避免两条线路各写半篇。
                 streamCommitMode: wantsStreamPreview ? 'content' : 'activity',
