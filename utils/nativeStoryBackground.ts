@@ -46,9 +46,15 @@ interface NativeStoryJob {
   routeModel?: string;
   attempts?: NativeStoryAttempt[];
   createdAt?: number;
+  startedAt?: number;
   openedAt?: number;
   firstEventAt?: number;
   firstVisibleAt?: number;
+  lastChunkAt?: number;
+  lastReasoningAt?: number;
+  lastVisibleAt?: number;
+  lastActivityAt?: number;
+  chunkCount?: number;
   sseEvents?: number;
   reasoningChars?: number;
   visibleChars?: number;
@@ -138,7 +144,8 @@ const makeKeepAliveLeaseId = (ownerKey: string): string => {
 
 /**
  * 这个 keepalive lease 只给剧情完成后的 JS 阶段（例如自动配图）使用。
- * 真正的剧情 completion 在 Android 上由 SullyStoryBackgroundService + okhttp-sse EventSource 持有。
+ * 真正的剧情 completion 在 Android App 进程里由 SullyStoryGenerationManager 持有；
+ * ForegroundService 只负责进程前台生命周期。
  */
 export const acquireNativeStoryKeepAlive = async (
   ownerKey: string,
@@ -359,13 +366,31 @@ export const executeStoryCompletionInNativeBackground = async (
   const error = new Error(job.error || '剧情后台续写失败');
   (error as any).status = job.statusCode;
   if (job.partialContent) (error as any).partialContent = job.partialContent;
+  const startedAt = Number(job.startedAt || job.createdAt || 0);
+  const elapsedFromStart = (at?: number): number | undefined => {
+    const value = Number(at || 0);
+    return startedAt > 0 && value >= startedAt ? value - startedAt : undefined;
+  };
   (error as any).nativeStoryDiagnostics = {
     jobId: job.jobId,
     status: job.status,
     statusCode: job.statusCode,
+    startedAt: job.startedAt,
     openedAt: job.openedAt,
     firstEventAt: job.firstEventAt,
     firstVisibleAt: job.firstVisibleAt,
+    lastChunkAt: job.lastChunkAt,
+    lastReasoningAt: job.lastReasoningAt,
+    lastVisibleAt: job.lastVisibleAt,
+    lastActivityAt: job.lastActivityAt,
+    openedMs: elapsedFromStart(job.openedAt),
+    firstEventMs: elapsedFromStart(job.firstEventAt),
+    firstVisibleMs: elapsedFromStart(job.firstVisibleAt),
+    lastChunkMs: elapsedFromStart(job.lastChunkAt),
+    lastReasoningMs: elapsedFromStart(job.lastReasoningAt),
+    lastVisibleMs: elapsedFromStart(job.lastVisibleAt),
+    lastActivityMs: elapsedFromStart(job.lastActivityAt),
+    chunkCount: job.chunkCount,
     sseEvents: job.sseEvents,
     reasoningChars: job.reasoningChars,
     visibleChars: job.visibleChars,
