@@ -85,6 +85,13 @@ interface NativeStoryJob {
   callFailureMessage?: string;
   callFailureCauseClass?: string;
   callFailureCauseMessage?: string;
+  foregroundRequestedAt?: number;
+  foregroundStartedAt?: number;
+  foregroundFailedAt?: number;
+  foregroundDestroyedAt?: number;
+  foregroundReleasedAt?: number;
+  foregroundFailureClass?: string;
+  foregroundFailureMessage?: string;
   networkEvents?: Array<Record<string, any>>;
   sseEvents?: number;
   reasoningChars?: number;
@@ -444,6 +451,18 @@ export const executeStoryCompletionInNativeBackground = async (
     callFailureMessage: job.callFailureMessage,
     callFailureCauseClass: job.callFailureCauseClass,
     callFailureCauseMessage: job.callFailureCauseMessage,
+    foregroundRequestedAt: job.foregroundRequestedAt,
+    foregroundStartedAt: job.foregroundStartedAt,
+    foregroundFailedAt: job.foregroundFailedAt,
+    foregroundDestroyedAt: job.foregroundDestroyedAt,
+    foregroundReleasedAt: job.foregroundReleasedAt,
+    foregroundFailureClass: job.foregroundFailureClass,
+    foregroundFailureMessage: job.foregroundFailureMessage,
+    foregroundRequestedMs: elapsedFromStart(job.foregroundRequestedAt),
+    foregroundStartedMs: elapsedFromStart(job.foregroundStartedAt),
+    foregroundFailedMs: elapsedFromStart(job.foregroundFailedAt),
+    foregroundDestroyedMs: elapsedFromStart(job.foregroundDestroyedAt),
+    foregroundReleasedMs: elapsedFromStart(job.foregroundReleasedAt),
     callStartMs: elapsedFromStart(job.callStartAt),
     openedMs: elapsedFromStart(job.openedAt),
     firstEventMs: elapsedFromStart(job.firstEventAt),
