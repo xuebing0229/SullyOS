@@ -135,6 +135,7 @@ public class SullyStoryBackgroundService extends Service {
             "startedAt", "completedAt", "statusCode", "responseJson", "partialContent",
             "error", "promptTokens", "completionTokens", "totalTokens",
             "routeIndex", "routePresetId", "routePresetName", "routeBaseUrl", "routeModel",
+            "sseEvents", "reasoningChars", "visibleChars", "streamFinishReason",
             "attempts"
         };
         for (String key : keys) if (job.has(key)) result.put(key, job.get(key));
@@ -666,6 +667,9 @@ public class SullyStoryBackgroundService extends Service {
         String role = "assistant";
         String finishReason = null;
         long lastPersistAt = 0L;
+        boolean sawMeaningfulActivity = false;
+        int reasoningChars = 0;
+        int sseEvents = 0;
 
         while (true) {
             String line = source.readUtf8Line();
@@ -687,6 +691,7 @@ public class SullyStoryBackgroundService extends Service {
             } catch (Exception ignored) {
                 continue;
             }
+            sseEvents++;
 
             if (chunk.has("usage") && !chunk.isNull("usage")) usage = chunk.optJSONObject("usage");
             if (chunk.has("usageMetadata") && !chunk.isNull("usageMetadata")) {
@@ -696,6 +701,21 @@ public class SullyStoryBackgroundService extends Service {
             if (id.isEmpty()) id = chunk.optString("id", chunk.optString("responseId", ""));
 
             JSONArray choices = chunk.optJSONArray("choices");
+
+            // OpenAI stream_options.include_usage 的标准末块是 choices: [] + usage。
+            // 有些中转业务上已经结束并计费，却不再补 [DONE] / 不主动断 socket。
+            // 已经收到正文或 reasoning 后，usage-only 块可视为本轮终止。
+            if (
+                choices != null
+                && choices.length() == 0
+                && chunk.has("usage")
+                && !chunk.isNull("usage")
+                && sawMeaningfulActivity
+            ) {
+                finishReason = finishReason == null ? "stop" : finishReason;
+                break;
+            }
+
             if (choices == null || choices.length() == 0) {
                 JSONArray candidates = chunk.optJSONArray("candidates");
                 JSONObject candidate = candidates == null || candidates.length() == 0
@@ -712,14 +732,20 @@ public class SullyStoryBackgroundService extends Service {
                         if (part == null) continue;
                         String text = part.optString("text", "");
                         if (text.isEmpty()) continue;
-                        if (part.optBoolean("thought", false)) reasoning.append(text);
-                        else visible.append(text);
+                        if (part.optBoolean("thought", false)) {
+                            reasoning.append(text);
+                            reasoningChars += text.length();
+                            sawMeaningfulActivity = true;
+                        } else {
+                            visible.append(text);
+                        }
                     }
                 }
                 String piece = visible.toString();
                 if (!piece.isEmpty()) {
                     content.append(piece);
                     visibleContent.set(true);
+                    sawMeaningfulActivity = true;
                     if (now - lastPersistAt >= 800L) {
                         JSONObject liveJob = readJobFile(this, jobId);
                         if (liveJob != null && "running".equals(liveJob.optString("status"))) {
@@ -766,7 +792,14 @@ public class SullyStoryBackgroundService extends Service {
                 Object rr = delta.has("reasoning_content") ? delta.opt("reasoning_content")
                     : delta.has("reasoning") ? delta.opt("reasoning")
                     : delta.opt("thinking");
-                if (rr instanceof String) reasoning.append((String) rr);
+                if (rr instanceof String) {
+                    String reasoningPiece = (String) rr;
+                    reasoning.append(reasoningPiece);
+                    if (!reasoningPiece.isEmpty()) {
+                        reasoningChars += reasoningPiece.length();
+                        sawMeaningfulActivity = true;
+                    }
+                }
                 String r = delta.optString("role", "");
                 if (!r.isEmpty()) role = r;
             } else if (message != null) {
@@ -786,7 +819,14 @@ public class SullyStoryBackgroundService extends Service {
                 Object rr = message.has("reasoning_content") ? message.opt("reasoning_content")
                     : message.has("reasoning") ? message.opt("reasoning")
                     : message.opt("thinking");
-                if (rr instanceof String) reasoning.append((String) rr);
+                if (rr instanceof String) {
+                    String reasoningPiece = (String) rr;
+                    reasoning.append(reasoningPiece);
+                    if (!reasoningPiece.isEmpty()) {
+                        reasoningChars += reasoningPiece.length();
+                        sawMeaningfulActivity = true;
+                    }
+                }
                 String r = message.optString("role", "");
                 if (!r.isEmpty()) role = r;
             }
@@ -794,6 +834,7 @@ public class SullyStoryBackgroundService extends Service {
             if (!piece.isEmpty()) {
                 content.append(piece);
                 visibleContent.set(true);
+                sawMeaningfulActivity = true;
 
                 // 原生后台每隔约 0.8 秒把已收到正文落盘。
                 // 前台还开着时可以实时读出来；切屏后 WebView 暂停也没关系，回来会追上当前进度。
@@ -824,6 +865,20 @@ public class SullyStoryBackgroundService extends Service {
                 writeJobFile(this, liveJob);
             }
         }
+
+        // 只记录统计，不保存 reasoning 原文。后续日志能直接区分“没收到流”
+        // 与“只收到思考、没收到可见正文”。
+        try {
+            JSONObject liveJob = readJobFile(this, jobId);
+            if (liveJob != null && "running".equals(liveJob.optString("status"))) {
+                liveJob.put("sseEvents", sseEvents);
+                liveJob.put("reasoningChars", reasoningChars);
+                liveJob.put("visibleChars", content.length());
+                if (finishReason != null) liveJob.put("streamFinishReason", finishReason);
+                liveJob.put("updatedAt", System.currentTimeMillis());
+                writeJobFile(this, liveJob);
+            }
+        } catch (Exception ignored) { }
 
         JSONObject response = assembledResponse(id, model, role, content.toString(), reasoning.toString(), finishReason, usage);
         return new SseResult(raw.toString(), response, content.toString());
