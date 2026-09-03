@@ -53,6 +53,7 @@ for (const permission of [
   'android.permission.FOREGROUND_SERVICE',
   'android.permission.FOREGROUND_SERVICE_DATA_SYNC',
   'android.permission.ACCESS_NETWORK_STATE',
+  'android.permission.WAKE_LOCK',
 ]) {
   if (!manifest.includes(permission)) {
     manifest = manifest.replace(
