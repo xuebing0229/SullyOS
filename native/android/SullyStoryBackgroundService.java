@@ -456,7 +456,7 @@ public class SullyStoryBackgroundService extends Service {
                 // 不能把 timeoutMs 当“整轮总时长”。长篇流式只要一直在吐数据就应该继续写完，
                 // 否则 240 秒一到会把正常生成硬切成半篇。
                 .callTimeout(0L, TimeUnit.MILLISECONDS)
-                .retryOnConnectionFailure(true)
+                .retryOnConnectionFailure(false)
                 .build();
 
             Request request = new Request.Builder()
