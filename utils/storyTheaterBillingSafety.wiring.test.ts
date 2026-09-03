@@ -212,6 +212,11 @@ describe('story theater billing safety wiring', () => {
         expect(amsgStoryJobsSource).toContain("export const kickQueuedStoryJobs");
         expect(amsgStoryJobsSource).toContain("WHERE status = 'queued'");
         expect(amsgStoryJobsSource).toContain("export const failRunningStoryJob");
+        expect(amsgStoryJobsSource).toContain("loadRowByClient(env.DB, userId, spec.clientRequestId)");
+        expect(amsgStoryJobsSource).toContain("两个相同 clientRequestId 的 POST 极端并发时");
+        expect(cloudStoryBridgeSource).toContain("resolveSuccessfulRoute");
+        expect(cloudStoryBridgeSource).toContain("timestamp: pending.createdAt");
+        expect(cloudStoryBridgeSource).toContain("apiPresetId: successfulRoute.presetId");
         expect(amsgWorkerSource).toContain("await kickQueuedStoryJobs(env)");
         expect(amsgWorkerSource).toContain("await failRunningStoryJob(this.env, story.userId, story.jobId, error)");
         expect(amsgWorkerSource).toContain("running 绝不自动重跑");
