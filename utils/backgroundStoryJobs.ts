@@ -278,6 +278,7 @@ const toCloudError = (
     options: {
         terminal?: boolean;
         submissionUncertain?: boolean;
+        knownResponse?: boolean;
     } = {},
 ): Error => {
     const error: any = new Error(message);
@@ -285,6 +286,7 @@ const toCloudError = (
     error.cloudStoryDiagnostics = cloudDiagnostics(job, config);
     error.cloudStoryTerminal = options.terminal === true;
     error.cloudStorySubmissionUncertain = options.submissionUncertain === true;
+    error.cloudStoryKnownResponse = options.knownResponse === true;
     return error;
 };
 
@@ -367,17 +369,31 @@ export const executeStoryCompletionInCloudBackground = async (
             });
             if (!response.ok) {
                 const code = String(body?.error?.code || '');
+                const responseJob = body?.job || null;
                 if (response.status === 404 || code === 'INSTANT_TICK_STORY_MISSING') {
                     capabilityCache = null;
                 }
-                throw new Error(
+                // 这是 Worker 明确回来的 HTTP 结论，不是“POST 响应在路上丢了”。
+                // 有 job（例如旧 Worker 缺执行能力）就保留 pending 等更新后接回；
+                // 没 job 的 4xx/5xx 则明确没有可接回任务，清掉本地指针。
+                if (!responseJob) {
+                    await clearPendingCloudStoryJob(options.ownerKey);
+                }
+                throw toCloudError(
                     body?.error?.message
                     || body?.error
                     || `剧情云端任务提交失败（HTTP ${response.status}）`,
+                    responseJob,
+                    config,
+                    {
+                        terminal: !responseJob,
+                        knownResponse: true,
+                    },
                 );
             }
             job = body?.job || null;
         } catch (submitError: any) {
+            if (submitError?.cloudStoryKnownResponse === true) throw submitError;
             // POST 的响应丢了 ≠ POST 没到。和后台生图一样只用同一个 clientRequestId 查账，
             // 不自动再 POST 一遍。
             for (let attempt = 0; attempt < 4 && !job; attempt += 1) {
