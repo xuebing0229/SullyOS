@@ -92,6 +92,9 @@ interface NativeStoryJob {
   foregroundReleasedAt?: number;
   foregroundFailureClass?: string;
   foregroundFailureMessage?: string;
+  wakeLockAcquiredAt?: number;
+  wakeLockReleasedAt?: number;
+  wakeLockFailedAt?: number;
   appPausedAt?: number;
   appStoppedAt?: number;
   appStartedAt?: number;
@@ -109,6 +112,13 @@ interface NativeStoryJob {
   networkNotSuspended?: boolean;
   networkMetered?: boolean;
   networkInterface?: string;
+  networkBlocked?: boolean;
+  networkBlockedAt?: number;
+  restrictBackgroundStatus?: number;
+  backgroundRestricted?: boolean;
+  powerSaveMode?: boolean;
+  deviceIdleMode?: boolean;
+  ignoringBatteryOptimizations?: boolean;
   connectivityObserverRegistered?: boolean;
   connectivityObserverFailureClass?: string;
   connectivityObserverFailureMessage?: string;
@@ -478,6 +488,9 @@ export const executeStoryCompletionInNativeBackground = async (
     foregroundReleasedAt: job.foregroundReleasedAt,
     foregroundFailureClass: job.foregroundFailureClass,
     foregroundFailureMessage: job.foregroundFailureMessage,
+    wakeLockAcquiredAt: job.wakeLockAcquiredAt,
+    wakeLockReleasedAt: job.wakeLockReleasedAt,
+    wakeLockFailedAt: job.wakeLockFailedAt,
     appPausedAt: job.appPausedAt,
     appStoppedAt: job.appStoppedAt,
     appStartedAt: job.appStartedAt,
@@ -495,6 +508,13 @@ export const executeStoryCompletionInNativeBackground = async (
     networkNotSuspended: job.networkNotSuspended,
     networkMetered: job.networkMetered,
     networkInterface: job.networkInterface,
+    networkBlocked: job.networkBlocked,
+    networkBlockedAt: job.networkBlockedAt,
+    restrictBackgroundStatus: job.restrictBackgroundStatus,
+    backgroundRestricted: job.backgroundRestricted,
+    powerSaveMode: job.powerSaveMode,
+    deviceIdleMode: job.deviceIdleMode,
+    ignoringBatteryOptimizations: job.ignoringBatteryOptimizations,
     connectivityObserverRegistered: job.connectivityObserverRegistered,
     connectivityObserverFailureClass: job.connectivityObserverFailureClass,
     connectivityObserverFailureMessage: job.connectivityObserverFailureMessage,
@@ -503,6 +523,9 @@ export const executeStoryCompletionInNativeBackground = async (
     foregroundFailedMs: elapsedFromStart(job.foregroundFailedAt),
     foregroundDestroyedMs: elapsedFromStart(job.foregroundDestroyedAt),
     foregroundReleasedMs: elapsedFromStart(job.foregroundReleasedAt),
+    wakeLockAcquiredMs: elapsedFromStart(job.wakeLockAcquiredAt),
+    wakeLockReleasedMs: elapsedFromStart(job.wakeLockReleasedAt),
+    wakeLockFailedMs: elapsedFromStart(job.wakeLockFailedAt),
     appPausedMs: elapsedFromStart(job.appPausedAt),
     appStoppedMs: elapsedFromStart(job.appStoppedAt),
     appStartedMs: elapsedFromStart(job.appStartedAt),
@@ -513,6 +536,7 @@ export const executeStoryCompletionInNativeBackground = async (
     networkLosingMs: elapsedFromStart(job.networkLosingAt),
     networkCapabilitiesChangedMs: elapsedFromStart(job.networkCapabilitiesChangedAt),
     linkPropertiesChangedMs: elapsedFromStart(job.linkPropertiesChangedAt),
+    networkBlockedMs: elapsedFromStart(job.networkBlockedAt),
     callStartMs: elapsedFromStart(job.callStartAt),
     openedMs: elapsedFromStart(job.openedAt),
     firstEventMs: elapsedFromStart(job.firstEventAt),
