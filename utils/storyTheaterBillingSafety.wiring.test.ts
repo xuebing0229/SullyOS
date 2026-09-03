@@ -101,6 +101,10 @@ describe('story theater billing safety wiring', () => {
         expect(nativeStoryKeepAliveSource).toContain('fgsForegroundFailed');
         expect(nativeStoryInstallerSource).toContain("sully_story_notification.xml");
         expect(nativeStoryInstallerSource).toContain('android.permission.ACCESS_NETWORK_STATE');
+        expect(nativeStoryInstallerSource).toContain('android.permission.WAKE_LOCK');
+        expect(nativeStoryKeepAliveSource).toContain('PowerManager.PARTIAL_WAKE_LOCK');
+        expect(nativeStoryKeepAliveSource).toContain('WAKE_LOCK_TIMEOUT_MS');
+        expect(nativeStoryKeepAliveSource).toContain('wakeLockAcquired');
     });
 
     it('records the last real stream activity instead of only the eventual failure time', () => {
@@ -137,8 +141,15 @@ describe('story theater billing safety wiring', () => {
         expect(nativeStoryBridgeSource).toContain('networkCapabilitiesChangedMs');
         expect(nativeStoryBridgeSource).toContain('networkValidated');
         expect(nativeStoryBridgeSource).toContain('connectivityObserverRegistered');
+        expect(nativeStoryBridgeSource).toContain('wakeLockAcquiredMs');
+        expect(nativeStoryBridgeSource).toContain('networkBlockedMs');
+        expect(nativeStoryBridgeSource).toContain('backgroundRestricted');
+        expect(nativeStoryBridgeSource).toContain('ignoringBatteryOptimizations');
         expect(nativeStoryManagerSource).toContain('registerDefaultNetworkCallback');
         expect(nativeStoryManagerSource).toContain('networkCapabilitiesChanged');
+        expect(nativeStoryManagerSource).toContain('onBlockedStatusChanged');
+        expect(nativeStoryManagerSource).toContain('isBackgroundRestricted');
+        expect(nativeStoryManagerSource).toContain('isIgnoringBatteryOptimizations');
         expect(nativeStoryManagerSource).toContain('onActivityPaused(Activity activity)');
         expect(nativeStoryManagerSource).toContain('onActivityStopped(Activity activity)');
         expect(nativeStoryManagerSource).toContain('mergeLatestRuntimeDiagnostics(context, job);');
@@ -154,6 +165,16 @@ describe('story theater billing safety wiring', () => {
         expect(clearSource).not.toContain('NativeStoryBackground.remove');
         expect(nativeStoryManagerSource).toContain('private static final long RETENTION_MS = 7L * 24L * 60L * 60L * 1000L;');
         expect(nativeStoryManagerSource).toContain('if (terminal && job.optLong("updatedAt", 0L) < cutoff) file.delete();');
+    });
+
+    it('preserves native partial content after the app process is restarted', () => {
+        const sendCatch = storySource.slice(
+            storySource.indexOf('const returnedPartial ='),
+            storySource.indexOf('const message = String(error?.message || error)', storySource.indexOf('const returnedPartial =')),
+        );
+        expect(sendCatch).toContain('error?.partialContent');
+        expect(sendCatch).toContain('saveCentralAndMirrors');
+        expect(sendCatch).toContain('theaterInterrupted: true');
     });
 
     it('uses the independent story route scope instead of the main chat route', () => {
