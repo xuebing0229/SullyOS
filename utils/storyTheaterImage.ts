@@ -124,6 +124,49 @@ const parseToolArgs = (call: any): Record<string, any> => {
     return raw && typeof raw === 'object' ? raw : {};
 };
 
+const extractPlannerSelection = (
+    responseValue: any,
+    imageTools: { resolve: Map<string, ResolvedMcpTool> },
+): { selectedName: string; rawArgs: Record<string, any> } | null => {
+    const message = responseValue?.choices?.[0]?.message || {};
+    const nativeCalls = normalizeToolCallsForCompat(message.tool_calls, 'story-theater-image');
+    for (const call of nativeCalls) {
+        const name = String((call as any)?.function?.name || '');
+        if (!imageTools.resolve.has(name)) continue;
+        try {
+            return { selectedName: name, rawArgs: parseToolArgs(call) };
+        } catch {
+            // 工具名已经对了但 arguments 被模型写坏：交给下面的纠错规划重做，不能直接执行半截参数。
+        }
+    }
+
+    const faked = extractTextFakedMcpCalls(String(message.content || ''), imageTools.resolve)[0];
+    return faked
+        ? { selectedName: faked.exposedName, rawArgs: faked.args }
+        : null;
+};
+
+const buildPlannerRepairBody = (
+    nativeBody: Record<string, any>,
+    textFallback: boolean,
+): Record<string, any> => {
+    const body = textFallback
+        ? buildMcpRejectedToolsFallbackBody(nativeBody)
+        : { ...nativeBody };
+    body.temperature = 0;
+    body.parallel_tool_calls = false;
+    body.messages = [
+        ...(body.messages || []),
+        {
+            role: 'system',
+            content: textFallback
+                ? '纠错重试：上一轮没有产生客户端可执行的生图调用。你现在只允许输出一个生图工具调用，严格使用上面 MCP 文字兼容格式 tool_name({JSON})；禁止解释、分析、道歉、代码块、自然语言前后缀，也禁止返回空白。'
+                : '纠错重试：上一轮没有返回可执行的 tool_calls。你现在必须调用且只能调用一个本轮提供的生图工具；禁止只输出文字，禁止返回空白，禁止同时调用多个工具。',
+        },
+    ];
+    return body;
+};
+
 const buildPlannerInstruction = (input: GenerateStoryImageInput, toolNames: string[]): string => {
     const config = input.entry.imageGeneration;
     const actorAnchors = input.actors.map(actor => {
@@ -154,6 +197,12 @@ export async function generateStoryTheaterImage(input: GenerateStoryImageInput):
     const plannerApiConfig = input.plannerApiConfig || input.apiConfig;
     const imageTools = resolveStoryImageTools(input.actors);
     const toolNames = imageTools.tools.map(tool => tool.function.name);
+    const forcedToolChoice = imageTools.tools.length === 1
+        ? {
+            type: 'function',
+            function: { name: imageTools.tools[0].function.name },
+        }
+        : 'required';
     const nativeBody = {
         model: plannerApiConfig.model,
         messages: [
@@ -161,7 +210,10 @@ export async function generateStoryTheaterImage(input: GenerateStoryImageInput):
             { role: 'user', content: '请为上面最新一轮剧情生成插图。' },
         ],
         tools: imageTools.tools,
-        tool_choice: 'required',
+        // 只有一个可用生图工具时不要再让模型“决定要不要调用”，直接指定函数；
+        // 多工具时 required 只负责强制“必须选一个”，具体预设仍交给规划器判断。
+        tool_choice: forcedToolChoice,
+        parallel_tool_calls: false,
         temperature: 0.4,
         max_tokens: 3000,
         stream: false,
@@ -176,31 +228,46 @@ export async function generateStoryTheaterImage(input: GenerateStoryImageInput):
     });
 
     let response;
-    if (!getMcpUseNativeTools()) {
+    let plannerUsedTextFallback = !getMcpUseNativeTools();
+    if (plannerUsedTextFallback) {
         response = await runPlanner(buildMcpRejectedToolsFallbackBody(nativeBody));
     } else {
         try {
             response = await runPlanner(nativeBody);
         } catch (error) {
             if (!shouldRetryMcpWithoutTools(error)) throw error;
+            plannerUsedTextFallback = true;
             response = await runPlanner(buildMcpRejectedToolsFallbackBody(nativeBody));
         }
     }
 
-    const message = response.value?.choices?.[0]?.message || {};
-    const nativeCalls = normalizeToolCallsForCompat(message.tool_calls, 'story-theater-image');
-    const native = nativeCalls.find((call: any) => imageTools.resolve.has(String(call?.function?.name || '')));
+    let selection = extractPlannerSelection(response.value, imageTools);
+    if (!selection) {
+        // 规划器偶发“明明有工具却只回正文”。真正生图尚未发生，所以这里补一次规划不会重复出图。
+        // Native FC 路径先用更严格的 tool_choice/temperature=0 纠错；若本来就是文字兼容模式，
+        // 则严格要求只输出一行可解析的假调用。只补这一轮，避免规划器自己无限循环扣费。
+        console.warn('[StoryTheater] image planner omitted tool call; retrying planner once', {
+            plannerModel: plannerApiConfig.model,
+            mode: plannerUsedTextFallback ? 'text-fallback' : 'native-tools',
+            toolCount: imageTools.tools.length,
+        });
+        const repairBody = buildPlannerRepairBody(nativeBody, plannerUsedTextFallback);
+        const repairResponse = await runPlanner(repairBody);
+        selection = extractPlannerSelection(repairResponse.value, imageTools);
 
-    let selectedName = native ? String(native?.function?.name || '') : '';
-    let rawArgs: Record<string, any> | null = native ? parseToolArgs(native) : null;
-    if (!rawArgs) {
-        const faked = extractTextFakedMcpCalls(String(message.content || ''), imageTools.resolve)[0];
-        if (faked) {
-            selectedName = faked.exposedName;
-            rawArgs = faked.args;
+        // 有些“OpenAI 兼容”中转接受 tools 却静默无视 tool_choice。纠错轮仍没 FC 时，
+        // 不再发第三次模型请求；直接检查这次正文有没有按兼容调用格式输出。
+        if (!selection && !plannerUsedTextFallback) {
+            const repairMessage = repairResponse.value?.choices?.[0]?.message || {};
+            const faked = extractTextFakedMcpCalls(String(repairMessage.content || ''), imageTools.resolve)[0];
+            if (faked) selection = { selectedName: faked.exposedName, rawArgs: faked.args };
         }
     }
-    if (!rawArgs || !selectedName) throw new Error('剧情配图规划器没有调用生图工具。');
+
+    if (!selection) {
+        throw new Error('剧情配图规划器连续两次没有返回可执行的生图工具调用。');
+    }
+    const { selectedName, rawArgs } = selection;
 
     const selected = imageTools.resolve.get(selectedName);
     if (!selected) throw new Error('剧情配图规划器选择了未知的生图工具。');
