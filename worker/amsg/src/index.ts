@@ -159,6 +159,13 @@ import { buildScheduleChangeResult } from '../../../utils/amsgScheduleResult';
 import type { ActiveMsg2TaskRecord } from '../../../types';
 import { createHybridPushTransport, isFcmConfigured, type NativeFcmEnv } from './nativeFcm';
 import { handleNativePollRequest, type NativePollDb } from './nativePoll';
+import {
+  handleStoryJobsRequest,
+  StoryTickDO,
+  type StoryTickNamespace,
+} from './storyJobs';
+
+export { StoryTickDO };
 
 interface Env extends NativeFcmEnv {
   AMSG_MASTER_KEY: string;
@@ -178,6 +185,8 @@ interface Env extends NativeFcmEnv {
    * 那种情况由 /instant-chat 明确报「需要更新 Worker」，见 instantChat.kickInstantTick。
    */
   INSTANT_TICK?: InstantTickNamespace;
+  /** 剧情后台生成的云端起跳器；与 INSTANT_TICK 同 Worker、独立 namespace。 */
+  STORY_TICK?: StoryTickNamespace;
 }
 
 // ─── 满血 fire-time hooks（amsg-server 2.6.0-next.4+：含 ctx.scratch / 存储层大值分块） ───
@@ -3003,6 +3012,8 @@ export default {
           ...inspectWorkerEnv(env),
           instantChat: true,
           instantTick: !!env.INSTANT_TICK,
+          storyJobs: true,
+          storyTick: !!env.STORY_TICK,
           // 这份代码认不认识「后台任务」（metadata.amsgKind → handler，见 fireKinds.ts）。
           // 老 bundle 没有这个字段，前端据此不去建那种任务——老 worker 会把它当聊天任务
           // 跑，然后卡在「本次任务指令缺失」终态失败：任务行不在用户的清单里，面板一片
@@ -3063,6 +3074,12 @@ export default {
         success: false,
         error: { code: 'WORKER_CONFIG_MISSING', message: report.message, missing: report.missing },
       });
+    }
+
+    if (/\/story-jobs(?:\/|$)/.test(pathname)) {
+      if (method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS_HEADERS });
+      const result = await handleStoryJobsRequest(request, env);
+      return jsonWithCors(result.status, result.body);
     }
 
     if (pathname.endsWith('/native-poll') || pathname.endsWith('/native-poll/ack')) {
