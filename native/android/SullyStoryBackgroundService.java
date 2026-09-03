@@ -522,7 +522,7 @@ public class SullyStoryBackgroundService extends Service {
                         throw new RouteFailure(status, errorMessage(raw, status), false, "");
                     }
                     try {
-                        response = new JSONObject(raw);
+                        response = normalizeGeminiResponse(new JSONObject(raw));
                     } catch (Exception parseError) {
                         if (raw.trim().startsWith("data:")) {
                             SseResult parsed = parseSseText(raw);
@@ -625,11 +625,58 @@ public class SullyStoryBackgroundService extends Service {
             }
 
             if (chunk.has("usage") && !chunk.isNull("usage")) usage = chunk.optJSONObject("usage");
-            if (model.isEmpty()) model = chunk.optString("model", "");
-            if (id.isEmpty()) id = chunk.optString("id", "");
+            if (chunk.has("usageMetadata") && !chunk.isNull("usageMetadata")) {
+                usage = geminiUsageToOpenAi(chunk.optJSONObject("usageMetadata"));
+            }
+            if (model.isEmpty()) model = chunk.optString("model", chunk.optString("modelVersion", ""));
+            if (id.isEmpty()) id = chunk.optString("id", chunk.optString("responseId", ""));
 
             JSONArray choices = chunk.optJSONArray("choices");
-            if (choices == null || choices.length() == 0) continue;
+            if (choices == null || choices.length() == 0) {
+                JSONArray candidates = chunk.optJSONArray("candidates");
+                JSONObject candidate = candidates == null || candidates.length() == 0
+                    ? null
+                    : candidates.optJSONObject(0);
+                if (candidate == null) continue;
+
+                JSONObject candidateContent = candidate.optJSONObject("content");
+                JSONArray parts = candidateContent == null ? null : candidateContent.optJSONArray("parts");
+                StringBuilder visible = new StringBuilder();
+                if (parts != null) {
+                    for (int i = 0; i < parts.length(); i++) {
+                        JSONObject part = parts.optJSONObject(i);
+                        if (part == null) continue;
+                        String text = part.optString("text", "");
+                        if (text.isEmpty()) continue;
+                        if (part.optBoolean("thought", false)) reasoning.append(text);
+                        else visible.append(text);
+                    }
+                }
+                String piece = visible.toString();
+                if (!piece.isEmpty()) {
+                    content.append(piece);
+                    visibleContent.set(true);
+                    if (now - lastPersistAt >= 800L) {
+                        JSONObject liveJob = readJobFile(this, jobId);
+                        if (liveJob != null && "running".equals(liveJob.optString("status"))) {
+                            liveJob.put("partialContent", content.toString());
+                            liveJob.put("updatedAt", now);
+                            writeJobFile(this, liveJob);
+                        }
+                        lastPersistAt = now;
+                    }
+                }
+                if (candidateContent != null) {
+                    String r = candidateContent.optString("role", "");
+                    if (!r.isEmpty()) role = "model".equals(r) ? "assistant" : r;
+                }
+                String geminiFinish = candidate.optString("finishReason", "");
+                if (!geminiFinish.isEmpty()) {
+                    finishReason = normalizeGeminiFinishReason(geminiFinish);
+                    break;
+                }
+                continue;
+            }
             JSONObject choice = choices.optJSONObject(0);
             if (choice == null) continue;
 
@@ -734,10 +781,38 @@ public class SullyStoryBackgroundService extends Service {
             JSONObject chunk;
             try { chunk = new JSONObject(payload); } catch (Exception ignored) { continue; }
             if (chunk.has("usage") && !chunk.isNull("usage")) usage = chunk.optJSONObject("usage");
-            if (model.isEmpty()) model = chunk.optString("model", "");
-            if (id.isEmpty()) id = chunk.optString("id", "");
+            if (chunk.has("usageMetadata") && !chunk.isNull("usageMetadata")) {
+                usage = geminiUsageToOpenAi(chunk.optJSONObject("usageMetadata"));
+            }
+            if (model.isEmpty()) model = chunk.optString("model", chunk.optString("modelVersion", ""));
+            if (id.isEmpty()) id = chunk.optString("id", chunk.optString("responseId", ""));
             JSONArray choices = chunk.optJSONArray("choices");
-            if (choices == null || choices.length() == 0) continue;
+            if (choices == null || choices.length() == 0) {
+                JSONArray candidates = chunk.optJSONArray("candidates");
+                JSONObject candidate = candidates == null || candidates.length() == 0
+                    ? null
+                    : candidates.optJSONObject(0);
+                if (candidate == null) continue;
+                JSONObject candidateContent = candidate.optJSONObject("content");
+                JSONArray parts = candidateContent == null ? null : candidateContent.optJSONArray("parts");
+                if (parts != null) {
+                    for (int i = 0; i < parts.length(); i++) {
+                        JSONObject part = parts.optJSONObject(i);
+                        if (part == null) continue;
+                        String text = part.optString("text", "");
+                        if (text.isEmpty()) continue;
+                        if (part.optBoolean("thought", false)) reasoning.append(text);
+                        else content.append(text);
+                    }
+                }
+                if (candidateContent != null) {
+                    String r = candidateContent.optString("role", "");
+                    if (!r.isEmpty()) role = "model".equals(r) ? "assistant" : r;
+                }
+                String geminiFinish = candidate.optString("finishReason", "");
+                if (!geminiFinish.isEmpty()) finishReason = normalizeGeminiFinishReason(geminiFinish);
+                continue;
+            }
             JSONObject choice = choices.optJSONObject(0);
             if (choice == null) continue;
             JSONObject delta = choice.optJSONObject("delta");
@@ -772,6 +847,78 @@ public class SullyStoryBackgroundService extends Service {
             if (choice.has("finish_reason") && !choice.isNull("finish_reason")) finishReason = choice.optString("finish_reason", null);
         }
         return new SseResult(rawText, assembledResponse(id, model, role, content.toString(), reasoning.toString(), finishReason, usage), content.toString());
+    }
+
+    private static String normalizeGeminiFinishReason(String value) {
+        String upper = value == null ? "" : value.trim().toUpperCase(Locale.ROOT);
+        if ("STOP".equals(upper)) return "stop";
+        if ("MAX_TOKENS".equals(upper)) return "length";
+        if ("SAFETY".equals(upper)
+            || "RECITATION".equals(upper)
+            || "BLOCKLIST".equals(upper)
+            || "PROHIBITED_CONTENT".equals(upper)
+            || "SPII".equals(upper)) return "content_filter";
+        return upper.isEmpty() ? null : upper.toLowerCase(Locale.ROOT);
+    }
+
+    private static JSONObject geminiUsageToOpenAi(JSONObject metadata) throws Exception {
+        if (metadata == null) return null;
+        JSONObject usage = new JSONObject();
+        int prompt = metadata.optInt("promptTokenCount", 0);
+        int completion = metadata.optInt("candidatesTokenCount", 0);
+        int total = metadata.optInt("totalTokenCount", 0);
+        int cached = metadata.optInt("cachedContentTokenCount", 0);
+        int thoughts = metadata.optInt("thoughtsTokenCount", 0);
+        if (prompt > 0) usage.put("prompt_tokens", prompt);
+        if (completion > 0) usage.put("completion_tokens", completion);
+        if (total > 0) usage.put("total_tokens", total);
+        if (cached > 0) {
+            usage.put("prompt_tokens_details", new JSONObject().put("cached_tokens", cached));
+        }
+        if (thoughts > 0) {
+            usage.put("completion_tokens_details", new JSONObject().put("reasoning_tokens", thoughts));
+        }
+        usage.put("usage_metadata", metadata);
+        return usage;
+    }
+
+    private static JSONObject normalizeGeminiResponse(JSONObject raw) throws Exception {
+        if (raw == null || raw.has("choices")) return raw;
+        JSONArray candidates = raw.optJSONArray("candidates");
+        if (candidates == null || candidates.length() == 0) return raw;
+        JSONObject candidate = candidates.optJSONObject(0);
+        if (candidate == null) return raw;
+
+        StringBuilder content = new StringBuilder();
+        StringBuilder reasoning = new StringBuilder();
+        JSONObject candidateContent = candidate.optJSONObject("content");
+        JSONArray parts = candidateContent == null ? null : candidateContent.optJSONArray("parts");
+        if (parts != null) {
+            for (int i = 0; i < parts.length(); i++) {
+                JSONObject part = parts.optJSONObject(i);
+                if (part == null) continue;
+                String text = part.optString("text", "");
+                if (text.isEmpty()) continue;
+                if (part.optBoolean("thought", false)) reasoning.append(text);
+                else content.append(text);
+            }
+        }
+        String role = candidateContent == null ? "assistant" : candidateContent.optString("role", "assistant");
+        if ("model".equals(role)) role = "assistant";
+        String finishReason = normalizeGeminiFinishReason(candidate.optString("finishReason", ""));
+
+        JSONObject usage = raw.has("usageMetadata") && !raw.isNull("usageMetadata")
+            ? geminiUsageToOpenAi(raw.optJSONObject("usageMetadata"))
+            : null;
+        return assembledResponse(
+            raw.optString("responseId", "native-story-background"),
+            raw.optString("modelVersion", ""),
+            role,
+            content.toString(),
+            reasoning.toString(),
+            finishReason,
+            usage
+        );
     }
 
     private static JSONObject assembledResponse(String id, String model, String role, String content, String reasoning, String finishReason, JSONObject usage) throws Exception {
