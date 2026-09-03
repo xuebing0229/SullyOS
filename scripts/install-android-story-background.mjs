@@ -78,7 +78,7 @@ gradle = gradle.replace(
 );
 const okHttpDependencies = [
   'implementation "com.squareup.okhttp3:okhttp:5.5.0"',
-  'implementation "com.squareup.okhttp3:okhttp-sse:5.5.0"',
+  'implementation "com.squareup.okhttp3:okhttp-sse:5.1.0"',
 ];
 if (!/dependencies\s*\{/.test(gradle)) throw new Error('无法定位 android/app/build.gradle dependencies');
 for (const dependency of okHttpDependencies.slice().reverse()) {
