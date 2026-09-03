@@ -161,11 +161,8 @@ import { createHybridPushTransport, isFcmConfigured, type NativeFcmEnv } from '.
 import { handleNativePollRequest, type NativePollDb } from './nativePoll';
 import {
   handleStoryJobsRequest,
-  StoryTickDO,
-  type StoryTickNamespace,
+  runStoryJob,
 } from './storyJobs';
-
-export { StoryTickDO };
 
 interface Env extends NativeFcmEnv {
   AMSG_MASTER_KEY: string;
@@ -184,9 +181,9 @@ interface Env extends NativeFcmEnv {
    * 即时对话的起跳器（Durable Object）。类型上可选是因为老版本 Worker 上真的没有它，
    * 那种情况由 /instant-chat 明确报「需要更新 Worker」，见 instantChat.kickInstantTick。
    */
-  INSTANT_TICK?: InstantTickNamespace;
-  /** 剧情后台生成的云端起跳器；与 INSTANT_TICK 同 Worker、独立 namespace。 */
-  STORY_TICK?: StoryTickNamespace;
+  INSTANT_TICK?: InstantTickNamespace & {
+    get(id: unknown): { kick(uuid: string): Promise<unknown>; kickStory(userId: string, jobId: string): Promise<unknown> };
+  };
 }
 
 // ─── 满血 fire-time hooks（amsg-server 2.6.0-next.4+：含 ctx.scratch / 存储层大值分块） ───
@@ -2862,6 +2859,7 @@ const judgeTick = (storage: Awaited<ReturnType<typeof inspectStorage>>) => {
 
 /** DO 存「这个实例负责哪条任务」用的 storage 键。 */
 const INSTANT_TICK_UUID_KEY = 'taskUuid';
+const INSTANT_TICK_STORY_KEY = 'storyJob';
 
 const upstream = createSingleUserCloudflareWorker(buildWorkerConfig, {
   /**
@@ -2927,8 +2925,28 @@ export class InstantTickDO extends DurableObject<Env> {
     await this.ctx.storage.setAlarm(Date.now());
   }
 
+  /**
+   * 剧情后台生成复用同一个 namespace，但实例名以 story: 开头，所以不会和即时对话抢同一实例。
+   * 手机提交完 202 后就可以彻底离线；真正 LLM 流由这个 alarm 持有。
+   */
+  async kickStory(userId: string, jobId: string): Promise<void> {
+    await this.ctx.storage.put(INSTANT_TICK_STORY_KEY, { userId, jobId });
+    if ((await this.ctx.storage.getAlarm()) !== null) return;
+    await this.ctx.storage.setAlarm(Date.now());
+  }
+
   /** 独立 invocation，15 分钟墙钟。跑挂了不重设 alarm——下一分钟的 cron 会接着捡。 */
   async alarm(): Promise<void> {
+    const story = await this.ctx.storage.get<{ userId: string; jobId: string }>(INSTANT_TICK_STORY_KEY);
+    if (story?.userId && story.jobId) {
+      try {
+        await runStoryJob(this.env, story.userId, story.jobId);
+      } finally {
+        await this.ctx.storage.delete(INSTANT_TICK_STORY_KEY);
+      }
+      return;
+    }
+
     const uuid = await this.ctx.storage.get<string>(INSTANT_TICK_UUID_KEY);
     if (!uuid) {
       console.error('[amsg:instant-tick] alarm 醒了却不知道要跑哪条，跳过（等 cron 兜底）');
@@ -3013,7 +3031,7 @@ export default {
           instantChat: true,
           instantTick: !!env.INSTANT_TICK,
           storyJobs: true,
-          storyTick: !!env.STORY_TICK,
+          storyTick: !!env.INSTANT_TICK,
           // 这份代码认不认识「后台任务」（metadata.amsgKind → handler，见 fireKinds.ts）。
           // 老 bundle 没有这个字段，前端据此不去建那种任务——老 worker 会把它当聊天任务
           // 跑，然后卡在「本次任务指令缺失」终态失败：任务行不在用户的清单里，面板一片
