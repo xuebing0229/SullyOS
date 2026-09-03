@@ -904,22 +904,33 @@ export const handleStoryJobsRequest = async (
     if (!existing) {
       const t = now();
       const requestCipher = await sealJson(env, userId, spec.jobId, 'request', spec);
-      await env.DB.prepare(
-        `INSERT INTO story_jobs (
-          job_id, user_id, client_request_id, owner_key, title, status, request_cipher,
-          created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?)`,
-      ).bind(
-        spec.jobId,
-        userId,
-        spec.clientRequestId,
-        spec.ownerKey,
-        spec.title,
-        requestCipher,
-        t,
-        t,
-      ).run();
-      existing = await loadRowById(env.DB, userId, spec.jobId);
+      try {
+        await env.DB.prepare(
+          `INSERT INTO story_jobs (
+            job_id, user_id, client_request_id, owner_key, title, status, request_cipher,
+            created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?)`,
+        ).bind(
+          spec.jobId,
+          userId,
+          spec.clientRequestId,
+          spec.ownerKey,
+          spec.title,
+          requestCipher,
+          t,
+          t,
+        ).run();
+      } catch (error) {
+        // 两个相同 clientRequestId 的 POST 极端并发时，唯一索引只让一个 INSERT 成功。
+        // 另一边重新读同一行就是幂等命中；只有确实仍没有行才把真实 D1 错误抛出去。
+        existing = await loadRowByClient(env.DB, userId, spec.clientRequestId)
+          || await loadRowById(env.DB, userId, spec.jobId);
+        if (!existing) throw error;
+      }
+      if (!existing) {
+        existing = await loadRowByClient(env.DB, userId, spec.clientRequestId)
+          || await loadRowById(env.DB, userId, spec.jobId);
+      }
     }
     if (!existing) {
       return { status: 500, body: { success: false, error: { code: 'STORY_JOB_CREATE_FAILED', message: '剧情后台任务没能落库' } } };
