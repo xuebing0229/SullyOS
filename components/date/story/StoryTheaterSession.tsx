@@ -1510,7 +1510,11 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 console.error('[StoryTheater] send failed', error);
             }
 
-            const returnedPartial = String(error?.storyIncompleteCompletion?.content || '').trim();
+            const returnedPartial = String(
+                error?.partialContent
+                || error?.storyIncompleteCompletion?.content
+                || '',
+            ).trim();
             const committedPartial = (partialStreamText || streamingTextRef.current || returnedPartial).trim();
             if (committedPartial) {
                 try {
