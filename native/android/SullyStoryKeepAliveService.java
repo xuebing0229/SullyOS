@@ -96,15 +96,6 @@ public class SullyStoryKeepAliveService extends Service {
         super.onDestroy();
     }
 
-    @Override
-    public void onTimeout(int startId, int fgsType) {
-        Log.e(TAG, "Foreground service timed out (type=" + fgsType + ")");
-        for (String generationId : activeGenerations.keySet()) {
-            SullyStoryGenerationManager.get(this).cancel(generationId);
-        }
-        stopService();
-    }
-
     private void acquire(Intent intent) {
         String generationId = intent.getStringExtra(EXTRA_LEASE_ID);
         String title = intent.getStringExtra(EXTRA_TITLE);
