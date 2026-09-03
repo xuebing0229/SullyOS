@@ -167,10 +167,10 @@ const splitDisplayLines = (text: string): DisplayLine[] => {
     return result;
 };
 
-const LabeledRows: React.FC<{ lines: DisplayLine[] }> = ({ lines }) => <div className='divide-y divide-current/10'>
-    {lines.map((line, index) => <div key={index} className='py-2.5 grid grid-cols-[76px_1fr] gap-3 items-start'>
+const LabeledRows: React.FC<{ lines: DisplayLine[] }> = ({ lines }) => <div className='min-w-0 max-w-full divide-y divide-current/10'>
+    {lines.map((line, index) => <div key={index} className='min-w-0 py-2.5 grid grid-cols-[76px_minmax(0,1fr)] gap-3 items-start'>
         <span className='text-[9px] tracking-wide font-bold text-slate-400'>{line.label || '记录'}</span>
-        <span className='text-[12px] leading-6 whitespace-pre-wrap text-slate-700'>{line.value || '—'}</span>
+        <span className='min-w-0 text-[12px] leading-6 whitespace-pre-wrap break-words [overflow-wrap:anywhere] text-slate-700'>{line.value || '—'}</span>
     </div>)}
 </div>;
 
@@ -299,17 +299,17 @@ const StoryOutput: React.FC<{ content: string; onChoose?: (text: string) => void
     const backstageGroups = mergeDisplayGroupsByTitle(groupDisplayLines(backstageLines, '主体', [], ['幕后暗格']));
     const debtGroups = groupDisplayLines(debtLines, '起因', ['镜头债'], ['镜头债', '镜头债 · 后果尚未到账']);
     const hasTrueMonologue = backstageLines.some(line => line.label === '心声' || line.label === '真正的独白');
-    return <div className='space-y-6'>
+    return <div className='min-w-0 max-w-full space-y-6'>
         {!hasScene && relationship}
         {blocks.map((block, index) => {
             const lines = splitDisplayLines(block.text);
             if (block.kind === 'story') {
                 const paragraphs = splitStoryIndentedParagraphs(block.text);
-                return <div key={index} className='space-y-2.5'>
+                return <div key={index} className='min-w-0 max-w-full space-y-2.5'>
                     {paragraphs.map((paragraph, paragraphIndex) => (
                         <p
                             key={paragraphIndex}
-                            className='font-serif text-[15px] leading-8 text-slate-800 whitespace-pre-wrap'
+                            className='max-w-full font-serif text-[15px] leading-8 text-slate-800 whitespace-pre-wrap break-words [overflow-wrap:anywhere]'
                             style={{ textIndent: appearance.firstLineIndent ? '2em' : undefined }}
                         >
                             {appearance.textToneEnabled
@@ -335,7 +335,7 @@ const StoryOutput: React.FC<{ content: string; onChoose?: (text: string) => void
             }
             if (block.kind === 'scene') return <section key={index} className='py-4 border-y border-slate-300'>
                 <div className='flex items-center gap-2 text-[9px] tracking-[.22em] uppercase font-bold text-violet-600'><FilmSlate size={14} weight='fill' />{block.title}</div>
-                <div className='mt-3 grid grid-cols-2 gap-x-5 gap-y-3'>{lines.map((line, lineIndex) => <div key={lineIndex} className={line.label === '场面' ? 'col-span-2' : ''}><div className='flex items-center gap-1 text-[9px] font-bold text-slate-400'>{line.label === '时间' ? <Clock size={11} /> : line.label === '地点' ? <MapPin size={11} /> : null}{line.label || '场景'}</div><div className='mt-1 text-[12px] leading-5 text-slate-700'>{line.value}</div></div>)}</div>
+                <div className='mt-3 grid grid-cols-2 gap-x-5 gap-y-3'>{lines.map((line, lineIndex) => <div key={lineIndex} className={line.label === '场面' ? 'col-span-2' : ''}><div className='flex items-center gap-1 text-[9px] font-bold text-slate-400'>{line.label === '时间' ? <Clock size={11} /> : line.label === '地点' ? <MapPin size={11} /> : null}{line.label || '场景'}</div><div className='mt-1 min-w-0 text-[12px] leading-5 break-words [overflow-wrap:anywhere] text-slate-700'>{line.value}</div></div>)}</div>
                 {index === relationshipSceneIndex && relationship}
             </section>;
             if (block.kind === 'backstage' || block.kind === 'debts') {
@@ -1682,9 +1682,9 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
         <main
             ref={scrollContainerRef}
             onScroll={handleStoryScroll}
-            className='story-page-scroll flex-1 overflow-y-auto px-5 py-7'
+            className='story-page-scroll flex-1 min-w-0 overflow-y-auto overflow-x-hidden px-5 py-7'
         >
-            <div ref={scrollContentRef} className='max-w-2xl mx-auto'>
+            <div ref={scrollContentRef} className='w-full min-w-0 max-w-2xl mx-auto'>
                 {messages.length === 0 ? <section className='py-10 border-y border-slate-200'>
                     <div className='text-[9px] tracking-[.25em] uppercase font-bold text-violet-500'>Opening note</div>
                     <h2 className='mt-3 text-3xl font-serif font-semibold leading-tight'>{entry.title}</h2>
