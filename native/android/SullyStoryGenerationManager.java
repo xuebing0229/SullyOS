@@ -1,7 +1,15 @@
 package __APP_ID__.plugins;
 
+import android.app.Activity;
+import android.app.Application;
 import android.content.Context;
 import android.content.Intent;
+import android.net.ConnectivityManager;
+import android.net.LinkProperties;
+import android.net.Network;
+import android.net.NetworkCapabilities;
+import android.os.Build;
+import android.os.Bundle;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
@@ -56,6 +64,10 @@ public final class SullyStoryGenerationManager {
     private final Set<String> running = ConcurrentHashMap.newKeySet();
     private final ConcurrentHashMap<String, EventSource> activeSources = new ConcurrentHashMap<>();
     private final OkHttpClient client;
+    private final ConnectivityManager connectivityManager;
+    private volatile boolean connectivityObserverRegistered = false;
+    private volatile String connectivityObserverFailureClass = "";
+    private volatile String connectivityObserverFailureMessage = "";
 
     private static final class StoryCallTag {
         final String jobId;
@@ -66,6 +78,7 @@ public final class SullyStoryGenerationManager {
 
     private SullyStoryGenerationManager(Context context) {
         this.context = context.getApplicationContext();
+        this.connectivityManager = (ConnectivityManager) this.context.getSystemService(Context.CONNECTIVITY_SERVICE);
         this.client = new OkHttpClient.Builder()
             .connectTimeout(20L, TimeUnit.SECONDS)
             .readTimeout(10L, TimeUnit.MINUTES)
@@ -99,6 +112,7 @@ public final class SullyStoryGenerationManager {
                 return chain.proceed(request);
             })
             .build();
+        installRuntimeObservers();
         recoverInterruptedJobs();
         cleanupOldJobs();
     }
@@ -189,8 +203,166 @@ public final class SullyStoryGenerationManager {
         "networkEvents",
         "sseEvents", "reasoningChars", "visibleChars", "streamFinishReason",
         "foregroundRequestedAt", "foregroundStartedAt", "foregroundFailedAt", "foregroundDestroyedAt",
-        "foregroundReleasedAt", "foregroundFailureClass", "foregroundFailureMessage"
+        "foregroundReleasedAt", "foregroundFailureClass", "foregroundFailureMessage",
+        "appPausedAt", "appStoppedAt", "appStartedAt", "appResumedAt",
+        "networkSnapshotAt", "networkAvailableAt", "networkLostAt", "networkLosingAt",
+        "networkCapabilitiesChangedAt", "linkPropertiesChangedAt",
+        "androidNetwork", "networkTransports", "networkValidated", "networkInternet",
+        "networkNotSuspended", "networkMetered", "networkInterface",
+        "connectivityObserverRegistered", "connectivityObserverFailureClass", "connectivityObserverFailureMessage"
     };
+
+    private void installRuntimeObservers() {
+        if (context instanceof Application) {
+            ((Application) context).registerActivityLifecycleCallbacks(new Application.ActivityLifecycleCallbacks() {
+                @Override
+                public void onActivityPaused(Activity activity) {
+                    recordForRunningJobs("appPaused", "appPausedAt", null);
+                }
+
+                @Override
+                public void onActivityStopped(Activity activity) {
+                    if (!activity.isChangingConfigurations()) {
+                        recordForRunningJobs("appStopped", "appStoppedAt", null);
+                    }
+                }
+
+                @Override
+                public void onActivityStarted(Activity activity) {
+                    recordForRunningJobs("appStarted", "appStartedAt", null);
+                }
+
+                @Override
+                public void onActivityResumed(Activity activity) {
+                    recordForRunningJobs("appResumed", "appResumedAt", null);
+                }
+
+                @Override public void onActivityCreated(Activity activity, Bundle state) {}
+                @Override public void onActivitySaveInstanceState(Activity activity, Bundle outState) {}
+                @Override public void onActivityDestroyed(Activity activity) {}
+            });
+        }
+
+        if (connectivityManager == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return;
+        try {
+            connectivityManager.registerDefaultNetworkCallback(new ConnectivityManager.NetworkCallback() {
+                @Override
+                public void onAvailable(Network network) {
+                    recordForRunningJobs(
+                        "networkAvailable",
+                        "networkAvailableAt",
+                        networkDetail(network, connectivityManager.getNetworkCapabilities(network), null)
+                    );
+                }
+
+                @Override
+                public void onLosing(Network network, int maxMsToLive) {
+                    JSONObject detail = networkDetail(network, connectivityManager.getNetworkCapabilities(network), null);
+                    try { detail.put("networkLosingMaxMs", maxMsToLive); } catch (Exception ignored) {}
+                    recordForRunningJobs("networkLosing", "networkLosingAt", detail);
+                }
+
+                @Override
+                public void onLost(Network network) {
+                    recordForRunningJobs("networkLost", "networkLostAt", networkDetail(network, null, null));
+                }
+
+                @Override
+                public void onCapabilitiesChanged(Network network, NetworkCapabilities capabilities) {
+                    recordForRunningJobs(
+                        "networkCapabilitiesChanged",
+                        "networkCapabilitiesChangedAt",
+                        networkDetail(network, capabilities, null)
+                    );
+                }
+
+                @Override
+                public void onLinkPropertiesChanged(Network network, LinkProperties linkProperties) {
+                    recordForRunningJobs(
+                        "linkPropertiesChanged",
+                        "linkPropertiesChangedAt",
+                        networkDetail(network, connectivityManager.getNetworkCapabilities(network), linkProperties)
+                    );
+                }
+            });
+            connectivityObserverRegistered = true;
+        } catch (Throwable error) {
+            connectivityObserverFailureClass = error.getClass().getName();
+            connectivityObserverFailureMessage = error.getMessage() == null ? "" : error.getMessage();
+        }
+    }
+
+    private void recordObserverStatus(String jobId) {
+        JSONObject detail = new JSONObject();
+        try {
+            detail.put("connectivityObserverRegistered", connectivityObserverRegistered);
+            if (!connectivityObserverFailureClass.isEmpty()) {
+                detail.put("connectivityObserverFailureClass", connectivityObserverFailureClass);
+                detail.put("connectivityObserverFailureMessage", connectivityObserverFailureMessage);
+            }
+        } catch (Exception ignored) {}
+        recordNetworkEvent(context, jobId, "runtimeObserversReady", null, false, detail);
+    }
+
+    private void recordCurrentNetworkSnapshot(String jobId) {
+        if (connectivityManager == null) return;
+        try {
+            Network network = Build.VERSION.SDK_INT >= Build.VERSION_CODES.M
+                ? connectivityManager.getActiveNetwork()
+                : null;
+            NetworkCapabilities capabilities = network == null ? null : connectivityManager.getNetworkCapabilities(network);
+            LinkProperties linkProperties = network == null ? null : connectivityManager.getLinkProperties(network);
+            recordNetworkEvent(
+                context,
+                jobId,
+                "networkSnapshot",
+                "networkSnapshotAt",
+                false,
+                networkDetail(network, capabilities, linkProperties)
+            );
+        } catch (Throwable error) {
+            JSONObject detail = new JSONObject();
+            try {
+                detail.put("networkSnapshotFailureClass", error.getClass().getName());
+                detail.put("networkSnapshotFailureMessage", error.getMessage() == null ? "" : error.getMessage());
+            } catch (Exception ignored) {}
+            recordNetworkEvent(context, jobId, "networkSnapshotFailed", "networkSnapshotAt", false, detail);
+        }
+    }
+
+    private void recordForRunningJobs(String event, String timeKey, JSONObject detail) {
+        for (String jobId : running) {
+            recordNetworkEvent(context, jobId, event, timeKey, false, detail);
+        }
+    }
+
+    private JSONObject networkDetail(Network network, NetworkCapabilities capabilities, LinkProperties linkProperties) {
+        JSONObject detail = new JSONObject();
+        try {
+            detail.put("androidNetwork", network == null ? "" : network.toString());
+            JSONArray transports = new JSONArray();
+            if (capabilities != null) {
+                if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) transports.put("wifi");
+                if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) transports.put("cellular");
+                if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) transports.put("vpn");
+                if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)) transports.put("ethernet");
+                if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_BLUETOOTH)) transports.put("bluetooth");
+                detail.put("networkValidated", capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED));
+                detail.put("networkInternet", capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET));
+                detail.put(
+                    "networkNotSuspended",
+                    Build.VERSION.SDK_INT < Build.VERSION_CODES.P
+                        || capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_SUSPENDED)
+                );
+                detail.put("networkMetered", !capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED));
+            }
+            detail.put("networkTransports", transports);
+            if (linkProperties != null) {
+                detail.put("networkInterface", linkProperties.getInterfaceName() == null ? "" : linkProperties.getInterfaceName());
+            }
+        } catch (Exception ignored) {}
+        return detail;
+    }
 
     private static synchronized void mergeLatestRuntimeDiagnostics(Context context, JSONObject target) {
         try {
@@ -245,6 +417,12 @@ public final class SullyStoryGenerationManager {
             "callStartAt", "networkEvents",
             "foregroundRequestedAt", "foregroundStartedAt", "foregroundFailedAt", "foregroundDestroyedAt",
             "foregroundReleasedAt", "foregroundFailureClass", "foregroundFailureMessage",
+            "appPausedAt", "appStoppedAt", "appStartedAt", "appResumedAt",
+            "networkSnapshotAt", "networkAvailableAt", "networkLostAt", "networkLosingAt",
+            "networkCapabilitiesChangedAt", "linkPropertiesChangedAt",
+            "androidNetwork", "networkTransports", "networkValidated", "networkInternet",
+            "networkNotSuspended", "networkMetered", "networkInterface",
+            "connectivityObserverRegistered", "connectivityObserverFailureClass", "connectivityObserverFailureMessage",
             "sseEvents", "reasoningChars", "visibleChars", "streamFinishReason",
             "attempts"
         };
@@ -260,6 +438,8 @@ public final class SullyStoryGenerationManager {
         String title = spec.optString("title", "剧情");
         // 与 RikkaHub launchGenerationJob 一致：先 acquire FGS，再启动真正 generation job。
         recordForegroundEvent(context, jobId, "fgsAcquireRequested", "foregroundRequestedAt", null);
+        recordObserverStatus(jobId);
+        recordCurrentNetworkSnapshot(jobId);
         boolean foregroundStarted = SullyStoryKeepAliveService.acquire(context, jobId, title);
         start(jobId, foregroundStarted);
         return publicJob;
