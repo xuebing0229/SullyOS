@@ -217,6 +217,10 @@ describe('story theater billing safety wiring', () => {
         expect(cloudStoryBridgeSource).toContain("/story-jobs/by-client/");
         expect(cloudStoryBridgeSource).toContain("为避免重复扣费，本轮不会自动重发");
         expect(cloudStoryBridgeSource).toContain("getPendingCloudStoryJob");
+        expect(cloudStoryBridgeSource).toContain("const resolveWorkerConfig = async (): Promise<WorkerConfig | null>");
+        expect(cloudStoryBridgeSource).toContain("const config = await ActiveMsgClient.getGlobalConfig()");
+        expect(cloudStoryBridgeSource.match(/const config = await resolveWorkerConfig\(\);/g) || []).toHaveLength(2);
+        expect(cloudStoryBridgeSource).not.toContain("const config = ActiveMsgClient.getGlobalConfig()");
         expect(cloudStoryBridgeSource).toContain("cloud story capability probe failed; trying cloud transport anyway");
         expect(cloudStoryBridgeSource).toContain("cloud story capability probe inconclusive; trying cloud transport anyway");
         expect(cloudStoryBridgeSource).toContain("capabilityCache.available === true");
