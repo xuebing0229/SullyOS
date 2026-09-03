@@ -44,6 +44,7 @@ public final class SullyStoryGenerationManager {
     private final Context context;
     private final ExecutorService generationExecutor = Executors.newCachedThreadPool();
     private final Set<String> running = ConcurrentHashMap.newKeySet();
+    private final ConcurrentHashMap<String, EventSource> activeSources = new ConcurrentHashMap<>();
     private final OkHttpClient client;
 
     private SullyStoryGenerationManager(Context context) {
@@ -165,7 +166,10 @@ public final class SullyStoryGenerationManager {
     public JSONObject submit(JSONObject spec) throws Exception {
         JSONObject publicJob = enqueue(context, spec);
         String jobId = spec.optString("jobId", "").trim();
-        start(jobId);
+        String title = spec.optString("title", "剧情");
+        // 与 RikkaHub launchGenerationJob 一致：先 acquire FGS，再启动真正 generation job。
+        boolean foregroundStarted = SullyStoryKeepAliveService.acquire(context, jobId, title);
+        start(jobId, foregroundStarted);
         return publicJob;
     }
 
@@ -179,8 +183,10 @@ public final class SullyStoryGenerationManager {
     }
 
     public void cancel(String jobId) {
-        // EventSource cancellation is tied to the worker thread lifecycle; explicit cancellation
-        // is conservative here: mark cancelled so a queued/stale job cannot be restarted.
+        EventSource source = activeSources.remove(jobId);
+        if (source != null) {
+            try { source.cancel(); } catch (Exception ignored) { }
+        }
         try {
             JSONObject job = readJobFile(context, jobId);
             if (job != null && !"succeeded".equals(job.optString("status")) && !"failed".equals(job.optString("status"))) {
@@ -192,7 +198,7 @@ public final class SullyStoryGenerationManager {
         } catch (Exception ignored) { }
     }
 
-    private void start(String jobId) throws Exception {
+    private void start(String jobId, boolean foregroundStarted) throws Exception {
         if (!running.add(jobId)) return;
         JSONObject job = readJobFile(context, jobId);
         if (job == null) {
@@ -215,7 +221,8 @@ public final class SullyStoryGenerationManager {
                 processJob(job);
             } finally {
                 running.remove(jobId);
-                releaseForeground(jobId);
+                activeSources.remove(jobId);
+                if (foregroundStarted) releaseForeground(jobId);
             }
         });
     }
@@ -252,8 +259,7 @@ public final class SullyStoryGenerationManager {
         String jobId = job.optString("jobId", "");
         long startedAt = job.optLong("startedAt", System.currentTimeMillis());
         try {
-            // claimNextQueuedJob 已经原子地把 queued -> running，防止并发 pump 重复领取同一任务。
-            // 兼容极端恢复路径：没有 startedAt 时补一个。
+            // start() 已经把 queued -> running；没有 startedAt 时只做恢复兜底。
             if (!job.has("startedAt")) {
                 job.put("startedAt", startedAt);
                 job.put("updatedAt", startedAt);
@@ -395,7 +401,7 @@ public final class SullyStoryGenerationManager {
         boolean failoverMode,
         boolean includeUsage
     ) throws RouteFailure {
-        if (sseClient == null) {
+        if (client == null) {
             throw new RouteFailure(0, "剧情后台 SSE 客户端尚未初始化", false, "");
         }
 
@@ -556,8 +562,9 @@ public final class SullyStoryGenerationManager {
             }
         };
 
-        EventSource source = EventSources.createFactory(sseClient).newEventSource(request, listener);
+        EventSource source = EventSources.createFactory(client).newEventSource(request, listener);
         sourceRef.set(source);
+        activeSources.put(jobId, source);
 
         if (firstVisibleWaitMs > 0L) {
             firstVisibleTimer = Executors.newSingleThreadScheduledExecutor();
@@ -586,6 +593,7 @@ public final class SullyStoryGenerationManager {
             );
         } finally {
             if (firstVisibleTimer != null) firstVisibleTimer.shutdownNow();
+            activeSources.remove(jobId, sourceRef.get());
         }
 
         RouteResult result = resultRef.get();
