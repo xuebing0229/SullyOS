@@ -96,6 +96,10 @@ describe('story theater billing safety wiring', () => {
         expect(startIndex).toBeGreaterThan(submitIndex);
         expect(nativeStoryManagerSource).toContain('if (foregroundStarted) releaseForeground(jobId);');
         expect(nativeStoryKeepAliveSource).toContain('return START_NOT_STICKY;');
+        expect(nativeStoryKeepAliveSource).toContain('sully_story_notification');
+        expect(nativeStoryKeepAliveSource).toContain('fgsForegroundStarted');
+        expect(nativeStoryKeepAliveSource).toContain('fgsForegroundFailed');
+        expect(nativeStoryInstallerSource).toContain("sully_story_notification.xml");
     });
 
     it('records the last real stream activity instead of only the eventual failure time', () => {
@@ -122,6 +126,11 @@ describe('story theater billing safety wiring', () => {
         expect(nativeStoryBridgeSource).toContain('responseHeadersEndMs');
         expect(nativeStoryBridgeSource).toContain('callFailedMs');
         expect(nativeStoryBridgeSource).toContain('networkEvents');
+        expect(nativeStoryBridgeSource).toContain('foregroundStartedMs');
+        expect(nativeStoryBridgeSource).toContain('foregroundFailedMs');
+        expect(nativeStoryBridgeSource).toContain('foregroundDestroyedMs');
+        expect(nativeStoryManagerSource).toContain('mergeLatestRuntimeDiagnostics(context, job);');
+        expect(nativeStoryManagerSource).toContain('RUNTIME_DIAGNOSTIC_KEYS');
     });
 
     it('clears only the JS pending pointer and never deletes a native job another observer may still be polling', () => {
