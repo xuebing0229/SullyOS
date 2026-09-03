@@ -173,22 +173,41 @@ export const isCloudStoryJobsAvailable = async (): Promise<boolean> => {
     if (
         capabilityCache
         && capabilityCache.key === key
+        && capabilityCache.available === true
         && now() - capabilityCache.at < CAPABILITY_CACHE_MS
-    ) return capabilityCache.available;
+    ) return true;
 
     try {
         const { response, body } = await fetchJson(config, '/config-check');
-        const available = Boolean(
-            response.ok
-            && body?.success !== false
-            && body?.data?.storyJobs === true
-            && body?.data?.storyTick === true,
-        );
-        capabilityCache = { key, at: now(), available };
-        return available;
-    } catch {
-        capabilityCache = { key, at: now(), available: false };
-        return false;
+
+        if (response.ok && body?.success !== false) {
+            const available = body?.data?.storyJobs === true
+                && body?.data?.storyTick === true;
+            // 只缓存“明确支持”。明确不支持不能长期钉死：Worker 可能刚在另一条链路更新完成。
+            if (available) capabilityCache = { key, at: now(), available: true };
+            return available;
+        }
+
+        // 4xx / 明确配置缺失表示这台 Worker 当前确实不能接 Story Jobs。
+        // 5xx / Deno 502 / 临时上游故障只说明“这次探测失败”，不能因此退回已知会被后台掐死的 native SSE。
+        const explicitUnsupported =
+            (response.status >= 400 && response.status < 500)
+            || body?.error?.code === 'WORKER_CONFIG_MISSING';
+        if (explicitUnsupported) return false;
+
+        console.warn('[StoryTheater] cloud story capability probe inconclusive; trying cloud transport anyway', {
+            status: response.status,
+            workerHost: (() => {
+                try { return new URL(config.workerUrl).host; }
+                catch { return config.workerUrl; }
+            })(),
+        });
+        return true;
+    } catch (error) {
+        // “探测不到”不是“不支持”。即时聊天已经踩过同一类坑：网络抖一下不能把能力判死。
+        // 这里宁可真正尝试一次云端 job，让提交路径给出明确错误/不确定态，也绝不静默回退 native SSE。
+        console.warn('[StoryTheater] cloud story capability probe failed; trying cloud transport anyway', error);
+        return true;
     }
 };
 
