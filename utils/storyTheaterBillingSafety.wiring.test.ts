@@ -14,6 +14,7 @@ const nativeStoryManagerSource = read('../native/android/SullyStoryGenerationMan
 const nativeStoryKeepAliveSource = read('../native/android/SullyStoryKeepAliveService.java');
 const nativeStoryBridgeSource = read('./nativeStoryBackground.ts');
 const cloudStoryBridgeSource = read('./backgroundStoryJobs.ts');
+const storyImageSource = read('./storyTheaterImage.ts');
 const amsgStoryJobsSource = read('../worker/amsg/src/storyJobs.ts');
 const amsgWorkerSource = read('../worker/amsg/src/index.ts');
 
@@ -183,6 +184,20 @@ describe('story theater billing safety wiring', () => {
     it('uses the independent story route scope instead of the main chat route', () => {
         expect(storySource).toContain("resolveApiExecutionPlan('story', apiConfig, true)");
         expect(storySource).not.toContain("resolveApiExecutionPlan('chat', apiConfig, true)");
+    });
+
+    it('forces story image planning and repairs one omitted tool call before failing', () => {
+        expect(storyImageSource).toContain("const forcedToolChoice = imageTools.tools.length === 1");
+        expect(storyImageSource).toContain("function: { name: imageTools.tools[0].function.name }");
+        expect(storyImageSource).toContain("tool_choice: forcedToolChoice");
+        expect(storyImageSource).toContain("parallel_tool_calls: false");
+        expect(storyImageSource).toContain("image planner omitted tool call; retrying planner once");
+        expect(storyImageSource).toContain("body.temperature = 0");
+        expect(storyImageSource).toContain("纠错重试：上一轮没有返回可执行的 tool_calls");
+        expect(storyImageSource).toContain("连续两次没有返回可执行的生图工具调用");
+        // 纠错发生在真正 callMcpTool* 之前，所以不会因为规划器补救而重复生图。
+        expect(storyImageSource.indexOf("retrying planner once"))
+            .toBeLessThan(storyImageSource.indexOf("callMcpToolWithBackgroundImage("));
     });
 
     it('labels story requests and preserves sampling and transport diagnostics', () => {
