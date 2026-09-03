@@ -10,12 +10,14 @@ if (!/^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)+$/.test(appId)) {
 
 const packageDir = path.join(root, 'android', 'app', 'src', 'main', 'java', ...appId.split('.'));
 const pluginDir = path.join(packageDir, 'plugins');
+const drawableDir = path.join(root, 'android', 'app', 'src', 'main', 'res', 'drawable');
 const mainPath = path.join(packageDir, 'MainActivity.java');
 const manifestPath = path.join(root, 'android', 'app', 'src', 'main', 'AndroidManifest.xml');
 const gradlePath = path.join(root, 'android', 'app', 'build.gradle');
 
 await Promise.all([access(mainPath), access(manifestPath), access(gradlePath)]);
 await mkdir(pluginDir, { recursive: true });
+await mkdir(drawableDir, { recursive: true });
 
 for (const name of [
   'SullyStoryBackgroundPlugin.java',
@@ -25,6 +27,10 @@ for (const name of [
   const source = await readFile(path.join(root, 'native', 'android', name), 'utf8');
   await writeFile(path.join(pluginDir, name), source.replaceAll('__APP_ID__', appId));
 }
+await writeFile(
+  path.join(drawableDir, 'sully_story_notification.xml'),
+  await readFile(path.join(root, 'native', 'android', 'sully_story_notification.xml'), 'utf8'),
+);
 // 9/3 早期试验版把 HTTP 直接塞进 Service；新架构明确删除该类。
 await rm(path.join(pluginDir, 'SullyStoryBackgroundService.java'), { force: true });
 
