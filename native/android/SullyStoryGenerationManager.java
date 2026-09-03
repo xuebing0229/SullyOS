@@ -176,6 +176,56 @@ public final class SullyStoryGenerationManager {
         if (file.exists()) file.delete();
     }
 
+    private static final String[] RUNTIME_DIAGNOSTIC_KEYS = new String[] {
+        "openedAt", "firstEventAt", "firstVisibleAt",
+        "lastChunkAt", "lastReasoningAt", "lastVisibleAt", "lastActivityAt", "chunkCount",
+        "dnsStartAt", "dnsEndAt", "connectStartAt", "connectEndAt", "connectFailedAt",
+        "secureConnectStartAt", "secureConnectEndAt", "connectionAcquiredAt",
+        "requestHeadersStartAt", "requestHeadersEndAt", "requestBodyStartAt", "requestBodyEndAt",
+        "responseHeadersStartAt", "responseHeadersEndAt", "callStartAt", "callEndAt", "callFailedAt",
+        "responseCode", "networkProtocol", "remoteAddress", "dnsHost", "dnsAddresses", "connectProxy",
+        "tlsVersion", "cipherSuite", "requestBodyBytes",
+        "callFailureClass", "callFailureMessage", "callFailureCauseClass", "callFailureCauseMessage",
+        "networkEvents",
+        "sseEvents", "reasoningChars", "visibleChars", "streamFinishReason",
+        "foregroundRequestedAt", "foregroundStartedAt", "foregroundFailedAt", "foregroundDestroyedAt",
+        "foregroundReleasedAt", "foregroundFailureClass", "foregroundFailureMessage"
+    };
+
+    private static synchronized void mergeLatestRuntimeDiagnostics(Context context, JSONObject target) {
+        try {
+            JSONObject latest = readJobFile(context, target.optString("jobId", ""));
+            if (latest == null) return;
+            for (String key : RUNTIME_DIAGNOSTIC_KEYS) {
+                if (latest.has(key)) target.put(key, latest.get(key));
+            }
+        } catch (Exception ignored) { }
+    }
+
+    public static void recordForegroundEvent(
+        Context context,
+        String jobId,
+        String event,
+        String timeKey,
+        Throwable error
+    ) {
+        JSONObject detail = new JSONObject();
+        if (error != null) {
+            try {
+                detail.put("foregroundFailureClass", error.getClass().getName());
+                detail.put("foregroundFailureMessage", error.getMessage() == null ? "" : error.getMessage());
+            } catch (Exception ignored) { }
+        }
+        recordNetworkEvent(
+            context.getApplicationContext(),
+            jobId,
+            event,
+            timeKey,
+            false,
+            detail.length() == 0 ? null : detail
+        );
+    }
+
     private static JSONObject publicJob(JSONObject job) throws Exception {
         JSONObject result = new JSONObject();
         String[] keys = new String[] {
@@ -193,6 +243,8 @@ public final class SullyStoryGenerationManager {
             "tlsVersion", "cipherSuite", "requestBodyBytes",
             "callFailureClass", "callFailureMessage", "callFailureCauseClass", "callFailureCauseMessage",
             "callStartAt", "networkEvents",
+            "foregroundRequestedAt", "foregroundStartedAt", "foregroundFailedAt", "foregroundDestroyedAt",
+            "foregroundReleasedAt", "foregroundFailureClass", "foregroundFailureMessage",
             "sseEvents", "reasoningChars", "visibleChars", "streamFinishReason",
             "attempts"
         };
@@ -207,6 +259,7 @@ public final class SullyStoryGenerationManager {
         String jobId = spec.optString("jobId", "").trim();
         String title = spec.optString("title", "剧情");
         // 与 RikkaHub launchGenerationJob 一致：先 acquire FGS，再启动真正 generation job。
+        recordForegroundEvent(context, jobId, "fgsAcquireRequested", "foregroundRequestedAt", null);
         boolean foregroundStarted = SullyStoryKeepAliveService.acquire(context, jobId, title);
         start(jobId, foregroundStarted);
         return publicJob;
@@ -267,6 +320,7 @@ public final class SullyStoryGenerationManager {
     }
 
     private void releaseForeground(String generationId) {
+        recordForegroundEvent(context, generationId, "fgsReleaseRequested", "foregroundReleasedAt", null);
         try {
             Intent intent = new Intent(context, SullyStoryKeepAliveService.class)
                 .setAction(SullyStoryKeepAliveService.ACTION_RELEASE)
@@ -336,6 +390,7 @@ public final class SullyStoryGenerationManager {
                     long done = System.currentTimeMillis();
                     job.put("completedAt", done);
                     job.put("updatedAt", done);
+                    mergeLatestRuntimeDiagnostics(context, job);
                     scrubRequest(job);
                     writeJobFile(context, job);
                     return;
@@ -359,6 +414,7 @@ public final class SullyStoryGenerationManager {
             long done = System.currentTimeMillis();
             job.put("completedAt", done);
             job.put("updatedAt", done);
+            mergeLatestRuntimeDiagnostics(context, job);
             scrubRequest(job);
             writeJobFile(context, job);
         } catch (Exception error) {
@@ -368,6 +424,7 @@ public final class SullyStoryGenerationManager {
                 long done = System.currentTimeMillis();
                 job.put("completedAt", done);
                 job.put("updatedAt", done);
+                mergeLatestRuntimeDiagnostics(context, job);
                 scrubRequest(job);
                 writeJobFile(context, job);
             } catch (Exception ignored) { }
