@@ -48,6 +48,7 @@ import {
     ensureApiPresetModel,
     getApiPresetModelEntries,
     getApiPresetPricing,
+    removeApiPresetModel,
     setApiPresetDefaultModel,
     setApiPresetModelPricing,
 } from '../utils/apiPresetModels';
@@ -1060,6 +1061,71 @@ const Settings: React.FC = () => {
       updateApiPreset(preset.id, { models: updated.models });
       addToast(`已把 ${model} 添加到「${preset.name}」`, 'success');
       closeModelPicker();
+  };
+
+  const deleteModelFromPreset = (preset: typeof apiPresets[0], rawModel: string) => {
+      const model = normalizeApiModel(rawModel);
+      const entries = getApiPresetModelEntries(preset);
+      if (!model || !entries.some(item => normalizeApiModel(item.model) === model)) return;
+      if (entries.length <= 1) {
+          addToast('一条 API 预设至少保留一个模型；如果这个站点也不要了，可以直接删除整条预设', 'info');
+          return;
+      }
+
+      const updatedPreset = removeApiPresetModel(preset, model);
+      const remaining = getApiPresetModelEntries(updatedPreset);
+      const wasActive = activePresetId === preset.id;
+      const activeRuntimeModel = normalizeApiModel(apiConfig.model);
+      const activeModelStillSaved = remaining.some(
+          item => normalizeApiModel(item.model) === activeRuntimeModel,
+      );
+
+      updateApiPreset(preset.id, {
+          config: updatedPreset.config,
+          models: updatedPreset.models,
+      });
+
+      setPresetLatencyTests(prev => {
+          const key = `${preset.id}::${rawModel}`;
+          if (!(key in prev)) return prev;
+          const next = { ...prev };
+          delete next[key];
+          return next;
+      });
+      if (
+          pricingPresetId === preset.id
+          && normalizeApiModel(pricingModel) === model
+      ) {
+          setPricingPresetId(null);
+          setPricingModel('');
+          setPricingDraft(undefined);
+      }
+
+      if (wasActive) {
+          const nextRuntimeModel = activeModelStillSaved
+              ? activeRuntimeModel
+              : normalizeApiModel(updatedPreset.config.model);
+          const runtimePreset = setApiPresetDefaultModel(
+              updatedPreset,
+              nextRuntimeModel,
+          );
+          const patch = configFromPreset(runtimePreset);
+          setLocalModel(runtimePreset.config.model);
+          activateApiPreset(runtimePreset);
+          void syncAmsgLlmCredentials({ ...apiConfig, ...patch });
+          void ActiveMsgClient.refreshApiCredentialsForPendingTasks({
+              ...apiConfig,
+              ...patch,
+          });
+      }
+
+      const switched = wasActive && activeRuntimeModel === model;
+      addToast(
+          switched
+              ? `已删除 ${model}，当前已切到 ${updatedPreset.config.model}`
+              : `已从「${preset.name}」删除 ${model}`,
+          'success',
+      );
   };
 
   const openAddModelPicker = async (preset: typeof apiPresets[0]) => {
@@ -2681,6 +2747,26 @@ const Settings: React.FC = () => {
                                                             }`}
                                                         >
                                                             {item.pricing ? '修改价格' : '设置价格'}
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            onClick={(event) => {
+                                                                event.stopPropagation();
+                                                                deleteModelFromPreset(preset, item.model);
+                                                            }}
+                                                            aria-label={`删除模型 ${item.model}`}
+                                                            title={
+                                                                presetModels.length <= 1
+                                                                    ? '最后一个模型不能单独删除；不需要这个站点时请删除整条预设'
+                                                                    : '从这条预设中删除模型'
+                                                            }
+                                                            className={`grid h-7 w-7 shrink-0 place-items-center rounded-full text-[13px] transition-colors active:scale-95 ${
+                                                                presetModels.length <= 1
+                                                                    ? 'text-slate-200'
+                                                                    : 'text-slate-300 hover:bg-red-50 hover:text-red-400'
+                                                            }`}
+                                                        >
+                                                            ×
                                                         </button>
                                                     </div>
                                                 );
