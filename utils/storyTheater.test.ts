@@ -555,6 +555,22 @@ describe('剧情沙盒辅助逻辑', () => {
 });
 
 describe('剧场输出展示解析', () => {
+    it('剥掉模型偶尔套在整轮外面的 markdown/xml 代码围栏', () => {
+        const fenced = parseStoryDisplayBlocks([
+            '```markdown',
+            '<scene_header><time>九月二日</time><place>冠心塔</place></scene_header>',
+            '<story_text>温鸣竹推开门。</story_text>',
+            '```',
+        ].join('\n'));
+        expect(fenced.map(block => block.kind)).toEqual(['scene', 'story']);
+        expect(fenced.map(block => block.text).join('\n')).toContain('温鸣竹推开门。');
+        expect(fenced.map(block => block.text).join('\n')).not.toContain('```');
+
+        const streaming = parseStoryDisplayBlocks('```xml\n<story_text>还在流式生成');
+        expect(streaming[0]?.text).toContain('还在流式生成');
+        expect(streaming[0]?.text).not.toContain('```xml');
+    });
+
     it('隐藏协议标签并拆成可读区块', () => {
         const blocks = parseStoryDisplayBlocks([
             '<scene_header><time>深夜</time><place>客厅</place></scene_header>',
