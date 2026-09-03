@@ -52,6 +52,7 @@ for (const permission of [
   'android.permission.POST_NOTIFICATIONS',
   'android.permission.FOREGROUND_SERVICE',
   'android.permission.FOREGROUND_SERVICE_DATA_SYNC',
+  'android.permission.ACCESS_NETWORK_STATE',
 ]) {
   if (!manifest.includes(permission)) {
     manifest = manifest.replace(
