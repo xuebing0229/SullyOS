@@ -4,6 +4,7 @@ import {
   apiPresetHasModel,
   getApiPresetModelEntries,
   getApiPresetPricing,
+  removeApiPresetModel,
   setApiPresetDefaultModel,
   setApiPresetModelPricing,
 } from './apiPresetModels';
@@ -51,6 +52,38 @@ describe('API preset multi-model helpers', () => {
     expect(getApiPresetPricing(preset, 'model-b')).toMatchObject({
       pricePerRequestYuan: '0.2',
     });
+  });
+
+  it('removes a non-default model without changing the default', () => {
+    const preset = {
+      ...legacy(),
+      models: [
+        { model: 'model-a' },
+        { model: 'model-b' },
+      ],
+    };
+    const removed = removeApiPresetModel(preset, 'model-b');
+    expect(getApiPresetModelEntries(removed).map(item => item.model)).toEqual(['model-a']);
+    expect(removed.config.model).toBe('model-a');
+  });
+
+  it('moves the default to the first remaining model when deleting the old default', () => {
+    const preset = {
+      ...legacy(),
+      models: [
+        { model: 'model-a' },
+        { model: 'model-b' },
+      ],
+    };
+    const removed = removeApiPresetModel(preset, 'model-a');
+    expect(getApiPresetModelEntries(removed).map(item => item.model)).toEqual(['model-b']);
+    expect(removed.config.model).toBe('model-b');
+  });
+
+  it('refuses to remove the last model from a preset', () => {
+    const removed = removeApiPresetModel(legacy(), 'model-a');
+    expect(getApiPresetModelEntries(removed).map(item => item.model)).toEqual(['model-a']);
+    expect(removed.config.model).toBe('model-a');
   });
 
   it('does not borrow another model price when an exact multi-model price is absent', () => {
