@@ -73,7 +73,11 @@ function parseRawBodyText(text: string, status: number, contentType?: string | n
     }
 
     try {
-        return JSON.parse(text);
+        const parsed = JSON.parse(text);
+        // Gemini 原生 generateContent / streamGenerateContent 可能即使挂在兼容网关后，
+        // 仍返回 candidates/content/parts，而不是 OpenAI choices/message。
+        // 统一归一化成现有 chat completion 结构，调用方无需猜供应商。
+        return normalizeGeminiCompletion(parsed) || parsed;
     } catch (e) {
         // Show a snippet of what we got for debugging
         const preview = text.slice(0, 200);
@@ -152,8 +156,101 @@ class SseAssembler {
         // OpenAI 流式 usage 在最后一个 chunk（include_usage=true 时），也可能出现在中途；
         // 始终取最后一个非空的 usage，兼容各家代理。
         if (chunk.usage) this.usage = chunk.usage;
+        if (chunk.usageMetadata) {
+            const usage = chunk.usageMetadata;
+            const promptTokens = Number(usage.promptTokenCount);
+            const completionTokens = Number(usage.candidatesTokenCount);
+            const totalTokens = Number(usage.totalTokenCount);
+            const cachedTokens = Number(usage.cachedContentTokenCount);
+            const reasoningTokens = Number(usage.thoughtsTokenCount);
+            this.usage = {
+                ...(Number.isFinite(promptTokens) ? { prompt_tokens: promptTokens } : {}),
+                ...(Number.isFinite(completionTokens) ? { completion_tokens: completionTokens } : {}),
+                ...(Number.isFinite(totalTokens) ? { total_tokens: totalTokens } : {}),
+                ...(Number.isFinite(cachedTokens) && cachedTokens > 0
+                    ? { prompt_tokens_details: { cached_tokens: cachedTokens } }
+                    : {}),
+                ...(Number.isFinite(reasoningTokens) && reasoningTokens > 0
+                    ? { completion_tokens_details: { reasoning_tokens: reasoningTokens } }
+                    : {}),
+                usage_metadata: usage,
+            };
+        }
+
         const choice = chunk.choices?.[0];
-        if (!choice) return { content: '', reasoning: '', activity: false, done: false };
+
+        // Gemini 原生流：data: {"candidates":[{"content":{"parts":[{"text":"..."}]}}]}
+        // 不能把模型名是 Gemini 就假定成 OpenAI SSE；部分中转会原样透传这一层。
+        if (!choice) {
+            const candidate = chunk.candidates?.[0];
+            if (!candidate) return { content: '', reasoning: '', activity: false, done: false };
+
+            let delta = '';
+            let reasoningDelta = '';
+            let activity = false;
+            const parts = Array.isArray(candidate.content?.parts)
+                ? candidate.content.parts
+                : [];
+
+            for (const part of parts) {
+                if (typeof part?.text === 'string' && part.text) {
+                    if (part.thought === true) {
+                        this.reasoning += part.text;
+                        reasoningDelta += part.text;
+                    } else {
+                        this.content += part.text;
+                        delta += part.text;
+                    }
+                    activity = true;
+                }
+
+                if (part?.functionCall?.name) {
+                    const index = this.toolCalls.length;
+                    this.toolCalls[index] = {
+                        id: '',
+                        type: 'function',
+                        function: {
+                            name: String(part.functionCall.name),
+                            arguments: JSON.stringify(part.functionCall.args || {}),
+                        },
+                    };
+                    activity = true;
+                }
+            }
+
+            if (candidate.content?.role) {
+                this.role = candidate.content.role === 'model'
+                    ? 'assistant'
+                    : String(candidate.content.role);
+            }
+
+            const rawFinishReason = String(candidate.finishReason || '').trim();
+            if (rawFinishReason) {
+                const upper = rawFinishReason.toUpperCase();
+                this.finishReason =
+                    upper === 'STOP'
+                        ? 'stop'
+                        : upper === 'MAX_TOKENS'
+                            ? 'length'
+                            : [
+                                'SAFETY',
+                                'RECITATION',
+                                'BLOCKLIST',
+                                'PROHIBITED_CONTENT',
+                                'SPII',
+                            ].includes(upper)
+                                ? 'content_filter'
+                                : rawFinishReason.toLowerCase();
+            }
+
+            return {
+                content: delta,
+                reasoning: reasoningDelta,
+                activity,
+                done: Boolean(rawFinishReason),
+            };
+        }
+
         let delta = '';
         let reasoningDelta = '';
         let activity = false;
@@ -234,10 +331,10 @@ class SseAssembler {
         }
         // 合成兼容结构
         return {
-            id: this.firstChunk?.id || 'sse-assembled',
+            id: this.firstChunk?.id || this.firstChunk?.responseId || 'sse-assembled',
             object: 'chat.completion',
             created: this.firstChunk?.created || Math.floor(Date.now() / 1000),
-            model: this.firstChunk?.model || '',
+            model: this.firstChunk?.model || this.firstChunk?.modelVersion || '',
             choices: [{
                 index: 0,
                 message: {
@@ -253,6 +350,17 @@ class SseAssembler {
             usage: this.usage || this.firstChunk?.usage,
         };
     }
+}
+
+function normalizeGeminiCompletion(value: any): any | null {
+    const chunks = Array.isArray(value) ? value : [value];
+    if (!chunks.some(chunk => Array.isArray(chunk?.candidates))) return null;
+
+    const asm = new SseAssembler();
+    for (const chunk of chunks) {
+        if (chunk && typeof chunk === 'object') asm.feedChunk(chunk);
+    }
+    return asm.finish();
 }
 
 /** safeFetchJson 的可选流式钩子（只在响应确实是 SSE 流时触发） */
