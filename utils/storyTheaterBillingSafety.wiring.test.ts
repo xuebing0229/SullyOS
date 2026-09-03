@@ -68,6 +68,15 @@ describe('story theater billing safety wiring', () => {
         expect(nativeStoryManagerSource).toContain('activeSources.put(jobId, source)');
         expect(nativeStoryManagerSource).toContain('source.cancel()');
         expect(nativeStoryInstallerSource).toContain('com.squareup.okhttp3:okhttp-sse:5.5.0');
+        expect(nativeStoryManagerSource).toContain('.eventListenerFactory(');
+        expect(nativeStoryManagerSource).toContain('class StoryNetworkEventListener extends EventListener');
+        expect(nativeStoryManagerSource).toContain('dnsStart(Call call');
+        expect(nativeStoryManagerSource).toContain('connectFailed(');
+        expect(nativeStoryManagerSource).toContain('requestBodyEnd(Call call, long byteCount)');
+        expect(nativeStoryManagerSource).toContain('responseHeadersEnd(Call call, Response response)');
+        expect(nativeStoryManagerSource).toContain('callFailed(Call call, IOException ioe)');
+        expect(nativeStoryManagerSource).toContain('int statusCode = 0;');
+        expect(nativeStoryManagerSource).not.toContain('int statusCode = 200;');
     });
 
     it('acquires foreground lifetime before launching generation and releases it in finally', () => {
@@ -94,6 +103,12 @@ describe('story theater billing safety wiring', () => {
         expect(nativeStoryBridgeSource).toContain('lastReasoningMs');
         expect(nativeStoryBridgeSource).toContain('lastVisibleMs');
         expect(nativeStoryBridgeSource).toContain('lastActivityMs');
+        expect(nativeStoryBridgeSource).toContain('dnsStartMs');
+        expect(nativeStoryBridgeSource).toContain('connectFailedMs');
+        expect(nativeStoryBridgeSource).toContain('requestBodyEndMs');
+        expect(nativeStoryBridgeSource).toContain('responseHeadersEndMs');
+        expect(nativeStoryBridgeSource).toContain('callFailedMs');
+        expect(nativeStoryBridgeSource).toContain('networkEvents');
     });
 
     it('uses the independent story route scope instead of the main chat route', () => {
