@@ -100,6 +100,7 @@ describe('story theater billing safety wiring', () => {
         expect(nativeStoryKeepAliveSource).toContain('fgsForegroundStarted');
         expect(nativeStoryKeepAliveSource).toContain('fgsForegroundFailed');
         expect(nativeStoryInstallerSource).toContain("sully_story_notification.xml");
+        expect(nativeStoryInstallerSource).toContain('android.permission.ACCESS_NETWORK_STATE');
     });
 
     it('records the last real stream activity instead of only the eventual failure time', () => {
@@ -129,6 +130,17 @@ describe('story theater billing safety wiring', () => {
         expect(nativeStoryBridgeSource).toContain('foregroundStartedMs');
         expect(nativeStoryBridgeSource).toContain('foregroundFailedMs');
         expect(nativeStoryBridgeSource).toContain('foregroundDestroyedMs');
+        expect(nativeStoryBridgeSource).toContain('appPausedMs');
+        expect(nativeStoryBridgeSource).toContain('appStoppedMs');
+        expect(nativeStoryBridgeSource).toContain('networkSnapshotMs');
+        expect(nativeStoryBridgeSource).toContain('networkLostMs');
+        expect(nativeStoryBridgeSource).toContain('networkCapabilitiesChangedMs');
+        expect(nativeStoryBridgeSource).toContain('networkValidated');
+        expect(nativeStoryBridgeSource).toContain('connectivityObserverRegistered');
+        expect(nativeStoryManagerSource).toContain('registerDefaultNetworkCallback');
+        expect(nativeStoryManagerSource).toContain('networkCapabilitiesChanged');
+        expect(nativeStoryManagerSource).toContain('onActivityPaused(Activity activity)');
+        expect(nativeStoryManagerSource).toContain('onActivityStopped(Activity activity)');
         expect(nativeStoryManagerSource).toContain('mergeLatestRuntimeDiagnostics(context, job);');
         expect(nativeStoryManagerSource).toContain('RUNTIME_DIAGNOSTIC_KEYS');
     });
