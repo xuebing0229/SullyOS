@@ -209,6 +209,12 @@ describe('story theater billing safety wiring', () => {
         expect(amsgWorkerSource).toContain("await runStoryJob(this.env, story.userId, story.jobId)");
         expect(amsgWorkerSource).toContain("storyJobs: true");
         expect(amsgWorkerSource).toContain("storyTick: !!env.INSTANT_TICK");
+        expect(amsgStoryJobsSource).toContain("export const kickQueuedStoryJobs");
+        expect(amsgStoryJobsSource).toContain("WHERE status = 'queued'");
+        expect(amsgStoryJobsSource).toContain("export const failRunningStoryJob");
+        expect(amsgWorkerSource).toContain("await kickQueuedStoryJobs(env)");
+        expect(amsgWorkerSource).toContain("await failRunningStoryJob(this.env, story.userId, story.jobId, error)");
+        expect(amsgWorkerSource).toContain("running 绝不自动重跑");
         expect(interceptorSource).toContain('recentSuccessfulFetches.set(requestComparisonKey');
         expect(interceptorSource).toContain('summarizeFetchRequestBody((sendArgs[1] as any)?.body)');
         expect(interceptorSource).toContain('recentSuccessfulSameRequest: recentSuccess');
