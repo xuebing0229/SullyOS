@@ -116,9 +116,12 @@ export const clearPendingCloudStoryJob = async (
     writePendingMap(map);
 };
 
-const resolveWorkerConfig = (): WorkerConfig | null => {
+const resolveWorkerConfig = async (): Promise<WorkerConfig | null> => {
     try {
-        const config = ActiveMsgClient.getGlobalConfig();
+        // ActiveMsgClient.getGlobalConfig() 会先 ensureUserId()，本身是 async。
+        // 这里曾把 Promise 当配置对象读，导致 workerUrl/userId 永远是 undefined，
+        // Story Jobs 因而从未真正进入能力探测，整轮一直静默回退 native SSE。
+        const config = await ActiveMsgClient.getGlobalConfig();
         const workerUrl = normalizeWorkerUrl(config.workerUrl || '');
         const userId = String(config.userId || '').trim();
         if (!/^https?:\/\//i.test(workerUrl) || !userId) return null;
@@ -167,7 +170,7 @@ const fetchJson = async (
 };
 
 export const isCloudStoryJobsAvailable = async (): Promise<boolean> => {
-    const config = resolveWorkerConfig();
+    const config = await resolveWorkerConfig();
     if (!config) return false;
     const key = `${config.workerUrl}\u0000${config.userId}`;
     if (
@@ -334,7 +337,7 @@ export interface ExecuteCloudStoryOptions {
 export const executeStoryCompletionInCloudBackground = async (
     options: ExecuteCloudStoryOptions,
 ): Promise<any> => {
-    const config = resolveWorkerConfig();
+    const config = await resolveWorkerConfig();
     if (!config) throw new Error('主动消息 Worker 尚未配置，不能使用剧情云端后台任务');
 
     let pending = getPendingCloudStoryJob(options.ownerKey);
