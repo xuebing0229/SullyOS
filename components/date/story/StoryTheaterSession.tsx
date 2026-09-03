@@ -878,11 +878,14 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
     ): Promise<string> => {
         const generationSettings = prepareStoryGenerationSettings(settings, entry.omitSamplingParams === true);
         const plan = resolveApiExecutionPlan('story', apiConfig, true);
-        const wantsStream = Boolean(onStreamText);
+        const wantsStreamPreview = Boolean(onStreamText);
         const requestBody = {
             model: apiConfig.model,
             messages: payload,
-            stream: wantsStream,
+            // 正文不要再无脑强制 stream:true：不写 stream，让每条 API 线路按自己的
+            // 预设决定是否流式；总结/归档没有预览回调时则明确要求 stream:false。
+            // 这样 Gemini/特殊中转不会被强行塞进 OpenAI SSE，非流式也能正常拿整包正文。
+            ...(wantsStreamPreview ? {} : { stream: false }),
             ...generationSettings,
         };
 
@@ -927,10 +930,12 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 directMaxRetries: 2,
                 // 单线路剧情不再把“首字慢”误判成失败；连接只要还活着就继续等待。
                 disableDirectFirstVisibleTimeout: true,
-                forceStream: wantsStream,
+                // 不再强制流式。body 没显式写 stream 时，由当前实际线路的预设决定；
+                // summary 路径上方已明确 stream:false。
+                forceStream: false,
                 // 剧情正文按“首个可见正文字符”承诺线路：首字前可以故障转移，
                 // 首字一旦已经展示，后续断流也绝不换线路，避免两条线路各写半篇。
-                streamCommitMode: wantsStream ? 'content' : 'activity',
+                streamCommitMode: wantsStreamPreview ? 'content' : 'activity',
                 onAttempt: attempt => {
                     attemptTrace.push({
                         preset: attempt.presetName || attempt.presetId,
@@ -942,7 +947,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                         message: attempt.classification?.message,
                     });
                 },
-                streamHooks: wantsStream ? {
+                streamHooks: wantsStreamPreview ? {
                     onDelta: (_delta, fullText) => {
                         streamedChars = fullText.length;
                         if (firstVisibleMs === null && fullText.length > 0) {
