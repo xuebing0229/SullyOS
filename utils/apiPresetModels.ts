@@ -101,6 +101,34 @@ export function setApiPresetDefaultModel(
   };
 }
 
+export function removeApiPresetModel(
+  preset: ApiPreset,
+  model: unknown,
+): ApiPreset {
+  const target = normalizeApiPresetModelName(model);
+  if (!target) return preset;
+
+  const entries = getApiPresetModelEntries(preset);
+  if (entries.length <= 1) return preset;
+
+  const remaining = entries.filter(item => item.model !== target);
+  if (remaining.length === entries.length) return preset;
+
+  const defaultModel = normalizeApiPresetModelName(preset.config?.model);
+  const nextDefaultModel = defaultModel === target
+    ? remaining[0]?.model || ''
+    : defaultModel;
+
+  return {
+    ...preset,
+    models: remaining,
+    config: {
+      ...preset.config,
+      model: nextDefaultModel,
+    },
+  };
+}
+
 export function setApiPresetModelPricing(
   preset: ApiPreset,
   model: unknown,
