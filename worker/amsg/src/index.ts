@@ -3146,16 +3146,20 @@ export default {
     }
     // 整轮出错时上游把原因放在返回值里（同一份也会经 onError 记一行）。这里不再重复
     // 打印，但要把它咽掉——CF 不看 scheduled 的返回值，往外抛只会变成一条没上下文的堆栈。
-    await upstream.scheduled(event, env);
-    // Story Jobs 的模型请求由 DO alarm 独立持有；cron 只捡“还没开始”的 queued 行。
-    // running 绝不自动重跑——那种状态可能已经把 POST 送到上游，重放会造成重复扣费。
     try {
-      const swept = await kickQueuedStoryJobs(env);
-      if (swept.kicked > 0 || swept.failed > 0) {
-        console.log('[amsg:story-job] cron queued sweep', swept);
+      await upstream.scheduled(event, env);
+    } finally {
+      // Story Jobs 的模型请求由 DO alarm 独立持有；cron 只捡“还没开始”的 queued 行。
+      // 即使主动消息原 scheduled 这一分钟自己报错，也不能把 Story 的独立任务一起饿死。
+      // running 绝不自动重跑——那种状态可能已经把 POST 送到上游，重放会造成重复扣费。
+      try {
+        const swept = await kickQueuedStoryJobs(env);
+        if (swept.kicked > 0 || swept.failed > 0) {
+          console.log('[amsg:story-job] cron queued sweep', swept);
+        }
+      } catch (error) {
+        console.warn('[amsg:story-job] cron queued sweep 失败；queued 行仍留库，下一分钟再捡', error);
       }
-    } catch (error) {
-      console.warn('[amsg:story-job] cron queued sweep 失败；queued 行仍留库，下一分钟再捡', error);
     }
   },
 };
