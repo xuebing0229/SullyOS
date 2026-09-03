@@ -70,15 +70,17 @@ if (!manifest.includes('SullyStoryKeepAliveService')) {
 await writeFile(manifestPath, manifest);
 
 // RikkaHub 的 OpenAI streaming provider 使用 OkHttp + okhttp-sse EventSource。
-// 这里只引入同一官方 SSE 依赖，不再维护手写 SSE framing。
+// SullyOS 当前 compileSdk=34 / AGP=8.2.1，RikkaHub 当前 5.5.0 要求 compileSdk 37。
+// 因此只在版本上做最小工具链适配：锁定稳定 OkHttp 5.1.0，其余请求/连接行为保持同架构。
 let gradle = await readFile(gradlePath, 'utf8');
 gradle = gradle.replace(
-  /^\s*implementation\s+["']com\.squareup\.okhttp3:(?:okhttp|okhttp-jvm|okhttp-sse)(?::[^"']+)?["']\s*$/gm,
+  /^\s*implementation(?:\s*\(|\s+)\s*(?:enforcedPlatform\()?["']com\.squareup\.okhttp3:[^"']+["'][^\n]*$/gm,
   '',
 );
 const okHttpDependencies = [
-  'implementation "com.squareup.okhttp3:okhttp-jvm:5.5.0"',
-  'implementation "com.squareup.okhttp3:okhttp-sse:5.5.0"',
+  'implementation(enforcedPlatform("com.squareup.okhttp3:okhttp-bom:5.1.0"))',
+  'implementation "com.squareup.okhttp3:okhttp"',
+  'implementation "com.squareup.okhttp3:okhttp-sse"',
 ];
 if (!/dependencies\s*\{/.test(gradle)) throw new Error('无法定位 android/app/build.gradle dependencies');
 for (const dependency of okHttpDependencies.slice().reverse()) {
