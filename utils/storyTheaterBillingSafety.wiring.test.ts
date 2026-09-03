@@ -68,7 +68,7 @@ describe('story theater billing safety wiring', () => {
         expect(nativeStoryManagerSource).toContain('activeSources.put(jobId, source)');
         expect(nativeStoryManagerSource).toContain('source.cancel()');
         expect(nativeStoryInstallerSource).toContain('com.squareup.okhttp3:okhttp:5.5.0');
-        expect(nativeStoryInstallerSource).toContain('com.squareup.okhttp3:okhttp-sse:5.5.0');
+        expect(nativeStoryInstallerSource).toContain('com.squareup.okhttp3:okhttp-sse:5.1.0');
         expect(nativeStoryManagerSource).toContain('.eventListenerFactory(');
         expect(nativeStoryManagerSource).toContain('class StoryNetworkEventListener extends EventListener');
         expect(nativeStoryManagerSource).toContain('callStart(Call call');
