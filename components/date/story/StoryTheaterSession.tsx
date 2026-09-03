@@ -70,6 +70,12 @@ import {
     isNativeStoryBackgroundRuntime,
     releaseNativeStoryKeepAlive,
 } from '../../../utils/nativeStoryBackground';
+import {
+    clearPendingCloudStoryJob,
+    executeStoryCompletionInCloudBackground,
+    getPendingCloudStoryJob,
+    isCloudStoryJobsAvailable,
+} from '../../../utils/backgroundStoryJobs';
 import { BACKGROUND_IMAGE_JOB_EVENT } from '../../../utils/backgroundImageJobs';
 import {
     buildStoryContinueInstruction,
@@ -892,14 +898,22 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             ...generationSettings,
         };
 
-        // Android 对齐 RikkaHub：generation 由 App 进程里的原生 manager 持有，
-        // ForegroundService 只负责前台生命周期；WebView 只轮询持久化进度。
-        // Web/PWA 仍复用 safeApi；一次请求从发出到结束都不更换 owner/网络栈。
+        // 剧情后台优先复用项目里已经验证过的“后台生图 + 即时对话”架构：
+        // Worker/DO 持有真正的 LLM 流，手机只轮询持久化 job。已有 pending 时即使此刻
+        // config-check 临时断网也必须继续接同一个 job，绝不能回退本机再发第二次模型请求。
+        const pendingCloudJob = background ? getPendingCloudStoryJob(background.ownerKey) : null;
+        const useCloudStoryTransport = Boolean(
+            background
+            && (pendingCloudJob || await isCloudStoryJobsAvailable()),
+        );
+        // 云端 Worker 没配置/还是旧版时才保留 native EventSource 作为兼容兜底。
         const useNativeEventSourceTransport = Boolean(
-            background && isNativeStoryBackgroundRuntime(),
+            background
+            && !useCloudStoryTransport
+            && isNativeStoryBackgroundRuntime(),
         );
         let keepAliveLease: string | null = null;
-        if (background && !useNativeEventSourceTransport && isNativeStoryBackgroundRuntime()) {
+        if (background && !useCloudStoryTransport && !useNativeEventSourceTransport && isNativeStoryBackgroundRuntime()) {
             try {
                 keepAliveLease = await acquireNativeStoryKeepAlive(background.ownerKey, background.title);
             } catch (keepAliveError) {
@@ -927,7 +941,26 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
         };
         try {
             let data: any;
-            if (useNativeEventSourceTransport && background) {
+            if (useCloudStoryTransport && background) {
+                data = await executeStoryCompletionInCloudBackground({
+                    ownerKey: background.ownerKey,
+                    title: background.title,
+                    plan,
+                    body: {
+                        ...requestBody,
+                        stream: true,
+                    },
+                    meta: background.meta,
+                    onPromptTokens,
+                    onStreamText: wantsStreamPreview ? fullText => {
+                        streamedChars = fullText.length;
+                        if (firstVisibleMs === null && fullText.length > 0) {
+                            firstVisibleMs = Date.now() - completionStartedAt;
+                        }
+                        onStreamText?.(fullText);
+                    } : undefined,
+                });
+            } else if (useNativeEventSourceTransport && background) {
                 data = await executeStoryCompletionInNativeBackground({
                     ownerKey: background.ownerKey,
                     title: background.title,
@@ -1039,7 +1072,12 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 downlink: connection?.downlink,
                 saveData: connection?.saveData,
                 nativeKeepAlive: Boolean(background && isNativeStoryBackgroundRuntime()),
-                transport: useNativeEventSourceTransport ? 'native-eventsource' : 'webview-fetch',
+                transport: useCloudStoryTransport
+                    ? 'cloud-story-job'
+                    : useNativeEventSourceTransport
+                        ? 'native-eventsource'
+                        : 'webview-fetch',
+                cloudStory: completionError?.cloudStoryDiagnostics,
                 nativeStory: completionError?.nativeStoryDiagnostics,
                 imageGenerationEnabled: entry.imageGeneration?.enabled === true,
                 imageStageStarted: false,
