@@ -153,13 +153,13 @@ const setPending = (item: PendingNativeStoryJob): void => {
 
 export const clearPendingNativeStoryJob = async (ownerKey: string): Promise<void> => {
   const map = readPending();
-  const pending = map[ownerKey];
-  if (!pending) return;
+  if (!map[ownerKey]) return;
+  // 这里只清 JS 的“待接回”指针，绝不能物理删除 native job。
+  // 页面切出再回来时，旧/新 StoryTheaterSession 可能短时间同时观察同一个 generation；
+  // 任一观察者完成后若 remove(jobId)，另一个观察者下一次 status() 就会误报“任务记录不存在”。
+  // native terminal job 由 SullyStoryGenerationManager 的 retention cleanup 统一回收。
   delete map[ownerKey];
   writePending(map);
-  if (isNativeStoryBackgroundRuntime()) {
-    await NativeStoryBackground.remove({ jobId: pending.jobId }).catch(() => undefined);
-  }
 };
 
 export const getPendingNativeStoryJob = (ownerKey: string): PendingNativeStoryJob | null =>
