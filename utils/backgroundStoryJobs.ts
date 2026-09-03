@@ -271,6 +271,18 @@ const cloudDiagnostics = (
     attempts: job?.attempts,
 });
 
+const resolveSuccessfulRoute = (
+    job: CloudStoryJob,
+    plan: ApiExecutionPlan,
+) => {
+    const attempts = Array.isArray(job.attempts) ? job.attempts : [];
+    const success = attempts.find(attempt => attempt?.ok === true);
+    const index = Number(success?.routeIndex);
+    return Number.isInteger(index) && index >= 0 && index < plan.routes.length
+        ? plan.routes[index]
+        : plan.routes[0];
+};
+
 const toCloudError = (
     message: string,
     job: CloudStoryJob | null,
@@ -456,6 +468,24 @@ export const executeStoryCompletionInCloudBackground = async (
         }
 
         if (job.status === 'succeeded') {
+            const successfulRoute = resolveSuccessfulRoute(job, options.plan);
+            if (successfulRoute) {
+                recordCloudApiCall({
+                    id: logId,
+                    route: 'cloud-story-job',
+                    baseUrl: successfulRoute.api.baseUrl,
+                    model: successfulRoute.api.model,
+                    messages: options.body.messages,
+                    timestamp: pending.createdAt,
+                    meta: {
+                        appId: 'date',
+                        appName: '剧情剧场',
+                        purpose: '剧情续写',
+                        apiPresetId: successfulRoute.presetId,
+                        apiPresetName: successfulRoute.presetName,
+                    },
+                });
+            }
             const promptTokens = Number(job.promptTokens);
             const completionTokens = Number(job.completionTokens);
             if (Number.isFinite(promptTokens) && promptTokens > 0) {
