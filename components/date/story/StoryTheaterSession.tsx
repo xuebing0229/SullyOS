@@ -65,6 +65,8 @@ import { generateAppMemoryCandidates } from '../../../utils/appMemoryBridge';
 import {
     acquireNativeStoryKeepAlive,
     clearPendingNativeStoryJob,
+    executeStoryCompletionInNativeBackground,
+    getPendingNativeStoryJob,
     isNativeStoryBackgroundRuntime,
     releaseNativeStoryKeepAlive,
 } from '../../../utils/nativeStoryBackground';
@@ -889,14 +891,15 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             ...generationSettings,
         };
 
-        // Android 后台只开前台服务 + WakeLock 保活；模型请求本身仍走已经验证稳定的
-        // WebView safeFetchJson/fetch SSE。不要再把同一请求改写成另一套原生 HTTP 客户端，
-        // 否则会出现 HttpURLConnection/OkHttp 独有的 Software caused connection abort。
+        // Android 一旦切屏，WebView fetch 可能直接被系统冻结/判离线；WakeLock 只能保 CPU，
+        // 保不住 WebView 的网络栈。所以正文/总结在 Android 上交给原生前台服务真正执行，
+        // 页面只负责轮询结果；非 Android 仍走原来的 safeFetchJson。
+        const useNativeBackgroundTransport = Boolean(
+            background && isNativeStoryBackgroundRuntime(),
+        );
         let keepAliveLease: string | null = null;
-        if (background && isNativeStoryBackgroundRuntime()) {
+        if (background && !useNativeBackgroundTransport && isNativeStoryBackgroundRuntime()) {
             try {
-                // 顺手清掉旧版“原生直连任务”的残留记录，避免升级后幽灵恢复。
-                await clearPendingNativeStoryJob(background.ownerKey);
                 keepAliveLease = await acquireNativeStoryKeepAlive(background.ownerKey, background.title);
             } catch (keepAliveError) {
                 console.warn('[StoryTheater] native keepalive unavailable; continuing with browser fetch', keepAliveError);
@@ -919,44 +922,64 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             ].join(' @ ');
         };
         try {
-            const { value: data } = await executeOpenAiChatPlan({
-                plan,
-                body: requestBody,
-                meta: {
-                    appId: 'date',
-                    appName: '剧情剧场',
-                    purpose: '剧情续写',
-                },
-                directMaxRetries: 2,
-                // 单线路剧情不再把“首字慢”误判成失败；连接只要还活着就继续等待。
-                disableDirectFirstVisibleTimeout: true,
-                // 不再强制流式。body 没显式写 stream 时，由当前实际线路的预设决定；
-                // summary 路径上方已明确 stream:false。
-                forceStream: false,
-                // 剧情正文按“首个可见正文字符”承诺线路：首字前可以故障转移，
-                // 首字一旦已经展示，后续断流也绝不换线路，避免两条线路各写半篇。
-                streamCommitMode: wantsStreamPreview ? 'content' : 'activity',
-                onAttempt: attempt => {
-                    attemptTrace.push({
-                        preset: attempt.presetName || attempt.presetId,
-                        route: `${Number(attempt.routeIndex) + 1}/${attempt.routeCount}`,
-                        phase: attempt.phase,
-                        durationMs: attempt.durationMs,
-                        kind: attempt.classification?.kind,
-                        status: attempt.classification?.status,
-                        message: attempt.classification?.message,
-                    });
-                },
-                streamHooks: wantsStreamPreview ? {
-                    onDelta: (_delta, fullText) => {
+            let data: any;
+            if (useNativeBackgroundTransport && background) {
+                data = await executeStoryCompletionInNativeBackground({
+                    ownerKey: background.ownerKey,
+                    title: background.title,
+                    plan,
+                    body: requestBody,
+                    meta: background.meta,
+                    onPromptTokens,
+                    onStreamText: wantsStreamPreview ? fullText => {
                         streamedChars = fullText.length;
                         if (firstVisibleMs === null && fullText.length > 0) {
                             firstVisibleMs = Date.now() - completionStartedAt;
                         }
                         onStreamText?.(fullText);
+                    } : undefined,
+                });
+            } else {
+                const result = await executeOpenAiChatPlan({
+                    plan,
+                    body: requestBody,
+                    meta: {
+                        appId: 'date',
+                        appName: '剧情剧场',
+                        purpose: '剧情续写',
                     },
-                } : undefined,
-            });
+                    directMaxRetries: 2,
+                    // 单线路剧情不再把“首字慢”误判成失败；连接只要还活着就继续等待。
+                    disableDirectFirstVisibleTimeout: true,
+                    // 不再强制流式。body 没显式写 stream 时，由当前实际线路的预设决定；
+                    // summary 路径上方已明确 stream:false。
+                    forceStream: false,
+                    // 剧情正文按“首个可见正文字符”承诺线路：首字前可以故障转移，
+                    // 首字一旦已经展示，后续断流也绝不换线路，避免两条线路各写半篇。
+                    streamCommitMode: wantsStreamPreview ? 'content' : 'activity',
+                    onAttempt: attempt => {
+                        attemptTrace.push({
+                            preset: attempt.presetName || attempt.presetId,
+                            route: `${Number(attempt.routeIndex) + 1}/${attempt.routeCount}`,
+                            phase: attempt.phase,
+                            durationMs: attempt.durationMs,
+                            kind: attempt.classification?.kind,
+                            status: attempt.classification?.status,
+                            message: attempt.classification?.message,
+                        });
+                    },
+                    streamHooks: wantsStreamPreview ? {
+                        onDelta: (_delta, fullText) => {
+                            streamedChars = fullText.length;
+                            if (firstVisibleMs === null && fullText.length > 0) {
+                                firstVisibleMs = Date.now() - completionStartedAt;
+                            }
+                            onStreamText?.(fullText);
+                        },
+                    } : undefined,
+                });
+                data = result.value;
+            }
             const reportedPromptTokens = Number(data?.usage?.prompt_tokens);
             if (Number.isFinite(reportedPromptTokens) && reportedPromptTokens > 0) onPromptTokens?.(reportedPromptTokens);
             const content = extractContent(data).trim();
@@ -1000,6 +1023,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 downlink: connection?.downlink,
                 saveData: connection?.saveData,
                 nativeKeepAlive: Boolean(background && isNativeStoryBackgroundRuntime()),
+                transport: useNativeBackgroundTransport ? 'native-background' : 'webview-fetch',
                 imageGenerationEnabled: entry.imageGeneration?.enabled === true,
                 imageStageStarted: false,
                 planMode: plan.mode,
@@ -1563,7 +1587,27 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
         }
     }, [actors, addToast, affinityDrafts, affinityEnabled, apiConfig, apiPresets, appearance.textToneEnabled, applyActorMemoryPipeline, archiveIfNeeded, buildActorContexts, buildMaskMemoryContext, callCompletion, effectivePreset, entry, independentRecall, input, loadMessages, mask, promptIdentityName, saveCentralAndMirrors, selectedBooks, threadId, userProfile]);
 
-    // 新版 Android 后台只保活原来的 WebView fetch，不再创建可恢复的原生 API 任务。
+    // App 如果在原生任务完成前被系统杀掉，重进剧情时把这轮接回来继续落库；
+    // 原生层不会自动重发已经 running 过的请求，避免重复扣费。
+    useEffect(() => {
+        if (!isNativeStoryBackgroundRuntime() || sending || sendLock.current) return;
+        const pending = getPendingNativeStoryJob(`story-turn:${entry.id}`);
+        if (!pending) return;
+
+        let cancelled = false;
+        void (async () => {
+            let rerollTarget: Message | undefined;
+            const rerollTargetId = Number(pending.meta?.rerollTargetId || 0);
+            if (rerollTargetId > 0) {
+                const rows = (await DB.getMessagesByCharId(threadId, true))
+                    .filter(message => message.metadata?.source === 'story_theater');
+                rerollTarget = rows.find(message => message.id === rerollTargetId);
+            }
+            if (!cancelled) void send(rerollTarget);
+        })();
+
+        return () => { cancelled = true; };
+    }, [entry.id, send, sending, threadId]);
 
     const archivedCount = messages.filter(message => mirrorArchived(message, entry)).length;
     const pendingRetryInput = getPendingStoryRetryInput(messages);
