@@ -179,6 +179,19 @@ class SseAssembler {
 
         const choice = chunk.choices?.[0];
 
+        // OpenAI stream_options.include_usage 的标准末块就是 choices: [] + usage。
+        // 正常情况下后面还会跟 [DONE]，但部分中转会在这里结束业务生成却把 socket
+        // 继续挂着。把“已有模型活动后的 usage-only 末块”视为终止信号，避免上游
+        // 早已完成并计费，本地却一直等 [DONE]。
+        if (
+            Array.isArray(chunk.choices)
+            && chunk.choices.length === 0
+            && chunk.usage
+            && (this.content || this.reasoning || this.toolCalls.length > 0)
+        ) {
+            return { content: '', reasoning: '', activity: false, done: true };
+        }
+
         // Gemini 原生流：data: {"candidates":[{"content":{"parts":[{"text":"..."}]}}]}
         // 不能把模型名是 Gemini 就假定成 OpenAI SSE；部分中转会原样透传这一层。
         if (!choice) {
