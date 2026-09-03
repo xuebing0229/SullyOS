@@ -2227,6 +2227,17 @@ export interface StoryTheaterEntry {
     forceUserLastMessage?: boolean;
     /** 兼容不接受酒馆高级采样参数的接口；默认关闭，完整发送预设中的 top_p 与两项 penalty。 */
     omitSamplingParams?: boolean;
+    /** 从某一楼层分出的世界线；原剧情与新分支之后完全独立。 */
+    branchFrom?: {
+        parentId: string;
+        parentTitle: string;
+        rootId: string;
+        rootTitle: string;
+        messageId: number;
+        messageRole: 'user' | 'assistant';
+        messagePreview?: string;
+        depth: number;
+    };
     createdAt: number;
     updatedAt: number;
 }
