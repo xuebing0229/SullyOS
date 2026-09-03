@@ -74,8 +74,17 @@ interface NativeStoryJob {
   responseCode?: number;
   networkProtocol?: string;
   remoteAddress?: string;
+  dnsHost?: string;
+  dnsAddresses?: string[];
+  connectProxy?: string;
+  tlsVersion?: string;
+  cipherSuite?: string;
+  requestBodyBytes?: number;
+  callStartAt?: number;
   callFailureClass?: string;
   callFailureMessage?: string;
+  callFailureCauseClass?: string;
+  callFailureCauseMessage?: string;
   networkEvents?: Array<Record<string, any>>;
   sseEvents?: number;
   reasoningChars?: number;
@@ -424,8 +433,18 @@ export const executeStoryCompletionInNativeBackground = async (
     responseCode: job.responseCode,
     networkProtocol: job.networkProtocol,
     remoteAddress: job.remoteAddress,
+    dnsHost: job.dnsHost,
+    dnsAddresses: job.dnsAddresses,
+    connectProxy: job.connectProxy,
+    tlsVersion: job.tlsVersion,
+    cipherSuite: job.cipherSuite,
+    requestBodyBytes: job.requestBodyBytes,
+    callStartAt: job.callStartAt,
     callFailureClass: job.callFailureClass,
     callFailureMessage: job.callFailureMessage,
+    callFailureCauseClass: job.callFailureCauseClass,
+    callFailureCauseMessage: job.callFailureCauseMessage,
+    callStartMs: elapsedFromStart(job.callStartAt),
     openedMs: elapsedFromStart(job.openedAt),
     firstEventMs: elapsedFromStart(job.firstEventAt),
     firstVisibleMs: elapsedFromStart(job.firstVisibleAt),
