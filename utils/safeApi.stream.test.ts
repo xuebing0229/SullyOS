@@ -76,6 +76,28 @@ describe('safeFetchJson streaming', () => {
         expect(cancelled).toHaveBeenCalledOnce();
     });
 
+    it('usage-only 最终块可在缺少 [DONE] 时收口长连接', async () => {
+        const cancelled = vi.fn();
+        vi.stubGlobal('fetch', vi.fn(async () => lingeringSseResponse([
+            'data: {"choices":[{"delta":{"reasoning_content":"先想一下"}}]}\n\n',
+            'data: {"choices":[{"delta":{"content":"正文完成"}}]}\n\n',
+            'data: {"choices":[],"usage":{"prompt_tokens":20,"completion_tokens":8,"total_tokens":28}}\n\n',
+        ], cancelled)));
+
+        const data = await safeFetchJson(
+            'https://api.test/v1/chat/completions',
+            { method: 'POST', body: '{"stream":true}' },
+            0,
+            0,
+            undefined,
+            {},
+        );
+        expect(data.choices[0].message.content).toBe('正文完成');
+        expect(data.choices[0].message.reasoning_content).toBe('先想一下');
+        expect(data.usage.total_tokens).toBe(28);
+        expect(cancelled).toHaveBeenCalledOnce();
+    });
+
     it('缺少 [DONE] 时也可由 finish_reason 收口长连接', async () => {
         const cancelled = vi.fn();
         vi.stubGlobal('fetch', vi.fn(async () => lingeringSseResponse([
