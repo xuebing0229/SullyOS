@@ -165,7 +165,6 @@ const makeJobId = (): string => {
 
 const toNativeRoutes = (
   plan: ApiExecutionPlan,
-  streamOverride?: boolean,
 ): NativeStoryRoute[] =>
   plan.routes.map(route => ({
     presetId: route.presetId,
@@ -173,10 +172,13 @@ const toNativeRoutes = (
     baseUrl: route.api.baseUrl,
     apiKey: route.api.apiKey || 'sk-none',
     model: route.api.model,
-    // 与 WebView 路径保持同一语义：调用方明确给 stream:true/false 时优先；
-    // 正文不显式指定时才跟随每条 API 预设。这样总结能真正强制非流式，
-    // Gemini/特殊中转也不会被后台服务擅自改成另一种协议。
-    stream: streamOverride ?? route.api.stream === true,
+    // Android 原生后台一律请求非流式整包。
+    // 这个项目已经在部分设备/中转上稳定复现 OkHttp SSE：
+    // 上游 30~40 秒内生成完成并扣费，但本地长流继续挂住，最后报
+    // "Software caused connection abort" / 首字等待超时。非流式避免这类
+    // “上游已完成、本地却读不到结尾”的假失败；若上游无视 stream:false
+    // 仍返回 SSE，原生服务仍会按 Content-Type 兼容解析。
+    stream: false,
     ...(route.api.temperature != null ? { temperature: route.api.temperature } : {}),
     ...(route.firstByteTimeoutMs ? { firstByteTimeoutMs: route.firstByteTimeoutMs } : {}),
   }));
@@ -291,10 +293,7 @@ export const executeStoryCompletionInNativeBackground = async (
 
   if (!job || (job.status !== 'queued' && job.status !== 'running' && job.status !== 'succeeded' && job.status !== 'failed')) {
     jobId = makeJobId();
-    const streamOverride = Object.prototype.hasOwnProperty.call(options.body, 'stream')
-      ? Boolean(options.body.stream)
-      : undefined;
-    const routes = toNativeRoutes(options.plan, streamOverride);
+    const routes = toNativeRoutes(options.plan);
     const timeoutMs = options.plan.group?.policy.timeoutMs ?? 240_000;
     // 先记本地 pending，再把任务交给原生层：即使用户恰好在 submit 返回前
     // 切屏/系统冻结 WebView，回来也知道这一轮有后台任务需要接回。
