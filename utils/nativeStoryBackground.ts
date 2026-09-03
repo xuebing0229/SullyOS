@@ -55,6 +55,28 @@ interface NativeStoryJob {
   lastVisibleAt?: number;
   lastActivityAt?: number;
   chunkCount?: number;
+  dnsStartAt?: number;
+  dnsEndAt?: number;
+  connectStartAt?: number;
+  connectEndAt?: number;
+  connectFailedAt?: number;
+  secureConnectStartAt?: number;
+  secureConnectEndAt?: number;
+  connectionAcquiredAt?: number;
+  requestHeadersStartAt?: number;
+  requestHeadersEndAt?: number;
+  requestBodyStartAt?: number;
+  requestBodyEndAt?: number;
+  responseHeadersStartAt?: number;
+  responseHeadersEndAt?: number;
+  callEndAt?: number;
+  callFailedAt?: number;
+  responseCode?: number;
+  networkProtocol?: string;
+  remoteAddress?: string;
+  callFailureClass?: string;
+  callFailureMessage?: string;
+  networkEvents?: Array<Record<string, any>>;
   sseEvents?: number;
   reasoningChars?: number;
   visibleChars?: number;
@@ -383,6 +405,27 @@ export const executeStoryCompletionInNativeBackground = async (
     lastReasoningAt: job.lastReasoningAt,
     lastVisibleAt: job.lastVisibleAt,
     lastActivityAt: job.lastActivityAt,
+    dnsStartAt: job.dnsStartAt,
+    dnsEndAt: job.dnsEndAt,
+    connectStartAt: job.connectStartAt,
+    connectEndAt: job.connectEndAt,
+    connectFailedAt: job.connectFailedAt,
+    secureConnectStartAt: job.secureConnectStartAt,
+    secureConnectEndAt: job.secureConnectEndAt,
+    connectionAcquiredAt: job.connectionAcquiredAt,
+    requestHeadersStartAt: job.requestHeadersStartAt,
+    requestHeadersEndAt: job.requestHeadersEndAt,
+    requestBodyStartAt: job.requestBodyStartAt,
+    requestBodyEndAt: job.requestBodyEndAt,
+    responseHeadersStartAt: job.responseHeadersStartAt,
+    responseHeadersEndAt: job.responseHeadersEndAt,
+    callEndAt: job.callEndAt,
+    callFailedAt: job.callFailedAt,
+    responseCode: job.responseCode,
+    networkProtocol: job.networkProtocol,
+    remoteAddress: job.remoteAddress,
+    callFailureClass: job.callFailureClass,
+    callFailureMessage: job.callFailureMessage,
     openedMs: elapsedFromStart(job.openedAt),
     firstEventMs: elapsedFromStart(job.firstEventAt),
     firstVisibleMs: elapsedFromStart(job.firstVisibleAt),
@@ -390,6 +433,23 @@ export const executeStoryCompletionInNativeBackground = async (
     lastReasoningMs: elapsedFromStart(job.lastReasoningAt),
     lastVisibleMs: elapsedFromStart(job.lastVisibleAt),
     lastActivityMs: elapsedFromStart(job.lastActivityAt),
+    dnsStartMs: elapsedFromStart(job.dnsStartAt),
+    dnsEndMs: elapsedFromStart(job.dnsEndAt),
+    connectStartMs: elapsedFromStart(job.connectStartAt),
+    connectEndMs: elapsedFromStart(job.connectEndAt),
+    connectFailedMs: elapsedFromStart(job.connectFailedAt),
+    secureConnectStartMs: elapsedFromStart(job.secureConnectStartAt),
+    secureConnectEndMs: elapsedFromStart(job.secureConnectEndAt),
+    connectionAcquiredMs: elapsedFromStart(job.connectionAcquiredAt),
+    requestHeadersStartMs: elapsedFromStart(job.requestHeadersStartAt),
+    requestHeadersEndMs: elapsedFromStart(job.requestHeadersEndAt),
+    requestBodyStartMs: elapsedFromStart(job.requestBodyStartAt),
+    requestBodyEndMs: elapsedFromStart(job.requestBodyEndAt),
+    responseHeadersStartMs: elapsedFromStart(job.responseHeadersStartAt),
+    responseHeadersEndMs: elapsedFromStart(job.responseHeadersEndAt),
+    callEndMs: elapsedFromStart(job.callEndAt),
+    callFailedMs: elapsedFromStart(job.callFailedAt),
+    networkEvents: job.networkEvents,
     chunkCount: job.chunkCount,
     sseEvents: job.sseEvents,
     reasoningChars: job.reasoningChars,
