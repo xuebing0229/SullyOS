@@ -73,7 +73,7 @@ await writeFile(manifestPath, manifest);
 // 这里只引入同一官方 SSE 依赖，不再维护手写 SSE framing。
 let gradle = await readFile(gradlePath, 'utf8');
 gradle = gradle.replace(
-  /^\s*implementation\s+["']com\.squareup\.okhttp3:(?:okhttp|okhttp-sse)(?::[^"']+)?["']\s*$/gm,
+  /^\s*implementation\s+["']com\.squareup\.okhttp3:(?:okhttp|okhttp-jvm|okhttp-sse)(?::[^"']+)?["']\s*$/gm,
   '',
 );
 const okHttpDependencies = [
