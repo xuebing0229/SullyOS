@@ -91,6 +91,7 @@ export type ApiFailureKind =
     | 'gateway_parse'
     | 'circuit_open'
     | 'route_cooldown'
+    | 'route_changed'
     | 'unknown';
 
 export interface ClassifiedApiError {
@@ -748,6 +749,53 @@ function emitAttempt(
     }
 }
 
+function runtimeRouteKey(route: ResolvedApiRoute): string {
+    return [
+        route.presetId,
+        route.api.model.trim(),
+    ].join('\u0000');
+}
+
+/**
+ * 一个长请求跑着时，用户可能在设置里删掉/停用某条备用线路。
+ * 执行计划是请求开始时的快照；每次真正切到下一条之前重新看一眼当前持久化配置，
+ * 防止继续请求已经被用户踢出的旧线路。
+ *
+ * 返回 null 表示当前环境没有可核对的持久化配置（例如单元测试/SSR），此时沿用快照。
+ */
+function currentRuntimeRouteKeys(
+    plan: ApiExecutionPlan,
+): Set<string> | null {
+    if (!plan.group || typeof localStorage === 'undefined') return null;
+
+    const storedGroup = loadApiFailoverGroups().find(group =>
+        group.scope === plan.scope
+        && group.id === plan.group?.id
+    );
+    if (!storedGroup) return null;
+
+    const group = normalizeApiFailoverGroup(storedGroup, plan.scope);
+    const analysis = analyzeApiFailoverGroup(
+        group,
+        loadApiPresetsForFailover(),
+    );
+
+    let routes: ResolvedApiRoute[];
+    if (plan.scope === 'story' && !group.enabled) {
+        // 剧情关闭“备用回退”后仍固定使用自己的第一线路。
+        routes = analysis.routes.slice(0, 1);
+    } else if (!group.enabled) {
+        routes = [];
+    } else if (analysis.canEnable) {
+        routes = analysis.routes;
+    } else {
+        // 删除到只剩一条时，设置层会自动关闭回退；保留剩下的主线路。
+        routes = analysis.routes.slice(0, 1);
+    }
+
+    return new Set(routes.map(runtimeRouteKey));
+}
+
 export async function runApiFailover<T>(
     options: RunApiFailoverOptions<T>,
 ): Promise<ApiFailoverRunResult<T>> {
@@ -763,6 +811,32 @@ export async function runApiFailover<T>(
     const routeCount = options.plan.routes.length;
 
     for (const route of options.plan.routes) {
+        const liveRouteKeys = currentRuntimeRouteKeys(options.plan);
+        if (liveRouteKeys && !liveRouteKeys.has(runtimeRouteKey(route))) {
+            const now = Date.now();
+            emitAttempt(attempts, {
+                requestId,
+                groupId: options.plan.group?.id,
+                groupName: options.plan.group?.name,
+                presetId: route.presetId,
+                presetName: route.presetName,
+                routeIndex: route.routeIndex,
+                routeCount,
+                attempt: 0,
+                phase: 'skipped',
+                startedAt: now,
+                durationMs: 0,
+                classification: {
+                    kind: 'route_changed',
+                    message: '这条线路已从当前故障转移配置移除或停用',
+                    retrySameRoute: false,
+                    failoverEligible: true,
+                    circuitFailure: false,
+                },
+            }, options.onAttempt);
+            continue;
+        }
+
         const activeCooldown = getApiRouteCooldown(
             options.plan.scope,
             route,
@@ -965,7 +1039,13 @@ function bodyForRoute(
 
     if (forceStream) {
         body.stream = true;
-    } else if (api.stream != null) {
+    } else if (
+        !Object.prototype.hasOwnProperty.call(body, 'stream')
+        && api.stream != null
+    ) {
+        // 调用方显式给出的 stream:true/false 优先于预设默认值。
+        // 剧情总结会明确要求非流式；正文则可以不写 stream，让每条故障转移线路
+        // 按自己的预设决定是否流式，避免把 Gemini/特殊中转硬塞进 OpenAI SSE。
         body.stream = Boolean(api.stream);
     }
 
