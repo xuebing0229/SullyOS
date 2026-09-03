@@ -54,7 +54,7 @@ describe('story theater billing safety wiring', () => {
         expect(nativeStoryKeepAliveSource).not.toContain('EventSource');
         expect(nativeStoryKeepAliveSource).not.toContain('Request.Builder');
         expect(nativeStoryInstallerSource).toContain('SullyStoryGenerationManager.java');
-        expect(nativeStoryInstallerSource).not.toContain('SullyStoryBackgroundService.java\',\n');
+        expect(nativeStoryInstallerSource).toContain("await rm(path.join(pluginDir, 'SullyStoryBackgroundService.java')");
     });
 
     it('matches RikkaHub OkHttp and EventSource lifecycle defaults', () => {
