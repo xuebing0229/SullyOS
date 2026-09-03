@@ -38,6 +38,15 @@ describe('story theater billing safety wiring', () => {
         expect(interceptorSource).not.toContain('回退原请求重发');
     });
 
+    it('keeps Android story transport on WebView fetch with native keepalive only', () => {
+        expect(storySource).toContain('acquireNativeStoryKeepAlive');
+        expect(storySource).toContain('executeOpenAiChatPlan({');
+        expect(storySource).toContain("transport: 'webview-fetch'");
+        expect(storySource).not.toContain('executeStoryCompletionInNativeBackground');
+        expect(storySource).not.toContain('getPendingNativeStoryJob');
+        expect(storySource).not.toContain("transport: 'native-background'");
+    });
+
     it('uses the independent story route scope instead of the main chat route', () => {
         expect(storySource).toContain("resolveApiExecutionPlan('story', apiConfig, true)");
         expect(storySource).not.toContain("resolveApiExecutionPlan('chat', apiConfig, true)");
