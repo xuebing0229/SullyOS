@@ -240,6 +240,18 @@ export const normalizeStoryTheater = (entry: StoryTheaterEntry): StoryTheaterEnt
         presetOverride: entry.presetOverride?.schema === 'sullyos.story-preset' && Array.isArray(entry.presetOverride.prompts) ? entry.presetOverride : undefined,
         forceUserLastMessage: entry.forceUserLastMessage === true,
         omitSamplingParams: entry.omitSamplingParams === true,
+        branchFrom: entry.branchFrom && String(entry.branchFrom.parentId || '').trim()
+            ? {
+                parentId: String(entry.branchFrom.parentId),
+                parentTitle: String(entry.branchFrom.parentTitle || '未命名剧情'),
+                rootId: String(entry.branchFrom.rootId || entry.branchFrom.parentId),
+                rootTitle: String(entry.branchFrom.rootTitle || entry.branchFrom.parentTitle || '未命名剧情'),
+                messageId: Number(entry.branchFrom.messageId) || 0,
+                messageRole: entry.branchFrom.messageRole === 'user' ? 'user' : 'assistant',
+                messagePreview: String(entry.branchFrom.messagePreview || '').slice(0, 160),
+                depth: Math.max(1, Math.floor(Number(entry.branchFrom.depth) || 1)),
+            }
+            : undefined,
         createdAt: Number(entry.createdAt) || Date.now(),
         updatedAt: Number(entry.updatedAt) || Number(entry.createdAt) || Date.now(),
     };
