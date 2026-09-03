@@ -1106,6 +1106,14 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                     console.warn('[StoryTheater] keepalive handoff failed; continuing normally', handoffError);
                 }
             }
+            if (
+                completionSucceeded
+                && background
+                && useCloudStoryTransport
+                && !background.ownerKey.startsWith('story-turn:')
+            ) {
+                await clearPendingCloudStoryJob(background.ownerKey);
+            }
             await releaseNativeStoryKeepAlive(keepAliveLease);
         }
     }, [apiConfig, entry.omitSamplingParams]);
@@ -1491,8 +1499,11 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                     theaterRequestFinishedAt: Date.now(),
                 }));
             }
-            // native completion 成功 != 楼层已落库。只有上面 assistant 真正保存成功，
-            // 才删原生 job，避免 App 在“收到结果→写 IndexedDB”之间被杀时丢正文。
+            // 云端/native completion 成功 != 楼层已落库。只有上面 assistant 真正保存成功，
+            // 才清“待接回”指针，避免 App 在“收到结果→写 IndexedDB”之间被杀时丢正文。
+            if (getPendingCloudStoryJob(backgroundOwnerKey)) {
+                await clearPendingCloudStoryJob(backgroundOwnerKey);
+            }
             if (usedNativeBackground) await clearPendingNativeStoryJob(backgroundOwnerKey);
             if (!isContinueTurn) setInput('');
             setAffinityDrafts({});
@@ -1591,6 +1602,9 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                     await loadMessages();
                     streamingTextRef.current = '';
                     setStreamingText('');
+                    if (getPendingCloudStoryJob(backgroundOwnerKey)) {
+                        await clearPendingCloudStoryJob(backgroundOwnerKey);
+                    }
                     if (usedNativeBackground) await clearPendingNativeStoryJob(backgroundOwnerKey);
                     addToast(
                         error?.storyIncompleteCompletion
@@ -1606,6 +1620,9 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
 
             streamingTextRef.current = '';
             setStreamingText('');
+            if (error?.cloudStoryTerminal === true && getPendingCloudStoryJob(backgroundOwnerKey)) {
+                await clearPendingCloudStoryJob(backgroundOwnerKey);
+            }
             if (usedNativeBackground && !nativeCompletionReceived) {
                 await clearPendingNativeStoryJob(backgroundOwnerKey);
             }
@@ -1647,11 +1664,16 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
         }
     }, [actors, addToast, affinityDrafts, affinityEnabled, apiConfig, apiPresets, appearance.textToneEnabled, applyActorMemoryPipeline, archiveIfNeeded, buildActorContexts, buildMaskMemoryContext, callCompletion, effectivePreset, entry, independentRecall, input, loadMessages, mask, promptIdentityName, saveCentralAndMirrors, selectedBooks, threadId, userProfile]);
 
-    // App/renderer 如果在原生 EventSource 完成前被系统杀掉，重进剧情时接回同一个
-    // 持久化 job；running 任务不会被自动重发，避免重复扣费。
+    // 云端 job / 旧 native job 都是“任务 owner 与页面解耦”的：App 被杀后重进，
+    // 只接回同一个 job，绝不重新创建模型请求。云端优先，因为它不依赖手机后台 socket。
     useEffect(() => {
-        if (!isNativeStoryBackgroundRuntime() || sending || sendLock.current) return;
-        const pending = getPendingNativeStoryJob(`story-turn:${entry.id}`);
+        if (sending || sendLock.current) return;
+        const ownerKey = `story-turn:${entry.id}`;
+        const cloudPending = getPendingCloudStoryJob(ownerKey);
+        const nativePending = !cloudPending && isNativeStoryBackgroundRuntime()
+            ? getPendingNativeStoryJob(ownerKey)
+            : null;
+        const pending = cloudPending || nativePending;
         if (!pending) return;
 
         let cancelled = false;
