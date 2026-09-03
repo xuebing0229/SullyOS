@@ -1357,9 +1357,20 @@ const formatTaggedStoryFragment = (fragment: string): string => {
     return clean;
 };
 
+const unwrapStoryDisplayFence = (content: string): string => {
+    let source = String(content || '').replace(/\r\n?/g, '\n');
+    const opening = /^\s*```(?:markdown|md|xml|html|text)?[ \t]*\n/i.exec(source);
+    if (!opening) return source;
+    source = source.slice(opening[0].length);
+    // 流式阶段闭合 fence 可能还没到；先去掉外层开头，避免整轮把 Markdown 包装当正文。
+    // 只有最后一行正好是 fence 时才去掉结尾，正文内部的反引号不碰。
+    source = source.replace(/\n```[ \t]*\s*$/i, '');
+    return source;
+};
+
 /** 将模型的 XML 风格排版协议变成纯文本展示块；原始消息仍原样参与下一轮上下文。 */
 export const parseStoryDisplayBlocks = (content: string): StoryDisplayBlock[] => {
-    const source = String(content || '');
+    const source = unwrapStoryDisplayFence(content);
     const blocks: StoryDisplayBlock[] = [];
     const topLevel = /<(scene_header|story_text|backstage|mind_weather|worldline|world_line|shot_debts|mini_theater|reply_choices|affinity_panel)\b[^>]*>([\s\S]*?)<\/\1\s*>/gi;
     let cursor = 0;
