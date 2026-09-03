@@ -2,7 +2,7 @@ import React, { useMemo, useRef, useState } from 'react';
 import { ArrowLeft, DownloadSimple, LockSimple, UploadSimple, UserCircle } from '@phosphor-icons/react';
 import TokenImg from '../../os/TokenImg';
 import type { CharacterProfile, StoryTheaterEntry, StoryTheaterMask, StoryTheaterPreset, UserProfile } from '../../../types';
-import { dedupeTheaterWorldbooks, downloadStoryPreset, estimateStoryTokens, getPresetPromptStats, resolveStoryPresetDocument, resolveStoryTheaterMask } from '../../../utils/storyTheater';
+import { buildBareTheaterActorContext, buildTheaterPersona, dedupeTheaterWorldbooks, downloadStoryPreset, estimateStoryTokens, getPresetPromptStats, resolveStoryPresetDocument, resolveStoryTheaterMask } from '../../../utils/storyTheater';
 
 interface Props {
     initial: StoryTheaterEntry;
@@ -57,12 +57,21 @@ const StoryTheaterEditor: React.FC<Props> = ({ initial, characters, user, masks,
         };
     });
     const tokenPreview = useMemo(() => {
-        const actorText = [resolvedMask.name, resolvedMask.description, resolvedMask.coreInstruction, resolvedMask.worldview, ...actors.map(char => [char.name, char.systemPrompt, char.worldview, draft.carryCharacterMemory ? JSON.stringify(char.memories || []) : ''].join('\n'))].join('\n');
+        // 这里只统计“固定静态部分”。旧实现把 char.memories 整个 JSON 也塞进“角色”，
+        // 会把长期记忆几十万字误报成角色卡 token；而真实续写并不会全量发送这些记忆。
+        const actorText = actors.map(buildBareTheaterActorContext).join('\n\n---\n\n');
+        const personaText = buildTheaterPersona(resolvedMask);
         const bookText = books.filter(book => draft.selectedWorldbookIds.includes(book.id)).map(book => book.content).join('\n');
         const presetText = effectivePreset ? effectivePreset.document.prompts.filter(prompt => prompt.enabled).map(prompt => prompt.content).join('\n') : '';
         const archiveText = draft.archives.map(archive => archive.summary || '').join('\n');
-        return { actor: estimateStoryTokens(actorText), book: estimateStoryTokens(bookText), preset: estimateStoryTokens(presetText), archive: estimateStoryTokens(archiveText) };
-    }, [actors, books, draft, effectivePreset, resolvedMask]);
+        return {
+            actor: estimateStoryTokens(actorText),
+            persona: estimateStoryTokens(personaText),
+            book: estimateStoryTokens(bookText),
+            preset: estimateStoryTokens(presetText),
+            archive: estimateStoryTokens(archiveText),
+        };
+    }, [actors, books, draft.archives, draft.selectedWorldbookIds, effectivePreset, resolvedMask]);
     const save = async () => {
         if (!draft.title.trim() || draft.characterIds.length === 0) return;
         setSaving(true);
@@ -145,8 +154,8 @@ const StoryTheaterEditor: React.FC<Props> = ({ initial, characters, user, masks,
             </section>
             <section className='pt-6 border-t border-slate-200'>
                 <div className='text-[9px] tracking-[.22em] uppercase font-bold text-violet-500'>06 / Budget</div>
-                <div className='mt-2 flex items-end justify-between gap-4'><div><h2 className='text-lg font-semibold'>静态配置预算</h2><p className='mt-1 text-[10px] leading-5 text-slate-500'>这里只比较角色、世界书、预设与归档；剧场内会按续写实际使用的完整上下文统计历史、召回和本轮输入。</p></div><strong className='text-2xl font-serif'>{Object.values(tokenPreview).reduce((sum, value) => sum + value, 0).toLocaleString()}</strong></div>
-                <div className='mt-4 grid grid-cols-4 gap-2'>{Object.entries({ '角色': tokenPreview.actor, '世界书': tokenPreview.book, '预设': tokenPreview.preset, '归档': tokenPreview.archive }).map(([label, value]) => <div key={label} className='py-3 rounded-xl bg-white border border-slate-200 text-center'><div className='text-[9px] text-slate-400'>{label}</div><div className='mt-1 text-xs font-bold'>{value.toLocaleString()}</div></div>)}</div>
+                <div className='mt-2 flex items-end justify-between gap-4'><div><h2 className='text-lg font-semibold'>静态配置预算</h2><p className='mt-1 text-[10px] leading-5 text-slate-500'>这里只估算每轮固定发送的角色卡、当前身份、世界书、预设与常驻归档；不会把角色长期记忆 JSON、最近原文、向量召回或剧情历史冒充成静态配置。剧场内实际请求仍以运行时上下文统计为准。</p></div><strong className='text-2xl font-serif'>{Object.values(tokenPreview).reduce((sum, value) => sum + value, 0).toLocaleString()}</strong></div>
+                <div className='mt-4 grid grid-cols-5 gap-2'>{Object.entries({ '角色卡': tokenPreview.actor, '当前身份': tokenPreview.persona, '世界书': tokenPreview.book, '预设': tokenPreview.preset, '归档': tokenPreview.archive }).map(([label, value]) => <div key={label} className='min-w-0 py-3 rounded-xl bg-white border border-slate-200 text-center'><div className='text-[8px] text-slate-400 truncate'>{label}</div><div className='mt-1 text-[11px] font-bold tabular-nums'>{value.toLocaleString()}</div></div>)}</div>
             </section>
             <button onClick={save} disabled={saving || !draft.title.trim() || draft.characterIds.length === 0} className='w-full py-4 rounded-2xl bg-slate-900 text-white text-sm font-bold disabled:opacity-30'>{saving ? '正在保存……' : '保存并进入剧情'}</button>
         </div></main>
