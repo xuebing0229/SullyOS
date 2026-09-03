@@ -135,6 +135,30 @@ const resolveWorkerConfig = async (): Promise<WorkerConfig | null> => {
     }
 };
 
+const parseJsonResponse = async (
+    response: Response,
+): Promise<{ response: Response; body: any }> => {
+    const text = await response.text();
+    let body: any = null;
+    if (text) {
+        try { body = JSON.parse(text); }
+        catch { body = { error: text.slice(0, 500) }; }
+    }
+    return { response, body };
+};
+
+const buildWorkerHeaders = (
+    config: WorkerConfig,
+    init: RequestInit,
+): Headers => {
+    const headers = new Headers(init.headers || {});
+    headers.set('Accept', 'application/json');
+    headers.set('X-User-Id', config.userId);
+    if (config.serverToken) headers.set('X-Client-Token', config.serverToken);
+    if (init.body !== undefined) headers.set('Content-Type', 'application/json');
+    return headers;
+};
+
 const fetchJson = async (
     config: WorkerConfig,
     path: string,
@@ -143,29 +167,95 @@ const fetchJson = async (
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), HTTP_TIMEOUT_MS);
     try {
-        const headers = new Headers(init.headers || {});
-        headers.set('Accept', 'application/json');
-        headers.set('X-User-Id', config.userId);
-        if (config.serverToken) headers.set('X-Client-Token', config.serverToken);
-        if (init.body !== undefined) headers.set('Content-Type', 'application/json');
         const response = await fetch(
             `${config.workerUrl}${path.startsWith('/') ? path : `/${path}`}`,
             {
                 ...init,
-                headers,
+                headers: buildWorkerHeaders(config, init),
                 cache: 'no-store',
                 signal: controller.signal,
             },
         );
-        const text = await response.text();
-        let body: any = null;
-        if (text) {
-            try { body = JSON.parse(text); }
-            catch { body = { error: text.slice(0, 500) }; }
-        }
-        return { response, body };
+        return parseJsonResponse(response);
     } finally {
         clearTimeout(timeout);
+    }
+};
+
+const waitUntilDocumentVisible = (): Promise<void> => {
+    if (typeof document === 'undefined' || document.visibilityState === 'visible') {
+        return Promise.resolve();
+    }
+    return new Promise(resolve => {
+        const onVisibility = () => {
+            if (document.visibilityState !== 'visible') return;
+            document.removeEventListener('visibilitychange', onVisibility);
+            resolve();
+        };
+        document.addEventListener('visibilitychange', onVisibility);
+    });
+};
+
+/**
+ * 只给 GET /story-jobs* 的状态查询用。
+ *
+ * 真正生成在 Worker/DO，手机锁屏后完全没必要继续打状态 GET。更重要的是 Android WebView
+ * 会冻结 JS timer：旧实现的 20 秒 AbortController timeout 会在锁屏几十秒后、回前台那一刻
+ * 才突然执行，于是一个已经成功的远端 job 旁边凭空多出 “signal is aborted” 红日志。
+ *
+ * 这里不取消远端 job、不取消模型请求，也不改 POST；只是让轮询的超时只在页面可见时走钟。
+ */
+const fetchPollingJson = async (
+    config: WorkerConfig,
+    path: string,
+): Promise<{ response: Response; body: any }> => {
+    await waitUntilDocumentVisible();
+
+    const controller = new AbortController();
+    let timeout: ReturnType<typeof setTimeout> | null = null;
+    let settled = false;
+
+    const clearVisibleTimeout = () => {
+        if (timeout !== null) {
+            clearTimeout(timeout);
+            timeout = null;
+        }
+    };
+    const armVisibleTimeout = () => {
+        clearVisibleTimeout();
+        if (
+            settled
+            || (typeof document !== 'undefined' && document.visibilityState !== 'visible')
+        ) return;
+        timeout = setTimeout(() => controller.abort(), HTTP_TIMEOUT_MS);
+    };
+    const onVisibility = () => {
+        if (document.visibilityState === 'visible') armVisibleTimeout();
+        else clearVisibleTimeout();
+    };
+
+    if (typeof document !== 'undefined') {
+        document.addEventListener('visibilitychange', onVisibility);
+    }
+    armVisibleTimeout();
+
+    try {
+        const response = await fetch(
+            `${config.workerUrl}${path.startsWith('/') ? path : `/${path}`}`,
+            {
+                method: 'GET',
+                headers: buildWorkerHeaders(config, {}),
+                cache: 'no-store',
+                signal: controller.signal,
+            },
+        );
+        return parseJsonResponse(response);
+    } finally {
+        settled = true;
+        clearVisibleTimeout();
+        if (typeof document !== 'undefined') {
+            document.removeEventListener('visibilitychange', onVisibility);
+        }
     }
 };
 
@@ -218,7 +308,7 @@ const getRemoteJobById = async (
     config: WorkerConfig,
     jobId: string,
 ): Promise<CloudStoryJob | null> => {
-    const { response, body } = await fetchJson(
+    const { response, body } = await fetchPollingJson(
         config,
         `/story-jobs/${encodeURIComponent(jobId)}`,
     );
@@ -236,7 +326,7 @@ const getRemoteJobByClientId = async (
     config: WorkerConfig,
     clientRequestId: string,
 ): Promise<CloudStoryJob | null> => {
-    const { response, body } = await fetchJson(
+    const { response, body } = await fetchPollingJson(
         config,
         `/story-jobs/by-client/${encodeURIComponent(clientRequestId)}`,
     );
@@ -250,26 +340,42 @@ const getRemoteJobByClientId = async (
     return body?.job || null;
 };
 
-const sleepUntilPollOrVisible = (): Promise<void> =>
-    new Promise(resolve => {
+const sleepUntilPollOrVisible = async (): Promise<void> => {
+    await waitUntilDocumentVisible();
+
+    if (typeof document === 'undefined') {
+        await new Promise(resolve => setTimeout(resolve, POLL_MS));
+        return;
+    }
+
+    await new Promise<void>(resolve => {
         let done = false;
+        let timer: ReturnType<typeof setTimeout> | null = null;
+
+        const cleanup = () => {
+            if (timer !== null) {
+                clearTimeout(timer);
+                timer = null;
+            }
+            document.removeEventListener('visibilitychange', onVisibility);
+        };
         const finish = () => {
             if (done) return;
             done = true;
-            clearTimeout(timer);
-            if (typeof document !== 'undefined') {
-                document.removeEventListener('visibilitychange', onVisibility);
-            }
+            cleanup();
             resolve();
         };
         const onVisibility = () => {
-            if (document.visibilityState === 'visible') finish();
+            if (document.visibilityState === 'visible') return;
+            // 进入后台就停止这次 1s 轮询时钟；回来后立刻查同一个 job。
+            cleanup();
+            void waitUntilDocumentVisible().then(finish);
         };
-        const timer = setTimeout(finish, POLL_MS);
-        if (typeof document !== 'undefined') {
-            document.addEventListener('visibilitychange', onVisibility, { once: true });
-        }
+
+        document.addEventListener('visibilitychange', onVisibility);
+        timer = setTimeout(finish, POLL_MS);
     });
+};
 
 const cloudDiagnostics = (
     job: CloudStoryJob | null,
@@ -539,8 +645,8 @@ export const executeStoryCompletionInCloudBackground = async (
         try {
             job = await getRemoteJobById(config, pending.jobId);
         } catch {
-            // 手机后台时这条短轮询断掉无所谓；真正 LLM 流在 Worker/DO 里。
-            // 回前台后继续查同一个 job。
+            // 手机后台时状态 GET 断掉无所谓；真正 LLM 流在 Worker/DO 里。
+            // 回前台后继续查同一个 job，不删除、不取消、不重发。
         }
     }
 };
