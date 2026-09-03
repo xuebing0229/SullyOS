@@ -431,7 +431,11 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
     const streamingTextRef = useRef('');
     const archiveLock = useRef(false);
     const scrollContainerRef = useRef<HTMLElement>(null);
+    const scrollContentRef = useRef<HTMLDivElement>(null);
     const autoFollowStreamRef = useRef(true);
+    // 每次重新进入一条剧情时，先把“阅读锚点”稳定在真正的最底部。
+    // 首次渲染后图片/字体/折叠摘要还会继续改变正文高度，只滚一次很容易停在中段。
+    const initialBottomFollowRef = useRef(true);
     const bottomRef = useRef<HTMLDivElement>(null);
     const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
     const longPressOrigin = useRef<{ x: number; y: number } | null>(null);
@@ -516,6 +520,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
         streamingTextRef.current = '';
         setStreamingText('');
         autoFollowStreamRef.current = true;
+        initialBottomFollowRef.current = true;
     }, [entry.id]);
 
     useEffect(() => {
@@ -659,7 +664,9 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
 
     useEffect(() => {
         if (!autoFollowStreamRef.current) return;
-        const frame = requestAnimationFrame(() => scrollStoryToBottom('smooth'));
+        const frame = requestAnimationFrame(() => {
+            scrollStoryToBottom(initialBottomFollowRef.current ? 'auto' : 'smooth');
+        });
         return () => cancelAnimationFrame(frame);
     }, [messages.length, sending, scrollStoryToBottom]);
 
@@ -668,6 +675,61 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
         const frame = requestAnimationFrame(() => scrollStoryToBottom('auto'));
         return () => cancelAnimationFrame(frame);
     }, [streamingText, scrollStoryToBottom]);
+
+    useEffect(() => {
+        if (!initialBottomFollowRef.current || messages.length === 0) return;
+        const content = scrollContentRef.current;
+        if (!content) return;
+
+        let settleTimer: ReturnType<typeof setTimeout> | null = null;
+        let maxTimer: ReturnType<typeof setTimeout> | null = null;
+        let raf1 = 0;
+        let raf2 = 0;
+
+        const finishInitialFollow = () => {
+            initialBottomFollowRef.current = false;
+            if (settleTimer) {
+                clearTimeout(settleTimer);
+                settleTimer = null;
+            }
+        };
+
+        const keepAtRealBottom = () => {
+            // 用户自己往上翻以后 autoFollowStreamRef 会变 false；此时绝不再把人拽回底部。
+            if (!initialBottomFollowRef.current || !autoFollowStreamRef.current) {
+                finishInitialFollow();
+                return;
+            }
+            scrollStoryToBottom('auto');
+            if (settleTimer) clearTimeout(settleTimer);
+            // 连续 500ms 高度不再变化，才认为图片/字体/正文布局已经稳定。
+            settleTimer = setTimeout(finishInitialFollow, 500);
+        };
+
+        // React 首屏提交后再等两帧，避开浏览器自己的 scroll restoration / layout。
+        raf1 = requestAnimationFrame(() => {
+            keepAtRealBottom();
+            raf2 = requestAnimationFrame(keepAtRealBottom);
+        });
+
+        // StoryRoundImage 的 blob、字体等可能晚于 messages state 到达；
+        // 观察正文真实高度，变化一次就重新锚到底部，而不是只在消息数量变化时滚一次。
+        const observer = typeof ResizeObserver !== 'undefined'
+            ? new ResizeObserver(() => keepAtRealBottom())
+            : null;
+        observer?.observe(content);
+
+        // 安全上限：最多托底 3 秒，绝不长期抢用户滚动位置。
+        maxTimer = setTimeout(finishInitialFollow, 3000);
+
+        return () => {
+            cancelAnimationFrame(raf1);
+            cancelAnimationFrame(raf2);
+            observer?.disconnect();
+            if (settleTimer) clearTimeout(settleTimer);
+            if (maxTimer) clearTimeout(maxTimer);
+        };
+    }, [entry.id, messages.length, scrollStoryToBottom]);
     const archivedMessageIds = useMemo(
         () => messages.filter(message => mirrorArchived(message, entry)).map(message => message.id),
         [entry, messages],
@@ -1539,7 +1601,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             onScroll={handleStoryScroll}
             className='story-page-scroll flex-1 overflow-y-auto px-5 py-7'
         >
-            <div className='max-w-2xl mx-auto'>
+            <div ref={scrollContentRef} className='max-w-2xl mx-auto'>
                 {messages.length === 0 ? <section className='py-10 border-y border-slate-200'>
                     <div className='text-[9px] tracking-[.25em] uppercase font-bold text-violet-500'>Opening note</div>
                     <h2 className='mt-3 text-3xl font-serif font-semibold leading-tight'>{entry.title}</h2>
