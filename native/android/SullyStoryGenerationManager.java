@@ -180,8 +180,10 @@ public final class SullyStoryGenerationManager {
             "secureConnectStartAt", "secureConnectEndAt", "connectionAcquiredAt",
             "requestHeadersStartAt", "requestHeadersEndAt", "requestBodyStartAt", "requestBodyEndAt",
             "responseHeadersStartAt", "responseHeadersEndAt", "callEndAt", "callFailedAt",
-            "responseCode", "networkProtocol", "remoteAddress", "callFailureClass", "callFailureMessage",
-            "networkEvents",
+            "responseCode", "networkProtocol", "remoteAddress", "dnsHost", "dnsAddresses", "connectProxy",
+            "tlsVersion", "cipherSuite", "requestBodyBytes",
+            "callFailureClass", "callFailureMessage", "callFailureCauseClass", "callFailureCauseMessage",
+            "callStartAt", "networkEvents",
             "sseEvents", "reasoningChars", "visibleChars", "streamFinishReason",
             "attempts"
         };
@@ -691,6 +693,11 @@ public final class SullyStoryGenerationManager {
             this.jobId = jobId;
         }
 
+        @Override
+        public void callStart(Call call) {
+            recordNetworkEvent(context, jobId, "callStart", "callStartAt", true, null);
+        }
+
         private JSONObject detail(Object... pairs) {
             JSONObject out = new JSONObject();
             try {
@@ -744,7 +751,10 @@ public final class SullyStoryGenerationManager {
 
         @Override
         public void secureConnectEnd(Call call, Handshake handshake) {
-            recordNetworkEvent(context, jobId, "secureConnectEnd", "secureConnectEndAt", false, null);
+            recordNetworkEvent(context, jobId, "secureConnectEnd", "secureConnectEndAt", false, detail(
+                "tlsVersion", handshake == null ? "" : handshake.tlsVersion().javaName(),
+                "cipherSuite", handshake == null ? "" : handshake.cipherSuite().javaName()
+            ));
         }
 
         @Override
@@ -821,9 +831,12 @@ public final class SullyStoryGenerationManager {
 
         @Override
         public void callFailed(Call call, IOException ioe) {
+            Throwable cause = ioe == null ? null : ioe.getCause();
             recordNetworkEvent(context, jobId, "callFailed", "callFailedAt", false, detail(
                 "callFailureClass", ioe == null ? "" : ioe.getClass().getName(),
-                "callFailureMessage", ioe == null || ioe.getMessage() == null ? "" : ioe.getMessage()
+                "callFailureMessage", ioe == null || ioe.getMessage() == null ? "" : ioe.getMessage(),
+                "callFailureCauseClass", cause == null ? "" : cause.getClass().getName(),
+                "callFailureCauseMessage", cause == null || cause.getMessage() == null ? "" : cause.getMessage()
             ));
         }
     }
