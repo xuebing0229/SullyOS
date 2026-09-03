@@ -24,6 +24,7 @@ import java.net.SocketTimeoutException;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.Locale;
 import org.json.JSONArray;
@@ -38,6 +39,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import okhttp3.Call;
 import okhttp3.MediaType;
 import okhttp3.OkHttpClient;
+import okhttp3.Protocol;
 import okhttp3.Request;
 import okhttp3.RequestBody;
 import okhttp3.Response;
@@ -456,6 +458,10 @@ public class SullyStoryBackgroundService extends Service {
                 // 不能把 timeoutMs 当“整轮总时长”。长篇流式只要一直在吐数据就应该继续写完，
                 // 否则 240 秒一到会把正常生成硬切成半篇。
                 .callTimeout(0L, TimeUnit.MILLISECONDS)
+                // 部分 Android + 中转组合在 HTTP/2 长 SSE 上会出现
+                // "Software caused connection abort"。剧情后台是一请求一连接，
+                // 强制 HTTP/1.1 换稳定性，不影响接口语义，也不做任何自动 POST 重试。
+                .protocols(Collections.singletonList(Protocol.HTTP_1_1))
                 .retryOnConnectionFailure(false)
                 .build();
 
@@ -464,7 +470,9 @@ public class SullyStoryBackgroundService extends Service {
                 .header("Authorization", "Bearer " + route.optString("apiKey", "sk-none"))
                 .header("Accept", stream ? "text/event-stream, application/json" : "application/json, text/event-stream")
                 .header("Cache-Control", "no-cache")
-                .header("User-Agent", "SullyOS-StoryBackground/2.1")
+                // 长 SSE 禁用透明 gzip，减少某些中转/移动网络在分块解压时提前断流。
+                .header("Accept-Encoding", "identity")
+                .header("User-Agent", "SullyOS-StoryBackground/2.2")
                 .post(RequestBody.create(body.toString(), MediaType.get("application/json; charset=utf-8")))
                 .build();
 
