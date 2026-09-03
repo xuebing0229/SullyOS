@@ -21,9 +21,15 @@ import { constantTimeEqual } from './instantChat';
 
 const CF_API = 'https://api.cloudflare.com/client/v4';
 
-/** 官方成品代码。跟代配脚本、手册附录指的是同一份。 */
+/**
+ * 官方成品代码。
+ *
+ * 直接取 SullyOS GitHub Pages 的构建产物：主站每次 pnpm build 都会先跑 build:workers，
+ * 所以这里天然跟当前 master 同步。不要再依赖 sullyos-workers 的跨仓库同步 token——
+ * 那个 workflow 没配 WORKERS_REPO_TOKEN 时会“跳过但显示 success”，很容易静默拿到旧包。
+ */
 const BUNDLE_URL =
-  'https://raw.githubusercontent.com/Tosd0/sullyos-workers/main/amsg/worker.bundle.js';
+  'https://xuebing0229.github.io/SullyOS/amsg-worker.bundle.js';
 
 /** 上传时用的模块名，同时也是 metadata.main_module，两处必须一致。 */
 const MAIN_MODULE = 'worker.bundle.js';
