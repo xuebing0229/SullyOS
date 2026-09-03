@@ -31,6 +31,7 @@ export interface StoryJobRoute {
   baseUrl: string;
   apiKey: string;
   model: string;
+  temperature?: number;
   firstByteTimeoutMs?: number;
 }
 
@@ -279,6 +280,9 @@ const validateSpec = (value: unknown): StoryJobSpec => {
       baseUrl,
       apiKey,
       model,
+      temperature: Number.isFinite(Number(route.temperature))
+        ? Number(route.temperature)
+        : undefined,
       firstByteTimeoutMs: Number.isFinite(Number(route.firstByteTimeoutMs))
         ? Math.max(0, Number(route.firstByteTimeoutMs))
         : undefined,
@@ -672,8 +676,30 @@ export const runStoryJob = async (
     const route = spec.routes[index];
     const attemptStartedAt = now();
     let response: Response;
-    try {
-      response = await fetch(`${normalizeBaseUrl(route.baseUrl)}/chat/completions`, {
+    let explicitErrorText = '';
+    const requestRoute = async (includeUsage: boolean): Promise<Response> => {
+      const body: Record<string, unknown> = {
+        ...spec.baseBody,
+        model: route.model,
+        stream: true,
+      };
+      if (
+        Object.prototype.hasOwnProperty.call(body, 'temperature')
+        && typeof route.temperature === 'number'
+      ) {
+        body.temperature = route.temperature;
+      }
+      if (includeUsage) {
+        body.stream_options = {
+          ...(body.stream_options && typeof body.stream_options === 'object'
+            ? body.stream_options as Record<string, unknown>
+            : {}),
+          include_usage: true,
+        };
+      } else {
+        delete body.stream_options;
+      }
+      return fetch(`${normalizeBaseUrl(route.baseUrl)}/chat/completions`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -681,12 +707,22 @@ export const runStoryJob = async (
           'Authorization': `Bearer ${route.apiKey || 'sk-none'}`,
           'User-Agent': 'SullyOS-StoryWorker/1.0',
         },
-        body: JSON.stringify({
-          ...spec.baseBody,
-          model: route.model,
-          stream: true,
-        }),
+        body: JSON.stringify(body),
       });
+    };
+
+    try {
+      response = await requestRoute(true);
+      if (response.status === 400) {
+        explicitErrorText = (await response.text().catch(() => '')).slice(0, 1000);
+        const lower = explicitErrorText.toLowerCase();
+        // 与当前 native/safeApi 同一条兼容规则：明确 400 指向 usage 选项时，
+        // 模型尚未执行，才允许同线路去掉 stream_options 再发一次。
+        if (lower.includes('stream_options') || lower.includes('include_usage')) {
+          response = await requestRoute(false);
+          explicitErrorText = '';
+        }
+      }
     } catch (error) {
       const attempt = routeAttempt(route, index, attemptStartedAt);
       attempt.error = (error as Error)?.message || String(error);
@@ -698,7 +734,7 @@ export const runStoryJob = async (
     }
 
     if (!response.ok) {
-      const text = (await response.text().catch(() => '')).slice(0, 1000);
+      const text = explicitErrorText || (await response.text().catch(() => '')).slice(0, 1000);
       const attempt = routeAttempt(route, index, attemptStartedAt);
       attempt.status = response.status;
       attempt.error = text || `HTTP ${response.status}`;
