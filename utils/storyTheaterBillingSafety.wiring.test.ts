@@ -42,6 +42,7 @@ describe('story theater billing safety wiring', () => {
         expect(storySource).toContain('acquireNativeStoryKeepAlive');
         expect(storySource).toContain('executeOpenAiChatPlan({');
         expect(storySource).toContain("transport: 'webview-fetch'");
+        expect(storySource).toContain('forceStream: wantsStreamPreview');
         expect(storySource).not.toContain('executeStoryCompletionInNativeBackground');
         expect(storySource).not.toContain('getPendingNativeStoryJob');
         expect(storySource).not.toContain("transport: 'native-background'");
