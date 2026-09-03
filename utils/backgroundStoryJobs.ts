@@ -181,8 +181,8 @@ export const isCloudStoryJobsAvailable = async (): Promise<boolean> => {
         const available = Boolean(
             response.ok
             && body?.success !== false
-            && body?.config?.storyJobs === true
-            && body?.config?.storyTick === true,
+            && body?.data?.storyJobs === true
+            && body?.data?.storyTick === true,
         );
         capabilityCache = { key, at: now(), available };
         return available;
