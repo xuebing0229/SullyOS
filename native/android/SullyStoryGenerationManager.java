@@ -154,6 +154,7 @@ public final class SullyStoryGenerationManager {
             "error", "promptTokens", "completionTokens", "totalTokens",
             "routeIndex", "routePresetId", "routePresetName", "routeBaseUrl", "routeModel",
             "openedAt", "firstEventAt", "firstVisibleAt",
+            "lastChunkAt", "lastReasoningAt", "lastVisibleAt", "lastActivityAt", "chunkCount",
             "sseEvents", "reasoningChars", "visibleChars", "streamFinishReason",
             "attempts"
         };
@@ -625,7 +626,11 @@ public final class SullyStoryGenerationManager {
         String finishReason = null;
         int statusCode = 200;
         int sseEvents = 0;
+        int chunkCount = 0;
         int reasoningChars = 0;
+        long lastChunkAt = 0L;
+        long lastReasoningAt = 0L;
+        long lastVisibleAt = 0L;
         long lastPersistAt = 0L;
         boolean visible = false;
         boolean meaningfulActivity = false;
@@ -656,6 +661,8 @@ public final class SullyStoryGenerationManager {
             String payload = data.trim();
             if (payload.isEmpty()) return false;
             sseEvents++;
+            chunkCount++;
+            lastChunkAt = now;
             markFirstEvent(now);
 
             if ("[DONE]".equals(payload)) {
@@ -709,7 +716,7 @@ public final class SullyStoryGenerationManager {
                         if (part == null) continue;
                         String text = part.optString("text", "");
                         if (text.isEmpty()) continue;
-                        if (part.optBoolean("thought", false)) appendReasoning(text);
+                        if (part.optBoolean("thought", false)) appendReasoning(text, now);
                         else appendVisible(text, now);
                     }
                 }
@@ -735,7 +742,7 @@ public final class SullyStoryGenerationManager {
                 Object rr = delta.has("reasoning_content") ? delta.opt("reasoning_content")
                     : delta.has("reasoning") ? delta.opt("reasoning")
                     : delta.opt("thinking");
-                if (rr instanceof String) appendReasoning((String) rr);
+                if (rr instanceof String) appendReasoning((String) rr, now);
                 String r = delta.optString("role", "");
                 if (!r.isEmpty()) role = r;
             } else if (message != null) {
@@ -743,7 +750,7 @@ public final class SullyStoryGenerationManager {
                 Object rr = message.has("reasoning_content") ? message.opt("reasoning_content")
                     : message.has("reasoning") ? message.opt("reasoning")
                     : message.opt("thinking");
-                if (rr instanceof String) appendReasoning((String) rr);
+                if (rr instanceof String) appendReasoning((String) rr, now);
                 String r = message.optString("role", "");
                 if (!r.isEmpty()) role = r;
             }
@@ -771,21 +778,25 @@ public final class SullyStoryGenerationManager {
                 if (block == null) continue;
                 String type = block.optString("type", "");
                 if ("text".equals(type)) appendVisible(block.optString("text", ""), now);
-                else if ("thinking".equals(type)) appendReasoning(block.optString("thinking", ""));
+                else if ("thinking".equals(type)) appendReasoning(block.optString("thinking", ""), now);
             }
         }
 
-        private void appendReasoning(String piece) {
+        private void appendReasoning(String piece, long now) {
             if (piece == null || piece.isEmpty()) return;
             reasoning.append(piece);
             reasoningChars += piece.length();
             meaningfulActivity = true;
+            lastReasoningAt = now;
+            lastActivityAt.set(now);
         }
 
         private void appendVisible(String piece, long now) throws Exception {
             if (piece == null || piece.isEmpty()) return;
             content.append(piece);
             meaningfulActivity = true;
+            lastVisibleAt = now;
+            lastActivityAt.set(now);
             if (!visible) {
                 visible = true;
                 markFirstVisible(now);
@@ -822,6 +833,11 @@ public final class SullyStoryGenerationManager {
                 liveJob.put("visibleChars", content.length());
                 liveJob.put("reasoningChars", reasoningChars);
                 liveJob.put("sseEvents", sseEvents);
+                liveJob.put("chunkCount", chunkCount);
+                if (lastChunkAt > 0L) liveJob.put("lastChunkAt", lastChunkAt);
+                if (lastReasoningAt > 0L) liveJob.put("lastReasoningAt", lastReasoningAt);
+                if (lastVisibleAt > 0L) liveJob.put("lastVisibleAt", lastVisibleAt);
+                liveJob.put("lastActivityAt", lastActivityAt.get());
                 liveJob.put("updatedAt", now);
                 writeJobFile(context, liveJob);
             }
@@ -835,8 +851,13 @@ public final class SullyStoryGenerationManager {
                 JSONObject liveJob = readJobFile(context, jobId);
                 if (liveJob != null && "running".equals(liveJob.optString("status"))) {
                     liveJob.put("sseEvents", sseEvents);
+                    liveJob.put("chunkCount", chunkCount);
                     liveJob.put("reasoningChars", reasoningChars);
                     liveJob.put("visibleChars", content.length());
+                    if (lastChunkAt > 0L) liveJob.put("lastChunkAt", lastChunkAt);
+                    if (lastReasoningAt > 0L) liveJob.put("lastReasoningAt", lastReasoningAt);
+                    if (lastVisibleAt > 0L) liveJob.put("lastVisibleAt", lastVisibleAt);
+                    liveJob.put("lastActivityAt", lastActivityAt.get());
                     if (finishReason != null) liveJob.put("streamFinishReason", finishReason);
                     liveJob.put("updatedAt", now);
                     writeJobFile(context, liveJob);
