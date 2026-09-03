@@ -5,7 +5,12 @@ import android.content.Intent;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
+import java.io.IOException;
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.net.Proxy;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -17,8 +22,13 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import okhttp3.Call;
+import okhttp3.Connection;
+import okhttp3.EventListener;
+import okhttp3.Handshake;
 import okhttp3.MediaType;
 import okhttp3.OkHttpClient;
+import okhttp3.Protocol;
 import okhttp3.Request;
 import okhttp3.RequestBody;
 import okhttp3.Response;
@@ -47,6 +57,13 @@ public final class SullyStoryGenerationManager {
     private final ConcurrentHashMap<String, EventSource> activeSources = new ConcurrentHashMap<>();
     private final OkHttpClient client;
 
+    private static final class StoryCallTag {
+        final String jobId;
+        StoryCallTag(String jobId) {
+            this.jobId = jobId;
+        }
+    }
+
     private SullyStoryGenerationManager(Context context) {
         this.context = context.getApplicationContext();
         this.client = new OkHttpClient.Builder()
@@ -56,6 +73,10 @@ public final class SullyStoryGenerationManager {
             .followSslRedirects(true)
             .followRedirects(true)
             .retryOnConnectionFailure(true)
+            .eventListenerFactory(call -> {
+                StoryCallTag tag = call.request().tag(StoryCallTag.class);
+                return tag == null ? new EventListener() {} : new StoryNetworkEventListener(tag.jobId);
+            })
             .addNetworkInterceptor(chain -> {
                 Request request = chain.request();
                 String contentType = request.header("Content-Type");
@@ -155,6 +176,12 @@ public final class SullyStoryGenerationManager {
             "routeIndex", "routePresetId", "routePresetName", "routeBaseUrl", "routeModel",
             "openedAt", "firstEventAt", "firstVisibleAt",
             "lastChunkAt", "lastReasoningAt", "lastVisibleAt", "lastActivityAt", "chunkCount",
+            "dnsStartAt", "dnsEndAt", "connectStartAt", "connectEndAt", "connectFailedAt",
+            "secureConnectStartAt", "secureConnectEndAt", "connectionAcquiredAt",
+            "requestHeadersStartAt", "requestHeadersEndAt", "requestBodyStartAt", "requestBodyEndAt",
+            "responseHeadersStartAt", "responseHeadersEndAt", "callEndAt", "callFailedAt",
+            "responseCode", "networkProtocol", "remoteAddress", "callFailureClass", "callFailureMessage",
+            "networkEvents",
             "sseEvents", "reasoningChars", "visibleChars", "streamFinishReason",
             "attempts"
         };
@@ -433,6 +460,7 @@ public final class SullyStoryGenerationManager {
 
         Request request = new Request.Builder()
             .url(baseUrl + "/chat/completions")
+            .tag(StoryCallTag.class, new StoryCallTag(jobId))
             .post(RequestBody.create(body.toString(), MediaType.get("application/json")))
             .addHeader("Authorization", "Bearer " + route.optString("apiKey", "sk-none"))
             .addHeader("Content-Type", "application/json")
@@ -475,7 +503,7 @@ public final class SullyStoryGenerationManager {
         EventSourceListener listener = new EventSourceListener() {
             @Override
             public void onOpen(EventSource eventSource, Response response) {
-                state.onOpen(response == null ? 200 : response.code());
+                state.onOpen(response == null ? 0 : response.code());
             }
 
             @Override
@@ -613,6 +641,193 @@ public final class SullyStoryGenerationManager {
         return errorMessage(raw, status);
     }
 
+
+    private static synchronized void recordNetworkEvent(
+        Context context,
+        String jobId,
+        String event,
+        String timeKey,
+        boolean keepFirstTimestamp,
+        JSONObject detail
+    ) {
+        try {
+            JSONObject job = readJobFile(context, jobId);
+            if (job == null) return;
+            long now = System.currentTimeMillis();
+            if (timeKey != null && !timeKey.isEmpty()) {
+                if (!keepFirstTimestamp || !job.has(timeKey)) {
+                    job.put(timeKey, now);
+                }
+            }
+
+            JSONArray events = job.optJSONArray("networkEvents");
+            if (events == null) events = new JSONArray();
+            while (events.length() >= 80) events.remove(0);
+
+            JSONObject row = new JSONObject()
+                .put("event", event)
+                .put("at", now);
+            long startedAt = job.optLong("startedAt", 0L);
+            if (startedAt > 0L && now >= startedAt) row.put("ms", now - startedAt);
+            if (detail != null) {
+                java.util.Iterator<String> keys = detail.keys();
+                while (keys.hasNext()) {
+                    String key = keys.next();
+                    row.put(key, detail.opt(key));
+                    job.put(key, detail.opt(key));
+                }
+            }
+            events.put(row);
+            job.put("networkEvents", events);
+            job.put("updatedAt", now);
+            writeJobFile(context, job);
+        } catch (Exception ignored) { }
+    }
+
+    private final class StoryNetworkEventListener extends EventListener {
+        private final String jobId;
+
+        StoryNetworkEventListener(String jobId) {
+            this.jobId = jobId;
+        }
+
+        private JSONObject detail(Object... pairs) {
+            JSONObject out = new JSONObject();
+            try {
+                for (int i = 0; i + 1 < pairs.length; i += 2) {
+                    if (pairs[i] != null && pairs[i + 1] != null) {
+                        out.put(String.valueOf(pairs[i]), pairs[i + 1]);
+                    }
+                }
+            } catch (Exception ignored) { }
+            return out;
+        }
+
+        private String address(InetSocketAddress socketAddress) {
+            if (socketAddress == null) return "";
+            InetAddress inet = socketAddress.getAddress();
+            String host = inet == null ? socketAddress.getHostString() : inet.getHostAddress();
+            return host + ":" + socketAddress.getPort();
+        }
+
+        @Override
+        public void dnsStart(Call call, String domainName) {
+            recordNetworkEvent(context, jobId, "dnsStart", "dnsStartAt", true, detail(
+                "dnsHost", domainName
+            ));
+        }
+
+        @Override
+        public void dnsEnd(Call call, String domainName, List<InetAddress> inetAddressList) {
+            JSONArray addresses = new JSONArray();
+            for (InetAddress inet : inetAddressList) {
+                if (inet != null) addresses.put(inet.getHostAddress());
+            }
+            recordNetworkEvent(context, jobId, "dnsEnd", "dnsEndAt", false, detail(
+                "dnsHost", domainName,
+                "dnsAddresses", addresses
+            ));
+        }
+
+        @Override
+        public void connectStart(Call call, InetSocketAddress inetSocketAddress, Proxy proxy) {
+            recordNetworkEvent(context, jobId, "connectStart", "connectStartAt", true, detail(
+                "remoteAddress", address(inetSocketAddress),
+                "connectProxy", proxy == null ? "" : proxy.toString()
+            ));
+        }
+
+        @Override
+        public void secureConnectStart(Call call) {
+            recordNetworkEvent(context, jobId, "secureConnectStart", "secureConnectStartAt", true, null);
+        }
+
+        @Override
+        public void secureConnectEnd(Call call, Handshake handshake) {
+            recordNetworkEvent(context, jobId, "secureConnectEnd", "secureConnectEndAt", false, null);
+        }
+
+        @Override
+        public void connectEnd(Call call, InetSocketAddress inetSocketAddress, Proxy proxy, Protocol protocol) {
+            recordNetworkEvent(context, jobId, "connectEnd", "connectEndAt", false, detail(
+                "remoteAddress", address(inetSocketAddress),
+                "networkProtocol", protocol == null ? "" : protocol.toString()
+            ));
+        }
+
+        @Override
+        public void connectFailed(
+            Call call,
+            InetSocketAddress inetSocketAddress,
+            Proxy proxy,
+            Protocol protocol,
+            IOException ioe
+        ) {
+            recordNetworkEvent(context, jobId, "connectFailed", "connectFailedAt", false, detail(
+                "remoteAddress", address(inetSocketAddress),
+                "networkProtocol", protocol == null ? "" : protocol.toString(),
+                "callFailureClass", ioe == null ? "" : ioe.getClass().getName(),
+                "callFailureMessage", ioe == null || ioe.getMessage() == null ? "" : ioe.getMessage()
+            ));
+        }
+
+        @Override
+        public void connectionAcquired(Call call, Connection connection) {
+            recordNetworkEvent(context, jobId, "connectionAcquired", "connectionAcquiredAt", false, detail(
+                "remoteAddress", connection == null ? "" : address(connection.route().socketAddress()),
+                "networkProtocol", connection == null || connection.protocol() == null ? "" : connection.protocol().toString()
+            ));
+        }
+
+        @Override
+        public void requestHeadersStart(Call call) {
+            recordNetworkEvent(context, jobId, "requestHeadersStart", "requestHeadersStartAt", true, null);
+        }
+
+        @Override
+        public void requestHeadersEnd(Call call, Request request) {
+            recordNetworkEvent(context, jobId, "requestHeadersEnd", "requestHeadersEndAt", false, null);
+        }
+
+        @Override
+        public void requestBodyStart(Call call) {
+            recordNetworkEvent(context, jobId, "requestBodyStart", "requestBodyStartAt", true, null);
+        }
+
+        @Override
+        public void requestBodyEnd(Call call, long byteCount) {
+            recordNetworkEvent(context, jobId, "requestBodyEnd", "requestBodyEndAt", false, detail(
+                "requestBodyBytes", byteCount
+            ));
+        }
+
+        @Override
+        public void responseHeadersStart(Call call) {
+            recordNetworkEvent(context, jobId, "responseHeadersStart", "responseHeadersStartAt", true, null);
+        }
+
+        @Override
+        public void responseHeadersEnd(Call call, Response response) {
+            recordNetworkEvent(context, jobId, "responseHeadersEnd", "responseHeadersEndAt", false, detail(
+                "responseCode", response == null ? 0 : response.code(),
+                "networkProtocol", response == null || response.protocol() == null ? "" : response.protocol().toString()
+            ));
+        }
+
+        @Override
+        public void callEnd(Call call) {
+            recordNetworkEvent(context, jobId, "callEnd", "callEndAt", false, null);
+        }
+
+        @Override
+        public void callFailed(Call call, IOException ioe) {
+            recordNetworkEvent(context, jobId, "callFailed", "callFailedAt", false, detail(
+                "callFailureClass", ioe == null ? "" : ioe.getClass().getName(),
+                "callFailureMessage", ioe == null || ioe.getMessage() == null ? "" : ioe.getMessage()
+            ));
+        }
+    }
+
     private final class EventStreamAccumulator {
         final String jobId;
         final StringBuilder content = new StringBuilder();
@@ -624,7 +839,7 @@ public final class SullyStoryGenerationManager {
         String id = "";
         String role = "assistant";
         String finishReason = null;
-        int statusCode = 200;
+        int statusCode = 0;
         int sseEvents = 0;
         int chunkCount = 0;
         int reasoningChars = 0;
