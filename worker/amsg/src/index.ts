@@ -160,7 +160,9 @@ import type { ActiveMsg2TaskRecord } from '../../../types';
 import { createHybridPushTransport, isFcmConfigured, type NativeFcmEnv } from './nativeFcm';
 import { handleNativePollRequest, type NativePollDb } from './nativePoll';
 import {
+  failRunningStoryJob,
   handleStoryJobsRequest,
+  kickQueuedStoryJobs,
   runStoryJob,
 } from './storyJobs';
 
@@ -2941,6 +2943,19 @@ export class InstantTickDO extends DurableObject<Env> {
     if (story?.userId && story.jobId) {
       try {
         await runStoryJob(this.env, story.userId, story.jobId);
+      } catch (error) {
+        console.error('[amsg:story-job] Durable Object 执行异常；不重放上游，只把 running job 收成失败', {
+          jobId: story.jobId,
+          error,
+        });
+        try {
+          await failRunningStoryJob(this.env, story.userId, story.jobId, error);
+        } catch (settleError) {
+          console.error('[amsg:story-job] Durable Object 异常后连失败状态也没能落库', {
+            jobId: story.jobId,
+            error: settleError,
+          });
+        }
       } finally {
         await this.ctx.storage.delete(INSTANT_TICK_STORY_KEY);
       }
@@ -3132,5 +3147,15 @@ export default {
     // 整轮出错时上游把原因放在返回值里（同一份也会经 onError 记一行）。这里不再重复
     // 打印，但要把它咽掉——CF 不看 scheduled 的返回值，往外抛只会变成一条没上下文的堆栈。
     await upstream.scheduled(event, env);
+    // Story Jobs 的模型请求由 DO alarm 独立持有；cron 只捡“还没开始”的 queued 行。
+    // running 绝不自动重跑——那种状态可能已经把 POST 送到上游，重放会造成重复扣费。
+    try {
+      const swept = await kickQueuedStoryJobs(env);
+      if (swept.kicked > 0 || swept.failed > 0) {
+        console.log('[amsg:story-job] cron queued sweep', swept);
+      }
+    } catch (error) {
+      console.warn('[amsg:story-job] cron queued sweep 失败；queued 行仍留库，下一分钟再捡', error);
+    }
   },
 };
