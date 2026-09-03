@@ -77,6 +77,15 @@ public final class SullyStoryGenerationManager {
                 StoryCallTag tag = call.request().tag(StoryCallTag.class);
                 return tag == null ? new EventListener() {} : new StoryNetworkEventListener(tag.jobId);
             })
+            .addInterceptor(chain -> {
+                Request original = chain.request();
+                Request.Builder builder = original.newBuilder()
+                    .header("Accept-Language", Locale.getDefault().toLanguageTag());
+                if (original.header("User-Agent") == null) {
+                    builder.header("User-Agent", "SullyOS-Android");
+                }
+                return chain.proceed(builder.build());
+            })
             .addNetworkInterceptor(chain -> {
                 Request request = chain.request();
                 String contentType = request.header("Content-Type");
