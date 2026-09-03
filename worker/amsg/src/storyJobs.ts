@@ -819,6 +819,54 @@ export const runStoryJob = async (
   await finalizeFailed(env, liveRow, attempts, lastError);
 };
 
+export const failRunningStoryJob = async (
+  env: StoryJobsEnv,
+  userId: string,
+  jobId: string,
+  error: unknown,
+): Promise<void> => {
+  await ensureStoryJobsSchema(env.DB);
+  const row = await loadRowById(env.DB, userId, jobId);
+  if (!row || row.status !== 'running') return;
+  const attempts = parseAttempts(row.attempts_json);
+  await finalizeFailed(
+    env,
+    row,
+    attempts,
+    `剧情云端执行器异常：${(error as Error)?.message || error}`,
+  );
+};
+
+export const kickQueuedStoryJobs = async (
+  env: StoryJobsEnv,
+  limit = 24,
+): Promise<{ queued: number; kicked: number; failed: number }> => {
+  await ensureStoryJobsSchema(env.DB);
+  await cleanupOldJobs(env.DB);
+  const safeLimit = Math.max(1, Math.min(100, Math.floor(Number(limit) || 24)));
+  const result = await env.DB.prepare(
+    "SELECT user_id, job_id FROM story_jobs WHERE status = 'queued' ORDER BY created_at ASC LIMIT ?",
+  ).bind(safeLimit).all<{ user_id: string; job_id: string }>();
+  const rows = Array.isArray(result.results) ? result.results : [];
+  let kicked = 0;
+  let failed = 0;
+  for (const row of rows) {
+    if (!row?.user_id || !row?.job_id) continue;
+    const outcome = await kickStoryTick(env, row.user_id, row.job_id);
+    if (outcome.ok) {
+      kicked += 1;
+      continue;
+    }
+    if (outcome.reason === 'missing-binding') break;
+    failed += 1;
+    console.warn('[amsg:story-job] cron 重叫 queued story 失败', {
+      jobId: row.job_id,
+      error: outcome.error,
+    });
+  }
+  return { queued: rows.length, kicked, failed };
+};
+
 export const handleStoryJobsRequest = async (
   request: Request,
   env: StoryJobsEnv,
