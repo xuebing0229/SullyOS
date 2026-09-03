@@ -2,12 +2,13 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowLeft, Database, DownloadSimple, FilmSlate, Plus, SpinnerGap, Trash, UploadSimple, UsersThree, X } from '@phosphor-icons/react';
 import { useOS } from '../../../context/OSContext';
 import TokenImg from '../../os/TokenImg';
-import type { StoryTheaterEntry, StoryTheaterMask, StoryTheaterMaskSelection, StoryTheaterPreset } from '../../../types';
+import type { Message, StoryTheaterEntry, StoryTheaterMask, StoryTheaterMaskSelection, StoryTheaterPreset } from '../../../types';
 import { DB } from '../../../utils/db';
 import {
     BUILTIN_NIGHT_SCREENING_PRESET,
     createBlankStoryPreset,
     createStoryTheaterDraft,
+    makeStoryTheaterId,
     downloadStoryPreset,
     normalizeStoryTheater,
     parseStoryTheaterPreset,
@@ -121,6 +122,133 @@ const StoryTheaterContent: React.FC<Props> = ({ onClose }) => {
         setActiveEntry(normalized);
         setEntries(current => [normalized, ...current.filter(item => item.id !== normalized.id)].sort((a, b) => b.updatedAt - a.updatedAt));
     }, []);
+
+    const createBranchFrom = useCallback(async (sourceMessage: Message, requestedTitle?: string) => {
+        if (!activeEntry) return;
+        const sourceEntry = activeEntry;
+        const sourceThreadId = storyTheaterThreadId(sourceEntry.id);
+        const rows = (await DB.getMessagesByCharId(sourceThreadId, true))
+            .filter(message => message.metadata?.source === 'story_theater' && message.id <= sourceMessage.id)
+            .sort((a, b) => a.id - b.id);
+        if (rows.length === 0) {
+            addToast('这一层之前没有可复制的剧情内容', 'info');
+            return;
+        }
+
+        const rootId = sourceEntry.branchFrom?.rootId || sourceEntry.id;
+        const rootTitle = sourceEntry.branchFrom?.rootTitle || sourceEntry.title;
+        const branchNumber = entries.filter(item => item.branchFrom?.rootId === rootId).length + 1;
+        const title = String(requestedTitle || '').trim() || `${rootTitle} · 分支 ${branchNumber}`;
+        const newId = makeStoryTheaterId();
+        const newThreadId = storyTheaterThreadId(newId);
+
+        // 已完整落在分支点之前的“事件盒”可以原样继承；独立向量不能直接复用父线程分区，
+        // 所以向量归档对应的旧楼会在新分支里恢复为未归档，下一次续写前自动写进新分支自己的向量区。
+        const inheritedSummaryArchives = sourceEntry.archives.filter(archive =>
+            archive.strategy === 'summary'
+            && archive.fromMessageId <= sourceMessage.id
+            && archive.toMessageId <= sourceMessage.id
+        );
+        const summaryArchivedSourceIds = new Set<number>();
+        for (const archive of inheritedSummaryArchives) {
+            for (const row of rows) {
+                if (row.id >= archive.fromMessageId && row.id <= archive.toMessageId) summaryArchivedSourceIds.add(row.id);
+            }
+        }
+
+        const createdMessageIds: number[] = [];
+        const idMap = new Map<number, number>();
+        try {
+            for (const row of rows) {
+                const metadata: Record<string, any> = { ...(row.metadata || {}) };
+                metadata.source = 'story_theater';
+                metadata.theaterId = newId;
+                metadata.theaterBranchSourceMessageId = row.id;
+                delete metadata.theaterMirrorIds;
+                delete metadata.theaterRequestKey;
+                delete metadata.theaterRequestState;
+                delete metadata.theaterRequestStartedAt;
+                delete metadata.theaterRequestFinishedAt;
+                delete metadata.theaterRequestFailedAt;
+                delete metadata.theaterRequestRetriedAt;
+                delete metadata.theaterRequestStaleAt;
+                delete metadata.theaterRequestError;
+                if (summaryArchivedSourceIds.has(row.id)) {
+                    metadata.theaterArchived = true;
+                    metadata.theaterArchiveStrategy = 'summary';
+                } else {
+                    delete metadata.theaterArchived;
+                    delete metadata.theaterArchiveStrategy;
+                }
+
+                const newMessageId = await DB.saveMessage({
+                    charId: newThreadId,
+                    role: row.role,
+                    type: row.type || 'text',
+                    content: row.content,
+                    timestamp: row.timestamp,
+                    metadata,
+                } as any);
+                createdMessageIds.push(newMessageId);
+                idMap.set(row.id, newMessageId);
+            }
+
+            const archives = inheritedSummaryArchives
+                .map(archive => {
+                    const fromMessageId = idMap.get(archive.fromMessageId);
+                    const toMessageId = idMap.get(archive.toMessageId);
+                    if (!fromMessageId || !toMessageId) return null;
+                    return {
+                        ...archive,
+                        id: makeStoryTheaterId(),
+                        fromMessageId,
+                        toMessageId,
+                        createdAt: Date.now(),
+                    };
+                })
+                .filter(Boolean) as StoryTheaterEntry['archives'];
+
+            const now = Date.now();
+            const branched = normalizeStoryTheater({
+                ...sourceEntry,
+                id: newId,
+                title,
+                // 真实陪伴的分支是“如果当时……”世界线，绝不能再写回同一份角色真实记忆。
+                writesToCharacterMemory: false,
+                archives,
+                branchFrom: {
+                    parentId: sourceEntry.id,
+                    parentTitle: sourceEntry.title,
+                    rootId,
+                    rootTitle,
+                    messageId: sourceMessage.id,
+                    messageRole: sourceMessage.role === 'user' ? 'user' : 'assistant',
+                    messagePreview: String(sourceMessage.content || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120),
+                    depth: (sourceEntry.branchFrom?.depth || 0) + 1,
+                },
+                createdAt: now,
+                updatedAt: now,
+            });
+
+            await DB.saveStoryTheater(branched);
+            setEntries(current => [branched, ...current].sort((a, b) => b.updatedAt - a.updatedAt));
+            setActiveEntry(branched);
+            setMaskLocked(true);
+            setView('session');
+            addToast(
+                sourceEntry.writesToCharacterMemory
+                    ? `已从这一层建立「${title}」；为避免污染真实记忆，新世界线已自动改为虚构剧场`
+                    : `已从这一层建立「${title}」`,
+                'success',
+            );
+        } catch (error: any) {
+            if (createdMessageIds.length > 0) {
+                try { await DB.deleteMessages(createdMessageIds); } catch { /* best effort rollback */ }
+            }
+            try { await DB.deleteStoryTheater(newId); } catch { /* may not have been saved */ }
+            addToast(`建立分支失败：${error?.message || error}`, 'error');
+        }
+    }, [activeEntry, addToast, entries]);
 
     const savePreset = useCallback(async (next: StoryTheaterPreset) => {
         if (next.builtIn) return;
@@ -273,7 +401,7 @@ const StoryTheaterContent: React.FC<Props> = ({ onClose }) => {
     if (view === 'session' && activeEntry) {
         const preset = presets.find(item => item.id === activeEntry.presetId) || BUILTIN_NIGHT_SCREENING_PRESET;
         const hasVectorArchive = (!activeEntry.writesToCharacterMemory && activeEntry.archiveStrategy === 'vector') || activeEntry.archives.some(archive => archive.strategy === 'vector');
-        return <StoryTheaterSession entry={activeEntry} preset={preset} masks={masks} onBack={() => { setActiveEntry(null); setView('list'); }} onEdit={() => void openEntryEditor(activeEntry)} onOpenVectorMemory={hasVectorArchive ? () => setView('vectors') : undefined} onEntryChange={persistEntryInSession} />;
+        return <StoryTheaterSession entry={activeEntry} preset={preset} masks={masks} onBack={() => { setActiveEntry(null); setView('list'); }} onEdit={() => void openEntryEditor(activeEntry)} onOpenVectorMemory={hasVectorArchive ? () => setView('vectors') : undefined} onEntryChange={persistEntryInSession} onCreateBranch={createBranchFrom} />;
     }
 
     return <div className='h-full w-full flex flex-col bg-stone-100 text-slate-800'>
@@ -303,7 +431,7 @@ const StoryTheaterContent: React.FC<Props> = ({ onClose }) => {
                         return <div key={item.id} className='w-full py-5 flex items-center gap-2'>
                             <button onClick={() => { setActiveEntry(item); setView('session'); }} className='min-w-0 flex-1 flex items-center gap-4 text-left'>
                                 <div className='flex -space-x-2'>{mask.avatar ? <TokenImg value={mask.avatar} alt='' className='w-10 h-10 rounded-full object-cover border-2 border-slate-800 relative z-10' /> : <span className='w-10 h-10 rounded-full bg-slate-800 text-white grid place-items-center border-2 border-slate-800 relative z-10 text-xs font-serif'>{mask.name.slice(0, 1)}</span>}{cast.slice(0, 2).map(char => <TokenImg key={char.id} value={char.avatar} alt='' className='w-10 h-10 rounded-full object-cover border-2 border-stone-100' />)}{cast.length === 0 && <span className='w-10 h-10 rounded-full bg-slate-200 grid place-items-center'><UsersThree size={18} /></span>}</div>
-                                <div className='min-w-0 flex-1'><h3 className='font-serif font-semibold truncate'>{item.title}</h3><p className='mt-1 text-[10px] text-slate-400 truncate'>{youLabel} · 角色：{cast.map(char => char.name).join('、') || '暂无'} · {item.writesToCharacterMemory ? '进入角色记忆' : vectorEnabled ? '独立向量剧场' : '独立事件盒'}</p></div>
+                                <div className='min-w-0 flex-1'><h3 className='font-serif font-semibold truncate'>{item.title}</h3><p className='mt-1 text-[10px] text-slate-400 truncate'>{youLabel} · 角色：{cast.map(char => char.name).join('、') || '暂无'} · {item.writesToCharacterMemory ? '进入角色记忆' : vectorEnabled ? '独立向量剧场' : '独立事件盒'}</p>{item.branchFrom && <p className='mt-1 text-[9px] text-violet-500 truncate'>↳ 从「{item.branchFrom.parentTitle}」某一层分出 · 第 {item.branchFrom.depth} 级世界线</p>}</div>
                                 <time className='text-[9px] text-slate-400'>{new Date(item.updatedAt).toLocaleDateString()}</time>
                             </button>
                             {hasVectorArchive && <button onClick={() => { setActiveEntry(item); setView('vectors'); }} className='w-10 h-10 shrink-0 rounded-full bg-white border border-slate-200 grid place-items-center text-violet-600' title='查看本剧情向量记忆' aria-label='查看本剧情向量记忆'><Database size={17} /></button>}
