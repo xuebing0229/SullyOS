@@ -1,5 +1,7 @@
 package __APP_ID__.plugins;
 
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
 import android.content.Intent;
@@ -48,6 +50,19 @@ public class SullyStoryKeepAliveService extends Service {
             context.startService(intent);
         } catch (Exception error) {
             Log.e(TAG, "Unable to release story generation foreground service", error);
+        }
+    }
+
+    @Override
+    public void onCreate() {
+        super.onCreate();
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            NotificationManager manager = getSystemService(NotificationManager.class);
+            manager.createNotificationChannel(new NotificationChannel(
+                CHANNEL_ID,
+                "剧情后台续写",
+                NotificationManager.IMPORTANCE_LOW
+            ));
         }
     }
 
