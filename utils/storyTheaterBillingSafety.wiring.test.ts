@@ -10,6 +10,7 @@ const editorSource = read('../components/date/story/StoryTheaterEditor.tsx');
 const osContextSource = read('../context/OSContext.tsx');
 const nativeStoryInstallerSource = read('../scripts/install-android-story-background.mjs');
 const nativeStoryPluginSource = read('../native/android/SullyStoryBackgroundPlugin.java');
+const nativeStoryServiceSource = read('../native/android/SullyStoryBackgroundService.java');
 const nativeStoryBridgeSource = read('./nativeStoryBackground.ts');
 
 const sliceBetween = (source: string, startAnchor: string, endAnchor: string): string => {
@@ -41,28 +42,27 @@ describe('story theater billing safety wiring', () => {
         expect(interceptorSource).not.toContain('回退原请求重发');
     });
 
-    it('keeps Android story transport on WebView fetch with native keepalive only', () => {
-        expect(storySource).toContain('acquireNativeStoryKeepAlive');
-        expect(storySource).toContain('executeOpenAiChatPlan({');
-        expect(storySource).toContain("transport: 'webview-fetch'");
-        expect(storySource).toContain('forceStream: wantsStreamTransport');
-        expect(storySource).toContain('story-archive:');
-        expect(storySource).not.toContain('executeStoryCompletionInNativeBackground');
-        expect(storySource).not.toContain('getPendingNativeStoryJob');
-        expect(storySource).not.toContain("transport: 'native-background'");
+    it('uses a native foreground EventSource for Android story completions', () => {
+        expect(storySource).toContain('executeStoryCompletionInNativeBackground');
+        expect(storySource).toContain("transport: useNativeEventSourceTransport ? 'native-eventsource' : 'webview-fetch'");
+        expect(storySource).toContain('getPendingNativeStoryJob');
+        expect(nativeStoryBridgeSource).toContain('NativeStoryBackground.submit');
+        expect(nativeStoryBridgeSource).toContain('stream: true');
+        expect(nativeStoryPluginSource).toContain('void submit(');
+        expect(nativeStoryPluginSource).toContain('void status(');
+        expect(nativeStoryPluginSource).toContain('void remove(');
     });
 
-    it('keeps native Android code limited to keepalive and protects the WebView renderer', () => {
-        expect(nativeStoryInstallerSource).toContain('SullyStoryKeepAliveService.java');
-        expect(nativeStoryInstallerSource).toContain('setRendererPriorityPolicy');
-        expect(nativeStoryInstallerSource).toContain('RENDERER_PRIORITY_IMPORTANT');
-        expect(nativeStoryInstallerSource).not.toContain("['SullyStoryBackgroundPlugin.java', 'SullyStoryBackgroundService.java'");
-        expect(nativeStoryInstallerSource).not.toContain('const okHttpDependency');
-        expect(nativeStoryPluginSource).not.toContain('void submit(');
-        expect(nativeStoryPluginSource).not.toContain('void status(');
-        expect(nativeStoryPluginSource).not.toContain('void remove(');
-        expect(nativeStoryBridgeSource).not.toContain('executeStoryCompletionInNativeBackground');
-        expect(nativeStoryBridgeSource).not.toContain('ApiExecutionPlan');
+    it('delegates SSE framing to okhttp-sse instead of a hand-written line parser', () => {
+        expect(nativeStoryInstallerSource).toContain('com.squareup.okhttp3:okhttp-sse:4.12.0');
+        expect(nativeStoryServiceSource).toContain('EventSources.createFactory');
+        expect(nativeStoryServiceSource).toContain('EventSourceListener');
+        expect(nativeStoryServiceSource).toContain('.readTimeout(0L, TimeUnit.MILLISECONDS)');
+        expect(nativeStoryServiceSource).toContain('.retryOnConnectionFailure(false)');
+        expect(nativeStoryServiceSource).not.toContain('readUtf8Line');
+        expect(nativeStoryServiceSource).not.toContain('BufferedSource');
+        expect(nativeStoryServiceSource).not.toContain('HttpURLConnection');
+        expect(nativeStoryServiceSource).not.toContain('Protocol.HTTP_1_1');
     });
 
     it('uses the independent story route scope instead of the main chat route', () => {
