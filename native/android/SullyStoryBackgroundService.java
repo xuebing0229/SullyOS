@@ -31,10 +31,12 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 import java.io.IOException;
 import java.io.InterruptedIOException;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import okhttp3.Call;
 import okhttp3.MediaType;
@@ -53,9 +55,13 @@ public class SullyStoryBackgroundService extends Service {
     private static final int SERVICE_NOTIFICATION_ID = 23031;
     private static final long RETENTION_MS = 7L * 24L * 60L * 60L * 1000L;
 
+    private static final int MAX_PARALLEL_JOBS = 3;
+
     private HandlerThread workerThread;
     private Handler worker;
     private boolean pumping = false;
+    private final ExecutorService jobExecutor = Executors.newFixedThreadPool(MAX_PARALLEL_JOBS);
+    private final AtomicInteger activeJobs = new AtomicInteger(0);
     private PowerManager.WakeLock wakeLock;
 
     private static File jobsDir(Context context) {
@@ -175,6 +181,7 @@ public class SullyStoryBackgroundService extends Service {
     public void onDestroy() {
         if (worker != null) worker.removeCallbacksAndMessages(null);
         if (workerThread != null) workerThread.quitSafely();
+        jobExecutor.shutdownNow();
         releaseWakeLock();
         super.onDestroy();
     }
@@ -269,20 +276,48 @@ public class SullyStoryBackgroundService extends Service {
         if (pumping) return;
         pumping = true;
         try {
-            while (true) {
-                JSONObject job = nextQueuedJob();
+            while (activeJobs.get() < MAX_PARALLEL_JOBS) {
+                JSONObject job = claimNextQueuedJob();
                 if (job == null) break;
-                processJob(job);
+
+                activeJobs.incrementAndGet();
+                jobExecutor.submit(() -> {
+                    try {
+                        processJob(job);
+                    } finally {
+                        activeJobs.decrementAndGet();
+                        if (worker != null) worker.post(this::pump);
+                    }
+                });
+            }
+
+            // 以前所有剧情共用一个 HandlerThread 串行执行：前一个请求若卡 240 秒，
+            // 第二个剧情只能先排队 240 秒，再自己等 240 秒，于是页面看到 500+ 秒。
+            // 现在允许独立剧情并行；只有队列和活动任务都空了才停前台服务。
+            if (activeJobs.get() == 0 && !hasQueuedJob()) {
+                releaseWakeLock();
+                stopForeground(true);
+                stopSelf();
             }
         } finally {
             pumping = false;
-            releaseWakeLock();
-            stopForeground(true);
-            stopSelf();
         }
     }
 
-    private JSONObject nextQueuedJob() {
+    private boolean hasQueuedJob() {
+        File[] files = jobsDir(this).listFiles((dir, name) -> name.endsWith(".json"));
+        if (files == null || files.length == 0) return false;
+        for (File file : files) {
+            try {
+                String id = file.getName().substring(0, file.getName().length() - 5);
+                JSONObject job = readJobFile(this, id);
+                if (job != null && "queued".equals(job.optString("status"))) return true;
+            } catch (Exception ignored) { }
+        }
+        return false;
+    }
+
+    private JSONObject claimNextQueuedJob() {
         File[] files = jobsDir(this).listFiles((dir, name) -> name.endsWith(".json"));
         if (files == null || files.length == 0) return null;
         Arrays.sort(files, Comparator.comparingLong(File::lastModified));
@@ -290,7 +325,14 @@ public class SullyStoryBackgroundService extends Service {
             try {
                 String id = file.getName().substring(0, file.getName().length() - 5);
                 JSONObject job = readJobFile(this, id);
-                if (job != null && "queued".equals(job.optString("status"))) return job;
+                if (job == null || !"queued".equals(job.optString("status"))) continue;
+
+                long now = System.currentTimeMillis();
+                job.put("status", "running");
+                job.put("startedAt", now);
+                job.put("updatedAt", now);
+                writeJobFile(this, job);
+                return job;
             } catch (Exception ignored) { }
         }
         return null;
@@ -298,12 +340,15 @@ public class SullyStoryBackgroundService extends Service {
 
     private void processJob(JSONObject job) {
         String jobId = job.optString("jobId", "");
-        long startedAt = System.currentTimeMillis();
+        long startedAt = job.optLong("startedAt", System.currentTimeMillis());
         try {
-            job.put("status", "running");
-            job.put("startedAt", startedAt);
-            job.put("updatedAt", startedAt);
-            writeJobFile(this, job);
+            // claimNextQueuedJob 已经原子地把 queued -> running，防止并发 pump 重复领取同一任务。
+            // 兼容极端恢复路径：没有 startedAt 时补一个。
+            if (!job.has("startedAt")) {
+                job.put("startedAt", startedAt);
+                job.put("updatedAt", startedAt);
+                writeJobFile(this, job);
+            }
             updateServiceNotification(job.optString("title", "剧情"));
 
             JSONArray routes = job.optJSONArray("routes");
@@ -322,7 +367,7 @@ public class SullyStoryBackgroundService extends Service {
                 if (route == null) continue;
                 long attemptStarted = System.currentTimeMillis();
                 try {
-                    RouteResult result = executeRoute(jobId, route, baseBody, timeoutMs);
+                    RouteResult result = executeRoute(jobId, route, baseBody, timeoutMs, failover);
                     JSONObject attempt = attemptRecord(route, i, true, result.statusCode, null, System.currentTimeMillis() - attemptStarted);
                     attempts.put(attempt);
                     job.put("attempts", attempts);
@@ -411,14 +456,25 @@ public class SullyStoryBackgroundService extends Service {
             || lower.contains("审核");
     }
 
-    private RouteResult executeRoute(String jobId, JSONObject route, JSONObject baseBody, long timeoutMs) throws RouteFailure {
+    private RouteResult executeRoute(
+        String jobId,
+        JSONObject route,
+        JSONObject baseBody,
+        long timeoutMs,
+        boolean failoverMode
+    ) throws RouteFailure {
         StringBuilder streamedContent = new StringBuilder();
         long attemptStartedAt = System.currentTimeMillis();
         long firstByteTimeoutMs = Math.max(0L, Math.min(300_000L, route.optLong("firstByteTimeoutMs", 0L)));
-        // 故障转移线路用用户配置的首字等待；直连没有该值时，也不能无限挂死。
-        // 直连退回到本轮 timeoutMs 作为“首个可见正文”的兜底等待，而不是整轮总时长。
-        long firstVisibleWaitMs = firstByteTimeoutMs > 0L ? firstByteTimeoutMs : timeoutMs;
-        long firstVisibleDeadlineMs = attemptStartedAt + firstVisibleWaitMs;
+        // WebView 直连模式早就约定：单线路剧情不做“首字超时”，模型慢也继续等。
+        // 原生后台之前错误地又塞回了 240 秒硬阈值，于是 direct 模式会自己把正常慢请求杀掉。
+        // 只有真正开启故障转移时才需要首字等待，用于决定何时切下一条。
+        long firstVisibleWaitMs = failoverMode
+            ? (firstByteTimeoutMs > 0L ? firstByteTimeoutMs : timeoutMs)
+            : 0L;
+        long firstVisibleDeadlineMs = firstVisibleWaitMs > 0L
+            ? attemptStartedAt + firstVisibleWaitMs
+            : 0L;
 
         AtomicBoolean visibleContent = new AtomicBoolean(false);
         AtomicBoolean firstVisibleTimedOut = new AtomicBoolean(false);
@@ -479,7 +535,7 @@ public class SullyStoryBackgroundService extends Service {
             call = client.newCall(request);
             final Call activeCall = call;
 
-            {
+            if (firstVisibleWaitMs > 0L) {
                 long delayMs = Math.max(1L, firstVisibleDeadlineMs - System.currentTimeMillis());
                 firstVisibleTimer = Executors.newSingleThreadScheduledExecutor();
                 firstVisibleTimer.schedule(() -> {
