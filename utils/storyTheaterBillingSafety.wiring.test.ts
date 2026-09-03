@@ -217,6 +217,10 @@ describe('story theater billing safety wiring', () => {
         expect(cloudStoryBridgeSource).toContain("/story-jobs/by-client/");
         expect(cloudStoryBridgeSource).toContain("为避免重复扣费，本轮不会自动重发");
         expect(cloudStoryBridgeSource).toContain("getPendingCloudStoryJob");
+        expect(cloudStoryBridgeSource).toContain("cloud story capability probe failed; trying cloud transport anyway");
+        expect(cloudStoryBridgeSource).toContain("cloud story capability probe inconclusive; trying cloud transport anyway");
+        expect(cloudStoryBridgeSource).toContain("capabilityCache.available === true");
+        expect(cloudStoryBridgeSource).not.toContain("capabilityCache = { key, at: now(), available: false }");
         expect(amsgStoryJobsSource).toContain("CREATE TABLE IF NOT EXISTS story_jobs");
         expect(amsgStoryJobsSource).toContain("PARTIAL_PERSIST_INTERVAL_MS");
         expect(amsgStoryJobsSource).toContain("kickStory(userId, jobId)");
