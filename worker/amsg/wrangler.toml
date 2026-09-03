@@ -50,17 +50,9 @@ database_id = "REPLACE_WITH_YOUR_D1_ID"
 name = "INSTANT_TICK"
 class_name = "InstantTickDO"
 
-[[durable_objects.bindings]]
-name = "STORY_TICK"
-class_name = "StoryTickDO"
-
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["InstantTickDO"]
-
-[[migrations]]
-tag = "v2"
-new_sqlite_classes = ["StoryTickDO"]
 
 # 每分钟查一次到点任务（UTC）。这是主动消息唯一的投递触发方式——
 # 没有 send-notifications 这类 HTTP 端点，关掉 cron 等于整个功能停摆。
