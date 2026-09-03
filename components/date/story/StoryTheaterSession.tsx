@@ -892,9 +892,9 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             ...generationSettings,
         };
 
-        // Android 采用成熟的 ForegroundService + okhttp-sse EventSource：
-        // completion 从请求发出到结束始终由原生服务持有，WebView 只轮询持久化进度。
-        // Web/PWA 仍复用 safeApi；两边不再在一次请求中途“接力”或切换网络栈。
+        // Android 对齐 RikkaHub：generation 由 App 进程里的原生 manager 持有，
+        // ForegroundService 只负责前台生命周期；WebView 只轮询持久化进度。
+        // Web/PWA 仍复用 safeApi；一次请求从发出到结束都不更换 owner/网络栈。
         const useNativeEventSourceTransport = Boolean(
             background && isNativeStoryBackgroundRuntime(),
         );
