@@ -88,6 +88,15 @@ public class SullyStoryKeepAliveService extends Service {
 
     @Override
     public void onDestroy() {
+        for (String generationId : activeGenerations.keySet()) {
+            SullyStoryGenerationManager.recordForegroundEvent(
+                this,
+                generationId,
+                "fgsDestroyed",
+                "foregroundDestroyedAt",
+                null
+            );
+        }
         activeGenerations.clear();
         if (isForeground) {
             stopForeground(STOP_FOREGROUND_REMOVE);
@@ -104,7 +113,7 @@ public class SullyStoryKeepAliveService extends Service {
             return;
         }
         activeGenerations.put(generationId.trim(), title == null ? "剧情" : title.trim());
-        updateForegroundNotification(title == null ? "剧情" : title.trim());
+        updateForegroundNotification(generationId.trim(), title == null ? "剧情" : title.trim());
     }
 
     private void release(Intent intent) {
@@ -113,15 +122,17 @@ public class SullyStoryKeepAliveService extends Service {
         if (activeGenerations.isEmpty()) {
             stopService();
         } else {
+            String latestGenerationId = null;
             String latestTitle = "剧情";
             for (Map.Entry<String, String> entry : activeGenerations.entrySet()) {
+                latestGenerationId = entry.getKey();
                 latestTitle = entry.getValue();
             }
-            updateForegroundNotification(latestTitle);
+            if (latestGenerationId != null) updateForegroundNotification(latestGenerationId, latestTitle);
         }
     }
 
-    private void updateForegroundNotification(String title) {
+    private void updateForegroundNotification(String generationId, String title) {
         try {
             android.app.Notification notification = buildNotification(title);
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
@@ -135,7 +146,21 @@ public class SullyStoryKeepAliveService extends Service {
                 startForeground(NOTIFICATION_ID, notification);
             }
             isForeground = true;
+            SullyStoryGenerationManager.recordForegroundEvent(
+                this,
+                generationId,
+                "fgsForegroundStarted",
+                "foregroundStartedAt",
+                null
+            );
         } catch (Exception error) {
+            SullyStoryGenerationManager.recordForegroundEvent(
+                this,
+                generationId,
+                "fgsForegroundFailed",
+                "foregroundFailedAt",
+                error
+            );
             Log.e(TAG, "Failed to enter foreground", error);
             activeGenerations.clear();
             stopSelf();
@@ -159,7 +184,7 @@ public class SullyStoryKeepAliveService extends Service {
             PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT
         );
         return new NotificationCompat.Builder(this, CHANNEL_ID)
-            .setSmallIcon(getApplicationInfo().icon)
+            .setSmallIcon(__APP_ID__.R.drawable.sully_story_notification)
             .setContentTitle("剧情剧场")
             .setContentText("正在后台续写《" + (title == null || title.isEmpty() ? "剧情" : title) + "》")
             .setContentIntent(pending)
