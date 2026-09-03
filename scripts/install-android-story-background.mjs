@@ -91,7 +91,7 @@ await writeFile(manifestPath, manifest);
 // 清掉旧原生 completion 曾注入的 OkHttp / okhttp-sse；保活 Service 不拥有模型网络请求。
 let gradle = await readFile(gradlePath, 'utf8');
 gradle = gradle.replace(
-  /^\s*implementation\s+["']com\.squareup\.okhttp3:okhttp:4\.12\.0["']\s*$/gm,
+  /^\s*implementation\s+["']com\.squareup\.okhttp3:(?:okhttp|okhttp-sse)(?::[^"']+)?["']\s*$/gm,
   '',
 );
 await writeFile(gradlePath, gradle);
