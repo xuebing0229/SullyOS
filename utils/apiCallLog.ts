@@ -54,8 +54,9 @@ export interface ApiCallMeta {
  * Cloudflare Worker 在云端发出。
  *   - `cloud-instant-chat`：即时对话（用户此刻正等着的那一轮）
  *   - `cloud-plate-consolidate`：门牌整理（记忆宫殿的后台活儿，用的是副 API）
+ *   - `cloud-story-job`：剧情剧场后台续写（真正的长连接由用户自己的 Worker 持有）
  */
-export type ApiCallRoute = 'cloud-instant-chat' | 'cloud-plate-consolidate';
+export type ApiCallRoute = 'cloud-instant-chat' | 'cloud-plate-consolidate' | 'cloud-story-job';
 
 /** 落库的一条记录。 */
 export interface ApiCallLogEntry extends ApiCallMeta {
