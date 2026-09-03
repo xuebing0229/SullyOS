@@ -124,6 +124,17 @@ describe('story theater billing safety wiring', () => {
         expect(nativeStoryBridgeSource).toContain('networkEvents');
     });
 
+    it('clears only the JS pending pointer and never deletes a native job another observer may still be polling', () => {
+        const clearStart = nativeStoryBridgeSource.indexOf('export const clearPendingNativeStoryJob');
+        const clearEnd = nativeStoryBridgeSource.indexOf('export const getPendingNativeStoryJob', clearStart);
+        const clearSource = nativeStoryBridgeSource.slice(clearStart, clearEnd);
+        expect(clearSource).toContain('delete map[ownerKey]');
+        expect(clearSource).toContain('writePending(map)');
+        expect(clearSource).not.toContain('NativeStoryBackground.remove');
+        expect(nativeStoryManagerSource).toContain('private static final long RETENTION_MS = 7L * 24L * 60L * 60L * 1000L;');
+        expect(nativeStoryManagerSource).toContain('if (terminal && job.optLong("updatedAt", 0L) < cutoff) file.delete();');
+    });
+
     it('uses the independent story route scope instead of the main chat route', () => {
         expect(storySource).toContain("resolveApiExecutionPlan('story', apiConfig, true)");
         expect(storySource).not.toContain("resolveApiExecutionPlan('chat', apiConfig, true)");
