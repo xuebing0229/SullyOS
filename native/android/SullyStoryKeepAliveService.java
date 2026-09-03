@@ -8,6 +8,7 @@ import android.content.Intent;
 import android.content.pm.ServiceInfo;
 import android.os.Build;
 import android.os.IBinder;
+import android.os.PowerManager;
 import android.util.Log;
 import androidx.core.app.NotificationCompat;
 import androidx.core.app.ServiceCompat;
@@ -24,9 +25,11 @@ public class SullyStoryKeepAliveService extends Service {
     private static final String TAG = "SullyStoryFgs";
     private static final String CHANNEL_ID = "sully_story_keepalive";
     private static final int NOTIFICATION_ID = 23032;
+    private static final long WAKE_LOCK_TIMEOUT_MS = 30L * 60L * 1000L;
 
     private final LinkedHashMap<String, String> activeGenerations = new LinkedHashMap<>();
     private boolean isForeground = false;
+    private PowerManager.WakeLock wakeLock;
 
     public static boolean acquire(android.content.Context context, String generationId, String title) {
         Intent intent = new Intent(context, SullyStoryKeepAliveService.class)
@@ -56,6 +59,14 @@ public class SullyStoryKeepAliveService extends Service {
     @Override
     public void onCreate() {
         super.onCreate();
+        PowerManager powerManager = (PowerManager) getSystemService(POWER_SERVICE);
+        if (powerManager != null) {
+            wakeLock = powerManager.newWakeLock(
+                PowerManager.PARTIAL_WAKE_LOCK,
+                getPackageName() + ":story-generation"
+            );
+            wakeLock.setReferenceCounted(false);
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             NotificationManager manager = getSystemService(NotificationManager.class);
             manager.createNotificationChannel(new NotificationChannel(
@@ -97,6 +108,10 @@ public class SullyStoryKeepAliveService extends Service {
                 null
             );
         }
+        String diagnosticGenerationId = activeGenerations.isEmpty()
+            ? ""
+            : activeGenerations.keySet().iterator().next();
+        releaseWakeLock(diagnosticGenerationId);
         activeGenerations.clear();
         if (isForeground) {
             stopForeground(STOP_FOREGROUND_REMOVE);
@@ -113,6 +128,7 @@ public class SullyStoryKeepAliveService extends Service {
             return;
         }
         activeGenerations.put(generationId.trim(), title == null ? "剧情" : title.trim());
+        ensureWakeLock(generationId.trim());
         updateForegroundNotification(generationId.trim(), title == null ? "剧情" : title.trim());
     }
 
@@ -120,6 +136,7 @@ public class SullyStoryKeepAliveService extends Service {
         String generationId = intent.getStringExtra(EXTRA_LEASE_ID);
         if (generationId != null) activeGenerations.remove(generationId.trim());
         if (activeGenerations.isEmpty()) {
+            releaseWakeLock(generationId == null ? "" : generationId.trim());
             stopService();
         } else {
             String latestGenerationId = null;
@@ -164,6 +181,45 @@ public class SullyStoryKeepAliveService extends Service {
             Log.e(TAG, "Failed to enter foreground", error);
             activeGenerations.clear();
             stopSelf();
+        }
+    }
+
+    private void ensureWakeLock(String generationId) {
+        if (wakeLock == null || wakeLock.isHeld()) return;
+        try {
+            wakeLock.acquire(WAKE_LOCK_TIMEOUT_MS);
+            SullyStoryGenerationManager.recordForegroundEvent(
+                this,
+                generationId,
+                "wakeLockAcquired",
+                "wakeLockAcquiredAt",
+                null
+            );
+        } catch (Exception error) {
+            SullyStoryGenerationManager.recordForegroundEvent(
+                this,
+                generationId,
+                "wakeLockFailed",
+                "wakeLockFailedAt",
+                error
+            );
+            Log.e(TAG, "Failed to acquire story wake lock", error);
+        }
+    }
+
+    private void releaseWakeLock(String generationId) {
+        if (wakeLock == null || !wakeLock.isHeld()) return;
+        try {
+            wakeLock.release();
+            SullyStoryGenerationManager.recordForegroundEvent(
+                this,
+                generationId,
+                "wakeLockReleased",
+                "wakeLockReleasedAt",
+                null
+            );
+        } catch (Exception error) {
+            Log.w(TAG, "Failed to release story wake lock", error);
         }
     }
 
