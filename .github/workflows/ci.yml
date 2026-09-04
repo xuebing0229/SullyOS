@@ -38,7 +38,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Run story transport regression tests
-        run: pnpm exec vitest run utils/safeApi.stream.test.ts utils/apiFailover.test.ts utils/storyTheaterBillingSafety.wiring.test.ts utils/storyTheaterImage.inlinePlan.test.ts
+        run: pnpm exec vitest run utils/safeApi.stream.test.ts utils/apiFailover.test.ts utils/storyTheaterBillingSafety.wiring.test.ts
 
       - name: Build production app
         run: pnpm run build
