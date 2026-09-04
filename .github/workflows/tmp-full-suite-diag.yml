@@ -70,6 +70,7 @@ jobs:
           test_path.write_text(test.replace(old_block, new_block, 1))
           PY
           python scripts/tmp-post-upstream-merge.py
+          python scripts/tmp-post-upstream-merge-2.py
           git add -A
           test -z "$(git diff --name-only --diff-filter=U)"
 
@@ -79,7 +80,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
