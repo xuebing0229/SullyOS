@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   diagnose:
@@ -83,23 +83,28 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      - name: Run full suite and persist failure tail
+      - name: Run full suite
+        id: fullsuite
+        continue-on-error: true
         shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
-          set +e
           pnpm test:run > /tmp/full-vitest.log 2>&1
-          status=$?
-          set -e
-          if [ "$status" -ne 0 ]; then
-            tail -n 500 /tmp/full-vitest.log > /tmp/full-vitest-tail.log
-            encoded="$(base64 -w0 /tmp/full-vitest-tail.log)"
-            gh api --method PUT \
-              "repos/${GITHUB_REPOSITORY}/contents/.github/tmp-full-suite-failure.log" \
-              -f message='ci: capture full-suite failure tail' \
-              -f content="$encoded" \
-              -f branch='merge/upstream-20260904'
-            cat /tmp/full-vitest-tail.log
-            exit "$status"
-          fi
+          echo "status=$?" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare diagnostic tail
+        if: steps.fullsuite.outcome == 'failure'
+        shell: bash
+        run: |
+          tail -n 700 /tmp/full-vitest.log > /tmp/full-vitest-tail.log
+
+      - name: Upload diagnostic tail
+        if: steps.fullsuite.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: full-suite-failure-tail
+          path: /tmp/full-vitest-tail.log
+          retention-days: 1
+
+      - name: Fail if full suite failed
+        if: steps.fullsuite.outcome == 'failure'
+        run: exit 1
