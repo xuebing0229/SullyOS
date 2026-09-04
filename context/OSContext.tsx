@@ -1306,19 +1306,41 @@ recordApiCall({ requestId, url: urlStr, body, status, ok, response: parsed, resp
               if (urlStr.includes('/chat/completions')) {
 recordApiCall({ requestId: (config as any)?.__sullyApiCallId, url: urlStr, body: (sendArgs[1] as any)?.body, ok: false, meta: (config as any)?.__sullyMeta || requestMeta || ambientMetaAtStart, durationMs: Date.now() - fetchStartedAt, billingCapture });
               }
-              // Story Jobs 的状态 GET 在 Android WebView 锁屏/切后台后可能被本地
-              // AbortController 正常取消；远端 job 仍继续运行。这里只跳过这一个已知的诊断误报，
-              // 不吞异常、不改轮询/重试，也不放过 POST 或其它网络失败。
-              const isExpectedStoryJobPollAbort = (() => {
-                  if (method !== 'GET' || err?.name !== 'AbortError') return false;
+              // Story Jobs 的状态 GET，以及“带稳定幂等 ID 的任务提交 POST”，在 Android WebView
+              // 锁屏/切后台后都可能被本地 AbortController 取消等待；远端 job 仍可能已经创建并继续运行。
+              // 这里只跳过这两类可安全接回的底层诊断误报：异常本身仍继续 throw 给调用方，POST 会按同一
+              // clientRequestId 查找已创建任务；若最终找不回，上层仍会报“提交结果不确定”。
+              const isExpectedStoryJobAbort = (() => {
+                  if (err?.name !== 'AbortError') return false;
+                  let pathname = '';
                   try {
-                      const pathname = new URL(urlStr, window.location.href).pathname;
+                      pathname = new URL(urlStr, window.location.href).pathname;
+                  } catch {
+                      return false;
+                  }
+
+                  if (method === 'GET') {
                       return /^\/story-jobs\/(?:by-client\/)?[^/]+\/?$/.test(pathname);
+                  }
+                  if (method !== 'POST' || pathname !== '/story-jobs') return false;
+
+                  const rawBody = (sendArgs[1] as RequestInit | undefined)?.body;
+                  if (typeof rawBody !== 'string') return false;
+                  try {
+                      const spec = JSON.parse(rawBody);
+                      return typeof spec?.jobId === 'string'
+                          && spec.jobId.startsWith('storycloud_')
+                          && typeof spec?.clientRequestId === 'string'
+                          && spec.clientRequestId.startsWith('storyreq_')
+                          && Array.isArray(spec?.routes)
+                          && spec.routes.length > 0
+                          && spec?.baseBody
+                          && typeof spec.baseBody === 'object';
                   } catch {
                       return false;
                   }
               })();
-              if (!isAnalyticsRequestUrl(urlStr) && !isExpectedStoryJobPollAbort) {
+              if (!isAnalyticsRequestUrl(urlStr) && !isExpectedStoryJobAbort) {
                   // 光秃秃一句 "Failed to fetch" + 一个 URL 排查不了任何东西（社区里这条卡过好几个人）。
                   // 这里把浏览器肯在 JS 侧交出来的旁证一次性补齐：方法、耗时、在线状态、是否跨域、
                   // Resource Timing 里那条记录，再给一句初判；随后异步做一次 no-cors 连通性复检，
