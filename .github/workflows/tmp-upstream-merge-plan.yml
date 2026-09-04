@@ -70,6 +70,8 @@ jobs:
               raise RuntimeError('NovelAI prompt regression assertion anchor not found')
           test_path.write_text(test.replace(old_block, new_block, 1))
           PY
+          python scripts/tmp-post-upstream-merge.py
+          python scripts/tmp-post-upstream-merge-2.py
           git add -A
           unresolved="$(git diff --name-only --diff-filter=U)"
           if [ -n "$unresolved" ]; then
@@ -90,7 +92,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: pnpm
 
       - name: Install dependencies
@@ -122,36 +124,24 @@ jobs:
         run: pnpm exec vitest run utils/collaborationWiring.test.ts
 
       - name: Run full test suite
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set +e
-          pnpm test:run 2>&1 | tee /tmp/full-vitest.log
-          status=${PIPESTATUS[0]}
-          set -e
-          if [ "$status" -ne 0 ]; then
-            encoded="$(base64 -w0 /tmp/full-vitest.log)"
-            existing_sha="$(gh api "repos/${GITHUB_REPOSITORY}/contents/.github/tmp-upstream-test-failure.log?ref=merge/upstream-20260904" --jq .sha 2>/dev/null || true)"
-            args=(--method PUT "repos/${GITHUB_REPOSITORY}/contents/.github/tmp-upstream-test-failure.log" -f message='ci: capture full-suite regression failure' -f content="$encoded" -f branch='merge/upstream-20260904')
-            if [ -n "$existing_sha" ]; then
-              args+=(-f sha="$existing_sha")
-            fi
-            gh api "${args[@]}"
-            exit "$status"
-          fi
+        run: pnpm test:run
 
       - name: Build production app
         run: pnpm run build
 
-      - name: Validate diff and commit staging merge
+      - name: Validate diff, clean temporary tooling, and commit staging merge
         shell: bash
         run: |
           set -euo pipefail
           git add -A
           git diff --cached --check
-          git rm -f .github/workflows/tmp-upstream-merge-plan.yml scripts/tmp-resolve-upstream-merge.py
-          git rm -f .github/tmp-upstream-test-failure.log 2>/dev/null || true
+          git rm -f \
+            .github/workflows/tmp-upstream-merge-plan.yml \
+            .github/workflows/tmp-full-suite-diag.yml \
+            scripts/tmp-resolve-upstream-merge.py \
+            scripts/tmp-post-upstream-merge.py \
+            scripts/tmp-post-upstream-merge-2.py
+          git rm -f .github/tmp-upstream-test-failure.log .github/tmp-full-suite-tail.log .github/tmp-full-suite-failure.log 2>/dev/null || true
           git add -A
           git diff --cached --check
           git status --short
