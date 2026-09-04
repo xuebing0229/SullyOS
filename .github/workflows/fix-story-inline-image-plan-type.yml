@@ -1,0 +1,46 @@
+name: Fix story inline image plan typing
+
+on:
+  push:
+    branches:
+      - feat/story-inline-image-plan
+    paths:
+      - '.github/workflows/fix-story-inline-image-plan-type.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/story-inline-image-plan
+          fetch-depth: 0
+      - name: Patch union fallback and remove one-shot workflow
+        shell: python
+        run: |
+          from pathlib import Path
+          p = Path('components/date/story/StoryTheaterSession.tsx')
+          s = p.read_text()
+          old = """            const parsedInlineImage = entry.imageGeneration?.enabled
+                ? parseStoryInlineImagePlan(rawContent)
+                : { content: rawContent };
+"""
+          new = """            const parsedInlineImage = entry.imageGeneration?.enabled
+                ? parseStoryInlineImagePlan(rawContent)
+                : { content: rawContent, plan: undefined };
+"""
+          if s.count(old) != 1:
+              raise SystemExit(f'expected exactly one typing anchor, found {s.count(old)}')
+          p.write_text(s.replace(old, new))
+          Path('.github/workflows/fix-story-inline-image-plan-type.yml').unlink()
+      - name: Commit fix
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "fix(story): keep inline plan union typed"
+          git push origin HEAD:feat/story-inline-image-plan
