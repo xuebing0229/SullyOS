@@ -19,23 +19,24 @@ jobs:
           ref: feat/story-inline-image-plan
           fetch-depth: 0
       - name: Patch union fallback and remove one-shot workflow
-        shell: python
         run: |
+          python - <<'PY'
           from pathlib import Path
           p = Path('components/date/story/StoryTheaterSession.tsx')
           s = p.read_text()
           old = """            const parsedInlineImage = entry.imageGeneration?.enabled
-                ? parseStoryInlineImagePlan(rawContent)
-                : { content: rawContent };
-"""
+              ? parseStoryInlineImagePlan(rawContent)
+              : { content: rawContent };
+          """
           new = """            const parsedInlineImage = entry.imageGeneration?.enabled
-                ? parseStoryInlineImagePlan(rawContent)
-                : { content: rawContent, plan: undefined };
-"""
+              ? parseStoryInlineImagePlan(rawContent)
+              : { content: rawContent, plan: undefined };
+          """
           if s.count(old) != 1:
               raise SystemExit(f'expected exactly one typing anchor, found {s.count(old)}')
           p.write_text(s.replace(old, new))
           Path('.github/workflows/fix-story-inline-image-plan-type.yml').unlink()
+          PY
       - name: Commit fix
         run: |
           git config user.name "github-actions[bot]"
