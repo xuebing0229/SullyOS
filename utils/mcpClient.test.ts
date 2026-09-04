@@ -15,9 +15,11 @@ import {
     normalizeMcpToolArguments,
     MCP_REQUEST_TIMEOUT_MS,
     getMcpRequestTimeoutMs,
+    collectMcpFireServers,
+    hasWorkerUnreachableMcpServer,
     type McpServerConfig,
 } from './mcpClient';
-import { buildMcpOpenAITools, buildMcpRejectedToolsFallbackBody, buildMcpSystemBlock, buildMcpTextFallbackBody, extractMcpImageUrls, formatMcpToolResult, MCP_RESULT_MAX_CHARS, sanitizeMcpLeadInText, shouldRetryMcpWithoutTools, stripTextFakedMcpCalls } from './mcpToolBridge';
+import { buildMcpOpenAITools, buildMcpRejectedToolsFallbackBody, buildMcpSystemBlock, buildMcpTextFallbackBody, extractMcpImageUrls, formatMcpToolResult, MCP_CHAT_MAX_STALLED_ROUNDS, MCP_CHAT_MAX_TOOL_LOOPS, MCP_RESULT_MAX_CHARS, MCP_TAIL_REMINDER, sanitizeMcpLeadInText, shouldRetryMcpWithoutTools, stripTextFakedMcpCalls } from './mcpToolBridge';
 import { completeGroupChatWithMcp } from './groupChat/mcp';
 import { BUILTIN_IMAGE_MCP_REQUEST_TIMEOUT_MS, BUILTIN_IMAGE_SETTINGS_KEY, getBuiltinImageMcpServers, loadBuiltinImageSettings, saveBuiltinImageSettings } from './builtinImageMcp';
 
@@ -37,6 +39,7 @@ beforeEach(() => {
 
 afterEach(() => {
     vi.useRealTimers();
+    vi.unstubAllGlobals();
     vi.restoreAllMocks();
 });
 
@@ -107,10 +110,11 @@ describe('buildMcpRequestHeaders', () => {
                 { name: 'XBY-APIKEY', value: 'secret-xby' },
                 { name: 'Authorization', value: 'Custom auth' },
             ],
-        }, 'session-1');
+        }, 'session-1', '2025-11-25');
         expect(headers.get('XBY-APIKEY')).toBe('secret-xby');
         expect(headers.get('Authorization')).toBe('Bearer bearer-token');
         expect(headers.get('Mcp-Session-Id')).toBe('session-1');
+        expect(headers.get('MCP-Protocol-Version')).toBe('2025-11-25');
         expect(headers.get('X-Proxy-Key')).toBe('proxy-secret');
         expect(headers.get('X-MCP-Forward-Headers')).toBe('XBY-APIKEY,Authorization');
     });
@@ -226,16 +230,17 @@ describe('服务器配置持久化', () => {
         const tools = buildMcpOpenAITools('char-1', { allowCharacterReference: false }).tools;
         const novel = tools.find(tool => tool.function.name === 'novelai_generate_image');
         expect(novel?.function.parameters.properties).not.toHaveProperty('use_character_reference');
-        expect(novel?.function.parameters.properties).toHaveProperty('use_user_reference');
+        expect(novel?.function.parameters.properties).not.toHaveProperty('use_user_reference');
 
         const block = buildMcpSystemBlock('小明', 'char-1', {
             allowCharacterReference: false,
             character: { enabled: true, sourceName: '角色正面.png', type: 'character' },
             user: { enabled: true, sourceName: '用户正面.png', type: 'character' },
         });
-        expect(block).not.toContain('当前角色参考图');
-        expect(block).not.toContain('use_character_reference');
-        expect(block).toContain('use_user_reference');
+        expect(block).toContain('当前预设已关闭 Precise Reference');
+        expect(block).toContain('当前角色参考图和用户参考图均不可用');
+        expect(block).not.toContain('角色正面.png');
+        expect(block).not.toContain('用户正面.png');
     });
 
     it('isMcpChatAvailable: 必须启用且已发现工具', () => {
@@ -330,6 +335,56 @@ describe('buildMcpOpenAITools', () => {
     });
 });
 
+describe('MCP 高风险工具保护', () => {
+    it('服务端明确标注为 destructive 的工具会自动确认，用户拒绝后不发请求', async () => {
+        const server = mkServer({
+            tools: [{
+                name: 'delete_note',
+                title: '删除笔记',
+                inputSchema: { type: 'object', properties: {} },
+                annotations: { destructiveHint: true },
+            }],
+        });
+        vi.stubGlobal('window', { confirm: vi.fn().mockReturnValue(false) });
+        const fetchSpy = vi.spyOn(globalThis, 'fetch');
+
+        const result = await callMcpTool(server, 'delete_note', { id: 'n1' });
+        expect(result.success).toBe(false);
+        expect(fetchSpy).not.toHaveBeenCalled();
+    });
+});
+
+describe('MCP 多步任务策略', () => {
+    it('工具轮次使用 12 轮硬上限，并在连续两轮没有新结果时提前收口', () => {
+        expect(MCP_CHAT_MAX_TOOL_LOOPS).toBe(12);
+        expect(MCP_CHAT_MAX_STALLED_ROUNDS).toBe(2);
+    });
+
+    it('提示模型从检查推进到动作，并把用户本轮明确要求视为已确认', () => {
+        saveMcpServers([mkServer({ name: '游戏盒' })]);
+        const block = buildMcpSystemBlock('条条');
+        expect(block).toContain('随后立刻调用能推进目标的动作工具');
+        expect(block).toContain('不要反复读取同一份说明或状态');
+        expect(block).toContain('本轮已经明确要求执行，即视为已经确认');
+        expect(MCP_TAIL_REMINDER).toContain('本轮已明确要求的操作视为已确认');
+    });
+
+    it('文字兼容提示允许按结果继续下一步，但要求每次只输出一个调用', () => {
+        const body = buildMcpRejectedToolsFallbackBody({
+            messages: [{ role: 'user', content: '继续玩游戏' }],
+            tools: [{ type: 'function', function: {
+                name: 'play_game',
+                description: '执行游戏动作',
+                parameters: { type: 'object', properties: { action: { type: 'string' } } },
+            } }],
+            tool_choice: 'auto',
+        });
+        const prompt = body.messages.at(-1).content;
+        expect(prompt).toContain('每一步如果需要工具，只输出一行');
+        expect(prompt).toContain('选择下一步真正能推进目标的工具');
+        expect(prompt).toContain('不要反复读取同一份说明或状态');
+    });
+});
 describe('extractTextFakedMcpCalls（掉格式容错）', () => {
     const setup = () => {
         const s = mkServer({
@@ -693,5 +748,96 @@ describe('群聊 MCP 工具循环', () => {
         expect(result.choices[0].message.content).toContain('你掷出了 4');
         expect(result.usage.total_tokens).toBe(29);
         expect(info).toHaveBeenCalled();
+    });
+});
+
+describe('collectMcpFireServers', () => {
+    it('只带 enabled + 已发现工具 + 公网地址; 剥代理字段、留 token', () => {
+        localStorage.setItem('aetheros.mcp.servers', JSON.stringify([
+            { id: 'a', name: 'ok', url: 'https://mcp.example.com', enabled: true, token: 'tok', proxyUrl: 'https://proxy.x', proxyKey: 'pk', charIds: ['c1'], tools: [{ name: 't1', inputSchema: { type: 'object' } }], updatedAt: 1 },
+            { id: 'b', name: 'disabled', url: 'https://x.com', enabled: false, tools: [{ name: 't' }], updatedAt: 1 },
+            { id: 'c', name: 'no-tools', url: 'https://y.com', enabled: true, tools: [], updatedAt: 1 },
+            { id: 'd', name: 'local', url: 'http://localhost:18061/mcp', enabled: true, tools: [{ name: 't' }], updatedAt: 1 },
+            { id: 'e', name: 'lan', url: 'http://192.168.1.5/mcp', enabled: true, tools: [{ name: 't' }], updatedAt: 1 },
+        ]));
+        const out = collectMcpFireServers();
+        expect(out.map((s) => s.id)).toEqual(['a']);
+        expect(out[0]).toEqual({
+            id: 'a', name: 'ok', url: 'https://mcp.example.com', token: 'tok',
+            charIds: ['c1'], tools: [{ name: 't1', inputSchema: { type: 'object' } }],
+        });
+        expect('proxyUrl' in out[0]).toBe(false);
+    });
+
+    it('本机 / 内网服务器不上云，但本地照常在 MCP 模式里 —— 上云那一轮会掉工具', () => {
+        // 这一条钉的是「两侧集合不一致」这件事本身：collectMcpFireServers 把 localhost
+        // 过滤掉了，isMcpChatAvailable 没有。即时对话那一轮前端不注入 MCP 说明块、云端
+        // 清单又是空的，角色就彻底不知道自己有工具，而设置页还显示「已连接」。
+        saveMcpServers([mkServer({ id: 'srv_local', url: 'http://localhost:18061/mcp' })]);
+        expect(isMcpChatAvailable('char_a')).toBe(true);
+        expect(collectMcpFireServers()).toEqual([]);
+        expect(hasWorkerUnreachableMcpServer('char_a')).toBe(true);
+    });
+
+    it('无人值守后台不带 destructive 工具', () => {
+        saveMcpServers([
+            mkServer({
+                id: 'guarded',
+                tools: [
+                    { name: 'read_note', annotations: { readOnlyHint: true } },
+                    { name: 'delete_note', annotations: { destructiveHint: true } },
+                ],
+            }),
+        ]);
+
+        const out = collectMcpFireServers();
+        expect(out.map(server => server.id)).toEqual(['guarded']);
+        expect(out[0].tools?.map(tool => tool.name)).toEqual(['read_note']);
+    });
+
+    it('其余 worker 够不着的地址一并挡掉（链路本地 / 占位地址 / 局域网域名 / IPv6 ULA）', () => {
+        const blocked = [
+            'http://169.254.1.1/mcp',      // IPv4 链路本地
+            'http://0.0.0.0:8080/mcp',     // 占位地址
+            'http://[::]/mcp',             // 同上, IPv6
+            'http://127.0.0.5:9000/mcp',   // 回环整段 127/8, 不只 127.0.0.1
+            'http://my-nas.local/mcp',     // mDNS
+            'http://foo.localhost/mcp',    // 本机后缀域名
+            'http://[fd12:3456::1]/mcp',   // IPv6 ULA (fd)
+            'http://[fc00::1]/mcp',        // IPv6 ULA (fc)
+            'ftp://files.example.com/mcp', // 非 http(s)
+            '这不是个地址',                  // URL 解析不了
+        ];
+        localStorage.setItem('aetheros.mcp.servers', JSON.stringify([
+            ...blocked.map((url, i) => ({ id: `bad${i}`, name: url, url, enabled: true, tools: [{ name: 't' }], updatedAt: 1 })),
+            { id: 'good', name: 'ok', url: 'https://mcp.example.com/mcp', enabled: true, tools: [{ name: 't' }], updatedAt: 1 },
+        ]));
+
+        expect(collectMcpFireServers().map((s) => s.id)).toEqual(['good']);
+    });
+});
+
+describe('hasWorkerUnreachableMcpServer', () => {
+    it('地址全是公网 → false（这一轮可以放心上云，worker 那边照样有工具）', () => {
+        saveMcpServers([mkServer({ id: 'srv_pub', url: 'https://mcp.example.com/mcp' })]);
+        expect(hasWorkerUnreachableMcpServer('char_a')).toBe(false);
+    });
+
+    it('混着一台本机地址 → true（上云会让角色少掉那台的工具）', () => {
+        saveMcpServers([
+            mkServer({ id: 'srv_pub', url: 'https://mcp.example.com/mcp' }),
+            mkServer({ id: 'srv_lan', url: 'http://192.168.1.5:18061/mcp' }),
+        ]);
+        expect(hasWorkerUnreachableMcpServer('char_a')).toBe(true);
+    });
+
+    it('口径跟 isMcpChatAvailable 同源：没启用 / 没发现工具 / 绑给别的角色的都不算', () => {
+        saveMcpServers([mkServer({ id: 'srv_off', url: 'http://localhost:18061/mcp', enabled: false })]);
+        expect(hasWorkerUnreachableMcpServer('char_a')).toBe(false);
+        saveMcpServers([mkServer({ id: 'srv_empty', url: 'http://localhost:18061/mcp', tools: [] })]);
+        expect(hasWorkerUnreachableMcpServer('char_a')).toBe(false);
+        saveMcpServers([mkServer({ id: 'srv_bound', url: 'http://localhost:18061/mcp', charIds: ['char_b'] })]);
+        expect(hasWorkerUnreachableMcpServer('char_a')).toBe(false);
+        expect(hasWorkerUnreachableMcpServer('char_b')).toBe(true);
     });
 });

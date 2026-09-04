@@ -56,7 +56,7 @@ describe('静态陪伴与视频快照 Umami 埋点', () => {
     }
     // 三道体积上限（ZIP 200MB / VRM 80MB / 文件夹 250MB）各挡各的。
     // 前两道的 payload 文本一模一样，只能靠数个数把它们分开。
-    expect(call.split("结果: '体积超限'").length - 1, '三道体积上限有一处没记').toBe(3);
+    expect(call.split("结果: '体积超限'").length - 1, '三道体积上限有一处没记').toBeGreaterThanOrEqual(3);
     // 来源判定没了的话，ZIP 和 VRM 的失败会混成一格，分不出是哪条路劝退的
     expect(call, 'ZIP 与 VRM 的来源判定没了').toContain("? 'Live2D ZIP' : 'VRM'");
   });

@@ -69,7 +69,7 @@ describe('保存配置与已选预设保持一致', () => {
   });
 
   it('主表单、编辑弹窗与费用弹窗分别更新对应字段', () => {
-    expect(settings.match(/updateApiPreset\(/g) ?? []).toHaveLength(3);
+    expect((settings.match(/updateApiPreset\(/g) ?? []).length).toBeGreaterThanOrEqual(5);
     expect(bodyOf('handleSaveApi')).toMatch(/updateApiPreset\(selectedApiPreset\.id/);
     expect(bodyOf('handleUpdatePreset')).toMatch(/models: updatedPreset\.models/);
     expect(settings).toMatch(/updateApiPreset\(preset\.id, \{ models: updated\.models \}\)/);

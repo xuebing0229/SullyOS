@@ -378,7 +378,7 @@ describe('applyEmotionEvalRaw — 落库语义', () => {
             ],
             injection: 'x',
         });
-        await applyEmotionEvalRaw(raw, makeChar());
+        await applyEmotionEvalRaw(raw, makeChar({ id: 'char-missing-fields' }));
         const saved = saveCharacter.mock.calls[0][0];
         expect(saved.activeBuffs.length).toBe(3);
         expect(saved.activeBuffs[0].name).toBe('buff_x');

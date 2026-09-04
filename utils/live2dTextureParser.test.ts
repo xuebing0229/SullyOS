@@ -1,12 +1,24 @@
-import { Assets, loadTextures } from 'pixi.js';
 import { describe, expect, it } from 'vitest';
 
+const ensureNavigator = () => {
+  if (!('navigator' in globalThis)) {
+    Object.defineProperty(globalThis, 'navigator', {
+      configurable: true,
+      value: { userAgent: 'node', platform: 'Linux', maxTouchPoints: 0 },
+    });
+  }
+};
+
 describe('Live2D Blob texture parser selection', () => {
-  it('does not rely on a fragment extension that Pixi removes', () => {
+  it('does not rely on a fragment extension that Pixi removes', async () => {
+    ensureNavigator();
+    const { loadTextures } = await import('pixi.js');
     expect(loadTextures.test?.('blob:https://localhost/texture#live2d-texture.png')).toBe(false);
   });
 
-  it('keeps an explicit texture parser on a bare Blob URL', () => {
+  it('keeps an explicit texture parser on a bare Blob URL', async () => {
+    ensureNavigator();
+    const { Assets } = await import('pixi.js');
     const url = 'blob:https://localhost/live2d-explicit-parser-test';
     Assets.add({
       alias: url,

@@ -31,6 +31,6 @@ describe('failover three-minute cooldown contract', () => {
     expect(source).not.toContain('单线路总尝试');
     expect(source).not.toContain('连续失败熔断');
     expect(source).not.toContain('冷却（秒）');
-    expect(source).toContain('固定冷却 3 分钟');
+    expect(source).toContain('失败线路冷却 3 分钟');
   });
 });

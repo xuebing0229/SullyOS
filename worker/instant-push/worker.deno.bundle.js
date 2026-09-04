@@ -2325,7 +2325,10 @@ var SSE_DONE_BYTES2 = SSE_ENCODER2.encode("event: done\ndata: {}\n\n");
 
 // utils/sanitize.ts
 var stripLiteralBackslashN = (t) => t.replace(/\\n/g, "\n");
-var stripSourceTags = (t) => t.replace(/\s*\[(?:聊天|通话|约会)\]\s*/g, "\n");
+var stripLeakedSourceTags = (t) => t.replace(
+  /\s*\[\s*(?:聊\s*(?:天|chat)|chat|通\s*(?:话|call)|call|约\s*(?:会|date)|date)\s*\]\s*/giu,
+  "\n"
+);
 var stripTimestamps = (t) => t.replace(/\[\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}\]\s*/g, "").replace(/^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}\s*/gm, "").replace(/（[上下]午\d{1,2}[：:]\d{2}）/g, "").replace(/\(\d{1,2}:\d{2}\s*[AP]M\)/gi, "");
 var stripChineseDate = (t) => t.replace(/\[\d{4}[-/年]\d{1,2}[-/月]\d{1,2}.*?\]/g, "");
 var stripRoleNamePrefix = (t) => t.replace(/^[\w一-龥]+:\s*/, "");
@@ -2463,7 +2466,7 @@ function sanitizeForNotification(text) {
   result = stripChineseDate(result);
   result = stripRoleNamePrefix(result);
   result = stripSystemLogLeak(result);
-  result = stripSourceTags(result);
+  result = stripLeakedSourceTags(result);
   result = stripInnerState(result);
   result = stripGameHallAutoplayCommands(result);
   result = stripBusinessTagsForNotification(result);
@@ -2522,7 +2525,7 @@ ${ATOM_MARKER}B${idx}${ATOM_MARKER}
   cleaned = stripTimestamps(cleaned);
   cleaned = stripChineseDate(cleaned);
   cleaned = stripRoleNamePrefix(cleaned);
-  cleaned = stripSourceTags(cleaned);
+  cleaned = stripLeakedSourceTags(cleaned);
   cleaned = stripLegacyTrans(cleaned);
   cleaned = stripMarkdownDividers(cleaned);
   const rawChunks = chunkText(cleaned);
@@ -3023,6 +3026,9 @@ var INSTANT_WORKER_VERSION = "2026-08-19";
 // utils/emotionEvalCore.ts
 var EMOTION_EVAL_SYSTEM_SLOT = "__EMOTION_EVAL_SYSTEM_PROMPT__";
 var EMOTION_EVAL_HISTORY_SLOT = "__EMOTION_EVAL_HISTORY__";
+var EMOTION_EVAL_DIALOGUE_WINDOW = 6;
+var EMOTION_EVAL_TEMPERATURE = 0.2;
+var EMOTION_EVAL_JSON_RESPONSE_FORMAT = { type: "json_object" };
 var EMOTION_EVAL_TIMEOUT_MS = 12e4;
 var flattenEvalContent = (content) => {
   if (typeof content === "string") return content;
@@ -3031,19 +3037,53 @@ var flattenEvalContent = (content) => {
   }
   return "";
 };
-var restoreEvalPrompt = (template, chatMessages, charName) => {
-  const messages = Array.isArray(chatMessages) ? chatMessages : [];
-  let systemPromptText = "";
-  let conversation = messages;
-  if (messages.length > 0 && messages[0]?.role === "system") {
-    systemPromptText = flattenEvalContent(messages[0].content);
-    conversation = messages.slice(1);
+var buildEmotionEvalRequestMessages = (promptTemplate, chatMessages, charName, systemPromptOverride, dialogueWindow = EMOTION_EVAL_DIALOGUE_WINDOW) => {
+  const source = Array.isArray(chatMessages) ? chatMessages : [];
+  const systemParts = [];
+  const override = typeof systemPromptOverride === "string" ? systemPromptOverride.trim() : "";
+  if (override) systemParts.push(override);
+  for (const message of source) {
+    if (message?.role !== "system") continue;
+    const text = flattenEvalContent(message.content).trim();
+    if (text && !systemParts.includes(text)) systemParts.push(text);
   }
-  const recentLines = conversation.map((m) => {
-    const role = m.role === "user" ? "\u7528\u6237" : m.role === "assistant" ? charName : "\u7CFB\u7EDF";
-    return `[${role}]: ${flattenEvalContent(m.content)}`;
-  }).join("\n");
-  return String(template).replace(EMOTION_EVAL_SYSTEM_SLOT, () => systemPromptText).replace(EMOTION_EVAL_HISTORY_SLOT, () => recentLines);
+  const systemContext = systemParts.join("\n\n---\n\n");
+  const structuredHistoryNote = [
+    "\uFF08\u5BF9\u8BDD\u5386\u53F2\u6CA1\u6709\u62CD\u5E73\u6210\u6587\u672C\uFF1B\u7D27\u968F\u672C system \u6D88\u606F\u4E4B\u540E\u7684 API role \u5C31\u662F\u771F\u5B9E\u8BF4\u8BDD\u4EBA\uFF1A",
+    "role=user \u6C38\u8FDC\u662F\u7528\u6237\u672C\u4EBA\uFF0Crole=assistant \u6C38\u8FDC\u662F\u76EE\u6807\u89D2\u8272\u300C" + (charName || "\u89D2\u8272") + "\u300D\u3002",
+    "\u4E0D\u5F97\u56E0\u4E3A\u5F15\u7528\u3001\u590D\u8FF0\u3001\u7B2C\u4E00\u4EBA\u79F0\u6216\u6700\u540E\u4E00\u6761\u6D88\u606F\u7684\u4F4D\u7F6E\u800C\u4EA4\u6362\u8BF4\u8BDD\u4EBA\u3002\uFF09"
+  ].join("");
+  const templateText = String(promptTemplate);
+  let evaluatorSystem = templateText.replace(EMOTION_EVAL_SYSTEM_SLOT, () => systemContext).replace(EMOTION_EVAL_HISTORY_SLOT, () => structuredHistoryNote);
+  if (!templateText.includes(EMOTION_EVAL_SYSTEM_SLOT) && systemContext) {
+    evaluatorSystem += "\n\n## \u5BF9\u8BDD\u5386\u53F2\u4E2D\u7684\u9644\u52A0 system \u4E0A\u4E0B\u6587\n" + systemContext;
+  }
+  evaluatorSystem += `
+
+## \u8BF4\u8BDD\u4EBA\u8FB9\u754C\uFF08\u786C\u89C4\u5219\uFF09
+- role=user\uFF1A\u53EA\u4EE3\u8868\u7528\u6237\u8BF4\u7684\u8BDD\u3002
+- role=assistant\uFF1A\u53EA\u4EE3\u8868\u76EE\u6807\u89D2\u8272\u300C${charName || "\u89D2\u8272"}\u300D\u8BF4\u7684\u8BDD\u3002
+- \u5F15\u53F7\u3001\u8F6C\u8FF0\u3001\u5F15\u7528\u56DE\u590D\u53EA\u5C5E\u4E8E\u6240\u5728\u6D88\u606F\u7684\u8BF4\u8BDD\u4EBA\uFF0C\u4E0D\u5F97\u636E\u5185\u5BB9\u731C\u6D4B\u540E\u6539 role\u3002
+- \u4F60\u7684\u4EFB\u52A1\u662F\u5206\u6790\u8FD9\u6BB5\u5BF9\u8BDD\uFF0C\u4E0D\u662F\u7EE7\u7EED\u626E\u6F14\u804A\u5929\u3002`;
+  const dialogue = source.filter((message) => message?.role === "user" || message?.role === "assistant").map((message) => ({
+    role: message.role,
+    content: flattenEvalContent(message.content).trim()
+  })).filter((message) => !!message.content).slice(-Math.max(1, Math.floor(dialogueWindow || EMOTION_EVAL_DIALOGUE_WINDOW)));
+  const lastDialogueRole = dialogue.length > 0 ? dialogue[dialogue.length - 1].role : "none";
+  const outputControl = {
+    role: "user",
+    content: [
+      "\u3010\u8BC4\u4F30\u63A7\u5236\u6307\u4EE4\uFF0C\u4E0D\u5C5E\u4E8E\u771F\u5B9E\u5BF9\u8BDD\u3011",
+      `\u4EE5\u4E0A\u771F\u5B9E\u5BF9\u8BDD\u5230\u6B64\u7ED3\u675F\uFF1B\u6700\u540E\u4E00\u6761\u771F\u5B9E\u5BF9\u8BDD\u7684 role=${lastDialogueRole}\u3002`,
+      "\u73B0\u5728\u6267\u884C system \u4E2D\u5B9A\u4E49\u7684\u60C5\u7EEA\u8BC4\u4F30\u4EFB\u52A1\u3002\u4E0D\u8981\u7EE7\u7EED\u5BF9\u8BDD\uFF0C\u4E0D\u8981\u626E\u6F14\u89D2\u8272\uFF0C\u4E0D\u8981\u89E3\u91CA\u5206\u6790\u8FC7\u7A0B\u3002",
+      "\u53EA\u8F93\u51FA\u4E00\u4E2A\u5408\u6CD5 JSON \u5BF9\u8C61\uFF1BJSON \u524D\u540E\u7981\u6B62\u6DFB\u52A0 Markdown\u3001\u4EE3\u7801\u56F4\u680F\u3001\u5BD2\u6684\u6216\u4EFB\u4F55\u8BF4\u660E\u6587\u5B57\u3002"
+    ].join("\n")
+  };
+  return [
+    { role: "system", content: evaluatorSystem },
+    ...dialogue,
+    outputControl
+  ];
 };
 var ERROR_SNIPPET_MAX = 120;
 var maskAndSnip = (text, apiKey) => {
@@ -3056,7 +3096,8 @@ var requestEmotionEval = async (api, promptContent, timeoutMs = EMOTION_EVAL_TIM
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const baseUrl = String(api.baseUrl).replace(/\/+$/, "");
-    const res = await fetch(`${baseUrl}/chat/completions`, {
+    const messages = Array.isArray(promptContent) ? promptContent : [{ role: "user", content: promptContent }];
+    const send = (jsonMode) => fetch(`${baseUrl}/chat/completions`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -3064,15 +3105,39 @@ var requestEmotionEval = async (api, promptContent, timeoutMs = EMOTION_EVAL_TIM
       },
       body: JSON.stringify({
         model: api.model,
-        messages: [{ role: "user", content: promptContent }],
-        temperature: 0.85,
+        messages,
+        temperature: EMOTION_EVAL_TEMPERATURE,
         // 显式给足输出额度：部分中转不传 max_tokens 时默认很小，评估输出很长，
         // 会被截成半截 JSON。
         max_tokens: 8e3,
-        stream: false
+        stream: false,
+        ...jsonMode ? { response_format: EMOTION_EVAL_JSON_RESPONSE_FORMAT } : {}
       }),
       signal: controller.signal
     });
+    let res = await send(true);
+    if (!res.ok) {
+      let body = "";
+      try {
+        body = await res.text();
+      } catch {
+      }
+      const jsonModeRejected = (res.status === 400 || res.status === 422) && /response[_ -]?format|json[_ -]?object|json mode|unsupported[^\n]*(?:parameter|field)|unknown[^\n]*(?:parameter|field)/i.test(body);
+      if (jsonModeRejected) {
+        console.warn("[emotion-eval] \u526F API \u4E0D\u652F\u6301 JSON mode\uFF0C\u53BB\u6389 response_format \u540E\u91CD\u8BD5");
+        res = await send(false);
+      } else {
+        console.warn("[emotion-eval] \u526F API \u62D2\u4E86\u8FD9\u6B21\u8BC4\u4F30\uFF08\u4E3B\u6D41\u7A0B\u4E0D\u53D7\u5F71\u54CD\uFF09", res.status);
+        const snippet = maskAndSnip(body, api.apiKey);
+        const failoverEligible = res.status === 401 || res.status === 403 || res.status === 404 || res.status === 408 || res.status === 425 || res.status === 429 || res.status >= 500;
+        return {
+          raw: null,
+          error: `\u526F API HTTP ${res.status}${snippet ? `\uFF1A${snippet}` : ""}`,
+          status: res.status,
+          failoverEligible
+        };
+      }
+    }
     if (!res.ok) {
       let body = "";
       try {
@@ -3081,7 +3146,13 @@ var requestEmotionEval = async (api, promptContent, timeoutMs = EMOTION_EVAL_TIM
       }
       console.warn("[emotion-eval] \u526F API \u62D2\u4E86\u8FD9\u6B21\u8BC4\u4F30\uFF08\u4E3B\u6D41\u7A0B\u4E0D\u53D7\u5F71\u54CD\uFF09", res.status);
       const snippet = maskAndSnip(body, api.apiKey);
-      return { raw: null, error: `\u526F API HTTP ${res.status}${snippet ? `\uFF1A${snippet}` : ""}` };
+      const failoverEligible = res.status === 401 || res.status === 403 || res.status === 404 || res.status === 408 || res.status === 425 || res.status === 429 || res.status >= 500;
+      return {
+        raw: null,
+        error: `\u526F API HTTP ${res.status}${snippet ? `\uFF1A${snippet}` : ""}`,
+        status: res.status,
+        failoverEligible
+      };
     }
     const data = await res.json();
     const message = data?.choices?.[0]?.message;
@@ -3089,17 +3160,38 @@ var requestEmotionEval = async (api, promptContent, timeoutMs = EMOTION_EVAL_TIM
     if (!raw.trim()) {
       return {
         raw: null,
-        error: `\u8BC4\u4F30\u6A21\u578B\u6CA1\u6709\u8F93\u51FA\u5185\u5BB9\uFF08finish_reason: ${data?.choices?.[0]?.finish_reason ?? "?"}\uFF09`
+        error: `\u8BC4\u4F30\u6A21\u578B\u6CA1\u6709\u8F93\u51FA\u5185\u5BB9\uFF08finish_reason: ${data?.choices?.[0]?.finish_reason ?? "?"}\uFF09`,
+        failoverEligible: false
       };
     }
-    return { raw, error: null };
+    return { raw, error: null, failoverEligible: false };
   } catch (error) {
     console.warn("[emotion-eval] \u8BC4\u4F30\u5931\u8D25\uFF08\u4E3B\u6D41\u7A0B\u4E0D\u53D7\u5F71\u54CD\uFF09", error);
     const reason = controller.signal.aborted ? `\u8BC4\u4F30\u8D85\u65F6\uFF08${Math.round(timeoutMs / 1e3)} \u79D2\u6CA1\u56DE\u6765\uFF09` : `\u8BC4\u4F30\u8BF7\u6C42\u6CA1\u53D1\u51FA\u53BB\uFF1A${maskAndSnip(error instanceof Error ? error.message : String(error), api.apiKey)}`;
-    return { raw: null, error: reason };
+    return { raw: null, error: reason, failoverEligible: true };
   } finally {
     clearTimeout(timer);
   }
+};
+var requestEmotionEvalWithFailover = async (apis, promptContent, timeoutMs = EMOTION_EVAL_TIMEOUT_MS) => {
+  const routes = (Array.isArray(apis) ? apis : []).filter(
+    (api) => !!api?.baseUrl && !!api?.model
+  );
+  if (routes.length === 0) {
+    return { raw: null, error: "\u6CA1\u6709\u53EF\u7528\u7684\u60C5\u7EEA\u8BC4\u4F30 API \u7EBF\u8DEF", failoverEligible: false };
+  }
+  let last = null;
+  for (let i = 0; i < routes.length; i += 1) {
+    const outcome = await requestEmotionEval(routes[i], promptContent, timeoutMs);
+    if (outcome.raw != null) return outcome;
+    last = outcome;
+    if (!outcome.failoverEligible) return outcome;
+  }
+  if (!last) return { raw: null, error: "\u60C5\u7EEA\u8BC4\u4F30\u5931\u8D25", failoverEligible: false };
+  return routes.length > 1 ? {
+    ...last,
+    error: `\u60C5\u7EEA\u8BC4\u4F30\u6545\u969C\u8F6C\u79FB\u5DF2\u8017\u5C3D\uFF08${routes.length} \u6761\u7EBF\u8DEF\uFF09\uFF1A${last.error || "\u672A\u77E5\u9519\u8BEF"}`
+  } : last;
 };
 
 // worker/instant-push/src/index.ts
@@ -3450,9 +3542,9 @@ async function runEmotionEval(body) {
   }
   const priorMessages = Array.isArray(body?.messages) ? body.messages : [];
   const contactName = body?.contactName || "\u89D2\u8272";
-  const outcome = await requestEmotionEval(
-    ee.api,
-    restoreEvalPrompt(String(ee.prompt), priorMessages, contactName)
+  const outcome = await requestEmotionEvalWithFailover(
+    [ee.api, ...Array.isArray(ee.fallbackApis) ? ee.fallbackApis : []],
+    buildEmotionEvalRequestMessages(String(ee.prompt), priorMessages, contactName)
   );
   return outcome.raw != null ? { raw: outcome.raw } : { raw: "", error: outcome.error ?? void 0 };
 }

@@ -34,8 +34,10 @@ describe('③ 凭据变更重传接线', () => {
     // 两个入口递进去的都是现组的配置对象，不是旧的 localXxx 草稿
     expect(sliceBetween(src, 'const handleSaveApi', 'const handleTestVisionApi'))
       .toMatch(/const nextConfig = buildCurrentApiPresetConfig\(\);[\s\S]*commitApiConfig\(nextConfig\)/);
-    expect(sliceBetween(src, 'const applyPreset', 'const openEditPreset'))
-      .toContain('commitApiConfig(configFromPreset(preset))');
+    const applyPreset = sliceBetween(src, 'const applyPreset', 'const openEditPreset');
+    expect(applyPreset).toContain('const patch = configFromPreset(runtimePreset)');
+    expect(applyPreset).toContain('syncAmsgLlmCredentials({ ...apiConfig, ...patch })');
+    expect(applyPreset).toContain('ActiveMsgClient.refreshApiCredentialsForPendingTasks({ ...apiConfig, ...patch })');
   });
 
   it('ActiveMsg2SettingsModal.handleSubmit：角色级 API 保存后刷同角色其余 pending AI 任务', () => {

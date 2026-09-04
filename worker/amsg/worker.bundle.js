@@ -3,7 +3,7 @@
 // worker/amsg/src/index.ts
 import { DurableObject } from "cloudflare:workers";
 
-// node_modules/.pnpm/@rei-standard+amsg-server@2_c57770165a8a2256e4acaa4bae2ba803/node_modules/@rei-standard/amsg-server/dist/chunk-GN44PST5.mjs
+// node_modules/.pnpm/@rei-standard+amsg-server@2.6.0-next.27_@neondatabase+serverless@1.1.0_pg@8.22.0/node_modules/@rei-standard/amsg-server/dist/chunk-GN44PST5.mjs
 var UPDATABLE_COLUMNS = /* @__PURE__ */ new Set([
   "user_id",
   "uuid",
@@ -22,7 +22,7 @@ var UPDATABLE_COLUMNS = /* @__PURE__ */ new Set([
 var TASK_DELIVERY_COLUMNS = "id, user_id, uuid, encrypted_payload, message_type, next_send_at, retry_after, status, retry_count";
 var TASK_DETAIL_COLUMNS = "id, user_id, uuid, encrypted_payload, message_type, next_send_at, status, retry_count, last_error, created_at, updated_at";
 
-// node_modules/.pnpm/@rei-standard+amsg-shared@0.4.0-next.8/node_modules/@rei-standard/amsg-shared/dist/index.mjs
+// node_modules/.pnpm/@rei-standard+amsg-shared@0.4.0-next.9/node_modules/@rei-standard/amsg-shared/dist/index.mjs
 var TEXT_ENCODER = new TextEncoder();
 var TEXT_DECODER = new TextDecoder("utf-8", { fatal: false });
 function toUint8(buf) {
@@ -349,7 +349,10 @@ function looksLikeJson(raw) {
 function salvageJsonStringFields(raw) {
   const found = {};
   for (const match of raw.matchAll(JSON_STRING_FIELD)) {
-    if (found[match[1]] === void 0) found[match[1]] = unescapeJsonString(match[2]);
+    if (found[match[1]] !== void 0) continue;
+    const value = unescapeJsonString(match[2]);
+    if (match[1] === "type" && value === "error") continue;
+    found[match[1]] = value;
   }
   return {
     message: firstNonEmptyString(found.message, found.detail),
@@ -396,15 +399,27 @@ var UUID_SHAPE = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}
 function alternationCount(segment) {
   return (segment.match(/[a-z]+|[0-9]+/g) || []).length;
 }
+var MOE_SIZE_SEGMENT = /^\d+x\d+b$/;
+var HEX_SEGMENT = /^[0-9a-f]+$/;
+var HEX_RUN_MAX_CHARS = 15;
 function looksLikeModelId(token) {
   if (token.length > MODEL_ID_MAX_CHARS) return false;
   if (!MODEL_ID_LIKE.test(token)) return false;
   if (UUID_SHAPE.test(token)) return false;
   const segments = token.split(/[.-]/);
   if (CREDENTIAL_PREFIX_SEGMENTS.has(segments[0])) return false;
-  const randomLooking = segments.filter((segment) => alternationCount(segment) >= 3);
-  if (randomLooking.length === 0) return true;
-  return randomLooking.length === 1 && randomLooking[0].length <= 5;
+  let hexRunChars = 0;
+  for (const segment of segments) {
+    if (HEX_SEGMENT.test(segment)) {
+      hexRunChars += segment.length;
+      if (hexRunChars > HEX_RUN_MAX_CHARS) return false;
+    } else {
+      hexRunChars = 0;
+    }
+  }
+  return segments.every(
+    (segment) => alternationCount(segment) < 3 || MOE_SIZE_SEGMENT.test(segment)
+  );
 }
 function redactCredentials(text) {
   let s = text;
@@ -1121,7 +1136,7 @@ function stringifyDecisionForError(value) {
   }
 }
 
-// node_modules/.pnpm/@rei-standard+amsg-server@2_c57770165a8a2256e4acaa4bae2ba803/node_modules/@rei-standard/amsg-server/dist/chunk-3JEWYDM4.mjs
+// node_modules/.pnpm/@rei-standard+amsg-server@2.6.0-next.27_@neondatabase+serverless@1.1.0_pg@8.22.0/node_modules/@rei-standard/amsg-server/dist/chunk-FPVXATA4.mjs
 var DAY_MS = 24 * 60 * 60 * 1e3;
 var MAX_LISTED_SKIPPED_OCCURRENCES = 32;
 var MAX_ADJUST_STEPS = 32;
@@ -2091,7 +2106,7 @@ function stateValueBytes(value) {
   return utf82.encode(value).length;
 }
 var warnedInvalidTtl = /* @__PURE__ */ new Set();
-function planClientStateCleanup(ttl, now) {
+function planClientStateCleanup(ttl, now2) {
   if (!ttl || typeof ttl !== "object" || Array.isArray(ttl)) return [];
   const targets = [];
   for (const [namespace, days] of Object.entries(ttl)) {
@@ -2105,32 +2120,35 @@ function planClientStateCleanup(ttl, now) {
       }
       continue;
     }
-    const updatedBefore = now - days * 24 * 60 * 60 * 1e3;
+    const updatedBefore = now2 - days * 24 * 60 * 60 * 1e3;
     targets.push({ namespace, updatedBefore });
     targets.push({ namespace: chunkNamespaceFor(namespace), updatedBefore });
   }
   return targets;
 }
-async function writeClientStateEntries({ db, userId, userKey, entries }) {
+async function writeClientStateEntries({ db, userId, userKey, entries, now: now2 }) {
+  const nowFn = typeof now2 === "function" ? now2 : Date.now;
+  const at = nowFn();
   const physicalRows = [];
   const cleanups = [];
   const rootRowIndexes = [];
   const rootRowEntries = [];
-  let deleted = 0;
+  const deletions = [];
   for (const entry of entries) {
-    const guardAt = Number.isInteger(entry.version) && entry.version > 0 ? entry.version : entry.updatedAt;
+    const rawGuardAt = Number.isInteger(entry.version) && entry.version > 0 ? entry.version : entry.updatedAt;
+    const guardAt = Math.min(rawGuardAt, at);
     cleanups.push({
       namespace: chunkNamespaceFor(entry.namespace),
       keyPrefix: chunkKeyPrefixFor(entry.key),
       updatedAt: guardAt
     });
     if (entry.value === null) {
+      deletions.push({ cleanupIndex: cleanups.length, entry });
       cleanups.push({
         namespace: entry.namespace,
         key: entry.key,
         updatedAt: guardAt
       });
-      deleted++;
       continue;
     }
     rootRowIndexes.push(physicalRows.length);
@@ -2164,9 +2182,10 @@ async function writeClientStateEntries({ db, userId, userKey, entries }) {
   if (physicalRows.length === 0 && cleanups.length === 0) {
     return { upserted: 0, skipped: 0, deleted: 0, skippedEntries: [] };
   }
-  const result = await db.upsertClientState(userId, physicalRows, cleanups);
+  const result = await db.upsertClientState(userId, physicalRows, cleanups, at);
   let upserted = 0;
   let skipped = 0;
+  let deleted = 0;
   const skippedEntries = [];
   if (Array.isArray(result.outcomes) && result.outcomes.length === physicalRows.length) {
     for (let i = 0; i < rootRowIndexes.length; i++) {
@@ -2182,10 +2201,19 @@ async function writeClientStateEntries({ db, userId, userKey, entries }) {
     upserted = result.upserted;
     skipped = result.skipped;
   }
+  const cleanupOutcomes = Array.isArray(result.cleanupOutcomes) && result.cleanupOutcomes.length === cleanups.length ? result.cleanupOutcomes : null;
+  for (const { cleanupIndex, entry } of deletions) {
+    if (cleanupOutcomes && cleanupOutcomes[cleanupIndex] === false) {
+      skipped++;
+      skippedEntries.push({ namespace: entry.namespace, key: entry.key });
+    } else {
+      deleted++;
+    }
+  }
   return { upserted, skipped, deleted, skippedEntries };
 }
-function createStateAccessors({ db, userId, userKey, maxStateValueBytes, now }) {
-  const nowFn = typeof now === "function" ? now : Date.now;
+function createStateAccessors({ db, userId, userKey, maxStateValueBytes, now: now2 }) {
+  const nowFn = typeof now2 === "function" ? now2 : Date.now;
   const valueCeiling = Number.isInteger(maxStateValueBytes) && maxStateValueBytes > 0 ? maxStateValueBytes : DEFAULT_MAX_STATE_VALUE_BYTES;
   const readState = async (namespace) => {
     if (typeof namespace !== "string" || !namespace.trim()) {
@@ -2255,7 +2283,7 @@ function createStateAccessors({ db, userId, userKey, maxStateValueBytes, now }) 
         ...entry.version !== void 0 ? { version: entry.version } : {}
       };
     });
-    return writeClientStateEntries({ db, userId, userKey, entries: normalized });
+    return writeClientStateEntries({ db, userId, userKey, entries: normalized, now: nowFn });
   };
   return { readState, writeState };
 }
@@ -2311,15 +2339,27 @@ async function discardUndeliveredPushes({ db, userId, pushes, sentIds }) {
 var OUTBOX_SCAN_PAGE_SIZE = 100;
 var OUTBOX_SCAN_MAX_ROWS = 5e3;
 async function discardUndeliveredPushesForTask({ db, userId, taskUuid }) {
-  if (!db || typeof db.listUnackedOutbox !== "function" || typeof db.discardOutboxMessages !== "function") return;
-  if (!taskUuid) return;
+  if (!db || !taskUuid) return;
+  if (typeof db.discardUndeliveredOutboxForTask === "function") {
+    try {
+      await db.discardUndeliveredOutboxForTask(userId, taskUuid);
+    } catch (error) {
+      console.warn("[amsg-server] outbox \u6309\u4EFB\u52A1\u64A4\u56DE\u672A\u6295\u9012\u7684\u884C\u5931\u8D25\uFF08\u5DF2\u5FFD\u7565\uFF09:", error && error.message);
+    }
+    return;
+  }
+  if (typeof db.listUnackedOutbox !== "function" || typeof db.discardOutboxMessages !== "function") return;
   const messageIds = [];
+  let exhausted = false;
   try {
     let cursor = 0;
     let scanned = 0;
     while (scanned < OUTBOX_SCAN_MAX_ROWS) {
       const rows = await db.listUnackedOutbox(userId, cursor, OUTBOX_SCAN_PAGE_SIZE);
-      if (!rows || rows.length === 0) break;
+      if (!rows || rows.length === 0) {
+        exhausted = true;
+        break;
+      }
       scanned += rows.length;
       let nextCursor = cursor;
       for (const row of rows) {
@@ -2330,11 +2370,19 @@ async function discardUndeliveredPushesForTask({ db, userId, taskUuid }) {
       }
       if (nextCursor <= cursor) break;
       cursor = nextCursor;
-      if (rows.length < OUTBOX_SCAN_PAGE_SIZE) break;
+      if (rows.length < OUTBOX_SCAN_PAGE_SIZE) {
+        exhausted = true;
+        break;
+      }
     }
   } catch (error) {
     console.warn("[amsg-server] outbox \u67E5\u672A\u6295\u9012\u7684\u884C\u5931\u8D25\uFF08\u5DF2\u5FFD\u7565\uFF09:", error && error.message);
     return;
+  }
+  if (!exhausted) {
+    console.warn(
+      `[amsg-server] outbox \u626B\u63CF\u5230 ${OUTBOX_SCAN_MAX_ROWS} \u884C\u4E0A\u9650\u4ECD\u672A\u626B\u5B8C\uFF0C\u4EFB\u52A1 ${taskUuid} \u53EF\u80FD\u8FD8\u6709\u672A\u6295\u9012\u7684\u884C\u6CA1\u64A4\u6389\uFF08\u88AB\u53D6\u6D88\u4EFB\u52A1\u7684\u884C\u901A\u5E38\u662F\u6700\u65B0\u7684\uFF0C\u6B63\u597D\u5728\u4E0A\u9650\u4E4B\u5916\uFF09\u3002\u7ED9\u9002\u914D\u5668\u5B9E\u73B0 discardUndeliveredOutboxForTask \u53EF\u7ED5\u5F00\u8FD9\u4E2A\u4E0A\u9650\u3002`
+    );
   }
   await discardPushesFromOutbox({ db, userId, messageIds });
 }
@@ -2391,10 +2439,17 @@ function createResultEmitter({
   sessionId,
   occurrenceMs,
   webpush,
-  now
+  now: now2,
+  isCancelled
 }) {
-  const nowFn = typeof now === "function" ? now : Date.now;
+  const nowFn = typeof now2 === "function" ? now2 : Date.now;
   let emitted = 0;
+  const assertNotCancelled = () => {
+    if (typeof isCancelled !== "function" || !isCancelled()) return;
+    const error = new Error("\u4EFB\u52A1\u5728\u6295\u9012\u671F\u95F4\u88AB\u53D6\u6D88\u6216\u9876\u66FF\uFF0C\u7ED3\u679C\u5DF2\u4E2D\u6B62");
+    error.code = TASK_CANCELLED_CODE;
+    throw error;
+  };
   const emitResult = async (payload) => {
     if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
       throw new TypeError("emitResult(payload) \u9700\u8981\u4E00\u4E2A\u666E\u901A\u5BF9\u8C61");
@@ -2406,9 +2461,10 @@ function createResultEmitter({
       );
     }
     const seq = emitted++;
+    const messageType = decryptedPayload.messageType || "auto";
     const push = buildResultPush({
-      messageType: decryptedPayload.messageType || "auto",
-      source: "scheduled",
+      messageType,
+      source: messageType === "instant" ? "instant" : "scheduled",
       messageId: `${messageIdBase}_result_${seq}`,
       sessionId,
       ...payload,
@@ -2422,9 +2478,11 @@ function createResultEmitter({
       recurrenceType: decryptedPayload.recurrenceType || "none",
       occurrenceMs
     });
+    assertNotCancelled();
     await db.appendOutboxMessages(task.user_id, await toOutboxRows([push], userKey, nowFn()));
     let pushed;
     try {
+      assertNotCancelled();
       pushed = shouldSendPush(push, { outboxed: true }) ? await sendResultPush({ db, task, userKey, decryptedPayload, webpush, push }) : false;
     } catch (error) {
       await discardUndeliveredPushes({ db, userId: task.user_id, pushes: [push], sentIds: [] });
@@ -2620,7 +2678,10 @@ async function runAgenticFire({ task, decryptedPayload, userKey, ctx }) {
     sessionId,
     occurrenceMs,
     webpush: ctx.webpush,
-    now: nowFn
+    now: nowFn,
+    // run-tick 在投递 ctx 上挂的取消信号（与 guardWebpushWithLease 读的是同一
+    // 个租约状态），emitResult 不发推送的那条路要靠它拦下已取消任务的落行。
+    isCancelled: typeof ctx.isTaskCancelled === "function" ? ctx.isTaskCancelled : null
   });
   const maxScheduledTasksPerFire = Number.isInteger(ctx.maxScheduledTasksPerFire) && ctx.maxScheduledTasksPerFire >= 0 ? ctx.maxScheduledTasksPerFire : DEFAULT_MAX_SCHEDULED_TASKS_PER_FIRE;
   let scheduledTaskCount = 0;
@@ -2806,6 +2867,9 @@ async function runAgenticFire({ task, decryptedPayload, userKey, ctx }) {
       );
     }
     const cancelled = await ctx.db.deleteTaskByUuid(uuid, task.user_id);
+    if (cancelled) {
+      await discardUndeliveredPushesForTask({ db: ctx.db, userId: task.user_id, taskUuid: uuid });
+    }
     return { cancelled: !!cancelled };
   };
   const renewTask = async (uuid, nextSendAt) => {
@@ -3262,12 +3326,36 @@ function sleepFor(ctx, ms) {
 }
 function resolveMultipartOptions(ctx) {
   const configured = ctx && ctx.multipart && typeof ctx.multipart === "object" ? ctx.multipart : {};
-  return {
+  const resolved = {
     maxChunkBytes: positiveIntegerOr(configured.maxChunkBytes, DEFAULT_MULTIPART_CHUNK_BYTES),
     maxChunks: positiveIntegerOr(configured.maxChunks, DEFAULT_MULTIPART_MAX_CHUNKS),
     maxTotalBytes: positiveIntegerOr(configured.maxTotalBytes, DEFAULT_MULTIPART_MAX_TOTAL_BYTES),
     ttlMs: positiveIntegerOr(configured.ttlMs, DEFAULT_MULTIPART_TTL_MS)
   };
+  assertChunkBytesFitPushLimit(resolved);
+  return resolved;
+}
+function assertChunkBytesFitPushLimit({ maxChunkBytes, maxChunks, ttlMs }) {
+  const PROBE_CHUNK_BYTES = 3;
+  const [probe] = buildMultipartPushPayloads(
+    { messageKind: "reasoning" },
+    { serializedPayload: "x".repeat(PROBE_CHUNK_BYTES), maxChunkBytes: PROBE_CHUNK_BYTES, ttlMs }
+  );
+  const digitHeadroom = 2 * (String(maxChunks).length - 1);
+  const envelopeOverhead = measurePushPayload(JSON.stringify(probe)).bytes - base64UrlLength(PROBE_CHUNK_BYTES) + digitHeadroom;
+  const worstEnvelopeBytes = envelopeOverhead + base64UrlLength(maxChunkBytes);
+  if (worstEnvelopeBytes <= MAX_PUSH_PAYLOAD_BYTES) return;
+  let maxAllowed = Math.floor((MAX_PUSH_PAYLOAD_BYTES - envelopeOverhead) * 3 / 4);
+  while (maxAllowed > 0 && envelopeOverhead + base64UrlLength(maxAllowed) > MAX_PUSH_PAYLOAD_BYTES) {
+    maxAllowed--;
+  }
+  throw new DeploymentConfigError(
+    `MULTIPART_CHUNK_BYTES_TOO_LARGE: multipart.maxChunkBytes = ${maxChunkBytes} \u5207\u51FA\u7684\u5206\u7247\u4FE1\u5C01\u6700\u574F ${worstEnvelopeBytes} \u5B57\u8282\uFF0C\u8D85\u8FC7\u5355\u6761 push \u660E\u6587\u4E0A\u9650 ${MAX_PUSH_PAYLOAD_BYTES} \u5B57\u8282\uFF0C\u6BCF\u4E00\u7247\u90FD\u4F1A\u88AB\u63A8\u9001\u670D\u52A1\u62D2\u6536\u3002\u8FD9\u4E2A\u65CB\u94AE\u53EA\u7528\u4E8E\u6536\u7A84\uFF0C\u5F53\u524D\u914D\u7F6E\u4E0B\u6700\u5927 ${maxAllowed}`,
+    { code: "MULTIPART_CHUNK_BYTES_TOO_LARGE" }
+  );
+}
+function base64UrlLength(n) {
+  return Math.ceil(n * 4 / 3);
 }
 function positiveIntegerOr(value, fallback) {
   return Number.isInteger(value) && /** @type {number} */
@@ -4021,13 +4109,14 @@ async function deliverTasks(ctx, tasks) {
     groupsTakenThisTick.add(scopedKey);
     return { taken: false, rawKey };
   }
-  function recordCancelled(task, status) {
+  async function recordCancelled(task, status) {
     results.cancelledTasks.push({
       taskId: task.id,
       reason: "\u4EFB\u52A1\u5728\u6295\u9012\u671F\u95F4\u88AB\u53D6\u6D88\u6216\u9876\u66FF",
       status
     });
     console.warn(`[amsg-server] \u4EFB\u52A1 ${task.id} \u5728\u6295\u9012\u671F\u95F4\u88AB\u53D6\u6D88\u6216\u9876\u66FF\uFF08${status}\uFF09`);
+    await discardUndeliveredPushesForTask({ db, userId: task.user_id, taskUuid: task.uuid });
   }
   async function payloadStillFresh(task) {
     if (typeof db.getTaskByUuid !== "function" || !task.uuid) return true;
@@ -4209,7 +4298,8 @@ async function deliverTasks(ctx, tasks) {
           messageIdBase: task.id != null ? `msg_task_${task.id}${occurrenceSuffix(task)}` : `msg_stale_${task.uuid || ""}`,
           sessionId: task.id != null ? `sess_task_${task.id}${occurrenceSuffix(task)}` : `sess_stale_${task.uuid || ""}`,
           occurrenceMs,
-          webpush: ctx.webpush
+          webpush: ctx.webpush,
+          isCancelled: () => lease.lost
         });
         const recurring = isRecurringType(recurrenceType);
         const plan = recurring ? planNextOccurrence(occurrenceMs, recurrenceType, Date.now(), tzId) : null;
@@ -4258,13 +4348,19 @@ async function deliverTasks(ctx, tasks) {
     try {
       sendResult = await processSingleMessage(
         task,
-        { ...ctx, db, masterKey, webpush: guardWebpushWithLease(ctx.webpush, lease) },
+        {
+          ...ctx,
+          db,
+          masterKey,
+          webpush: guardWebpushWithLease(ctx.webpush, lease),
+          isTaskCancelled: () => lease.lost
+        },
         masterKey,
         { userKey, payload: decryptedPayload }
       );
     } catch (error) {
       if (lease.lost) {
-        recordCancelled(task, "cancelled_mid_delivery");
+        await recordCancelled(task, "cancelled_mid_delivery");
         return;
       }
       await handleDeliveryFailure(
@@ -4279,7 +4375,7 @@ async function deliverTasks(ctx, tasks) {
     }
     if (!sendResult.success) {
       if (lease.lost) {
-        recordCancelled(task, "cancelled_mid_delivery");
+        await recordCancelled(task, "cancelled_mid_delivery");
         return;
       }
       await handleDeliveryFailure(
@@ -4302,7 +4398,7 @@ async function deliverTasks(ctx, tasks) {
       if (recurrenceType === "none") {
         markLeaseReleased(task.id);
         if (rowVanished(await db.deleteTaskById(task.id))) {
-          recordCancelled(task, "cancelled_after_delivery");
+          await recordCancelled(task, "cancelled_after_delivery");
           return;
         }
         results.deletedOnceOffTasks++;
@@ -4316,7 +4412,7 @@ async function deliverTasks(ctx, tasks) {
           ...clearedPayload ? { encrypted_payload: clearedPayload } : {}
         });
         if (rowVanished(updated)) {
-          recordCancelled(task, "cancelled_after_delivery");
+          await recordCancelled(task, "cancelled_after_delivery");
           return;
         }
         results.updatedRecurringTasks++;
@@ -4500,6 +4596,13 @@ function createUpdateMessageHandler(ctx) {
       return { status: 409, body: { success: false, error: { code: "TASK_ALREADY_COMPLETED", message: "\u4EFB\u52A1\u5DF2\u5B8C\u6210\u6216\u5DF2\u5931\u8D25\uFF0C\u65E0\u6CD5\u66F4\u65B0" } } };
     }
     const existingData = JSON.parse(await decryptFromStorage(existingTask.encrypted_payload, userKey));
+    if ((updates.apiUrl || updates.apiKey || updates.primaryModel) && hasChatCredRef(existingData)) {
+      return { status: 409, body: { success: false, error: {
+        code: "TASK_USES_CRED_REFS",
+        message: "\u4EFB\u52A1\u5DF2\u901A\u8FC7 credRefs.chat \u5F15\u7528\u51ED\u636E\uFF0C\u89E6\u53D1\u65F6\u4EE5\u51ED\u636E\u8868\u4E3A\u51C6\uFF0C\u5185\u8054 apiUrl / apiKey / primaryModel \u7684\u66F4\u65B0\u4E0D\u4F1A\u751F\u6548\u3002\u6362 Key \u8BF7\u7528 PUT /llm-credentials \u8986\u76D6\u5BF9\u5E94\u51ED\u636E\uFF0C\u6216\u5728\u672C\u6B21\u8BF7\u6C42\u91CC\u6539\u7528 credRefs \u6307\u5411\u65B0\u51ED\u636E",
+        details: { invalidFields: ["apiUrl", "apiKey", "primaryModel"].filter((name) => updates[name]) }
+      } } };
+    }
     const promptUpdates = {};
     if (updates.completePrompt) {
       promptUpdates.completePrompt = updates.completePrompt;
@@ -5054,6 +5157,19 @@ var CLIENT_STATE_TABLE_SQL = `
     PRIMARY KEY (user_id, namespace, key)
   )
 `;
+var CLIENT_STATE_INDEXES = [
+  {
+    name: "idx_client_state_cleanup",
+    // 服务 cleanupClientState 的
+    //   DELETE FROM client_state WHERE namespace = ? AND updated_at < ?
+    // 主键 (user_id, namespace, key) 最左列是 user_id，按 namespace 起头的条件
+    // 吃不到它。
+    sql: `CREATE INDEX IF NOT EXISTS idx_client_state_cleanup
+          ON client_state (namespace, updated_at)`,
+    description: "TTL cleanup index (cleanupClientState by namespace + updated_at)",
+    critical: false
+  }
+];
 var PUSH_SUBSCRIPTION_TABLE_SQL = `
   CREATE TABLE IF NOT EXISTS push_subscriptions (
     user_id TEXT PRIMARY KEY,
@@ -5087,11 +5203,57 @@ var MESSAGE_OUTBOX_TABLE_SQL = `
     UNIQUE (user_id, message_id)
   )
 `;
-var MESSAGE_OUTBOX_INDEX_SQL = `
-  CREATE INDEX IF NOT EXISTS idx_outbox_unacked
-    ON message_outbox (user_id, id)
-    WHERE acked_at IS NULL
-`;
+var MESSAGE_OUTBOX_INDEXES = [
+  {
+    name: "idx_outbox_unacked",
+    // 服务 listUnackedOutbox 的
+    //   SELECT … WHERE user_id = ? AND acked_at IS NULL AND id > ? ORDER BY id
+    sql: `CREATE INDEX IF NOT EXISTS idx_outbox_unacked
+          ON message_outbox (user_id, id)
+          WHERE acked_at IS NULL`,
+    description: "Unacked outbox paging index (GET /outbox)",
+    critical: false
+  },
+  {
+    name: "idx_outbox_created",
+    // 服务 cleanupOutbox 的
+    //   DELETE FROM message_outbox WHERE created_at < ?
+    sql: `CREATE INDEX IF NOT EXISTS idx_outbox_created
+          ON message_outbox (created_at)`,
+    description: "Outbox retention cleanup index (cleanupOutbox by created_at)",
+    critical: false
+  },
+  {
+    name: "idx_outbox_acked",
+    // 服务 cleanupOutbox 的
+    //   DELETE FROM message_outbox WHERE acked_at IS NOT NULL AND acked_at < ?
+    // 部分索引只收已 ack 的行：未 ack 的那部分本来就不是这条语句的目标，
+    // idx_outbox_unacked 的 WHERE 条件与它正好互补。
+    sql: `CREATE INDEX IF NOT EXISTS idx_outbox_acked
+          ON message_outbox (acked_at)
+          WHERE acked_at IS NOT NULL`,
+    description: "Acked outbox cleanup index (cleanupOutbox by acked_at)",
+    critical: false
+  },
+  {
+    name: "idx_outbox_task_undelivered",
+    // 服务 discardUndeliveredOutboxForTask 的
+    //   DELETE FROM message_outbox
+    //   WHERE user_id = ? AND task_uuid = ? AND delivered_at IS NULL AND acked_at IS NULL
+    // 没有它这条只能靶着 user_id 走 (user_id, message_id) 或 idx_outbox_unacked，
+    // 单用户部署下 user_id 对每一行都成立，等于把整个未 ack 积压扫一遍。
+    sql: `CREATE INDEX IF NOT EXISTS idx_outbox_task_undelivered
+          ON message_outbox (user_id, task_uuid)
+          WHERE delivered_at IS NULL AND acked_at IS NULL`,
+    description: "Undelivered-by-task discard index (cancel / supersede)",
+    critical: false
+  }
+];
+var SQLITE_ALL_INDEXES = [
+  ...SQLITE_INDEXES,
+  ...CLIENT_STATE_INDEXES,
+  ...MESSAGE_OUTBOX_INDEXES
+];
 function parseTableName(sql) {
   const match = /CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([A-Za-z_][A-Za-z0-9_]*)/i.exec(sql);
   return match ? match[1] : "";
@@ -5126,7 +5288,7 @@ var SQLITE_REQUIRED_SCHEMA = Object.freeze({
     describeTable(LLM_CREDENTIALS_TABLE_SQL),
     describeTable(MESSAGE_OUTBOX_TABLE_SQL)
   ])),
-  indexes: Object.freeze(SQLITE_INDEXES.filter((index) => index.critical).map((index) => index.name))
+  indexes: Object.freeze(SQLITE_ALL_INDEXES.filter((index) => index.critical).map((index) => index.name))
 });
 function prefixRangeEnd(prefix) {
   const points = Array.from(prefix);
@@ -5229,7 +5391,6 @@ var D1Adapter = class {
     await this._db.prepare(PUSH_SUBSCRIPTION_TABLE_SQL).run();
     await this._db.prepare(LLM_CREDENTIALS_TABLE_SQL).run();
     await this._db.prepare(MESSAGE_OUTBOX_TABLE_SQL).run();
-    await this._db.prepare(MESSAGE_OUTBOX_INDEX_SQL).run();
     for (const migration of SQLITE_MIGRATIONS) {
       try {
         await this._db.prepare(migration.sql).run();
@@ -5238,7 +5399,7 @@ var D1Adapter = class {
       }
     }
     const indexResults = [];
-    for (const index of SQLITE_INDEXES) {
+    for (const index of SQLITE_ALL_INDEXES) {
       try {
         await this._db.prepare(index.sql).run();
         indexResults.push({ name: index.name, status: "success", description: index.description, critical: !!index.critical });
@@ -5296,13 +5457,13 @@ var D1Adapter = class {
     await this._db.prepare("DROP TABLE IF EXISTS message_outbox").run();
   }
   async createTask(params) {
-    const now = this._now();
+    const now2 = this._now();
     const nextSendAt = this._iso(params.next_send_at);
     const res = await this._db.prepare(
       `INSERT INTO scheduled_messages
         (user_id, uuid, encrypted_payload, next_send_at, message_type, status, retry_count, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, ?)`
-    ).bind(params.user_id, params.uuid, params.encrypted_payload, nextSendAt, params.message_type, now, now).run();
+    ).bind(params.user_id, params.uuid, params.encrypted_payload, nextSendAt, params.message_type, now2, now2).run();
     const id = res.meta.last_row_id;
     return this._db.prepare(
       `SELECT id, uuid, next_send_at, status, created_at FROM scheduled_messages WHERE id = ?`
@@ -5321,7 +5482,7 @@ var D1Adapter = class {
    *   真的被删掉；false = 旧行本就不存在）
    */
   async createTaskSuperseding(params, supersedesUuid) {
-    const now = this._now();
+    const now2 = this._now();
     const nextSendAt = this._iso(params.next_send_at);
     const statements = [
       this._db.prepare(
@@ -5331,7 +5492,7 @@ var D1Adapter = class {
         `INSERT INTO scheduled_messages
           (user_id, uuid, encrypted_payload, next_send_at, message_type, status, retry_count, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, ?)`
-      ).bind(params.user_id, params.uuid, params.encrypted_payload, nextSendAt, params.message_type, now, now)
+      ).bind(params.user_id, params.uuid, params.encrypted_payload, nextSendAt, params.message_type, now2, now2)
     ];
     let results;
     if (typeof this._db.batch === "function") {
@@ -5397,9 +5558,9 @@ var D1Adapter = class {
     return this._db.prepare("SELECT * FROM scheduled_messages WHERE id = ?").bind(taskId).first();
   }
   async updateTaskByUuid(uuid, userId, encryptedPayload, extraFields) {
-    const now = this._now();
+    const now2 = this._now();
     const sets = ["encrypted_payload = ?", "updated_at = ?"];
-    const values = [encryptedPayload, now];
+    const values = [encryptedPayload, now2];
     if (extraFields) {
       for (const [key, value] of Object.entries(extraFields)) {
         if (!UPDATABLE_COLUMNS.has(key)) {
@@ -5415,7 +5576,7 @@ var D1Adapter = class {
        WHERE uuid = ? AND user_id = ? AND status = 'pending'`
     ).bind(...values).run();
     if (!res.meta.changes) return null;
-    return { uuid, updated_at: now };
+    return { uuid, updated_at: now2 };
   }
   async deleteTaskById(taskId) {
     const res = await this._db.prepare("DELETE FROM scheduled_messages WHERE id = ?").bind(taskId).run();
@@ -5428,7 +5589,7 @@ var D1Adapter = class {
     return res.meta.changes > 0;
   }
   async getPendingTasks(limit = 50) {
-    const now = this._now();
+    const now2 = this._now();
     const res = await this._db.prepare(
       `SELECT ${TASK_DELIVERY_COLUMNS}
        FROM scheduled_messages
@@ -5437,7 +5598,7 @@ var D1Adapter = class {
          AND (retry_after IS NULL OR retry_after <= ?)
        ORDER BY next_send_at ASC
        LIMIT ?`
-    ).bind(now, now, now, limit).all();
+    ).bind(now2, now2, now2, limit).all();
     return res.results || [];
   }
   /**
@@ -5477,7 +5638,7 @@ var D1Adapter = class {
   async claimTask(taskId, expectedNextSendAt, leaseUntil, serializeGroup = null) {
     const expected = typeof expectedNextSendAt === "string" ? expectedNextSendAt : this._iso(expectedNextSendAt);
     const grouped = typeof serializeGroup === "string" && serializeGroup.length > 0;
-    const now = this._now();
+    const now2 = this._now();
     const sets = ["lease_until = ?"];
     const values = [this._iso(leaseUntil)];
     if (grouped) {
@@ -5485,10 +5646,10 @@ var D1Adapter = class {
       values.push(serializeGroup);
     }
     sets.push("updated_at = ?");
-    values.push(now);
+    values.push(now2);
     let where = `id = ? AND status = 'pending' AND next_send_at = ?
           AND (lease_until IS NULL OR lease_until <= ?)`;
-    values.push(taskId, expected, now);
+    values.push(taskId, expected, now2);
     if (grouped) {
       where += `
           AND NOT EXISTS (
@@ -5496,7 +5657,7 @@ var D1Adapter = class {
              WHERE busy.serialize_group = ? AND busy.id <> ?
                AND busy.status = 'pending' AND busy.lease_until > ?
           )`;
-      values.push(serializeGroup, taskId, now);
+      values.push(serializeGroup, taskId, now2);
     }
     const res = await this._db.prepare(
       `UPDATE scheduled_messages SET ${sets.join(", ")} WHERE ${where}`
@@ -5576,8 +5737,17 @@ var D1Adapter = class {
    * than the stored row (updatedAt strictly lower) is skipped; equal or
    * newer overwrites. Values arrive pre-encrypted (the handler encrypts).
    *
+   * 例外是「来自未来」的行：`updated_at` 晚于服务端当前时间的行一律放行覆盖。
+   * 比较值是客户端自己报的时间戳，设备时钟只要领先过真实时间（用户改过系统
+   * 时间、时区或日期误操作），那一刻同步上来的行就带着一个还没到的时刻；之后
+   * 这台设备发什么都比它「旧」，条件写全被无声跳过，云端那行要等真实时间追上
+   * 去才解得开——客户端删本地数据、重装都碰不到它。合法写入不可能来自未来，
+   * 所以这种行按脏数据处理：服务端的钟是可信的那一个，拿它当判据放行。一次
+   * 正常写入就把 `updated_at` 拉回现实，之后旧不盖新照常生效。
+   *
    * `cleanups` 是删除项：在同一 batch 里先于 upsert 执行，`updated_at <= ?`
-   * 条件保证陈旧批次删不动更新写入的行。两种形态——
+   * 条件保证陈旧批次删不动更新写入的行（同样对未来时间戳的行放行，否则删一条
+   * 状态时切片行留在库里成孤儿）。两种形态——
    *   - `{ namespace, keyPrefix, updatedAt }` 删 key 前缀下的所有行，用来清掉
    *     大值旧写入留下的切片行（见 lib/state-chunks.js）；
    *   - `{ namespace, key, updatedAt }` 删这一个 key，用来删整条状态（前缀会
@@ -5595,43 +5765,76 @@ var D1Adapter = class {
    * @param {string} userId
    * @param {Array<{ namespace: string, key: string, value: string, updatedAt: number }>} entries
    * @param {Array<{ namespace: string, key?: string, keyPrefix?: string, updatedAt: number }>} [cleanups]
-   * @returns {Promise<{ upserted: number, skipped: number, outcomes: boolean[] }>}
+   * @param {number} [now] - 服务端当前时刻（epoch 毫秒），判定「这行来自未来」用的
+   *   就是它。调用方（lib/client-state-store.js）传下来，测试可以钉住一个假时钟；
+   *   自定义调用方不传时退回本机时钟。
+   * @returns {Promise<{ upserted: number, skipped: number, outcomes: boolean[], cleanupOutcomes?: Array<boolean|null> }>}
    *   `outcomes[i]` 对应 entries[i] 是否真的写入（changes > 0）。
+   *   `cleanupOutcomes[i]` 对应 cleanups[i]（传了 cleanups 才有）：精确 key 形态
+   *   回 `true` = 这个 key 的行已经不在（删掉了，或本来就没有）、`false` = 行还在
+   *   （库里那行更新，删除被条件写拦下）；前缀形态不探测，回 `null`。
    */
-  async upsertClientState(userId, entries, cleanups = []) {
+  async upsertClientState(userId, entries, cleanups = [], now2 = Date.now()) {
     const UPSERT_SQL = `INSERT INTO client_state (user_id, namespace, key, value, updated_at)
        VALUES (?, ?, ?, ?, ?)
        ON CONFLICT (user_id, namespace, key) DO UPDATE SET
          value = excluded.value,
          updated_at = excluded.updated_at
-       WHERE excluded.updated_at >= client_state.updated_at`;
+       WHERE excluded.updated_at >= client_state.updated_at
+          OR client_state.updated_at > ?`;
     const CLEANUP_PREFIX_SQL = `DELETE FROM client_state
-       WHERE user_id = ? AND namespace = ? AND key >= ? AND key < ? AND updated_at <= ?`;
+       WHERE user_id = ? AND namespace = ? AND key >= ? AND key < ?
+         AND (updated_at <= ? OR updated_at > ?)`;
     const CLEANUP_KEY_SQL = `DELETE FROM client_state
-       WHERE user_id = ? AND namespace = ? AND key = ? AND updated_at <= ?`;
-    const buildStatements = () => [
-      ...cleanups.map((c) => typeof c.key === "string" ? this._db.prepare(CLEANUP_KEY_SQL).bind(userId, c.namespace, c.key, c.updatedAt) : this._db.prepare(CLEANUP_PREFIX_SQL).bind(userId, c.namespace, c.keyPrefix, prefixRangeEnd(c.keyPrefix), c.updatedAt)),
-      ...entries.map(
-        (entry) => this._db.prepare(UPSERT_SQL).bind(userId, entry.namespace, entry.key, entry.value, entry.updatedAt)
-      )
-    ];
+       WHERE user_id = ? AND namespace = ? AND key = ?
+         AND (updated_at <= ? OR updated_at > ?)`;
+    const PROBE_KEY_SQL = `SELECT COUNT(*) AS n FROM client_state
+       WHERE user_id = ? AND namespace = ? AND key = ?`;
+    const statements = [];
+    const probeIndexes = [];
+    for (const c of cleanups) {
+      if (typeof c.key === "string") {
+        statements.push(this._db.prepare(CLEANUP_KEY_SQL).bind(userId, c.namespace, c.key, c.updatedAt, now2));
+        probeIndexes.push(statements.length);
+        statements.push(this._db.prepare(PROBE_KEY_SQL).bind(userId, c.namespace, c.key));
+      } else {
+        statements.push(
+          this._db.prepare(CLEANUP_PREFIX_SQL).bind(userId, c.namespace, c.keyPrefix, prefixRangeEnd(c.keyPrefix), c.updatedAt, now2)
+        );
+        probeIndexes.push(null);
+      }
+    }
+    const upsertStart = statements.length;
+    for (const entry of entries) {
+      statements.push(
+        this._db.prepare(UPSERT_SQL).bind(userId, entry.namespace, entry.key, entry.value, entry.updatedAt, now2)
+      );
+    }
     let results;
     if (typeof this._db.batch === "function") {
-      results = await this._db.batch(buildStatements());
+      results = await this._db.batch(statements);
     } else {
       results = [];
-      for (const stmt of buildStatements()) {
+      for (const stmt of statements) {
         results.push(await stmt.run());
       }
     }
-    const outcomes = results.slice(cleanups.length).map((res) => res.meta.changes > 0);
+    const outcomes = results.slice(upsertStart).map((res) => res.meta.changes > 0);
     let upserted = 0;
     let skipped = 0;
     for (const wrote of outcomes) {
       if (wrote) upserted++;
       else skipped++;
     }
-    return { upserted, skipped, outcomes };
+    const result = { upserted, skipped, outcomes };
+    if (cleanups.length > 0) {
+      result.cleanupOutcomes = probeIndexes.map((probeAt) => {
+        if (probeAt === null) return null;
+        const row = results[probeAt] && Array.isArray(results[probeAt].results) ? results[probeAt].results[0] : null;
+        return Number(row?.n ?? 0) === 0;
+      });
+    }
+    return result;
   }
   /**
    * All entries of one namespace (values still encrypted).
@@ -5739,14 +5942,14 @@ var D1Adapter = class {
    */
   async upsertLlmCredentials(userId, entries) {
     if (!entries || entries.length === 0) return 0;
-    const now = this._now();
+    const now2 = this._now();
     const SQL = `INSERT INTO llm_credentials (user_id, cred_id, encrypted_value, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?)
        ON CONFLICT (user_id, cred_id) DO UPDATE SET
          encrypted_value = excluded.encrypted_value,
          updated_at = excluded.updated_at`;
     const statements = entries.map(
-      (entry) => this._db.prepare(SQL).bind(userId, entry.credId, entry.encryptedValue, now, now)
+      (entry) => this._db.prepare(SQL).bind(userId, entry.credId, entry.encryptedValue, now2, now2)
     );
     let results;
     if (typeof this._db.batch === "function") {
@@ -5897,6 +6100,25 @@ var D1Adapter = class {
       [userId],
       messageIds
     );
+  }
+  /**
+   * 把某条任务名下还没发出去的行一次删掉（取消 / 顶替时的 outbox 清理）。
+   *
+   * 判据与 discardOutboxMessages 相同：只删 delivered_at 与 acked_at 均为
+   * NULL 的行——已经推给设备 / 已 ack 的照旧留着。按 task_uuid 直删是为了不
+   * 受未 ack 积压量的影响：靠翻页扫描挑行的话，积压一大这条任务的行就落在
+   * 扫描上限之外（见 lib/outbox-store.js 的 discardUndeliveredPushesForTask）。
+   *
+   * @param {string} userId
+   * @param {string} taskUuid
+   * @returns {Promise<number>} 删掉的行数
+   */
+  async discardUndeliveredOutboxForTask(userId, taskUuid) {
+    const res = await this._db.prepare(
+      `DELETE FROM message_outbox
+       WHERE user_id = ? AND task_uuid = ? AND delivered_at IS NULL AND acked_at IS NULL`
+    ).bind(userId, taskUuid).run();
+    return res.meta.changes || 0;
   }
   /**
    * 未 ack 的行（id 升序，游标翻页）。payload 仍是密文，解密在 handler。
@@ -6091,12 +6313,14 @@ function validateEntry(entry, index, maxValueBytes) {
   if (INTERNAL_STATE_CHAR_RE.test(entry.key)) {
     return rejectEntry(entry, index, "INVALID_STATE_KEY", `entries[${index}].key \u4E0D\u80FD\u5305\u542B\u63A7\u5236\u5B57\u7B26\uFF08\\u0000-\\u001f \u4E3A\u5E93\u5185\u90E8\u4FDD\u7559\uFF09`);
   }
-  if (typeof entry.value !== "string") {
-    return rejectEntry(entry, index, "INVALID_STATE_VALUE", `entries[${index}].value \u5FC5\u987B\u662F\u5B57\u7B26\u4E32\uFF08\u5BBF\u4E3B\u81EA\u884C\u5E8F\u5217\u5316\uFF09`);
+  if (entry.value !== null && typeof entry.value !== "string") {
+    return rejectEntry(entry, index, "INVALID_STATE_VALUE", `entries[${index}].value \u5FC5\u987B\u662F\u5B57\u7B26\u4E32\uFF08\u5BBF\u4E3B\u81EA\u884C\u5E8F\u5217\u5316\uFF09\uFF0C\u6216 null \u8868\u793A\u5220\u9664`);
   }
-  const bytes = stateValueBytes(entry.value);
-  if (bytes > maxValueBytes) {
-    return rejectEntry(entry, index, "STATE_VALUE_TOO_LARGE", `entries[${index}].value \u8D85\u8FC7\u5355\u6761\u603B\u4E0A\u9650`, { bytes, maxBytes: maxValueBytes });
+  if (typeof entry.value === "string") {
+    const bytes = stateValueBytes(entry.value);
+    if (bytes > maxValueBytes) {
+      return rejectEntry(entry, index, "STATE_VALUE_TOO_LARGE", `entries[${index}].value \u8D85\u8FC7\u5355\u6761\u603B\u4E0A\u9650`, { bytes, maxBytes: maxValueBytes });
+    }
   }
   if (!Number.isInteger(entry.updatedAt) || entry.updatedAt <= 0) {
     return rejectEntry(entry, index, "INVALID_STATE_UPDATED_AT", `entries[${index}].updatedAt \u5FC5\u987B\u662F\u6B63\u6574\u6570\uFF08epoch \u6BEB\u79D2\uFF09`);
@@ -6157,8 +6381,9 @@ function createClientStateHandler(ctx) {
     if (typeof db.upsertClientState !== "function") {
       return err3(501, "CLIENT_STATE_NOT_SUPPORTED", "\u5F53\u524D\u6570\u636E\u5E93\u9002\u914D\u5668\u4E0D\u652F\u6301 client_state");
     }
-    const { upserted, skipped, skippedEntries } = await writeClientStateEntries({ db, userId, userKey, entries: accepted });
+    const { upserted, skipped, deleted, skippedEntries } = await writeClientStateEntries({ db, userId, userKey, entries: accepted });
     const data = { upserted, skipped };
+    if (deleted > 0) data.deleted = deleted;
     if (skippedEntries.length > 0) data.skippedEntries = skippedEntries;
     if (rejected.length > 0) data.rejected = rejected;
     return { status: 200, body: { success: true, data } };
@@ -6203,7 +6428,7 @@ function createClientStateHandler(ctx) {
   }
   return { PUT, GET, DELETE };
 }
-var SERVER_VERSION = true ? "2.6.0-next.23" : "0.0.0-dev";
+var SERVER_VERSION = true ? "2.6.0-next.27" : "0.0.0-dev";
 var SERVER_FEATURES = Object.freeze([
   "client-state",
   "client-state-chunking",
@@ -6287,7 +6512,10 @@ var SERVER_FEATURES = Object.freeze([
   // client_state 按命名空间过期清理（config 的 clientStateTtl，cron 每跳顺手做）。
   "client-state-ttl",
   // hook ctx 带 emitResult(payload)：往客户端补一条自定义结果（落收件箱 + 推送）。
-  "emit-result"
+  "emit-result",
+  // PUT /client-state 的 entry 认 value: null（删掉这个 key，连切片行一起；同一套
+  // last-write-wins，被拦下的进 skippedEntries；删掉的条数在 data.deleted）。
+  "client-state-delete"
 ]);
 function createCapabilitiesHandler(ctx) {
   async function GET(url, headers) {
@@ -6769,8 +6997,101 @@ function createSingleUserCloudflareWorker(buildConfig, options = {}) {
   return { fetch: fetch2, scheduled, runTask: runTask2, getSchemaVersion: getSchemaVersion2, ensureSchema: ensureSchema2 };
 }
 
+// node_modules/.pnpm/@rei-standard+amsg-shared@0.4.0-next.8/node_modules/@rei-standard/amsg-shared/dist/index.mjs
+var TEXT_ENCODER2 = new TextEncoder();
+var TEXT_DECODER2 = new TextDecoder("utf-8", { fatal: false });
+function utf83(str) {
+  return TEXT_ENCODER2.encode(String(str));
+}
+var LLM_MESSAGES_ERROR2 = Object.freeze({
+  MESSAGES_NOT_ARRAY: "MESSAGES_NOT_ARRAY",
+  MESSAGE_NOT_OBJECT: "MESSAGE_NOT_OBJECT",
+  INVALID_ROLE: "INVALID_ROLE",
+  TOOL_CALL_MALFORMED: "TOOL_CALL_MALFORMED",
+  TOOL_CONTENT_INVALID: "TOOL_CONTENT_INVALID",
+  TOOL_CALL_ID_MISSING: "TOOL_CALL_ID_MISSING",
+  CONTENT_EMPTY_STRING: "CONTENT_EMPTY_STRING",
+  CONTENT_EMPTY_ARRAY: "CONTENT_EMPTY_ARRAY",
+  CONTENT_INVALID_TYPE: "CONTENT_INVALID_TYPE"
+});
+var UPSTREAM_ERROR_BODY_MAX_BYTES2 = 16 * 1024;
+var KEY_INFO_PREFIX2 = utf83("WebPush: info\0");
+var CEK_INFO2 = utf83("Content-Encoding: aes128gcm\0");
+var NONCE_INFO2 = utf83("Content-Encoding: nonce\0");
+var VAPID_TOKEN_LIFETIME2 = 12 * 3600;
+var REI_SW_EVENT2 = Object.freeze({
+  CONTENT_RECEIVED: "rei-amsg-content-received",
+  REASONING_RECEIVED: "rei-amsg-reasoning-received",
+  TOOL_REQUEST_RECEIVED: "rei-amsg-tool-request-received",
+  ERROR_RECEIVED: "rei-amsg-error-received",
+  /** 宿主自定义的一条结果（`messageKind: 'result'`），不是聊天内容。 */
+  RESULT_RECEIVED: "rei-amsg-result-received",
+  MULTIPART_EXPIRED: "rei-amsg-multipart-expired",
+  UNKNOWN_RECEIVED: "rei-amsg-unknown-received"
+});
+var MULTIPART_FAILURE_REASON2 = Object.freeze({
+  /** TTL 到期仍未收齐，或收到的分片本身已经过期。 */
+  TTL_EXPIRED: "ttl-expired",
+  /** 分片信封不合规：version / encoding 对不上、index 越界、chunk 不是合法 base64url。 */
+  INVALID_CHUNK: "invalid-chunk",
+  /** 同一个 id 的分片报了不一样的 total / encoding，已收的部分拼不回去。 */
+  CHUNK_CONFLICT: "chunk-conflict",
+  /** 累计字节数超过 maxTotalBytes。 */
+  SIZE_LIMIT_EXCEEDED: "size-limit-exceeded",
+  /** 收齐了但拼不回原 payload（缺片、超限、JSON 解不开）。 */
+  RESTORE_FAILED: "restore-failed",
+  /** 分片仓库（IndexedDB）读写失败。 */
+  STORAGE_FAILED: "storage-failed",
+  /** 接收端把 multipart 关了（`multipart.enabled === false`），分片没法重组。 */
+  DISABLED: "disabled"
+});
+var REI_SW_MESSAGE_TYPE2 = Object.freeze({
+  ENQUEUE_REQUEST: "REI_ENQUEUE_REQUEST",
+  DELIVER: "REI_AMSG_DELIVER",
+  FLUSH_QUEUE: "REI_FLUSH_QUEUE",
+  /**
+   * 入队的点对点回执：谁发的 ENQUEUE_REQUEST 就回给谁一条，一次一条。
+   * 没转 MessagePort 过来时会落到全局的 `navigator.serviceWorker` message
+   * 监听器上。
+   */
+  QUEUE_RESULT: "REI_QUEUE_RESULT",
+  /**
+   * 队列请求被永久拒绝、即将从队列里删掉时广播给所有窗口的一条。
+   *
+   * 跟 QUEUE_RESULT 分开是因为两者的收信人不是一回事：这条是广播，可能来自后台
+   * `sync` 冲刷、说的也可能是另一条八竿子打不着的旧请求。共用一个 type 的话，
+   * 页面等自己那条入队回执时会先收到这一条、当成自己的结果处理。
+   */
+  QUEUE_DROPPED: "REI_QUEUE_DROPPED"
+});
+var REI_AMSG_DELIVER_MESSAGE_TYPE2 = REI_SW_MESSAGE_TYPE2.DELIVER;
+var MESSAGE_KIND2 = Object.freeze({
+  CONTENT: "content",
+  REASONING: "reasoning",
+  TOOL_REQUEST: "tool_request",
+  ERROR: "error",
+  RESULT: "result"
+});
+var MESSAGE_TYPE2 = Object.freeze({
+  INSTANT: "instant",
+  FIXED: "fixed",
+  PROMPTED: "prompted",
+  AUTO: "auto"
+});
+var PUSH_SOURCE2 = Object.freeze({
+  INSTANT: "instant",
+  SCHEDULED: "scheduled"
+});
+var REASONING_CHUNK_ENCODER2 = new TextEncoder();
+var REASONING_CHUNK_DECODER2 = new TextDecoder("utf-8", { fatal: true });
+var REASONING_TAG_RE_G2 = /<(think|thinking|thought)>[\s\S]*?<\/\1>/gi;
+function stripReasoningTags2(content) {
+  if (typeof content !== "string" || !content.includes("<")) return content;
+  return content.replace(REASONING_TAG_RE_G2, "").trim();
+}
+
 // utils/amsgBundleVersion.ts
-var AMSG_BUNDLE_VERSION = "2026-08-19";
+var AMSG_BUNDLE_VERSION = "2026-09-04";
 
 // utils/amsgTaskKinds.ts
 var AMSG_TASK_KIND_KEY = "amsgKind";
@@ -7093,9 +7414,9 @@ function getFlowNarrativeKey(hour) {
   return "evening";
 }
 var PRE_DAWN_END_HOUR = 5;
-var resolveScheduleSlots = (schedule, now) => {
+var resolveScheduleSlots = (schedule, now2) => {
   if (!schedule?.slots?.length) return { current: null, next: null };
-  const currentMinutes = now.getHours() * 60 + now.getMinutes();
+  const currentMinutes = now2.getHours() * 60 + now2.getMinutes();
   for (let i = schedule.slots.length - 1; i >= 0; i--) {
     const [h, m] = schedule.slots[i].startTime.split(":").map(Number);
     if (!Number.isFinite(h) || !Number.isFinite(m)) continue;
@@ -7108,12 +7429,12 @@ var resolveScheduleSlots = (schedule, now) => {
   }
   return { current: null, next: schedule.slots[0] };
 };
-var buildScheduleInjection = (schedule, evolvedNarrative, now = /* @__PURE__ */ new Date(), options = {}) => {
+var buildScheduleInjection = (schedule, evolvedNarrative, now2 = /* @__PURE__ */ new Date(), options = {}) => {
   if (!schedule || !schedule.slots || schedule.slots.length === 0) return "";
-  const { current: currentSlot, next: nextSlot } = resolveScheduleSlots(schedule, now);
+  const { current: currentSlot, next: nextSlot } = resolveScheduleSlots(schedule, now2);
   const withClock = options.includeClock !== false;
   const withTime = (text, startTime) => withClock ? `${text}\uFF08${startTime}\uFF09` : text;
-  const isPreDawnCarryOver = !currentSlot && now.getHours() < PRE_DAWN_END_HOUR;
+  const isPreDawnCarryOver = !currentSlot && now2.getHours() < PRE_DAWN_END_HOUR;
   let slotHeader = "";
   if (currentSlot) {
     slotHeader = withClock ? `\u5F53\u524D\u65F6\u6BB5\uFF1A${currentSlot.startTime} \u4F60\u6B63\u5728${currentSlot.activity}` : `\u5F53\u524D\u65F6\u6BB5\uFF1A\u4F60\u6B63\u5728${currentSlot.activity}`;
@@ -7133,7 +7454,7 @@ var buildScheduleInjection = (schedule, evolvedNarrative, now = /* @__PURE__ */ 
   if (evolvedNarrative) {
     narrative = evolvedNarrative;
   } else if (schedule.flowNarrative && Object.keys(schedule.flowNarrative).length > 0) {
-    const key = isPreDawnCarryOver ? "evening" : getFlowNarrativeKey(now.getHours());
+    const key = isPreDawnCarryOver ? "evening" : getFlowNarrativeKey(now2.getHours());
     narrative = schedule.flowNarrative[key] || schedule.flowNarrative["evening"] || schedule.flowNarrative["afternoon"] || schedule.flowNarrative["morning"] || "";
   } else if (currentSlot?.innerThought) {
     narrative = currentSlot.innerThought;
@@ -7142,6 +7463,7 @@ var buildScheduleInjection = (schedule, evolvedNarrative, now = /* @__PURE__ */ 
 `;
   const footnote = `
 \uFF08\u4E0D\u662F\u53F0\u8BCD\uFF0C\u4E0D\u7528\u8BF4\u51FA\u53E3\u2014\u2014\u8BA9\u5B83\u5F71\u54CD\u4F60\u7684\u8BED\u6C14\u548C\u60C5\u7EEA\u5C31\u597D\u3002\uFF09`;
+  const scopeNote = "\uFF08\u8FD9\u5F20\u8868\u662F\u4F60\u81EA\u5DF1\u7684\u4E00\u5929\uFF0C\u4E0D\u662F\u7ED9\u5BF9\u65B9\u5217\u7684\u5F85\u529E\u3002\u91CC\u5934\u8981\u662F\u6709\u8DDF\u5BF9\u65B9\u76F8\u5173\u7684\u4E8B\uFF0C\u90A3\u4E5F\u662F\u4F60\u81EA\u5DF1\u7684\u60E6\u8BB0\u2014\u2014\u8BDD\u8D76\u5230\u4E86\u987A\u53E3\u5E26\u4E00\u53E5\u5C31\u591F\uFF0C\u4E0D\u7528\u8FFD\u7740\u95EE\u8FDB\u5C55\uFF0C\u4E5F\u4E0D\u7528\u50AC\u5BF9\u65B9\u53BB\u505A\u3002\uFF09";
   let out = "";
   if (options.includeFullDay) {
     const rows = schedule.slots.map((slot) => {
@@ -7164,6 +7486,8 @@ ${rows.join("\n")}
 \u65E5\u7A0B\u662F\u4F60\u65E9\u4E0A\u7ED9\u81EA\u5DF1\u6392\u7684\u8BA1\u5212\uFF0C\u4E0D\u662F\u5FC5\u987B\u5C65\u884C\u7684\u547D\u4EE4\u3002\u771F\u5B9E\u53D1\u751F\u7684\u4E8B\u8DDF\u5B83\u5BF9\u4E0D\u4E0A\u65F6\uFF08\u6BD4\u5982\u8FD9\u4F1A\u513F\u8868\u4E0A\u5199\u7740\u7761\u89C9\u3001\u4F60\u5374\u9192\u7740\u5728\u8DDF\u5BF9\u65B9\u8BF4\u8BDD\uFF09\uFF0C\u628A\u5B83\u6539\u6210\u4F60\u5B9E\u9645\u5728\u505A\u7684\u4E8B\u5C31\u597D\u3002
 \u9700\u8981\u65F6\u5728\u56DE\u590D\u672B\u5C3E\u5355\u72EC\u8F93\u51FA\uFF1A[[ACTION:CHANGE_SCHEDULE | ${changeTarget.startTime} | \u53BB\u8D85\u5E02]]\uFF08\u65F6\u6BB5\u8981\u539F\u6837\u6284\u4E0A\u9762\u51FA\u73B0\u8FC7\u7684\u90A3\u51E0\u4E2A\uFF1B\u6B63\u5728\u8FDB\u884C\u7684\u8FD9\u4E00\u6761\u548C\u5B83\u4E4B\u540E\u7684\u90FD\u80FD\u6539\uFF0C\u5DF2\u7ECF\u8FC7\u53BB\u7684\u4E0D\u80FD\uFF09\u3002`;
   }
+  out += `
+${scopeNote}`;
   out += "\n";
   return out;
 };
@@ -7623,6 +7947,7 @@ var MAX_ACTIVE_TASKS_PER_CHAR = 5;
 var shortTaskId = (taskUuid) => taskUuid.slice(0, 8);
 var describeRecurrence = (recurrence) => recurrence === "daily" ? "\u6BCF\u5929" : recurrence === "weekly" ? "\u6BCF\u5468" : "\u4E00\u6B21\u6027";
 var AMSG2_SCHEDULE_SECRECY_NOTE = "\u4E0D\u8981\u5411\u7528\u6237\u590D\u8FF0\u6216\u63D0\u53CA\u8FD9\u4EFD\u6392\u7A0B\u4FE1\u606F\u672C\u8EAB\u7684\u5B58\u5728\u3002";
+var AMSG2_SCHEDULE_NOT_YET_NOTE = "\u6392\u5728\u672A\u6765\u7684\u4E8B\u5230\u70B9\u81EA\u5DF1\u4F1A\u54CD\uFF0C\u4E0D\u7528\u4F60\u73B0\u5728\u63D0\u524D\u66FF\u5B83\u5F00\u53E3\u2014\u2014\u8FD8\u6CA1\u5230\u90A3\u4E2A\u65F6\u523B\u7684\u5C31\u8BA9\u5B83\u5B89\u9759\u5F85\u7740\uFF0C\u522B\u6BCF\u8F6E\u90FD\u62FF\u5B83\u8D77\u8BDD\u5934\u3001\u8FFD\u7740\u95EE\u8FDB\u5C55\u3002\u5BF9\u65B9\u81EA\u5DF1\u63D0\u8D77\uFF0C\u6216\u8005\u771F\u5230\u4E86\u90A3\u4E2A\u70B9\uFF0C\u624D\u662F\u8BF4\u5B83\u7684\u65F6\u5019\u3002";
 var describeExpirePolicy = (policy) => policy === "force" ? "\u5F3A\u5236\u53D1\u9001" : "\u9047\u5FD9\u4F5C\u5E9F";
 var describeTaskMode = (task) => {
   if (task.mode === "fixed") return "\u56FA\u5B9A\u6D88\u606F";
@@ -7662,6 +7987,7 @@ var buildFireTaskListBlock = (tasks, opts) => {
       return `- [${shortTaskId(t.taskUuid)}] ${when} ${describeRecurrence(t.recurrenceType)} \xB7 ${describeTaskMode(t)} \xB7 ${describeExpirePolicy(t.expirePolicy)}`;
     }),
     "\uFF08\u8FD9\u51E0\u6761\u5230\u70B9\u4F1A\u81EA\u52A8\u53D1\u51FA\u53BB\uFF0C\u522B\u5728\u8FD9\u6761\u6D88\u606F\u91CC\u628A\u540C\u4E00\u4EF6\u4E8B\u518D\u6392\u4E00\u904D\uFF0C\u4E5F\u522B\u5F53\u5B83\u4EEC\u4E0D\u5B58\u5728\u3002\uFF09",
+    AMSG2_SCHEDULE_NOT_YET_NOTE,
     AMSG2_SCHEDULE_SECRECY_NOTE
   ].join("\n");
 };
@@ -8237,9 +8563,9 @@ var LUNAR_FESTIVAL_DATES = {
   "2035-10-09": "\u91CD\u9633\u8282"
 };
 var checkSpecialDates = (tz, nowMs) => {
-  const now = nowInTimeZone(tz, nowMs == null ? void 0 : new Date(nowMs));
-  const monthDay = `${(now.getMonth() + 1).toString().padStart(2, "0")}-${now.getDate().toString().padStart(2, "0")}`;
-  const fullDate = `${now.getFullYear()}-${monthDay}`;
+  const now2 = nowInTimeZone(tz, nowMs == null ? void 0 : new Date(nowMs));
+  const monthDay = `${(now2.getMonth() + 1).toString().padStart(2, "0")}-${now2.getDate().toString().padStart(2, "0")}`;
+  const fullDate = `${now2.getFullYear()}-${monthDay}`;
   const special = [];
   if (SPECIAL_DATES[monthDay]) {
     special.push(SPECIAL_DATES[monthDay]);
@@ -8611,17 +8937,17 @@ var isEncryptedEnvelope2 = (value) => {
 var handleInstantChat = async (args) => {
   const { request, env, upstream: upstream2, json } = args;
   const stateBackoffMs = args.stateBackoffMs ?? STATE_FORWARD_BACKOFF_MS;
-  const fail2 = (status, code, message, extra) => json(status, { success: false, error: { code, message, ...extra ?? {} } });
+  const fail3 = (status, code, message, extra) => json(status, { success: false, error: { code, message, ...extra ?? {} } });
   const token = (env.AMSG_SERVER_TOKEN ?? "").trim();
   const clientToken = request.headers.get("X-Client-Token") ?? "";
   if (token) {
     if (!clientToken || !await constantTimeEqual2(clientToken, token)) {
-      return fail2(401, "INVALID_CLIENT_TOKEN", "\u5171\u4EAB\u5BC6\u94A5\u65E0\u6548\u6216\u7F3A\u5931");
+      return fail3(401, "INVALID_CLIENT_TOKEN", "\u5171\u4EAB\u5BC6\u94A5\u65E0\u6548\u6216\u7F3A\u5931");
     }
   }
   const userId = request.headers.get("X-User-Id") ?? "";
-  if (!userId) return fail2(400, "USER_ID_REQUIRED", "\u7F3A\u5C11\u7528\u6237\u6807\u8BC6\u7B26");
-  if (!UUID_V4_RE.test(userId)) return fail2(400, "INVALID_USER_ID_FORMAT", "X-User-Id \u5FC5\u987B\u662F UUID v4 \u683C\u5F0F");
+  if (!userId) return fail3(400, "USER_ID_REQUIRED", "\u7F3A\u5C11\u7528\u6237\u6807\u8BC6\u7B26");
+  if (!UUID_V4_RE.test(userId)) return fail3(400, "INVALID_USER_ID_FORMAT", "X-User-Id \u5FC5\u987B\u662F UUID v4 \u683C\u5F0F");
   let body;
   try {
     const text = await readMaybeGzippedBody(request);
@@ -8629,13 +8955,13 @@ var handleInstantChat = async (args) => {
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("not an object");
     body = parsed;
   } catch {
-    return fail2(400, "INVALID_JSON", "\u8BF7\u6C42\u4F53\u4E0D\u662F\u5408\u6CD5\u7684 JSON \u5BF9\u8C61");
+    return fail3(400, "INVALID_JSON", "\u8BF7\u6C42\u4F53\u4E0D\u662F\u5408\u6CD5\u7684 JSON \u5BF9\u8C61");
   }
   if (!isEncryptedEnvelope2(body.statePayload)) {
-    return fail2(400, "INVALID_STATE_PAYLOAD", "statePayload \u5FC5\u987B\u662F\u52A0\u5BC6\u4FE1\u5C01\uFF08iv / authTag / encryptedData\uFF09");
+    return fail3(400, "INVALID_STATE_PAYLOAD", "statePayload \u5FC5\u987B\u662F\u52A0\u5BC6\u4FE1\u5C01\uFF08iv / authTag / encryptedData\uFF09");
   }
   if (!isEncryptedEnvelope2(body.taskPayload)) {
-    return fail2(400, "INVALID_TASK_PAYLOAD", "taskPayload \u5FC5\u987B\u662F\u52A0\u5BC6\u4FE1\u5C01\uFF08iv / authTag / encryptedData\uFF09");
+    return fail3(400, "INVALID_TASK_PAYLOAD", "taskPayload \u5FC5\u987B\u662F\u52A0\u5BC6\u4FE1\u5C01\uFF08iv / authTag / encryptedData\uFF09");
   }
   const requestUrl = new URL(request.url);
   const mountPath = requestUrl.pathname.replace(/\/+$/, "").replace(/\/instant-chat$/, "");
@@ -8726,7 +9052,7 @@ var handleInstantChat = async (args) => {
   }
   const uuid = taskBody?.data?.uuid;
   if (typeof uuid !== "string" || !uuid) {
-    return fail2(502, "INSTANT_CHAT_TASK_UUID_MISSING", "\u4E0A\u6E38\u6CA1\u6709\u56DE\u4EFB\u52A1 uuid\uFF0C\u65E0\u6CD5\u8DDF\u8E2A\u8FD9\u4E00\u8F6E", {
+    return fail3(502, "INSTANT_CHAT_TASK_UUID_MISSING", "\u4E0A\u6E38\u6CA1\u6709\u56DE\u4EFB\u52A1 uuid\uFF0C\u65E0\u6CD5\u8DDF\u8E2A\u8FD9\u4E00\u8F6E", {
       step: "schedule-message"
     });
   }
@@ -8751,7 +9077,7 @@ var handleInstantChat = async (args) => {
 
 // worker/amsg/src/selfUpdate.ts
 var CF_API = "https://api.cloudflare.com/client/v4";
-var BUNDLE_URL = "https://raw.githubusercontent.com/Tosd0/sullyos-workers/main/amsg/worker.bundle.js";
+var BUNDLE_URL = "https://xuebing0229.github.io/SullyOS/amsg-worker.bundle.js";
 var MAIN_MODULE = "worker.bundle.js";
 var FALLBACK_COMPATIBILITY_DATE = "2026-01-01";
 var FALLBACK_COMPATIBILITY_FLAGS = ["global_fetch_strictly_public"];
@@ -8764,7 +9090,7 @@ async function cf(token, path, init = {}) {
   try {
     res = await fetch(`${CF_API}${path}`, {
       method: init.method ?? "GET",
-      headers: { Authorization: `Bearer ${token}` },
+      headers: { Authorization: `Bearer ${token}`, ...init.headers },
       body: init.body
     });
   } catch (err5) {
@@ -8974,6 +9300,87 @@ async function handleSelfUpdate(request, env) {
   };
 }
 
+// worker/amsg/src/cronTrigger.ts
+var AMSG_CRON_EXPRESSION = "* * * * *";
+var isCronTriggerAuthFailure = (code) => code === "SERVER_TOKEN_REQUIRED" || code === "UNAUTHORIZED";
+var fail2 = (code, message) => ({ code, message });
+async function prepare(env, request) {
+  const serverToken = env.AMSG_SERVER_TOKEN?.trim();
+  if (!serverToken) {
+    return {
+      ok: false,
+      failure: fail2(
+        "SERVER_TOKEN_REQUIRED",
+        "\u8FD9\u4E2A Worker \u6CA1\u8BBE\u5171\u4EAB\u5BC6\u94A5\uFF08AMSG_SERVER_TOKEN\uFF09\uFF0C\u51FA\u4E8E\u5B89\u5168\u8003\u8651\u4E0D\u5F00\u653E\u6682\u505C\u540E\u53F0\u4EFB\u52A1\u3002\u5148\u8865\u4E0A\u518D\u8BD5\u3002"
+      )
+    };
+  }
+  const clientToken = request.headers.get("X-Client-Token");
+  if (!clientToken || !await constantTimeEqual2(clientToken, serverToken)) {
+    return { ok: false, failure: fail2("UNAUTHORIZED", "\u5171\u4EAB\u5BC6\u94A5\u5BF9\u4E0D\u4E0A\u3002") };
+  }
+  const token = env.CF_API_TOKEN?.trim();
+  if (!token) {
+    return {
+      ok: false,
+      failure: fail2(
+        "CF_TOKEN_MISSING",
+        "\u6CA1\u914D CF_API_TOKEN\uFF0C\u6CA1\u6CD5\u6539\u5B9A\u65F6\u89E6\u53D1\u3002\u53BB Cloudflare \u5EFA\u4E00\u679A\u53EA\u52FE Workers Scripts \u2192 Edit \u7684 API Token\uFF0C\u52A0\u8FDB\u8FD9\u4E2A Worker \u7684\u53D8\u91CF\u91CC\u3002"
+      )
+    };
+  }
+  const scriptName = resolveScriptName(env, request.url);
+  if (!scriptName) {
+    return {
+      ok: false,
+      failure: fail2(
+        "SCRIPT_NAME_UNKNOWN",
+        "\u8BA4\u4E0D\u51FA\u8FD9\u4E2A Worker \u53EB\u4EC0\u4E48\uFF08\u591A\u534A\u662F\u5957\u4E86\u4EE3\u7406\u57DF\u540D\uFF09\u3002\u7ED9\u5B83\u52A0\u4E00\u6761 CF_SCRIPT_NAME \u53D8\u91CF\uFF0C\u503C\u586B Worker \u7684\u540D\u5B57\u3002"
+      )
+    };
+  }
+  const located = await locateScript(env, token, scriptName);
+  if (!located.ok) return { ok: false, failure: fail2("SCRIPT_NOT_LOCATED", located.message) };
+  return {
+    ok: true,
+    token,
+    schedulesPath: `/accounts/${located.accountId}/workers/scripts/${encodeURIComponent(scriptName)}/schedules`
+  };
+}
+var readSchedules = (result) => {
+  const schedules = result?.schedules;
+  return Array.isArray(schedules) ? schedules : [];
+};
+async function handleCronTriggerRead(env, request) {
+  const prepared = await prepare(env, request);
+  if (!prepared.ok) return { supported: false, ...prepared.failure };
+  const current = await cf(prepared.token, prepared.schedulesPath);
+  if (!current.ok) {
+    return { supported: false, ...fail2("CF_ERROR", `\u8BFB\u4E0D\u5230\u5B9A\u65F6\u89E6\u53D1\u7684\u72B6\u6001\uFF08${current.detail}\uFF09\u3002`) };
+  }
+  return { supported: true, enabled: readSchedules(current.result).length > 0 };
+}
+async function handleCronTriggerWrite(env, request, enabled) {
+  const prepared = await prepare(env, request);
+  if (!prepared.ok) return { ok: false, ...prepared.failure };
+  const schedules = enabled ? [{ cron: AMSG_CRON_EXPRESSION }] : [];
+  const written = await cf(prepared.token, prepared.schedulesPath, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(schedules)
+  });
+  if (!written.ok) {
+    return {
+      ok: false,
+      ...fail2(
+        "CF_ERROR",
+        `${enabled ? "\u6062\u590D" : "\u6682\u505C"}\u6CA1\u6210\u529F\uFF08${written.detail}\uFF09\u3002\u5B9A\u65F6\u89E6\u53D1\u4FDD\u6301\u539F\u6837\u3002`
+      )
+    };
+  }
+  return { ok: true, enabled };
+}
+
 // utils/mcpFireCore.ts
 var DEFAULT_MAX_TOOL_NAME_LEN = 64;
 var MCP_FIRE_NAME_PREFIX = "mcp__";
@@ -9147,9 +9554,22 @@ var extractTextFakedMcpCalls = (content, resolve, opts = {}) => {
   }
   return found.sort((a, b) => a.index - b.index).map(({ index: _index, ...call }) => call);
 };
-var MCP_PROTOCOL_VERSION = "2024-11-05";
+var MCP_LATEST_HANDSHAKE_PROTOCOL_VERSION = "2025-11-25";
+var MCP_SUPPORTED_HANDSHAKE_PROTOCOL_VERSIONS = [
+  "2025-11-25",
+  "2025-06-18",
+  "2025-03-26"
+];
 var MCP_REQUEST_TIMEOUT_MS = 6e4;
-var createMcpSessionState = () => ({ sessionId: null, initialized: false, initPromise: null, nextId: 0 });
+var createMcpSessionState = () => ({
+  sessionId: null,
+  initialized: false,
+  initPromise: null,
+  protocolVersion: null,
+  serverInfo: null,
+  serverCapabilities: null,
+  nextId: 0
+});
 var buildRpcRequest = (session, method, params, isNotification = false) => {
   const req = { jsonrpc: "2.0", method, params };
   if (!isNotification) req.id = ++session.nextId;
@@ -9224,7 +9644,7 @@ var readSseResponse = async (resp, expectedId) => {
   }
 };
 var postCore = async (target, session, body, timeoutMs, expectResponse = true) => {
-  const headers = target.headers(session.sessionId);
+  const headers = target.headers(session.sessionId, session.protocolVersion);
   let resp;
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
@@ -9284,12 +9704,23 @@ var postCore = async (target, session, body, timeoutMs, expectResponse = true) =
 };
 var initializeCore = async (target, session, timeoutMs) => {
   const initReq = buildRpcRequest(session, "initialize", {
-    protocolVersion: MCP_PROTOCOL_VERSION,
+    protocolVersion: MCP_LATEST_HANDSHAKE_PROTOCOL_VERSION,
     capabilities: {},
-    clientInfo: { name: "SullyOS-MCP", version: "1.0.0" }
+    clientInfo: { name: "sullyos", title: "SullyOS", version: "1.0.0" }
   });
   const { response } = await postCore(target, session, initReq, timeoutMs);
   if (response?.error) throw new Error(`Initialize \u5931\u8D25: ${response.error.message}`);
+  const negotiated = String(
+    response?.result?.protocolVersion || MCP_LATEST_HANDSHAKE_PROTOCOL_VERSION
+  );
+  if (!MCP_SUPPORTED_HANDSHAKE_PROTOCOL_VERSIONS.includes(negotiated)) {
+    throw new Error(
+      `MCP \u534F\u8BAE\u7248\u672C\u4E0D\u517C\u5BB9\uFF1A\u670D\u52A1\u5668\u9009\u62E9\u4E86 ${negotiated}\u3002SullyOS \u7684 Streamable HTTP \u63A5\u7EBF\u652F\u6301 ${MCP_SUPPORTED_HANDSHAKE_PROTOCOL_VERSIONS.join(" / ")}\uFF1B2024-11-05 \u5C5E\u4E8E\u65E7 HTTP+SSE \u53CC\u7AEF\u70B9\uFF0C2026-07-28 \u5219\u9700\u8981\u65B0\u7684\u65E0\u63E1\u624B\u751F\u547D\u5468\u671F\u3002`
+    );
+  }
+  session.protocolVersion = negotiated;
+  session.serverInfo = response?.result?.serverInfo || null;
+  session.serverCapabilities = response?.result?.capabilities || null;
   const notif = buildRpcRequest(session, "notifications/initialized", {}, true);
   await postCore(target, session, notif, timeoutMs, false).catch(() => {
   });
@@ -9411,35 +9842,33 @@ var callMcpToolCore = async (target, session, toolName, args = {}, opts = {}) =>
       if (/HTTP (400|404)/.test(e?.message || "")) {
         Object.assign(session, createMcpSessionState());
         await ensureInitializedCore(target, session, timeoutMs);
-        ({ response } = await postCore(
-          target,
-          session,
-          buildRpcRequest(session, "tools/call", { name: toolName, arguments: normalizedArgs }),
-          timeoutMs
-        ));
-      } else {
-        throw e;
-      }
+        ({ response } = await postCore(target, session, buildRpcRequest(session, "tools/call", { name: toolName, arguments: normalizedArgs }), timeoutMs));
+      } else throw e;
     }
     if (!response) return finish({ success: false, error: "\u7A7A\u54CD\u5E94" });
     if (response.error) return finish({ success: false, error: `MCP \u9519\u8BEF [${response.error.code}]: ${response.error.message}` });
-    const result = response.result;
-    if (result?.content && Array.isArray(result.content)) {
-      const textParts = result.content.filter((c) => c?.type === "text").map((c) => c.text || "");
-      const fullText = textParts.join("\n").trim();
-      if (result.isError) return finish({ success: false, error: fullText || "MCP \u5DE5\u5177\u6267\u884C\u5931\u8D25", rawText: fullText });
+    const result = response.result ?? response;
+    if (result?.resultType === "input_required") return finish({ success: false, error: "\u8FD9\u4E2A\u5DE5\u5177\u9700\u8981\u5728\u6267\u884C\u9014\u4E2D\u8865\u5145\u786E\u8BA4\u6216\u8F93\u5165\uFF1BSullyOS \u5F53\u524D\u4E0D\u4F1A\u66FF\u4F60\u81EA\u52A8\u56DE\u7B54\uFF0C\u8BF7\u56DE\u5230\u804A\u5929\u4E2D\u660E\u786E\u8981\u6C42\u540E\u91CD\u8BD5\u3002", data: result, rawResult: result });
+    const content = Array.isArray(result?.content) ? result.content : [];
+    const rawText = content.filter((part) => part?.type === "text" && typeof part.text === "string").map((part) => part.text).join("\n").trim();
+    let parsedText = void 0;
+    if (rawText) {
       try {
-        return finish({ success: true, data: JSON.parse(fullText), rawText: fullText });
+        parsedText = JSON.parse(rawText);
       } catch {
-        return finish({ success: true, data: fullText, rawText: fullText });
+        parsedText = rawText;
       }
     }
-    return finish({ success: true, data: result });
+    const structuredContent = result?.structuredContent;
+    const images = content.filter((part) => part?.type === "image" && typeof part.data === "string" && part.data.length > 0).map((part) => ({ data: part.data, mimeType: typeof part.mimeType === "string" && part.mimeType.startsWith("image/") ? part.mimeType : "image/png" }));
+    const modelData = parsedText !== void 0 ? parsedText : structuredContent !== void 0 ? structuredContent : content.length > 0 ? {} : result;
+    const isError = result?.isError === true;
+    return finish({ success: !isError, data: modelData, rawText, error: isError ? rawText || result?.error?.message || result?.message || "MCP \u5DE5\u5177\u8FD4\u56DE\u9519\u8BEF" : void 0, content, structuredContent, images, rawResult: result });
   } catch (e) {
     return finish({ success: false, error: e?.message || String(e) });
   }
 };
-var buildMcpDirectHeaders = (server, sessionId) => {
+var buildMcpDirectHeaders = (server, sessionId, protocolVersion = null) => {
   const headers = {
     "Content-Type": "application/json",
     "Accept": "application/json, text/event-stream"
@@ -9451,6 +9880,7 @@ var buildMcpDirectHeaders = (server, sessionId) => {
   }
   if (server.token) headers["Authorization"] = `Bearer ${server.token}`;
   if (sessionId) headers["Mcp-Session-Id"] = sessionId;
+  if (protocolVersion) headers["MCP-Protocol-Version"] = protocolVersion;
   return headers;
 };
 var filterMcpServersForChar = (servers, charId) => (servers || []).filter(
@@ -11130,27 +11560,27 @@ ${noteDesc}`;
   return { ok: true, noteId: args.noteId, detailText, commentsUnavailable };
 }
 function parseDiaryDate(dateInput) {
-  const now = /* @__PURE__ */ new Date();
+  const now2 = /* @__PURE__ */ new Date();
   if (/^\d{4}-\d{2}-\d{2}$/.test(dateInput)) return dateInput;
-  if (dateInput === "\u4ECA\u5929") return getLocalDateKey(now);
+  if (dateInput === "\u4ECA\u5929") return getLocalDateKey(now2);
   if (dateInput === "\u6628\u5929") {
-    const d = new Date(now);
+    const d = new Date(now2);
     d.setDate(d.getDate() - 1);
     return getLocalDateKey(d);
   }
   if (dateInput === "\u524D\u5929") {
-    const d = new Date(now);
+    const d = new Date(now2);
     d.setDate(d.getDate() - 2);
     return getLocalDateKey(d);
   }
   const daysAgo = dateInput.match(/^(\d+)天前$/);
   if (daysAgo) {
-    const d = new Date(now);
+    const d = new Date(now2);
     d.setDate(d.getDate() - parseInt(daysAgo[1]));
     return getLocalDateKey(d);
   }
   const monthDay = dateInput.match(/(\d{1,2})月(\d{1,2})/);
-  if (monthDay) return `${now.getFullYear()}-${monthDay[1].padStart(2, "0")}-${monthDay[2].padStart(2, "0")}`;
+  if (monthDay) return `${now2.getFullYear()}-${monthDay[1].padStart(2, "0")}-${monthDay[2].padStart(2, "0")}`;
   const parsed = new Date(dateInput);
   if (!isNaN(parsed.getTime())) return getLocalDateKey(parsed);
   return "";
@@ -11360,7 +11790,10 @@ var SSE_DONE_BYTES = SSE_ENCODER.encode("event: done\ndata: {}\n\n");
 
 // utils/sanitize.ts
 var stripLiteralBackslashN = (t) => t.replace(/\\n/g, "\n");
-var stripSourceTags = (t) => t.replace(/\s*\[(?:聊天|通话|约会)\]\s*/g, "\n");
+var stripLeakedSourceTags = (t) => t.replace(
+  /\s*\[\s*(?:聊\s*(?:天|chat)|chat|通\s*(?:话|call)|call|约\s*(?:会|date)|date)\s*\]\s*/giu,
+  "\n"
+);
 var stripTimestamps = (t) => t.replace(/\[\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}\]\s*/g, "").replace(/^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}\s*/gm, "").replace(/（[上下]午\d{1,2}[：:]\d{2}）/g, "").replace(/\(\d{1,2}:\d{2}\s*[AP]M\)/gi, "");
 var stripChineseDate = (t) => t.replace(/\[\d{4}[-/年]\d{1,2}[-/月]\d{1,2}.*?\]/g, "");
 var stripRoleNamePrefix = (t) => t.replace(/^[\w一-龥]+:\s*/, "");
@@ -11498,7 +11931,7 @@ function sanitizeForNotification(text) {
   result = stripChineseDate(result);
   result = stripRoleNamePrefix(result);
   result = stripSystemLogLeak(result);
-  result = stripSourceTags(result);
+  result = stripLeakedSourceTags(result);
   result = stripInnerState(result);
   result = stripGameHallAutoplayCommands(result);
   result = stripBusinessTagsForNotification(result);
@@ -11557,7 +11990,7 @@ ${ATOM_MARKER}B${idx}${ATOM_MARKER}
   cleaned = stripTimestamps(cleaned);
   cleaned = stripChineseDate(cleaned);
   cleaned = stripRoleNamePrefix(cleaned);
-  cleaned = stripSourceTags(cleaned);
+  cleaned = stripLeakedSourceTags(cleaned);
   cleaned = stripLegacyTrans(cleaned);
   cleaned = stripMarkdownDividers(cleaned);
   const rawChunks = chunkText(cleaned);
@@ -12217,6 +12650,9 @@ function buildScheduledPush(message, build, extraMeta, bannerBody) {
 // utils/emotionEvalCore.ts
 var EMOTION_EVAL_SYSTEM_SLOT = "__EMOTION_EVAL_SYSTEM_PROMPT__";
 var EMOTION_EVAL_HISTORY_SLOT = "__EMOTION_EVAL_HISTORY__";
+var EMOTION_EVAL_DIALOGUE_WINDOW = 6;
+var EMOTION_EVAL_TEMPERATURE = 0.2;
+var EMOTION_EVAL_JSON_RESPONSE_FORMAT = { type: "json_object" };
 var EMOTION_EVAL_TIMEOUT_MS = 12e4;
 var flattenEvalContent = (content) => {
   if (typeof content === "string") return content;
@@ -12225,19 +12661,53 @@ var flattenEvalContent = (content) => {
   }
   return "";
 };
-var restoreEvalPrompt = (template, chatMessages, charName) => {
-  const messages = Array.isArray(chatMessages) ? chatMessages : [];
-  let systemPromptText = "";
-  let conversation = messages;
-  if (messages.length > 0 && messages[0]?.role === "system") {
-    systemPromptText = flattenEvalContent(messages[0].content);
-    conversation = messages.slice(1);
+var buildEmotionEvalRequestMessages = (promptTemplate, chatMessages, charName, systemPromptOverride, dialogueWindow = EMOTION_EVAL_DIALOGUE_WINDOW) => {
+  const source = Array.isArray(chatMessages) ? chatMessages : [];
+  const systemParts = [];
+  const override = typeof systemPromptOverride === "string" ? systemPromptOverride.trim() : "";
+  if (override) systemParts.push(override);
+  for (const message of source) {
+    if (message?.role !== "system") continue;
+    const text = flattenEvalContent(message.content).trim();
+    if (text && !systemParts.includes(text)) systemParts.push(text);
   }
-  const recentLines = conversation.map((m) => {
-    const role = m.role === "user" ? "\u7528\u6237" : m.role === "assistant" ? charName : "\u7CFB\u7EDF";
-    return `[${role}]: ${flattenEvalContent(m.content)}`;
-  }).join("\n");
-  return String(template).replace(EMOTION_EVAL_SYSTEM_SLOT, () => systemPromptText).replace(EMOTION_EVAL_HISTORY_SLOT, () => recentLines);
+  const systemContext = systemParts.join("\n\n---\n\n");
+  const structuredHistoryNote = [
+    "\uFF08\u5BF9\u8BDD\u5386\u53F2\u6CA1\u6709\u62CD\u5E73\u6210\u6587\u672C\uFF1B\u7D27\u968F\u672C system \u6D88\u606F\u4E4B\u540E\u7684 API role \u5C31\u662F\u771F\u5B9E\u8BF4\u8BDD\u4EBA\uFF1A",
+    "role=user \u6C38\u8FDC\u662F\u7528\u6237\u672C\u4EBA\uFF0Crole=assistant \u6C38\u8FDC\u662F\u76EE\u6807\u89D2\u8272\u300C" + (charName || "\u89D2\u8272") + "\u300D\u3002",
+    "\u4E0D\u5F97\u56E0\u4E3A\u5F15\u7528\u3001\u590D\u8FF0\u3001\u7B2C\u4E00\u4EBA\u79F0\u6216\u6700\u540E\u4E00\u6761\u6D88\u606F\u7684\u4F4D\u7F6E\u800C\u4EA4\u6362\u8BF4\u8BDD\u4EBA\u3002\uFF09"
+  ].join("");
+  const templateText = String(promptTemplate);
+  let evaluatorSystem = templateText.replace(EMOTION_EVAL_SYSTEM_SLOT, () => systemContext).replace(EMOTION_EVAL_HISTORY_SLOT, () => structuredHistoryNote);
+  if (!templateText.includes(EMOTION_EVAL_SYSTEM_SLOT) && systemContext) {
+    evaluatorSystem += "\n\n## \u5BF9\u8BDD\u5386\u53F2\u4E2D\u7684\u9644\u52A0 system \u4E0A\u4E0B\u6587\n" + systemContext;
+  }
+  evaluatorSystem += `
+
+## \u8BF4\u8BDD\u4EBA\u8FB9\u754C\uFF08\u786C\u89C4\u5219\uFF09
+- role=user\uFF1A\u53EA\u4EE3\u8868\u7528\u6237\u8BF4\u7684\u8BDD\u3002
+- role=assistant\uFF1A\u53EA\u4EE3\u8868\u76EE\u6807\u89D2\u8272\u300C${charName || "\u89D2\u8272"}\u300D\u8BF4\u7684\u8BDD\u3002
+- \u5F15\u53F7\u3001\u8F6C\u8FF0\u3001\u5F15\u7528\u56DE\u590D\u53EA\u5C5E\u4E8E\u6240\u5728\u6D88\u606F\u7684\u8BF4\u8BDD\u4EBA\uFF0C\u4E0D\u5F97\u636E\u5185\u5BB9\u731C\u6D4B\u540E\u6539 role\u3002
+- \u4F60\u7684\u4EFB\u52A1\u662F\u5206\u6790\u8FD9\u6BB5\u5BF9\u8BDD\uFF0C\u4E0D\u662F\u7EE7\u7EED\u626E\u6F14\u804A\u5929\u3002`;
+  const dialogue = source.filter((message) => message?.role === "user" || message?.role === "assistant").map((message) => ({
+    role: message.role,
+    content: flattenEvalContent(message.content).trim()
+  })).filter((message) => !!message.content).slice(-Math.max(1, Math.floor(dialogueWindow || EMOTION_EVAL_DIALOGUE_WINDOW)));
+  const lastDialogueRole = dialogue.length > 0 ? dialogue[dialogue.length - 1].role : "none";
+  const outputControl = {
+    role: "user",
+    content: [
+      "\u3010\u8BC4\u4F30\u63A7\u5236\u6307\u4EE4\uFF0C\u4E0D\u5C5E\u4E8E\u771F\u5B9E\u5BF9\u8BDD\u3011",
+      `\u4EE5\u4E0A\u771F\u5B9E\u5BF9\u8BDD\u5230\u6B64\u7ED3\u675F\uFF1B\u6700\u540E\u4E00\u6761\u771F\u5B9E\u5BF9\u8BDD\u7684 role=${lastDialogueRole}\u3002`,
+      "\u73B0\u5728\u6267\u884C system \u4E2D\u5B9A\u4E49\u7684\u60C5\u7EEA\u8BC4\u4F30\u4EFB\u52A1\u3002\u4E0D\u8981\u7EE7\u7EED\u5BF9\u8BDD\uFF0C\u4E0D\u8981\u626E\u6F14\u89D2\u8272\uFF0C\u4E0D\u8981\u89E3\u91CA\u5206\u6790\u8FC7\u7A0B\u3002",
+      "\u53EA\u8F93\u51FA\u4E00\u4E2A\u5408\u6CD5 JSON \u5BF9\u8C61\uFF1BJSON \u524D\u540E\u7981\u6B62\u6DFB\u52A0 Markdown\u3001\u4EE3\u7801\u56F4\u680F\u3001\u5BD2\u6684\u6216\u4EFB\u4F55\u8BF4\u660E\u6587\u5B57\u3002"
+    ].join("\n")
+  };
+  return [
+    { role: "system", content: evaluatorSystem },
+    ...dialogue,
+    outputControl
+  ];
 };
 var ERROR_SNIPPET_MAX = 120;
 var maskAndSnip = (text, apiKey) => {
@@ -12250,7 +12720,8 @@ var requestEmotionEval = async (api, promptContent, timeoutMs = EMOTION_EVAL_TIM
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const baseUrl = String(api.baseUrl).replace(/\/+$/, "");
-    const res = await fetch(`${baseUrl}/chat/completions`, {
+    const messages = Array.isArray(promptContent) ? promptContent : [{ role: "user", content: promptContent }];
+    const send = (jsonMode) => fetch(`${baseUrl}/chat/completions`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -12258,15 +12729,39 @@ var requestEmotionEval = async (api, promptContent, timeoutMs = EMOTION_EVAL_TIM
       },
       body: JSON.stringify({
         model: api.model,
-        messages: [{ role: "user", content: promptContent }],
-        temperature: 0.85,
+        messages,
+        temperature: EMOTION_EVAL_TEMPERATURE,
         // 显式给足输出额度：部分中转不传 max_tokens 时默认很小，评估输出很长，
         // 会被截成半截 JSON。
         max_tokens: 8e3,
-        stream: false
+        stream: false,
+        ...jsonMode ? { response_format: EMOTION_EVAL_JSON_RESPONSE_FORMAT } : {}
       }),
       signal: controller.signal
     });
+    let res = await send(true);
+    if (!res.ok) {
+      let body = "";
+      try {
+        body = await res.text();
+      } catch {
+      }
+      const jsonModeRejected = (res.status === 400 || res.status === 422) && /response[_ -]?format|json[_ -]?object|json mode|unsupported[^\n]*(?:parameter|field)|unknown[^\n]*(?:parameter|field)/i.test(body);
+      if (jsonModeRejected) {
+        console.warn("[emotion-eval] \u526F API \u4E0D\u652F\u6301 JSON mode\uFF0C\u53BB\u6389 response_format \u540E\u91CD\u8BD5");
+        res = await send(false);
+      } else {
+        console.warn("[emotion-eval] \u526F API \u62D2\u4E86\u8FD9\u6B21\u8BC4\u4F30\uFF08\u4E3B\u6D41\u7A0B\u4E0D\u53D7\u5F71\u54CD\uFF09", res.status);
+        const snippet = maskAndSnip(body, api.apiKey);
+        const failoverEligible = res.status === 401 || res.status === 403 || res.status === 404 || res.status === 408 || res.status === 425 || res.status === 429 || res.status >= 500;
+        return {
+          raw: null,
+          error: `\u526F API HTTP ${res.status}${snippet ? `\uFF1A${snippet}` : ""}`,
+          status: res.status,
+          failoverEligible
+        };
+      }
+    }
     if (!res.ok) {
       let body = "";
       try {
@@ -12275,7 +12770,13 @@ var requestEmotionEval = async (api, promptContent, timeoutMs = EMOTION_EVAL_TIM
       }
       console.warn("[emotion-eval] \u526F API \u62D2\u4E86\u8FD9\u6B21\u8BC4\u4F30\uFF08\u4E3B\u6D41\u7A0B\u4E0D\u53D7\u5F71\u54CD\uFF09", res.status);
       const snippet = maskAndSnip(body, api.apiKey);
-      return { raw: null, error: `\u526F API HTTP ${res.status}${snippet ? `\uFF1A${snippet}` : ""}` };
+      const failoverEligible = res.status === 401 || res.status === 403 || res.status === 404 || res.status === 408 || res.status === 425 || res.status === 429 || res.status >= 500;
+      return {
+        raw: null,
+        error: `\u526F API HTTP ${res.status}${snippet ? `\uFF1A${snippet}` : ""}`,
+        status: res.status,
+        failoverEligible
+      };
     }
     const data = await res.json();
     const message = data?.choices?.[0]?.message;
@@ -12283,17 +12784,38 @@ var requestEmotionEval = async (api, promptContent, timeoutMs = EMOTION_EVAL_TIM
     if (!raw.trim()) {
       return {
         raw: null,
-        error: `\u8BC4\u4F30\u6A21\u578B\u6CA1\u6709\u8F93\u51FA\u5185\u5BB9\uFF08finish_reason: ${data?.choices?.[0]?.finish_reason ?? "?"}\uFF09`
+        error: `\u8BC4\u4F30\u6A21\u578B\u6CA1\u6709\u8F93\u51FA\u5185\u5BB9\uFF08finish_reason: ${data?.choices?.[0]?.finish_reason ?? "?"}\uFF09`,
+        failoverEligible: false
       };
     }
-    return { raw, error: null };
+    return { raw, error: null, failoverEligible: false };
   } catch (error) {
     console.warn("[emotion-eval] \u8BC4\u4F30\u5931\u8D25\uFF08\u4E3B\u6D41\u7A0B\u4E0D\u53D7\u5F71\u54CD\uFF09", error);
     const reason = controller.signal.aborted ? `\u8BC4\u4F30\u8D85\u65F6\uFF08${Math.round(timeoutMs / 1e3)} \u79D2\u6CA1\u56DE\u6765\uFF09` : `\u8BC4\u4F30\u8BF7\u6C42\u6CA1\u53D1\u51FA\u53BB\uFF1A${maskAndSnip(error instanceof Error ? error.message : String(error), api.apiKey)}`;
-    return { raw: null, error: reason };
+    return { raw: null, error: reason, failoverEligible: true };
   } finally {
     clearTimeout(timer);
   }
+};
+var requestEmotionEvalWithFailover = async (apis, promptContent, timeoutMs = EMOTION_EVAL_TIMEOUT_MS) => {
+  const routes = (Array.isArray(apis) ? apis : []).filter(
+    (api) => !!api?.baseUrl && !!api?.model
+  );
+  if (routes.length === 0) {
+    return { raw: null, error: "\u6CA1\u6709\u53EF\u7528\u7684\u60C5\u7EEA\u8BC4\u4F30 API \u7EBF\u8DEF", failoverEligible: false };
+  }
+  let last = null;
+  for (let i = 0; i < routes.length; i += 1) {
+    const outcome = await requestEmotionEval(routes[i], promptContent, timeoutMs);
+    if (outcome.raw != null) return outcome;
+    last = outcome;
+    if (!outcome.failoverEligible) return outcome;
+  }
+  if (!last) return { raw: null, error: "\u60C5\u7EEA\u8BC4\u4F30\u5931\u8D25", failoverEligible: false };
+  return routes.length > 1 ? {
+    ...last,
+    error: `\u60C5\u7EEA\u8BC4\u4F30\u6545\u969C\u8F6C\u79FB\u5DF2\u8017\u5C3D\uFF08${routes.length} \u6761\u7EBF\u8DEF\uFF09\uFF1A${last.error || "\u672A\u77E5\u9519\u8BEF"}`
+  } : last;
 };
 
 // worker/amsg/src/emotionEval.ts
@@ -12339,7 +12861,11 @@ var takeEmotionEvalSpec = (metadata) => {
   return isUsableEvalSpec(spec) ? spec : null;
 };
 var EMOTION_EVAL_RIDE_ALONG_MS = 1e4;
-var runAmsgEmotionEval = async (spec, api, chatMessages, charName, timeoutMs = EMOTION_EVAL_TIMEOUT_MS) => requestEmotionEval(api, restoreEvalPrompt(spec.prompt, chatMessages, charName), timeoutMs);
+var runAmsgEmotionEval = async (spec, api, chatMessages, charName, timeoutMs = EMOTION_EVAL_TIMEOUT_MS) => requestEmotionEvalWithFailover(
+  [api, ...Array.isArray(spec.fallbackApis) ? spec.fallbackApis : []],
+  buildEmotionEvalRequestMessages(spec.prompt, chatMessages, charName),
+  timeoutMs
+);
 
 // utils/amsgScheduleResult.ts
 var SCHEDULE_CHANGE_RESULT_KIND = "schedule-change";
@@ -12378,11 +12904,11 @@ var enqueueNativePollMessage = async (db, deviceToken, payload) => {
   if (!db) throw new Error("NATIVE_POLL_DB_MISSING: Worker \u672A\u7ED1\u5B9A D1");
   if (!TOKEN_RE.test(deviceToken)) throw new Error("NATIVE_POLL_TOKEN_INVALID");
   await ensureTable(db);
-  const now = Date.now();
+  const now2 = Date.now();
   await db.prepare(
     "INSERT INTO native_poll_messages (device_token, payload, created_at) VALUES (?, ?, ?)"
-  ).bind(deviceToken, payload, now).run();
-  await db.prepare("DELETE FROM native_poll_messages WHERE created_at < ?").bind(now - RETENTION_MS).run();
+  ).bind(deviceToken, payload, now2).run();
+  await db.prepare("DELETE FROM native_poll_messages WHERE created_at < ?").bind(now2 - RETENTION_MS).run();
   return { statusCode: 201 };
 };
 var readToken = (request) => {
@@ -12413,13 +12939,13 @@ var handleNativePollRequest = async (request, db) => {
 
 // worker/amsg/src/nativeFcm.ts
 var accessTokenCache = null;
-var utf83 = new TextEncoder();
+var utf84 = new TextEncoder();
 var bytesToB64u = (bytes) => {
   let binary = "";
   for (const byte of bytes) binary += String.fromCharCode(byte);
   return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
 };
-var textToB64u = (value) => bytesToB64u(utf83.encode(value));
+var textToB64u = (value) => bytesToB64u(utf84.encode(value));
 var pemToPkcs8 = (raw) => {
   const base64 = raw.replace(/\\n/g, "\n").replace(/-----BEGIN PRIVATE KEY-----/g, "").replace(/-----END PRIVATE KEY-----/g, "").replace(/\s+/g, "");
   if (!base64) throw new Error("FCM_SERVICE_ACCOUNT_PRIVATE_KEY \u4E0D\u662F\u6709\u6548\u7684 PKCS#8 PEM");
@@ -12441,13 +12967,13 @@ var fetchFcmAccessToken = async (env) => {
   if (accessTokenCache?.key === cacheKey && accessTokenCache.expiresAt > Date.now() + 6e4) {
     return accessTokenCache.token;
   }
-  const now = Math.floor(Date.now() / 1e3);
+  const now2 = Math.floor(Date.now() / 1e3);
   const unsigned = `${textToB64u(JSON.stringify({ alg: "RS256", typ: "JWT" }))}.${textToB64u(JSON.stringify({
     iss: config.clientEmail,
     scope: "https://www.googleapis.com/auth/firebase.messaging",
     aud: "https://oauth2.googleapis.com/token",
-    iat: now,
-    exp: now + 3600
+    iat: now2,
+    exp: now2 + 3600
   }))}`;
   const key = await crypto.subtle.importKey(
     "pkcs8",
@@ -12456,7 +12982,7 @@ var fetchFcmAccessToken = async (env) => {
     false,
     ["sign"]
   );
-  const signature = await crypto.subtle.sign("RSASSA-PKCS1-v1_5", key, utf83.encode(unsigned));
+  const signature = await crypto.subtle.sign("RSASSA-PKCS1-v1_5", key, utf84.encode(unsigned));
   const assertion = `${unsigned}.${bytesToB64u(new Uint8Array(signature))}`;
   const response = await fetch("https://oauth2.googleapis.com/token", {
     method: "POST",
@@ -12509,7 +13035,7 @@ var buildFcmMessage = (token, rawPayload) => {
       }
     }
   };
-  const bytes = utf83.encode(JSON.stringify(result)).byteLength;
+  const bytes = utf84.encode(JSON.stringify(result)).byteLength;
   if (bytes > 4e3) throw new Error(`FCM_PAYLOAD_TOO_LARGE: ${bytes} bytes\uFF08\u5B89\u5168\u4E0A\u9650 4000\uFF09`);
   return result;
 };
@@ -12543,6 +13069,758 @@ var createHybridPushTransport = (env, webPush) => ({
 var isFcmConfigured = (env) => Boolean(
   env.FCM_PROJECT_ID?.trim() && env.FCM_SERVICE_ACCOUNT_EMAIL?.trim() && env.FCM_SERVICE_ACCOUNT_PRIVATE_KEY?.trim()
 );
+
+// worker/amsg/src/storyJobs.ts
+var UUID_V4_RE2 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+var JOB_ID_RE = /^[A-Za-z0-9_-]{12,160}$/;
+var TERMINAL_RETENTION_MS = 7 * 24 * 60 * 60 * 1e3;
+var MAX_ROUTES = 8;
+var MAX_REQUEST_BYTES = 2e6;
+var PARTIAL_PERSIST_INTERVAL_MS = 900;
+var PARTIAL_PERSIST_CHAR_STEP = 512;
+var jsonSize = (value) => new TextEncoder().encode(JSON.stringify(value)).byteLength;
+var now = () => Date.now();
+var normalizeBaseUrl = (value) => value.trim().replace(/\/+$/, "");
+var toBase64 = (bytes) => {
+  let binary = "";
+  const step = 32768;
+  for (let i = 0; i < bytes.length; i += step) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + step));
+  }
+  return btoa(binary);
+};
+var fromBase64 = (value) => {
+  const binary = atob(value);
+  const out = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) out[i] = binary.charCodeAt(i);
+  return out;
+};
+var deriveStorageKey = async (masterKey) => {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(masterKey));
+  return crypto.subtle.importKey("raw", digest, { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
+};
+var sealJson = async (env, userId, jobId, kind, value) => {
+  const key = await deriveStorageKey(env.AMSG_MASTER_KEY);
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const aad = new TextEncoder().encode(`${userId}:${jobId}:${kind}`);
+  const plain = new TextEncoder().encode(JSON.stringify(value));
+  const cipher = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv, additionalData: aad }, key, plain));
+  return JSON.stringify({ v: 1, iv: toBase64(iv), data: toBase64(cipher) });
+};
+var openJson = async (env, userId, jobId, kind, envelope) => {
+  const parsed = JSON.parse(envelope);
+  if (!parsed?.iv || !parsed?.data) throw new Error("\u5267\u60C5\u540E\u53F0\u4EFB\u52A1\u5BC6\u6587\u635F\u574F");
+  const key = await deriveStorageKey(env.AMSG_MASTER_KEY);
+  const aad = new TextEncoder().encode(`${userId}:${jobId}:${kind}`);
+  const plain = await crypto.subtle.decrypt(
+    { name: "AES-GCM", iv: fromBase64(parsed.iv), additionalData: aad },
+    key,
+    fromBase64(parsed.data)
+  );
+  return JSON.parse(new TextDecoder().decode(plain));
+};
+var ensureStoryJobsSchema = async (db) => {
+  await db.prepare(`
+    CREATE TABLE IF NOT EXISTS story_jobs (
+      job_id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      client_request_id TEXT NOT NULL,
+      owner_key TEXT NOT NULL,
+      title TEXT NOT NULL,
+      status TEXT NOT NULL,
+      request_cipher TEXT NOT NULL,
+      partial_cipher TEXT,
+      response_cipher TEXT,
+      error TEXT,
+      attempts_json TEXT,
+      prompt_tokens INTEGER,
+      completion_tokens INTEGER,
+      reasoning_chars INTEGER,
+      visible_chars INTEGER,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      started_at INTEGER,
+      completed_at INTEGER
+    )
+  `).run();
+  await db.prepare(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_story_jobs_user_client
+    ON story_jobs(user_id, client_request_id)
+  `).run();
+  await db.prepare(`
+    CREATE INDEX IF NOT EXISTS idx_story_jobs_updated
+    ON story_jobs(updated_at)
+  `).run();
+};
+var cleanupOldJobs = async (db) => {
+  const cutoff = now() - TERMINAL_RETENTION_MS;
+  await db.prepare(
+    "DELETE FROM story_jobs WHERE status IN ('succeeded','failed','cancelled') AND updated_at < ?"
+  ).bind(cutoff).run();
+};
+var loadRowById = async (db, userId, jobId) => db.prepare("SELECT * FROM story_jobs WHERE user_id = ? AND job_id = ? LIMIT 1").bind(userId, jobId).first();
+var loadRowByClient = async (db, userId, clientRequestId) => db.prepare("SELECT * FROM story_jobs WHERE user_id = ? AND client_request_id = ? LIMIT 1").bind(userId, clientRequestId).first();
+var parseAttempts = (raw) => {
+  if (!raw) return [];
+  try {
+    const value = JSON.parse(raw);
+    return Array.isArray(value) ? value : [];
+  } catch {
+    return [];
+  }
+};
+var publicJob = async (env, row) => {
+  let partialContent = "";
+  let response = void 0;
+  try {
+    if (row.partial_cipher) {
+      partialContent = await openJson(env, row.user_id, row.job_id, "partial", row.partial_cipher);
+    }
+  } catch {
+    partialContent = "";
+  }
+  try {
+    if (row.response_cipher) {
+      response = await openJson(env, row.user_id, row.job_id, "response", row.response_cipher);
+    }
+  } catch {
+    response = void 0;
+  }
+  return {
+    jobId: row.job_id,
+    clientRequestId: row.client_request_id,
+    ownerKey: row.owner_key,
+    title: row.title,
+    status: row.status,
+    partialContent,
+    ...response !== void 0 ? { response } : {},
+    ...row.error ? { error: row.error } : {},
+    attempts: parseAttempts(row.attempts_json),
+    ...row.prompt_tokens != null ? { promptTokens: row.prompt_tokens } : {},
+    ...row.completion_tokens != null ? { completionTokens: row.completion_tokens } : {},
+    reasoningChars: row.reasoning_chars ?? 0,
+    visibleChars: row.visible_chars ?? partialContent.length,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    ...row.started_at != null ? { startedAt: row.started_at } : {},
+    ...row.completed_at != null ? { completedAt: row.completed_at } : {}
+  };
+};
+var validateSpec = (value) => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("\u5267\u60C5\u540E\u53F0\u4EFB\u52A1\u53C2\u6570\u65E0\u6548");
+  const raw = value;
+  const jobId = String(raw.jobId || "").trim();
+  const clientRequestId = String(raw.clientRequestId || "").trim();
+  const ownerKey = String(raw.ownerKey || "").trim();
+  const title = String(raw.title || "\u5267\u60C5").trim() || "\u5267\u60C5";
+  const mode = raw.mode === "failover" ? "failover" : "direct";
+  const routesRaw = Array.isArray(raw.routes) ? raw.routes : [];
+  if (!JOB_ID_RE.test(jobId)) throw new Error("\u5267\u60C5\u540E\u53F0 jobId \u65E0\u6548");
+  if (!JOB_ID_RE.test(clientRequestId)) throw new Error("\u5267\u60C5\u540E\u53F0 clientRequestId \u65E0\u6548");
+  if (!ownerKey || ownerKey.length > 240) throw new Error("\u5267\u60C5\u540E\u53F0 ownerKey \u65E0\u6548");
+  if (routesRaw.length < 1 || routesRaw.length > MAX_ROUTES) throw new Error("\u5267\u60C5\u540E\u53F0\u7EBF\u8DEF\u6570\u91CF\u65E0\u6548");
+  if (!raw.baseBody || typeof raw.baseBody !== "object" || Array.isArray(raw.baseBody)) {
+    throw new Error("\u5267\u60C5\u540E\u53F0\u8BF7\u6C42\u4F53\u65E0\u6548");
+  }
+  const routes = routesRaw.map((item, index) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) throw new Error(`\u5267\u60C5\u540E\u53F0\u7EBF\u8DEF ${index + 1} \u65E0\u6548`);
+    const route = item;
+    const baseUrl = normalizeBaseUrl(String(route.baseUrl || ""));
+    const model = String(route.model || "").trim();
+    const apiKey = String(route.apiKey || "");
+    if (!/^https?:\/\//i.test(baseUrl) || !model) throw new Error(`\u5267\u60C5\u540E\u53F0\u7EBF\u8DEF ${index + 1} \u914D\u7F6E\u4E0D\u5B8C\u6574`);
+    return {
+      presetId: typeof route.presetId === "string" ? route.presetId : void 0,
+      presetName: typeof route.presetName === "string" ? route.presetName : void 0,
+      baseUrl,
+      apiKey,
+      model,
+      temperature: Number.isFinite(Number(route.temperature)) ? Number(route.temperature) : void 0,
+      firstByteTimeoutMs: Number.isFinite(Number(route.firstByteTimeoutMs)) ? Math.max(0, Number(route.firstByteTimeoutMs)) : void 0
+    };
+  });
+  const spec = {
+    jobId,
+    clientRequestId,
+    ownerKey,
+    title: title.slice(0, 200),
+    mode,
+    routes,
+    baseBody: raw.baseBody
+  };
+  if (jsonSize(spec) > MAX_REQUEST_BYTES) throw new Error("\u5267\u60C5\u540E\u53F0\u8BF7\u6C42\u4F53\u8FC7\u5927");
+  return spec;
+};
+var authenticate = async (request, env) => {
+  const expected = (env.AMSG_SERVER_TOKEN || "").trim();
+  const actual = request.headers.get("X-Client-Token") || "";
+  if (expected && (!actual || !await constantTimeEqual2(actual, expected))) {
+    return { ok: false, status: 401, code: "INVALID_CLIENT_TOKEN", message: "\u5171\u4EAB\u5BC6\u94A5\u65E0\u6548\u6216\u7F3A\u5931" };
+  }
+  const userId = request.headers.get("X-User-Id") || "";
+  if (!UUID_V4_RE2.test(userId)) {
+    return { ok: false, status: 400, code: "INVALID_USER_ID", message: "X-User-Id \u65E0\u6548" };
+  }
+  return { ok: true, userId };
+};
+var kickStoryTick = async (env, userId, jobId) => {
+  const ns = env.INSTANT_TICK;
+  if (!ns || typeof ns.get !== "function" || typeof ns.idFromName !== "function") {
+    return { ok: false, reason: "missing-binding" };
+  }
+  try {
+    await ns.get(ns.idFromName(`story:${userId}:${jobId}`)).kickStory(userId, jobId);
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, reason: "kick-failed", error };
+  }
+};
+var routeAttempt = (route, index, startedAt) => ({
+  routeIndex: index,
+  presetId: route.presetId,
+  presetName: route.presetName,
+  baseUrl: route.baseUrl,
+  model: route.model,
+  ok: false,
+  durationMs: now() - startedAt
+});
+var appendChunk = (state, chunk) => {
+  if (!state.firstChunk && chunk && typeof chunk === "object") state.firstChunk = chunk;
+  if (chunk?.usage && typeof chunk.usage === "object") state.usage = chunk.usage;
+  if (chunk?.usageMetadata && typeof chunk.usageMetadata === "object") {
+    const u = chunk.usageMetadata;
+    const prompt = Number(u.promptTokenCount);
+    const completion = Number(u.candidatesTokenCount);
+    const total = Number(u.totalTokenCount);
+    const reasoning2 = Number(u.thoughtsTokenCount);
+    state.usage = {
+      ...Number.isFinite(prompt) ? { prompt_tokens: prompt } : {},
+      ...Number.isFinite(completion) ? { completion_tokens: completion } : {},
+      ...Number.isFinite(total) ? { total_tokens: total } : {},
+      ...Number.isFinite(reasoning2) ? { completion_tokens_details: { reasoning_tokens: reasoning2 } } : {},
+      usage_metadata: u
+    };
+  }
+  let contentDelta = "";
+  let reasoningDelta = "";
+  const choice = chunk?.choices?.[0];
+  if (!choice) {
+    if (Array.isArray(chunk?.choices) && chunk.choices.length === 0 && chunk?.usage && state.activity) {
+      state.terminal = true;
+      return { contentDelta, reasoningDelta };
+    }
+    const candidate = chunk?.candidates?.[0];
+    if (!candidate) return { contentDelta, reasoningDelta };
+    const parts = Array.isArray(candidate?.content?.parts) ? candidate.content.parts : [];
+    for (const part of parts) {
+      if (typeof part?.text !== "string" || !part.text) continue;
+      if (part.thought === true) {
+        state.reasoning += part.text;
+        reasoningDelta += part.text;
+      } else {
+        state.content += part.text;
+        contentDelta += part.text;
+      }
+      state.activity = true;
+    }
+    if (candidate?.content?.role) state.role = candidate.content.role === "model" ? "assistant" : String(candidate.content.role);
+    const finish2 = String(candidate?.finishReason || "").trim();
+    if (finish2) {
+      state.finishReason = finish2.toUpperCase() === "STOP" ? "stop" : finish2.toUpperCase() === "MAX_TOKENS" ? "length" : finish2.toLowerCase();
+      state.terminal = true;
+    }
+    return { contentDelta, reasoningDelta };
+  }
+  const source = choice.delta || choice.message || {};
+  if (typeof source.content === "string") {
+    state.content += source.content;
+    contentDelta += source.content;
+    if (source.content) state.activity = true;
+  } else if (Array.isArray(source.content)) {
+    for (const block of source.content) {
+      if (block?.type === "text" && typeof block.text === "string") {
+        state.content += block.text;
+        contentDelta += block.text;
+        if (block.text) state.activity = true;
+      } else if (block?.type === "thinking" && typeof block.thinking === "string") {
+        state.reasoning += block.thinking;
+        reasoningDelta += block.thinking;
+        if (block.thinking) state.activity = true;
+      }
+    }
+  }
+  const reasoning = source.reasoning_content ?? source.reasoning ?? source.thinking;
+  if (typeof reasoning === "string" && reasoning) {
+    state.reasoning += reasoning;
+    reasoningDelta += reasoning;
+    state.activity = true;
+  }
+  if (source.role) state.role = String(source.role);
+  const finish = String(choice.finish_reason ?? choice.finishReason ?? "").trim();
+  if (finish) {
+    state.finishReason = finish;
+    state.terminal = true;
+  }
+  return { contentDelta, reasoningDelta };
+};
+var completionFromState = (state, model) => ({
+  id: state.firstChunk?.id || "story-cloud-job",
+  object: "chat.completion",
+  created: Number(state.firstChunk?.created) || Math.floor(now() / 1e3),
+  model: state.firstChunk?.model || model,
+  choices: [{
+    index: 0,
+    message: {
+      role: state.role || "assistant",
+      content: state.content,
+      ...state.reasoning ? { reasoning_content: state.reasoning } : {}
+    },
+    finish_reason: state.finishReason
+  }],
+  ...state.usage ? { usage: state.usage } : {}
+});
+var normalizeJsonCompletion = (value, model) => {
+  if (Array.isArray(value) || Array.isArray(value?.candidates)) {
+    const state = {
+      content: "",
+      reasoning: "",
+      role: "assistant",
+      finishReason: null,
+      usage: void 0,
+      firstChunk: null,
+      activity: false,
+      terminal: false
+    };
+    for (const chunk of Array.isArray(value) ? value : [value]) appendChunk(state, chunk);
+    return {
+      response: completionFromState(state, model),
+      content: state.content,
+      reasoning: state.reasoning,
+      terminal: state.terminal || Boolean(state.content)
+    };
+  }
+  const content = typeof value?.choices?.[0]?.message?.content === "string" ? value.choices[0].message.content : "";
+  const reasoning = String(
+    value?.choices?.[0]?.message?.reasoning_content ?? value?.choices?.[0]?.message?.reasoning ?? ""
+  );
+  const finish = value?.choices?.[0]?.finish_reason ?? value?.choices?.[0]?.finishReason;
+  return {
+    response: value,
+    content,
+    reasoning,
+    terminal: Boolean(finish) || Boolean(content)
+  };
+};
+var persistProgress = async (env, row, content, reasoningChars) => {
+  const cipher = await sealJson(env, row.user_id, row.job_id, "partial", content);
+  await env.DB.prepare(
+    "UPDATE story_jobs SET partial_cipher = ?, reasoning_chars = ?, visible_chars = ?, updated_at = ? WHERE user_id = ? AND job_id = ? AND status = ?"
+  ).bind(cipher, reasoningChars, content.length, now(), row.user_id, row.job_id, "running").run();
+};
+var readStreamingResponse = async (env, row, response, model) => {
+  if (!response.body?.getReader) {
+    const raw2 = await response.text();
+    return normalizeJsonCompletion(JSON.parse(raw2), model);
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  const state = {
+    content: "",
+    reasoning: "",
+    role: "assistant",
+    finishReason: null,
+    usage: void 0,
+    firstChunk: null,
+    activity: false,
+    terminal: false
+  };
+  let pending = "";
+  let raw = "";
+  let sawSse = false;
+  let sawDoneMarker = false;
+  let lastPersistAt = 0;
+  let lastPersistChars = 0;
+  const maybePersist = async (force = false) => {
+    const t = now();
+    const enoughTime = t - lastPersistAt >= PARTIAL_PERSIST_INTERVAL_MS;
+    const enoughChars = state.content.length - lastPersistChars >= PARTIAL_PERSIST_CHAR_STEP;
+    if (!force && !enoughTime && !enoughChars) return;
+    if (!state.content && !state.reasoning) return;
+    await persistProgress(env, row, state.content, state.reasoning.length);
+    lastPersistAt = t;
+    lastPersistChars = state.content.length;
+  };
+  const consumeLine = async (line) => {
+    const trimmed = line.trimEnd();
+    if (!trimmed.startsWith("data:")) return;
+    sawSse = true;
+    const payload = trimmed.slice(5).trim();
+    if (!payload) return;
+    if (payload === "[DONE]") {
+      state.terminal = true;
+      sawDoneMarker = true;
+      return;
+    }
+    let chunk;
+    try {
+      chunk = JSON.parse(payload);
+    } catch {
+      return;
+    }
+    appendChunk(state, chunk);
+    await maybePersist();
+  };
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    const text = decoder.decode(value, { stream: true });
+    raw += text;
+    pending += text;
+    let nl = pending.indexOf("\n");
+    while (nl >= 0) {
+      const line = pending.slice(0, nl).replace(/\r$/, "");
+      pending = pending.slice(nl + 1);
+      await consumeLine(line);
+      if (sawDoneMarker) break;
+      nl = pending.indexOf("\n");
+    }
+    if (sawDoneMarker) {
+      try {
+        await reader.cancel();
+      } catch {
+      }
+      break;
+    }
+  }
+  const tail = decoder.decode();
+  if (tail) {
+    raw += tail;
+    pending += tail;
+  }
+  if (pending.trim()) await consumeLine(pending.trim());
+  await maybePersist(true);
+  if (!sawSse) {
+    return normalizeJsonCompletion(JSON.parse(raw), model);
+  }
+  return {
+    response: completionFromState(state, model),
+    content: state.content,
+    reasoning: state.reasoning,
+    terminal: state.terminal
+  };
+};
+var finalizeFailed = async (env, row, attempts, error, content = "", reasoningChars = 0) => {
+  const latest = await loadRowById(env.DB, row.user_id, row.job_id);
+  const partialCipher = content ? await sealJson(env, row.user_id, row.job_id, "partial", content) : latest?.partial_cipher ?? row.partial_cipher;
+  const visibleChars = content ? content.length : latest?.visible_chars ?? row.visible_chars ?? 0;
+  const keptReasoningChars = reasoningChars > 0 ? reasoningChars : latest?.reasoning_chars ?? row.reasoning_chars ?? 0;
+  await env.DB.prepare(
+    `UPDATE story_jobs
+     SET status = 'failed', partial_cipher = ?, error = ?, attempts_json = ?, reasoning_chars = ?, visible_chars = ?, updated_at = ?, completed_at = ?
+     WHERE user_id = ? AND job_id = ?`
+  ).bind(
+    partialCipher,
+    error.slice(0, 2e3),
+    JSON.stringify(attempts),
+    keptReasoningChars,
+    visibleChars,
+    now(),
+    now(),
+    row.user_id,
+    row.job_id
+  ).run();
+};
+var runStoryJob = async (env, userId, jobId) => {
+  await ensureStoryJobsSchema(env.DB);
+  const row = await loadRowById(env.DB, userId, jobId);
+  if (!row || row.status !== "queued") return;
+  const startedAt = now();
+  const claimed = await env.DB.prepare(
+    "UPDATE story_jobs SET status = 'running', started_at = ?, updated_at = ? WHERE user_id = ? AND job_id = ? AND status = 'queued'"
+  ).bind(startedAt, startedAt, userId, jobId).run();
+  if ((claimed.meta?.changes ?? 0) <= 0) return;
+  const liveRow = { ...row, status: "running", started_at: startedAt, updated_at: startedAt };
+  let spec;
+  try {
+    spec = await openJson(env, userId, jobId, "request", row.request_cipher);
+  } catch (error) {
+    await finalizeFailed(env, liveRow, [], `\u5267\u60C5\u540E\u53F0\u4EFB\u52A1\u89E3\u5BC6\u5931\u8D25\uFF1A${error?.message || error}`);
+    return;
+  }
+  const attempts = [];
+  let lastError = "\u5267\u60C5\u540E\u53F0\u751F\u6210\u5931\u8D25";
+  for (let index = 0; index < spec.routes.length; index += 1) {
+    const route = spec.routes[index];
+    const attemptStartedAt = now();
+    let response;
+    let explicitErrorText = "";
+    const requestRoute = async (includeUsage) => {
+      const body = {
+        ...spec.baseBody,
+        model: route.model,
+        stream: true
+      };
+      if (Object.prototype.hasOwnProperty.call(body, "temperature") && typeof route.temperature === "number") {
+        body.temperature = route.temperature;
+      }
+      if (includeUsage) {
+        body.stream_options = {
+          ...body.stream_options && typeof body.stream_options === "object" ? body.stream_options : {},
+          include_usage: true
+        };
+      } else {
+        delete body.stream_options;
+      }
+      return fetch(`${normalizeBaseUrl(route.baseUrl)}/chat/completions`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Accept": "text/event-stream",
+          "Authorization": `Bearer ${route.apiKey || "sk-none"}`,
+          "User-Agent": "SullyOS-StoryWorker/1.0"
+        },
+        body: JSON.stringify(body)
+      });
+    };
+    try {
+      response = await requestRoute(true);
+      if (response.status === 400) {
+        explicitErrorText = (await response.text().catch(() => "")).slice(0, 1e3);
+        const lower = explicitErrorText.toLowerCase();
+        if (lower.includes("stream_options") || lower.includes("include_usage")) {
+          response = await requestRoute(false);
+          explicitErrorText = "";
+        }
+      }
+    } catch (error) {
+      const attempt = routeAttempt(route, index, attemptStartedAt);
+      attempt.error = error?.message || String(error);
+      attempt.durationMs = now() - attemptStartedAt;
+      attempts.push(attempt);
+      await finalizeFailed(env, liveRow, attempts, `\u5267\u60C5\u4E91\u7AEF\u8BF7\u6C42\u5931\u8D25\uFF1A${attempt.error}`);
+      return;
+    }
+    if (!response.ok) {
+      const text = explicitErrorText || (await response.text().catch(() => "")).slice(0, 1e3);
+      const attempt = routeAttempt(route, index, attemptStartedAt);
+      attempt.status = response.status;
+      attempt.error = text || `HTTP ${response.status}`;
+      attempt.durationMs = now() - attemptStartedAt;
+      attempts.push(attempt);
+      lastError = `\u5267\u60C5\u4E0A\u6E38\u8FD4\u56DE HTTP ${response.status}${text ? `\uFF1A${text}` : ""}`;
+      if (spec.mode === "failover" && index < spec.routes.length - 1) continue;
+      await finalizeFailed(env, liveRow, attempts, lastError);
+      return;
+    }
+    try {
+      const streamed = await readStreamingResponse(env, liveRow, response, route.model);
+      const attempt = routeAttempt(route, index, attemptStartedAt);
+      attempt.status = response.status;
+      attempt.durationMs = now() - attemptStartedAt;
+      if (!streamed.content.trim()) {
+        attempt.error = streamed.reasoning ? "\u4E0A\u6E38\u53EA\u8FD4\u56DE\u4E86\u601D\u8003\u5185\u5BB9\uFF0C\u6CA1\u6709\u6B63\u6587" : "\u4E0A\u6E38\u6CA1\u6709\u8FD4\u56DE\u6B63\u6587";
+        attempts.push(attempt);
+        await finalizeFailed(env, liveRow, attempts, attempt.error, streamed.content, streamed.reasoning.length);
+        return;
+      }
+      if (!streamed.terminal) {
+        attempt.error = "\u6D41\u5F0F\u8FDE\u63A5\u7ED3\u675F\u65F6\u6CA1\u6709\u6536\u5230\u6A21\u578B\u5B8C\u6210\u6807\u8BB0";
+        attempts.push(attempt);
+        await finalizeFailed(
+          env,
+          liveRow,
+          attempts,
+          attempt.error,
+          streamed.content,
+          streamed.reasoning.length
+        );
+        return;
+      }
+      attempt.ok = true;
+      attempts.push(attempt);
+      const responseCipher = await sealJson(env, userId, jobId, "response", streamed.response);
+      const partialCipher = await sealJson(env, userId, jobId, "partial", streamed.content);
+      const usage = streamed.response?.usage || {};
+      const promptTokens = Number(usage?.prompt_tokens);
+      const completionTokens = Number(usage?.completion_tokens);
+      const finishedAt = now();
+      await env.DB.prepare(
+        `UPDATE story_jobs
+         SET status = 'succeeded', response_cipher = ?, partial_cipher = ?, error = NULL,
+             attempts_json = ?, prompt_tokens = ?, completion_tokens = ?, reasoning_chars = ?,
+             visible_chars = ?, updated_at = ?, completed_at = ?
+         WHERE user_id = ? AND job_id = ?`
+      ).bind(
+        responseCipher,
+        partialCipher,
+        JSON.stringify(attempts),
+        Number.isFinite(promptTokens) ? promptTokens : null,
+        Number.isFinite(completionTokens) ? completionTokens : null,
+        streamed.reasoning.length,
+        streamed.content.length,
+        finishedAt,
+        finishedAt,
+        userId,
+        jobId
+      ).run();
+      return;
+    } catch (error) {
+      const attempt = routeAttempt(route, index, attemptStartedAt);
+      attempt.status = response.status;
+      attempt.error = error?.message || String(error);
+      attempt.durationMs = now() - attemptStartedAt;
+      attempts.push(attempt);
+      await finalizeFailed(env, liveRow, attempts, `\u5267\u60C5\u4E91\u7AEF\u6D41\u8BFB\u53D6\u5931\u8D25\uFF1A${attempt.error}`);
+      return;
+    }
+  }
+  await finalizeFailed(env, liveRow, attempts, lastError);
+};
+var failRunningStoryJob = async (env, userId, jobId, error) => {
+  await ensureStoryJobsSchema(env.DB);
+  const row = await loadRowById(env.DB, userId, jobId);
+  if (!row || row.status !== "running") return;
+  const attempts = parseAttempts(row.attempts_json);
+  await finalizeFailed(
+    env,
+    row,
+    attempts,
+    `\u5267\u60C5\u4E91\u7AEF\u6267\u884C\u5668\u5F02\u5E38\uFF1A${error?.message || error}`
+  );
+};
+var kickQueuedStoryJobs = async (env, limit = 24) => {
+  await ensureStoryJobsSchema(env.DB);
+  await cleanupOldJobs(env.DB);
+  const safeLimit = Math.max(1, Math.min(100, Math.floor(Number(limit) || 24)));
+  const result = await env.DB.prepare(
+    "SELECT user_id, job_id FROM story_jobs WHERE status = 'queued' ORDER BY created_at ASC LIMIT ?"
+  ).bind(safeLimit).all();
+  const rows = Array.isArray(result.results) ? result.results : [];
+  let kicked = 0;
+  let failed = 0;
+  for (const row of rows) {
+    if (!row?.user_id || !row?.job_id) continue;
+    const outcome = await kickStoryTick(env, row.user_id, row.job_id);
+    if (outcome.ok) {
+      kicked += 1;
+      continue;
+    }
+    if (outcome.reason === "missing-binding") break;
+    failed += 1;
+    console.warn("[amsg:story-job] cron \u91CD\u53EB queued story \u5931\u8D25", {
+      jobId: row.job_id,
+      error: outcome.error
+    });
+  }
+  return { queued: rows.length, kicked, failed };
+};
+var handleStoryJobsRequest = async (request, env) => {
+  const auth = await authenticate(request, env);
+  if (!auth.ok) {
+    return {
+      status: auth.status,
+      body: { success: false, error: { code: auth.code, message: auth.message } }
+    };
+  }
+  const userId = auth.userId;
+  await ensureStoryJobsSchema(env.DB);
+  await cleanupOldJobs(env.DB);
+  const url = new URL(request.url);
+  const parts = url.pathname.replace(/\/+$/, "").split("/").filter(Boolean);
+  const marker = parts.lastIndexOf("story-jobs");
+  const tail = marker >= 0 ? parts.slice(marker + 1) : [];
+  const method = request.method.toUpperCase();
+  if (method === "POST" && tail.length === 0) {
+    let spec;
+    try {
+      spec = validateSpec(await request.json());
+    } catch (error) {
+      return {
+        status: 400,
+        body: { success: false, error: { code: "INVALID_STORY_JOB", message: error?.message || String(error) } }
+      };
+    }
+    let existing = await loadRowByClient(env.DB, userId, spec.clientRequestId);
+    if (!existing) existing = await loadRowById(env.DB, userId, spec.jobId);
+    if (!existing) {
+      const t = now();
+      const requestCipher = await sealJson(env, userId, spec.jobId, "request", spec);
+      try {
+        await env.DB.prepare(
+          `INSERT INTO story_jobs (
+            job_id, user_id, client_request_id, owner_key, title, status, request_cipher,
+            created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?)`
+        ).bind(
+          spec.jobId,
+          userId,
+          spec.clientRequestId,
+          spec.ownerKey,
+          spec.title,
+          requestCipher,
+          t,
+          t
+        ).run();
+      } catch (error) {
+        existing = await loadRowByClient(env.DB, userId, spec.clientRequestId) || await loadRowById(env.DB, userId, spec.jobId);
+        if (!existing) throw error;
+      }
+      if (!existing) {
+        existing = await loadRowByClient(env.DB, userId, spec.clientRequestId) || await loadRowById(env.DB, userId, spec.jobId);
+      }
+    }
+    if (!existing) {
+      return { status: 500, body: { success: false, error: { code: "STORY_JOB_CREATE_FAILED", message: "\u5267\u60C5\u540E\u53F0\u4EFB\u52A1\u6CA1\u80FD\u843D\u5E93" } } };
+    }
+    if (existing.status === "queued") {
+      const kicked = await kickStoryTick(env, userId, existing.job_id);
+      if (!kicked.ok && kicked.reason === "missing-binding") {
+        return {
+          status: 503,
+          body: {
+            success: false,
+            job: await publicJob(env, existing),
+            error: {
+              code: "INSTANT_TICK_STORY_MISSING",
+              message: "\u5267\u60C5\u540E\u53F0\u4EFB\u52A1\u9700\u8981\u66F4\u65B0\u4E3B\u52A8\u6D88\u606F Worker\uFF1A\u73B0\u6709 INSTANT_TICK Durable Object \u8FD8\u4E0D\u652F\u6301\u5267\u60C5\u4EFB\u52A1\u3002"
+            }
+          }
+        };
+      }
+      if (!kicked.ok) {
+        console.warn("[amsg:story-job] INSTANT_TICK story \u53EB\u9192\u5931\u8D25\uFF0C\u4EFB\u52A1\u4ECD\u4FDD\u7559 queued", kicked.error);
+      }
+    }
+    return { status: 202, body: { success: true, job: await publicJob(env, existing) } };
+  }
+  if (method === "GET" && tail[0] === "by-client" && tail[1]) {
+    const row = await loadRowByClient(env.DB, userId, decodeURIComponent(tail.slice(1).join("/")));
+    return { status: 200, body: { success: true, job: row ? await publicJob(env, row) : null } };
+  }
+  if (method === "GET" && tail.length === 1 && tail[0]) {
+    const row = await loadRowById(env.DB, userId, decodeURIComponent(tail[0]));
+    if (row?.status === "queued") {
+      const kicked = await kickStoryTick(env, userId, row.job_id);
+      if (!kicked.ok && kicked.reason === "kick-failed") {
+        console.warn("[amsg:story-job] status \u65F6\u91CD\u53EB INSTANT_TICK story \u5931\u8D25", kicked.error);
+      }
+    }
+    return { status: 200, body: { success: true, job: row ? await publicJob(env, row) : null } };
+  }
+  if (method === "DELETE" && tail.length === 1 && tail[0]) {
+    const jobId = decodeURIComponent(tail[0]);
+    const t = now();
+    await env.DB.prepare(
+      "UPDATE story_jobs SET status = 'cancelled', updated_at = ?, completed_at = ? WHERE user_id = ? AND job_id = ? AND status IN ('queued','running')"
+    ).bind(t, t, userId, jobId).run();
+    const row = await loadRowById(env.DB, userId, jobId);
+    return { status: 200, body: { success: true, job: row ? await publicJob(env, row) : null } };
+  }
+  return {
+    status: 404,
+    body: { success: false, error: { code: "STORY_JOB_NOT_FOUND", message: "\u5267\u60C5\u540E\u53F0\u4EFB\u52A1\u7AEF\u70B9\u4E0D\u5B58\u5728" } }
+  };
+};
 
 // worker/amsg/src/index.ts
 var getFireStash = (scratch) => scratch?.fire;
@@ -13103,7 +14381,10 @@ var runMcpFireTool = async (stash, name, args) => {
   const started = Date.now();
   const result = await callMcpToolCore(
     // worker 侧 fetch 没有 CORS，直连用户配的地址，不经代理。
-    { url: hit.server.url, headers: (sid) => buildMcpDirectHeaders(hit.server, sid) },
+    {
+      url: hit.server.url,
+      headers: (sid, protocolVersion) => buildMcpDirectHeaders(hit.server, sid, protocolVersion)
+    },
     session,
     hit.toolName,
     args,
@@ -13124,7 +14405,7 @@ var amsgHooks = {
       throw fireStateError("task metadata \u7F3A charId", { taskId: ctx.task.id });
     }
     const instant = isInstantChatTask(ctx.task.metadata ?? {});
-    const fail2 = (reason, extra) => {
+    const fail3 = (reason, extra) => {
       if (instant && typeof ctx.task.uuid === "string" && ctx.task.uuid) {
         if (typeof ctx.writeState === "function") {
           void writeChatFail(ctx.writeState, charId, {
@@ -13146,7 +14427,7 @@ var amsgHooks = {
       try {
         return await unpackStateValue(value);
       } catch (error) {
-        throw fail2(`${label} \u89E3\u538B\u5931\u8D25\uFF08\u6570\u636E\u635F\u574F\uFF09`, { error: String(error) });
+        throw fail3(`${label} \u89E3\u538B\u5931\u8D25\uFF08\u6570\u636E\u635F\u574F\uFF09`, { error: String(error) });
       }
     };
     const taskMeta = ctx.task.metadata ?? {};
@@ -13156,13 +14437,13 @@ var amsgHooks = {
     if (taskKind) {
       const handler = FIRE_KIND_HANDLERS[taskKind];
       if (!handler) {
-        throw fail2(`\u4E0D\u8BA4\u8BC6\u7684\u4EFB\u52A1\u79CD\u7C7B amsgKind=${taskKind}\uFF08worker \u4EE3\u7801\u6BD4\u524D\u7AEF\u65E7\uFF0C\u53BB\u8BBE\u7F6E\u9875\u91CD\u65B0\u90E8\u7F72\u4E00\u6B21\uFF09`);
+        throw fail3(`\u4E0D\u8BA4\u8BC6\u7684\u4EFB\u52A1\u79CD\u7C7B amsgKind=${taskKind}\uFF08worker \u4EE3\u7801\u6BD4\u524D\u7AEF\u65E7\uFF0C\u53BB\u8BBE\u7F6E\u9875\u91CD\u65B0\u90E8\u7F72\u4E00\u6B21\uFF09`);
       }
       let plan;
       try {
         plan = await handler.beforeFire({ ctx, charId, taskMeta });
       } catch (error) {
-        throw fail2(error instanceof Error ? error.message : String(error), { kind: taskKind });
+        throw fail3(error instanceof Error ? error.message : String(error), { kind: taskKind });
       }
       if ("skip" in plan) {
         console.log("[amsg:kind-skip]", { taskId: ctx.task.id, kind: taskKind, reason: plan.reason });
@@ -13193,12 +14474,12 @@ var amsgHooks = {
       return { skip: true };
     }
     const packRow = charRows.find((r) => r.key === AMSG_FIRE_PACK_KEY);
-    if (!packRow) throw fail2("\u4E91\u7AEF\u6CA1\u6709\u8FD9\u4E2A\u89D2\u8272\u7684 fire_pack");
+    if (!packRow) throw fail3("\u4E91\u7AEF\u6CA1\u6709\u8FD9\u4E2A\u89D2\u8272\u7684 fire_pack");
     const packJson = await unpackOrFail("fire_pack", packRow.value);
     const pack = parseFirePack(packJson);
-    if (!pack) throw fail2(`fire_pack \u89E3\u6790\u5931\u8D25\uFF1A${describeFirePackVersion(packJson)}`);
+    if (!pack) throw fail3(`fire_pack \u89E3\u6790\u5931\u8D25\uFF1A${describeFirePackVersion(packJson)}`);
     if (instant && !pack.chat) {
-      throw fail2("\u5373\u65F6\u5BF9\u8BDD\u4EFB\u52A1\u7684 fire_pack \u91CC\u6CA1\u6709 chat \u6BB5\uFF08\u4E91\u7AEF\u72B6\u6001\u6CA1\u8DDF\u4E0A\uFF09");
+      throw fail3("\u5373\u65F6\u5BF9\u8BDD\u4EFB\u52A1\u7684 fire_pack \u91CC\u6CA1\u6709 chat \u6BB5\uFF08\u4E91\u7AEF\u72B6\u6001\u6CA1\u8DDF\u4E0A\uFF09");
     }
     if (!instant && pack.template === AMSG2_INSTANT_STUB_TEMPLATE) {
       console.warn("[amsg:fire-pack-stub] fire_pack \u8FD8\u662F\u5373\u65F6\u5BF9\u8BDD\u7684\u5360\u4F4D\u6A21\u677F\uFF0C\u7B49\u5BA2\u6237\u7AEF\u8865\u4F20\u540E\u91CD\u8BD5", {
@@ -13209,7 +14490,7 @@ var amsgHooks = {
     }
     const occurrenceMs = Date.parse(String(ctx.task.nextSendAt));
     if (!Number.isFinite(occurrenceMs)) {
-      throw fail2("\u4EFB\u52A1\u884C next_send_at \u89E3\u6790\u4E0D\u51FA\u89E6\u53D1\u65F6\u523B", { nextSendAt: ctx.task.nextSendAt });
+      throw fail3("\u4EFB\u52A1\u884C next_send_at \u89E3\u6790\u4E0D\u51FA\u89E6\u53D1\u65F6\u523B", { nextSendAt: ctx.task.nextSendAt });
     }
     const presenceLastUserMessageAt = presence?.charId === charId ? presence.lastUserMessageAt : null;
     const expireInput = {
@@ -13233,17 +14514,17 @@ var amsgHooks = {
     }
     if (!instant) console.log("[amsg:expire-pass]", expireTrace);
     if (!instant && typeof taskMeta.amsgTaskInstruction !== "string") {
-      throw fail2("\u4EFB\u52A1 metadata \u7F3A amsgTaskInstruction\uFF08\u65E7\u683C\u5F0F\u4EFB\u52A1\uFF09");
+      throw fail3("\u4EFB\u52A1 metadata \u7F3A amsgTaskInstruction\uFF08\u65E7\u683C\u5F0F\u4EFB\u52A1\uFF09");
     }
     const globalRows = await ctx.readState(AMSG_GLOBAL_NAMESPACE);
     const toolPackRow = charRows.find((r) => r.key === AMSG_TOOL_PACK_KEY);
     const toolConfigRow = globalRows.find((r) => r.key === AMSG_TOOL_CONFIG_KEY);
-    if (!toolPackRow) throw fail2("\u4E91\u7AEF\u6CA1\u6709\u8FD9\u4E2A\u89D2\u8272\u7684 tool_pack");
-    if (!toolConfigRow) throw fail2("\u4E91\u7AEF\u6CA1\u6709 tool_config");
+    if (!toolPackRow) throw fail3("\u4E91\u7AEF\u6CA1\u6709\u8FD9\u4E2A\u89D2\u8272\u7684 tool_pack");
+    if (!toolConfigRow) throw fail3("\u4E91\u7AEF\u6CA1\u6709 tool_config");
     const toolPack = parseToolPack(await unpackOrFail("tool_pack", toolPackRow.value));
-    if (!toolPack) throw fail2("tool_pack \u89E3\u6790\u5931\u8D25\uFF08\u683C\u5F0F\u4E0D\u5BF9\u6216\u6570\u636E\u635F\u574F\uFF09");
+    if (!toolPack) throw fail3("tool_pack \u89E3\u6790\u5931\u8D25\uFF08\u683C\u5F0F\u4E0D\u5BF9\u6216\u6570\u636E\u635F\u574F\uFF09");
     const toolConfig = parseToolConfig(await unpackOrFail("tool_config", toolConfigRow.value));
-    if (!toolConfig) throw fail2("tool_config \u89E3\u6790\u5931\u8D25\uFF08\u683C\u5F0F\u4E0D\u5BF9\u6216\u6570\u636E\u635F\u574F\uFF09");
+    if (!toolConfig) throw fail3("tool_config \u89E3\u6790\u5931\u8D25\uFF08\u683C\u5F0F\u4E0D\u5BF9\u6216\u6570\u636E\u635F\u574F\uFF09");
     const mcpServers = filterMcpServersForChar(toolConfig.mcpServers, charId);
     const mcpResolve = mcpServers.length ? buildMcpNameMap(mcpServers, { maxNameLen: MCP_FIRE_NAME_BUDGET }) : null;
     const mcpNative = toolConfig.mcpUseNativeTools !== false;
@@ -13411,7 +14692,7 @@ var amsgHooks = {
       }
       return handler.llmOutput({ ctx, state: kindFire.state });
     }
-    const content = stripReasoningTags(ctx.llmOutputText || "").trim();
+    const content = stripReasoningTags2(ctx.llmOutputText || "").trim();
     const taskId = ctx.taskId != null ? String(ctx.taskId) : null;
     if (taskId == null) {
       console.warn("[amsg:agentic] ctx \u4E0A\u6CA1\u6709 taskId\uFF0C\u9001\u8FBE\u5F52\u5C5E\u4F1A\u5931\u6548", ctx.sessionId);
@@ -13877,6 +15158,7 @@ var judgeTick = (storage) => {
   return "stalled";
 };
 var INSTANT_TICK_UUID_KEY = "taskUuid";
+var INSTANT_TICK_STORY_KEY = "storyJob";
 var upstream = createSingleUserCloudflareWorker(buildWorkerConfig, {
   /**
    * cron 那条路上没有调用方能看到错误响应——上游把异常 catch 掉之后，整轮就这么无声
@@ -13911,8 +15193,39 @@ var InstantTickDO = class extends DurableObject {
     if (await this.ctx.storage.getAlarm() !== null) return;
     await this.ctx.storage.setAlarm(Date.now());
   }
+  /**
+   * 剧情后台生成复用同一个 namespace，但实例名以 story: 开头，所以不会和即时对话抢同一实例。
+   * 手机提交完 202 后就可以彻底离线；真正 LLM 流由这个 alarm 持有。
+   */
+  async kickStory(userId, jobId) {
+    await this.ctx.storage.put(INSTANT_TICK_STORY_KEY, { userId, jobId });
+    if (await this.ctx.storage.getAlarm() !== null) return;
+    await this.ctx.storage.setAlarm(Date.now());
+  }
   /** 独立 invocation，15 分钟墙钟。跑挂了不重设 alarm——下一分钟的 cron 会接着捡。 */
   async alarm() {
+    const story = await this.ctx.storage.get(INSTANT_TICK_STORY_KEY);
+    if (story?.userId && story.jobId) {
+      try {
+        await runStoryJob(this.env, story.userId, story.jobId);
+      } catch (error) {
+        console.error("[amsg:story-job] Durable Object \u6267\u884C\u5F02\u5E38\uFF1B\u4E0D\u91CD\u653E\u4E0A\u6E38\uFF0C\u53EA\u628A running job \u6536\u6210\u5931\u8D25", {
+          jobId: story.jobId,
+          error
+        });
+        try {
+          await failRunningStoryJob(this.env, story.userId, story.jobId, error);
+        } catch (settleError) {
+          console.error("[amsg:story-job] Durable Object \u5F02\u5E38\u540E\u8FDE\u5931\u8D25\u72B6\u6001\u4E5F\u6CA1\u80FD\u843D\u5E93", {
+            jobId: story.jobId,
+            error: settleError
+          });
+        }
+      } finally {
+        await this.ctx.storage.delete(INSTANT_TICK_STORY_KEY);
+      }
+      return;
+    }
     const uuid = await this.ctx.storage.get(INSTANT_TICK_UUID_KEY);
     if (!uuid) {
       console.error("[amsg:instant-tick] alarm \u9192\u4E86\u5374\u4E0D\u77E5\u9053\u8981\u8DD1\u54EA\u6761\uFF0C\u8DF3\u8FC7\uFF08\u7B49 cron \u515C\u5E95\uFF09");
@@ -13956,6 +15269,8 @@ var src_default = {
           ...inspectWorkerEnv(env),
           instantChat: true,
           instantTick: !!env.INSTANT_TICK,
+          storyJobs: true,
+          storyTick: !!env.INSTANT_TICK,
           // 这份代码认不认识「后台任务」（metadata.amsgKind → handler，见 fireKinds.ts）。
           // 老 bundle 没有这个字段，前端据此不去建那种任务——老 worker 会把它当聊天任务
           // 跑，然后卡在「本次任务指令缺失」终态失败：任务行不在用户的清单里，面板一片
@@ -13999,6 +15314,43 @@ var src_default = {
         error: result.ok ? void 0 : { code: result.code, message: result.message }
       });
     }
+    if (pathname.endsWith("/cron-trigger")) {
+      if (method === "OPTIONS") return new Response(null, { status: 204, headers: CORS_HEADERS });
+      if (method === "GET") {
+        const state = await handleCronTriggerRead(env, request);
+        if (!state.supported && isCronTriggerAuthFailure(state.code)) {
+          return jsonWithCors(401, {
+            success: false,
+            error: { code: state.code, message: state.message }
+          });
+        }
+        return jsonWithCors(200, { success: true, data: state });
+      }
+      if (method !== "POST") {
+        return jsonWithCors(405, {
+          success: false,
+          error: { code: "METHOD_NOT_ALLOWED", message: "/cron-trigger \u53EA\u63A5\u53D7 GET \u548C POST" }
+        });
+      }
+      let enabled;
+      try {
+        enabled = (await request.json())?.enabled;
+      } catch {
+        enabled = void 0;
+      }
+      if (typeof enabled !== "boolean") {
+        return jsonWithCors(400, {
+          success: false,
+          error: { code: "BAD_REQUEST", message: '\u8BF7\u6C42\u4F53\u8981\u662F { "enabled": true | false }' }
+        });
+      }
+      const result = await handleCronTriggerWrite(env, request, enabled);
+      if (result.ok) return jsonWithCors(200, { success: true, data: result });
+      return jsonWithCors(isCronTriggerAuthFailure(result.code) ? 401 : 400, {
+        success: false,
+        error: { code: result.code, message: result.message }
+      });
+    }
     const report = inspectWorkerEnv(env);
     if (!report.ok) {
       if (method === "OPTIONS") return new Response(null, { status: 204, headers: CORS_HEADERS });
@@ -14006,6 +15358,11 @@ var src_default = {
         success: false,
         error: { code: "WORKER_CONFIG_MISSING", message: report.message, missing: report.missing }
       });
+    }
+    if (/\/story-jobs(?:\/|$)/.test(pathname)) {
+      if (method === "OPTIONS") return new Response(null, { status: 204, headers: CORS_HEADERS });
+      const result = await handleStoryJobsRequest(request, env);
+      return jsonWithCors(result.status, result.body);
     }
     if (pathname.endsWith("/native-poll") || pathname.endsWith("/native-poll/ack")) {
       const result = await handleNativePollRequest(request, env.DB);
@@ -14029,7 +15386,18 @@ var src_default = {
       console.error(`[amsg] \u5B9A\u65F6\u4EFB\u52A1\u6574\u8F6E\u8DF3\u8FC7\uFF1A${report.message}`);
       return;
     }
-    await upstream.scheduled(event, env);
+    try {
+      await upstream.scheduled(event, env);
+    } finally {
+      try {
+        const swept = await kickQueuedStoryJobs(env);
+        if (swept.kicked > 0 || swept.failed > 0) {
+          console.log("[amsg:story-job] cron queued sweep", swept);
+        }
+      } catch (error) {
+        console.warn("[amsg:story-job] cron queued sweep \u5931\u8D25\uFF1Bqueued \u884C\u4ECD\u7559\u5E93\uFF0C\u4E0B\u4E00\u5206\u949F\u518D\u6361", error);
+      }
+    }
   }
 };
 export {

@@ -149,7 +149,7 @@ describe('handleSelfUpdate 上传时带的 metadata', () => {
     const realFetch = globalThis.fetch;
     globalThis.fetch = (async (input: any, init: any = {}) => {
       const url = String(input);
-      if (url.includes('raw.githubusercontent.com')) return new Response(FAKE_BUNDLE);
+      if (url.includes('raw.githubusercontent.com') || url.includes('xuebing0229.github.io/SullyOS/amsg-worker.bundle.js')) return new Response(FAKE_BUNDLE);
       const path = new URL(url).pathname;
       const method = init.method ?? 'GET';
       let body: unknown = null;

@@ -38,6 +38,7 @@ import { normalizeTranslationLangLabel } from './translationLang';
 import { cleanApiMessages, flattenImageContentParts } from './promptMessageCleanup';
 import { materializeVisionDescriptions } from './visionApi';
 import type { RecallEntryPoint, RecallTrace } from './memoryPalace/trace';
+import { loadCollaborationFileCabinetBlock } from '../features/collaboration/chatLibrary';
 
 export { cleanApiMessages, flattenImageContentParts } from './promptMessageCleanup';
 
@@ -132,6 +133,8 @@ export interface BuildChatPayloadResult {
     cleanedApiMessages: ChatPayloadMessage[];
     /** [system, ...cleanedApiMessages, 末尾 bilingual reminder?] —— 主 API 直接发这个 */
     fullMessages: ChatPayloadMessage[];
+    /** fullMessages 里易变尾段 system 的下标；动态块用它插到钢印之前。-1 表示没有。 */
+    volatileTailIndex: number;
     /** 本轮记忆召回的脱敏 Trace；Prompt Build 被整体跳过时不存在。 */
     recallTrace?: RecallTrace;
     /** 调试用：bilingual / mcd 是否实际注入 */
@@ -276,6 +279,7 @@ export async function buildChatRequestPayload(input: BuildChatPayloadInput): Pro
             systemPrompt: '',
             cleanedApiMessages: requestMessages,
             fullMessages: requestMessages,
+            volatileTailIndex: -1,
             flags: {
                 bilingualActive: false,
                 mcdActive: false,
@@ -484,6 +488,13 @@ export async function buildChatRequestPayload(input: BuildChatPayloadInput): Pro
                 engagementTrace.analysis as ConversationEngagementAnalysis | undefined,
             );
         }
+        if (char.chatCollaborationEnabled) {
+            volatileTail += await loadCollaborationFileCabinetBlock(
+                char.id,
+                historyMsgsForPrompt,
+                userProfile?.name || '用户',
+            );
+        }
     }
 
     // 「关于对方的表达」+「回到你自己」必须是易变尾段的最后内容：修复旧版把双语/HTML/
@@ -526,6 +537,8 @@ export async function buildChatRequestPayload(input: BuildChatPayloadInput): Pro
         systemPrompt: systemPrompt + volatileTail,
         cleanedApiMessages: messagesWithWorldbookDepth,
         fullMessages: finalMessages,
+        // 合并开关开着时多条 system 被并进开头一条，下标失去意义 → 交出 -1，调用方退回贴尾。
+        volatileTailIndex: finalMessages === fullMessages ? 1 + messagesWithWorldbookDepth.length : -1,
         recallTrace,
         flags: { bilingualActive, mcdActive, luckinActive, luckinChatActive, mcpChatActive, htmlActive, thinkingActive, promptBuildSkipped: false },
     };

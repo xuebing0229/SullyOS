@@ -24,6 +24,7 @@ import { getLocalDateKey } from './localDate';
 import { getDailyScheduleForChar } from './dailySchedule';
 import { formatRelativeAge } from './groupChat/relativeTime';
 import { isBlobRef } from './blobRef';
+import { voiceLanguagePromptLabel } from './voiceLanguage';
 
 // 语音格式指导按当前 TTS 服务商二选一：用 MiniMax 才注入 MiniMax 那套（含 <#秒#> 停顿标记），
 // 用鱼声则注入鱼声版（去掉 MiniMax 专属标记，改用标点 / 省略号控制停顿）。
@@ -673,6 +674,7 @@ ${uname} 的化身正挂在《彼方》的【${roomName}】${act ? `，状态写
 3. **格式要求**:
    - 每行渲染为一个气泡；空格和标点不会拆泡。
    - 【严禁】在输出中包含时间戳、名字前缀或"[角色名]:"。
+   - **历史中的 \`[聊天]\`、\`[通话]\`、\`[约会]\` 只是消息来源标记，只用于理解上下文；严禁输出、翻译或仿写这些标签（包括 \`[聊chat]\` 等中英混写形式）。**
    - **【严禁】模仿历史记录中的系统日志格式（如"[你 发送了...]"）。**
    - **发送表情包**: 必须且只能使用命令: \`[[SEND_EMOJI: 表情名称]]\`。命令里只写下面方括号内的表情名称，不要带分类名。
    - **可用表情库 (按分类)**:
@@ -961,6 +963,14 @@ ${xhsEnabled ? `${[notionEnabled, feishuEnabled, notionNotesEnabled].filter(Bool
 
 `;
 
+        if (char.chatCollaborationEnabled) {
+            baseSystemPrompt += `
+
+### 协同功能
+你在普通聊天。需要处理文件时，可引导${userProfile.name}从 ChatApp 加号页进入“协同工作”；不要在这里假装制作。系统另给已有文件标题，可按规则发送。
+`;
+        }
+
         // 特殊模式结束后的第一轮必须把输出格式重新锚定到 ChatApp。
         // 主聊天路径会从完整 DB 历史算好 returningFromMode；直接调用 ChatPrompts 的旧路径
         // 则用 currentMsgs 兜底。不能再看固定的倒数第二条：用户可能连续发多个气泡，界面
@@ -982,9 +992,8 @@ ${xhsEnabled ? `${[notionEnabled, feishuEnabled, notionNotesEnabled].filter(Bool
 
         // Voice message prompt injection
         if (char.chatVoiceEnabled) {
-            const VOICE_LANG_LABELS: Record<string, string> = { en: 'English', ja: '日本語', ko: '한국어', fr: 'Français', es: 'Español', de: 'Deutsch', ru: 'Русский' };
             const voiceLang = char.chatVoiceLang || '';
-            const langLabel = voiceLang ? (VOICE_LANG_LABELS[voiceLang] || voiceLang) : '';
+            const langLabel = voiceLang ? voiceLanguagePromptLabel(voiceLang) : '';
             if (voiceLang) {
                 baseSystemPrompt += `\n\n### 🎤 语音消息功能
 
@@ -1217,6 +1226,10 @@ ${userProfile.name} 给你反馈时，别当成约束，当成信任——ta 在
                 // TODO(记录形态): 戳一戳 / 时间间隔提示等其他系统事件, 等转账的 [[记录:TRANSFER]]
                 // 观察一段时间后再迁 (transferFormat.ts 头注) —— 防线已按整个记录命名空间就位。
                 if (m.type === 'interaction') content = `${timeStr} [系统: 用户戳了你一下]`;
+                else if (m.type === 'collaboration_file') {
+                    const fileName = String(m.metadata?.fileName || m.content || '未命名文件');
+                    content = `${timeStr} [你在聊天界面向用户交付了协同文件：《${fileName}》]`;
+                }
                 else if (m.type === 'transfer') {
                     // 统一记录形态 [[记录:TRANSFER|to=|amount=|status=]] —— 跟输出语法
                     // [[ACTION:TRANSFER|to=|amount=]] 共用词汇表 (见 transferFormat.ts 头注)。
