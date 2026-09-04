@@ -25,12 +25,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          LOCKED_UPSTREAM="ae0bf420c0093a77de1d8d570b9f96452c03d263"
           git config user.name "SullyOS Upstream Merge Bot"
           git config user.email "merge-bot@users.noreply.github.com"
           git remote add upstream https://github.com/qegj567-cloud/SullyOS.git 2>/dev/null || git remote set-url upstream https://github.com/qegj567-cloud/SullyOS.git
           git fetch upstream master
-          test "$(git rev-parse upstream/master)" = "ae0bf420c0093a77de1d8d570b9f96452c03d263"
-          git merge --no-commit --no-ff upstream/master || true
+          git cat-file -e "${LOCKED_UPSTREAM}^{commit}"
+          git merge-base --is-ancestor "$LOCKED_UPSTREAM" upstream/master
+          git merge --no-commit --no-ff "$LOCKED_UPSTREAM" || true
           python scripts/tmp-resolve-upstream-merge.py
           git add -A
           unresolved="$(git diff --name-only --diff-filter=U)"
