@@ -1491,7 +1491,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             const rawContent = prefill && !generated.startsWith(prefill) ? `${prefill}${generated}` : generated;
             const parsedInlineImage = entry.imageGeneration?.enabled
                 ? parseStoryInlineImagePlan(rawContent)
-                : { content: rawContent };
+                : { content: rawContent, plan: undefined };
             const content = parsedInlineImage.content.trim();
             const inlineImagePlan = parsedInlineImage.plan;
             if (!content) throw new Error('剧情正文为空：模型只返回了配图控制块，没有正文。');
