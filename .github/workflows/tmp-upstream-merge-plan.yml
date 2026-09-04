@@ -62,7 +62,22 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Test mcpClient
-        run: pnpm exec vitest run utils/mcpClient.test.ts
+        shell: bash
+        run: |
+          set +e
+          pnpm exec vitest run utils/mcpClient.test.ts 2>&1 | tee /tmp/mcpClient-vitest.log
+          status=${PIPESTATUS[0]}
+          set -e
+          if [ "$status" -ne 0 ]; then
+            rm -rf /tmp/upstream-merge-diag
+            git worktree add --detach /tmp/upstream-merge-diag "$GITHUB_SHA"
+            cp /tmp/mcpClient-vitest.log /tmp/upstream-merge-diag/.github/tmp-upstream-test-failure.log
+            cd /tmp/upstream-merge-diag
+            git add .github/tmp-upstream-test-failure.log
+            git commit -m "ci: capture mcpClient regression failure"
+            git push origin HEAD:merge/upstream-20260904
+            exit "$status"
+          fi
       - name: Test mcpFireCore
         run: pnpm exec vitest run utils/mcpFireCore.test.ts
       - name: Test mcpExecutionPolicy
@@ -99,6 +114,7 @@ jobs:
           git add -A
           git diff --cached --check
           git rm -f .github/workflows/tmp-upstream-merge-plan.yml scripts/tmp-resolve-upstream-merge.py
+          git rm -f .github/tmp-upstream-test-failure.log 2>/dev/null || true
           git add -A
           git diff --cached --check
           git status --short
