@@ -1591,14 +1591,17 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 console.error('[StoryTheater] send failed', error);
             }
 
-            const returnedPartialRaw = String(
-                error?.partialContent
-                || error?.storyIncompleteCompletion?.content
-                || '',
-            );
             const returnedPartial = entry.imageGeneration?.enabled
-                ? storyInlineImageVisibleText(returnedPartialRaw).trim()
-                : returnedPartialRaw.trim();
+                ? storyInlineImageVisibleText(String(
+                    error?.partialContent
+                    || error?.storyIncompleteCompletion?.content
+                    || '',
+                )).trim()
+                : String(
+                    error?.partialContent
+                    || error?.storyIncompleteCompletion?.content
+                    || '',
+                ).trim();
             const committedPartial = (partialStreamText || streamingTextRef.current || returnedPartial).trim();
             if (committedPartial) {
                 try {
