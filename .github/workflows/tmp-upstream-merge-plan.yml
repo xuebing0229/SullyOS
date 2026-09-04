@@ -1,0 +1,58 @@
+name: tmp-upstream-merge-plan
+
+on:
+  push:
+    branches:
+      - merge/upstream-20260904
+    paths:
+      - .github/workflows/tmp-upstream-merge-plan.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  merge-plan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Merge upstream without committing
+        id: merge
+        shell: bash
+        run: |
+          set +e
+          git remote add upstream https://github.com/qegj567-cloud/SullyOS.git 2>/dev/null || git remote set-url upstream https://github.com/qegj567-cloud/SullyOS.git
+          git fetch upstream master
+          git merge --no-commit --no-ff upstream/master
+          rc=$?
+          echo "merge_rc=$rc" >> "$GITHUB_OUTPUT"
+          mkdir -p .upstream-merge-report/base .upstream-merge-report/ours .upstream-merge-report/theirs
+          git status --porcelain=v1 > .upstream-merge-report/status.txt
+          git diff --name-only --diff-filter=U > .upstream-merge-report/conflicts.txt
+          while IFS= read -r p; do
+            [ -z "$p" ] && continue
+            mkdir -p ".upstream-merge-report/base/$(dirname "$p")" ".upstream-merge-report/ours/$(dirname "$p")" ".upstream-merge-report/theirs/$(dirname "$p")"
+            git show ":1:$p" > ".upstream-merge-report/base/$p" 2>/dev/null || true
+            git show ":2:$p" > ".upstream-merge-report/ours/$p" 2>/dev/null || true
+            git show ":3:$p" > ".upstream-merge-report/theirs/$p" 2>/dev/null || true
+          done < .upstream-merge-report/conflicts.txt
+          tar --exclude=.git -czf /tmp/upstream-merge-worktree.tar.gz .
+          tar -czf /tmp/upstream-merge-report.tar.gz .upstream-merge-report
+          exit 0
+
+      - name: Upload merge worktree
+        uses: actions/upload-artifact@v4
+        with:
+          name: upstream-merge-worktree
+          path: /tmp/upstream-merge-worktree.tar.gz
+          if-no-files-found: error
+
+      - name: Upload conflict report
+        uses: actions/upload-artifact@v4
+        with:
+          name: upstream-merge-report
+          path: /tmp/upstream-merge-report.tar.gz
+          if-no-files-found: error
