@@ -63,19 +63,20 @@ jobs:
 
       - name: Test mcpClient
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set +e
           pnpm exec vitest run utils/mcpClient.test.ts 2>&1 | tee /tmp/mcpClient-vitest.log
           status=${PIPESTATUS[0]}
           set -e
           if [ "$status" -ne 0 ]; then
-            rm -rf /tmp/upstream-merge-diag
-            git worktree add --detach /tmp/upstream-merge-diag "$GITHUB_SHA"
-            cp /tmp/mcpClient-vitest.log /tmp/upstream-merge-diag/.github/tmp-upstream-test-failure.log
-            cd /tmp/upstream-merge-diag
-            git add .github/tmp-upstream-test-failure.log
-            git commit -m "ci: capture mcpClient regression failure"
-            git push origin HEAD:merge/upstream-20260904
+            encoded="$(base64 -w0 /tmp/mcpClient-vitest.log)"
+            gh api --method PUT \
+              "repos/${GITHUB_REPOSITORY}/contents/.github/tmp-upstream-test-failure.log" \
+              -f message='ci: capture mcpClient regression failure' \
+              -f content="$encoded" \
+              -f branch='merge/upstream-20260904'
             exit "$status"
           fi
       - name: Test mcpFireCore
