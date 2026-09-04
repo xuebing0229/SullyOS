@@ -69,6 +69,7 @@ jobs:
               raise RuntimeError('NovelAI prompt regression assertion anchor not found')
           test_path.write_text(test.replace(old_block, new_block, 1))
           PY
+          python scripts/tmp-post-upstream-merge.py
           git add -A
           test -z "$(git diff --name-only --diff-filter=U)"
 
