@@ -61,21 +61,30 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Run merge regression tests
-        run: |
-          pnpm exec vitest run \
-            utils/mcpClient.test.ts \
-            utils/mcpFireCore.test.ts \
-            utils/mcpExecutionPolicy.test.ts \
-            utils/mcpImagePersistence.test.ts \
-            utils/chatRequestPayload.test.ts \
-            utils/activeMsgRuntime.test.ts \
-            utils/amsg2ScheduleRestraint.test.ts \
-            utils/storyTheater.test.ts \
-            utils/sanitize.test.ts \
-            utils/collaborationApi.test.ts \
-            utils/collaborationContext.test.ts \
-            utils/collaborationWiring.test.ts
+      - name: Test mcpClient
+        run: pnpm exec vitest run utils/mcpClient.test.ts
+      - name: Test mcpFireCore
+        run: pnpm exec vitest run utils/mcpFireCore.test.ts
+      - name: Test mcpExecutionPolicy
+        run: pnpm exec vitest run utils/mcpExecutionPolicy.test.ts
+      - name: Test mcpImagePersistence
+        run: pnpm exec vitest run utils/mcpImagePersistence.test.ts
+      - name: Test chatRequestPayload
+        run: pnpm exec vitest run utils/chatRequestPayload.test.ts
+      - name: Test activeMsgRuntime
+        run: pnpm exec vitest run utils/activeMsgRuntime.test.ts
+      - name: Test amsg2ScheduleRestraint
+        run: pnpm exec vitest run utils/amsg2ScheduleRestraint.test.ts
+      - name: Test storyTheater
+        run: pnpm exec vitest run utils/storyTheater.test.ts
+      - name: Test sanitize
+        run: pnpm exec vitest run utils/sanitize.test.ts
+      - name: Test collaborationApi
+        run: pnpm exec vitest run utils/collaborationApi.test.ts
+      - name: Test collaborationContext
+        run: pnpm exec vitest run utils/collaborationContext.test.ts
+      - name: Test collaborationWiring
+        run: pnpm exec vitest run utils/collaborationWiring.test.ts
 
       - name: Run full test suite
         run: pnpm test:run
