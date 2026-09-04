@@ -32,7 +32,8 @@ jobs:
           git fetch upstream master
           git cat-file -e "${LOCKED_UPSTREAM}^{commit}"
           git merge-base --is-ancestor "$LOCKED_UPSTREAM" upstream/master
-          git merge --no-commit --no-ff "$LOCKED_UPSTREAM" || true
+          git update-ref refs/remotes/upstream/master "$LOCKED_UPSTREAM"
+          git merge --no-commit --no-ff upstream/master || true
           python scripts/tmp-resolve-upstream-merge.py
           git add -A
           unresolved="$(git diff --name-only --diff-filter=U)"
