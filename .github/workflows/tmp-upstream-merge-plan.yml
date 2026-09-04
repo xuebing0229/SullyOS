@@ -61,9 +61,10 @@ jobs:
                   expect(block).not.toContain('use_character_reference');
                   expect(block).toContain('use_user_reference');
           """
-          new_block = """        expect(block).not.toContain('当前角色参考图');
-                  expect(block).not.toContain('use_character_reference');
-                  expect(block).not.toContain('use_user_reference');
+          new_block = """        expect(block).toContain('当前预设已关闭 Precise Reference');
+                  expect(block).toContain('当前角色参考图和用户参考图均不可用');
+                  expect(block).not.toContain('角色正面.png');
+                  expect(block).not.toContain('用户正面.png');
           """
           if old_block not in test:
               raise RuntimeError('NovelAI prompt regression assertion anchor not found')
