@@ -1306,7 +1306,19 @@ recordApiCall({ requestId, url: urlStr, body, status, ok, response: parsed, resp
               if (urlStr.includes('/chat/completions')) {
 recordApiCall({ requestId: (config as any)?.__sullyApiCallId, url: urlStr, body: (sendArgs[1] as any)?.body, ok: false, meta: (config as any)?.__sullyMeta || requestMeta || ambientMetaAtStart, durationMs: Date.now() - fetchStartedAt, billingCapture });
               }
-              if (!isAnalyticsRequestUrl(urlStr)) {
+              // Story Jobs 的状态 GET 在 Android WebView 锁屏/切后台后可能被本地
+              // AbortController 正常取消；远端 job 仍继续运行。这里只跳过这一个已知的诊断误报，
+              // 不吞异常、不改轮询/重试，也不放过 POST 或其它网络失败。
+              const isExpectedStoryJobPollAbort = (() => {
+                  if (method !== 'GET' || err?.name !== 'AbortError') return false;
+                  try {
+                      const pathname = new URL(urlStr, window.location.href).pathname;
+                      return /^\/story-jobs\/(?:by-client\/)?[^/]+\/?$/.test(pathname);
+                  } catch {
+                      return false;
+                  }
+              })();
+              if (!isAnalyticsRequestUrl(urlStr) && !isExpectedStoryJobPollAbort) {
                   // 光秃秃一句 "Failed to fetch" + 一个 URL 排查不了任何东西（社区里这条卡过好几个人）。
                   // 这里把浏览器肯在 JS 侧交出来的旁证一次性补齐：方法、耗时、在线状态、是否跨域、
                   // Resource Timing 里那条记录，再给一句初判；随后异步做一次 no-cors 连通性复检，
