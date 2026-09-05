@@ -59,11 +59,15 @@ import StoryQuickPresetPanel from './StoryQuickPresetPanel';
 import { StoryAppearanceButton, useStoryTheaterAppearance } from './StoryTheaterTheme';
 import { shareOrDownloadFile } from '../../../utils/shareExport';
 import {
+    adoptStoryCloudImageHandoff,
+    buildStoryCloudImageHandoffSpec,
     buildStoryInlineImagePlanInstruction,
     generateStoryTheaterImage,
     parseStoryInlineImagePlan,
     resolveStoryImagePlannerApiConfig,
     storyInlineImageVisibleText,
+    type StoryCloudImageHandoffResult,
+    type StoryCloudImageHandoffSpec,
 } from '../../../utils/storyTheaterImage';
 import StoryImageSettingsButton from './StoryImageSettings';
 import AppMemoryCandidatePanel from '../../AppMemoryCandidatePanel';
@@ -887,6 +891,8 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             ownerKey: string;
             title: string;
             meta?: Record<string, any>;
+            imageHandoff?: StoryCloudImageHandoffSpec;
+            onCloudCompleted?: (data: any) => void;
             beforeRelease?: () => Promise<void> | void;
         },
     ): Promise<string> => {
@@ -957,6 +963,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                         stream: true,
                     },
                     meta: background.meta,
+                    imageHandoff: background.imageHandoff,
                     onPromptTokens,
                     onStreamText: wantsStreamPreview ? fullText => {
                         streamedChars = fullText.length;
@@ -966,6 +973,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                         onStreamText?.(fullText);
                     } : undefined,
                 });
+                background.onCloudCompleted?.(data);
             } else if (useNativeEventSourceTransport && background) {
                 data = await executeStoryCompletionInNativeBackground({
                     ownerKey: background.ownerKey,
@@ -1432,6 +1440,16 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                     console.warn('[StoryTheater] inline image plan instruction unavailable; legacy planner remains available', imagePlanInstructionError);
                 }
             }
+            let cloudImageHandoffSpec: StoryCloudImageHandoffSpec | undefined;
+            if (entry.imageGeneration?.enabled && inlineImagePlanInstruction) {
+                try {
+                    cloudImageHandoffSpec = await buildStoryCloudImageHandoffSpec({ actors, userProfile });
+                } catch (cloudImageSetupError) {
+                    // 云端接力准备失败不影响正文；正文回来后仍走现有客户端配图兜底。
+                    console.warn('[StoryTheater] cloud image handoff preflight unavailable', cloudImageSetupError);
+                }
+            }
+            let cloudImageHandoffResult: StoryCloudImageHandoffResult | undefined;
             const modelInput = appendStoryAffinityInputs(modelText, affinityInputs);
             const payloadBeforeTurn = [
                 ...compiled.messages,
@@ -1472,6 +1490,11 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             }, {
                 ownerKey: backgroundOwnerKey,
                 title: entry.title,
+                imageHandoff: cloudImageHandoffSpec,
+                onCloudCompleted: data => {
+                    const raw = data?._sullyStoryImageHandoff;
+                    if (raw && typeof raw === 'object') cloudImageHandoffResult = raw as StoryCloudImageHandoffResult;
+                },
                 meta: {
                     ...(isReroll && rerollTarget ? { rerollTargetId: rerollTarget.id } : {}),
                     ...(affinityInputs.length > 0 ? { affinityInputs } : {}),
@@ -1549,17 +1572,25 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                     const imageRows = (await DB.getMessagesByCharId(threadId, true))
                         .filter(message => message.metadata?.source === 'story_theater')
                         .sort((a, b) => a.id - b.id);
-                    const imageResult = await generateStoryTheaterImage({
-                        apiConfig,
-                        plannerApiConfig: resolveStoryImagePlannerApiConfig(entry, apiConfig, apiPresets),
-                        entry,
-                        actors,
-                        userProfile,
-                        userName: promptIdentityName,
-                        messages: imageRows,
-                        inlinePlan: inlineImagePlan,
-                        targetMessageId: assistantMessageId,
-                    });
+                    const imageResult = cloudImageHandoffResult?.state === 'submitted'
+                        ? await adoptStoryCloudImageHandoff({
+                            entry,
+                            actors,
+                            handoff: cloudImageHandoffResult,
+                            inlinePlan: inlineImagePlan,
+                            targetMessageId: assistantMessageId,
+                        })
+                        : await generateStoryTheaterImage({
+                            apiConfig,
+                            plannerApiConfig: resolveStoryImagePlannerApiConfig(entry, apiConfig, apiPresets),
+                            entry,
+                            actors,
+                            userProfile,
+                            userName: promptIdentityName,
+                            messages: imageRows,
+                            inlinePlan: inlineImagePlan,
+                            targetMessageId: assistantMessageId,
+                        });
                     if (imageResult.frame) {
                         await DB.updateMessageMetadata(assistantMessageId, previous => ({ ...previous, theaterImage: imageResult.frame }));
                         await loadMessages();

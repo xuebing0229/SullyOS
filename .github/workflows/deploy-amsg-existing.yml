@@ -5,6 +5,11 @@ on:
   push:
     branches: [master]
     paths:
+      - 'worker/amsg/**'
+      - 'utils/**'
+      - 'types.ts'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
       - '.github/workflows/deploy-amsg-existing.yml'
       - 'scripts/deploy-existing-amsg.mjs'
 

@@ -1,4 +1,9 @@
 import { constantTimeEqual } from './instantChat';
+import {
+  normalizeStoryImageHandoffSpec,
+  runStoryImageHandoff,
+  type StoryCloudImageHandoffSpec,
+} from './storyImageHandoff';
 
 type D1Prepared = {
   bind(...values: unknown[]): D1Prepared;
@@ -43,6 +48,8 @@ export interface StoryJobSpec {
   mode: 'direct' | 'failover';
   routes: StoryJobRoute[];
   baseBody: Record<string, unknown>;
+  /** 可选：正文完成后由 Worker 直接把隐藏 image plan 交给生图 /jobs。 */
+  imageHandoff?: StoryCloudImageHandoffSpec;
 }
 
 type StoryJobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled';
@@ -296,6 +303,9 @@ const validateSpec = (value: unknown): StoryJobSpec => {
     mode,
     routes,
     baseBody: raw.baseBody as Record<string, unknown>,
+    ...(normalizeStoryImageHandoffSpec(raw.imageHandoff)
+      ? { imageHandoff: normalizeStoryImageHandoffSpec(raw.imageHandoff) }
+      : {}),
   };
   if (jsonSize(spec) > MAX_REQUEST_BYTES) throw new Error('剧情后台请求体过大');
   return spec;
@@ -778,7 +788,28 @@ export const runStoryJob = async (
 
       attempt.ok = true;
       attempts.push(attempt);
-      const responseCipher = await sealJson(env, userId, jobId, 'response', streamed.response);
+
+      // 正文已经完整且 terminal 后才允许起图。配图链任何失败都不能反过来把正文标失败。
+      // imageHandoff/result 都存进同一份加密 response；手机醒来接正文时顺便认领远端图 job。
+      let imageHandoffResult: Awaited<ReturnType<typeof runStoryImageHandoff>> | undefined;
+      if (spec.imageHandoff) {
+        try {
+          imageHandoffResult = await runStoryImageHandoff(
+            spec.imageHandoff,
+            spec.clientRequestId,
+            streamed.content,
+          );
+        } catch (imageHandoffError) {
+          imageHandoffResult = {
+            state: 'failed',
+            error: String((imageHandoffError as Error)?.message || imageHandoffError).slice(0, 500),
+          };
+        }
+      }
+      const storedResponse = imageHandoffResult
+        ? { ...streamed.response, _sullyStoryImageHandoff: imageHandoffResult }
+        : streamed.response;
+      const responseCipher = await sealJson(env, userId, jobId, 'response', storedResponse);
       const partialCipher = await sealJson(env, userId, jobId, 'partial', streamed.content);
       const usage = (streamed.response as any)?.usage || {};
       const promptTokens = Number(usage?.prompt_tokens);
