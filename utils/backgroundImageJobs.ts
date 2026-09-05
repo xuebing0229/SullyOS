@@ -5,6 +5,7 @@ import type {
     Message,
 } from '../types';
 import { DB } from './db';
+import { ActiveMsgClient } from './activeMsgClient';
 import type {
     BuiltinImageEngineId,
 } from './builtinImageMcp';
@@ -36,9 +37,6 @@ const MAX_SUBMIT_ATTEMPTS = 10;
 // 12 次在快速失败时约 48 秒；若每次都等满 12s timeout，则约 3 分钟以上。
 // 真正的 queued/running 状态不会计入这里，只有查询本身失败才累计。
 const MAX_RECONCILE_FAILURES = 12;
-// 云端剧情正文会先把稳定的 image handoff 身份交给手机，再由 Worker 紧接着 POST /jobs。
-// 手机在这段宽限期只做 by-client 查询，不能和 Worker 抢首发，否则同一张图可能被并发提交两次。
-const CLOUD_STORY_INITIAL_SUBMIT_GRACE_MS = 45_000;
 
 export type LocalBackgroundImageJobStatus =
     | 'submitting'
@@ -78,8 +76,8 @@ export interface LocalBackgroundImageJob {
     updatedAt: number;
     lastCheckedAt?: number;
     submitAttempts: number;
-    /** adopt 云端任务时，早于此时间只允许查询，不允许客户端首发 POST /jobs。 */
-    submitNotBefore?: number;
+    /** 云端剧情 handoff 由 Worker 独占首发权；客户端只查状态，永不自动补交。 */
+    workerOwnsSubmission?: boolean;
     resultAppliedAt?: number;
     lastError?: string;
     imageBillingCapture?: ImageGenerationBillingCapture;
@@ -307,10 +305,10 @@ const sanitizeLoadedJob = (
             Number.isFinite(raw.submitAttempts)
                 ? Math.max(0, raw.submitAttempts)
                 : 0,
-        submitNotBefore:
-            Number.isFinite(raw.submitNotBefore)
-                ? Number(raw.submitNotBefore)
-                : undefined,
+        // 兼容 2.3.204：旧版的 submitNotBefore 只会出现在云端剧情 adopt 任务上。
+        workerOwnsSubmission:
+            raw.workerOwnsSubmission === true
+            || (raw.ownerType === 'story-theater' && Number.isFinite(raw.submitNotBefore)),
         resultAppliedAt:
             Number.isFinite(raw.resultAppliedAt)
                 ? raw.resultAppliedAt
@@ -605,6 +603,62 @@ const getRemoteJobById = async (
     } catch (error) {
         if (isRemoteJobNotFoundError(error)) return null;
         throw error;
+    }
+};
+
+interface WorkerStoryImageHandoffState {
+    state?: 'submitted' | 'failed' | 'skipped';
+    remoteJobId?: string;
+    error?: string;
+    uncertain?: boolean;
+}
+
+const getWorkerStoryImageHandoff = async (
+    job: LocalBackgroundImageJob,
+): Promise<WorkerStoryImageHandoffState | null> => {
+    if (!job.workerOwnsSubmission) return null;
+    const imageClientRequestId = String(job.clientRequestId || '');
+    if (!imageClientRequestId.startsWith('storyimg_')) return null;
+    const storyClientRequestId = imageClientRequestId.slice('storyimg_'.length);
+    if (!storyClientRequestId) return null;
+
+    try {
+        const config = await ActiveMsgClient.getGlobalConfig();
+        const workerUrl = String(config.workerUrl || '').trim().replace(/\/+$/, '');
+        const userId = String(config.userId || '').trim();
+        if (!/^https?:\/\//i.test(workerUrl) || !userId) return null;
+
+        const headers = new Headers({
+            Accept: 'application/json',
+            'X-User-Id': userId,
+        });
+        const serverToken = String(config.serverToken || '').trim();
+        if (serverToken) headers.set('X-Client-Token', serverToken);
+
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), HTTP_TIMEOUT_MS);
+        try {
+            const response = await fetch(
+                `${workerUrl}/story-jobs/by-client/${encodeURIComponent(storyClientRequestId)}`,
+                {
+                    method: 'GET',
+                    headers,
+                    cache: 'no-store',
+                    signal: controller.signal,
+                },
+            );
+            if (!response.ok) return null;
+            const body = await response.json().catch(() => null);
+            const handoff = body?.job?.response?._sullyStoryImageHandoff;
+            return handoff && typeof handoff === 'object'
+                ? handoff as WorkerStoryImageHandoffState
+                : null;
+        } finally {
+            clearTimeout(timeout);
+        }
+    } catch {
+        // 这里只是补充 Worker 的最终 handoff 诊断；查询失败不应制造第二张图，也不应误判图片失败。
+        return null;
     }
 };
 
@@ -943,16 +997,36 @@ const reconcileOne = async (
         }
 
         if (!remoteJob) {
-            // adopt 的云端剧情 handoff 可能比 Worker 真正 POST /jobs 早几十毫秒到几秒抵达手机。
-            // 宽限期内每轮仍先执行上面的 by-client 查询，但查不到也绝不由手机抢首发。
-            // 只有 Worker 长时间没有创建任务，才允许客户端用同一 clientRequestId 做灾备补交。
-            if (Number(localJob.submitNotBefore || 0) > now()) {
-                updateJob(localJob.id, {
-                    status: 'submitting',
-                    lastCheckedAt: now(),
-                    lastError: undefined,
-                });
-                return;
+            if (localJob.workerOwnsSubmission) {
+                // 云端剧情自动配图只有 Worker 能首发。手机永远只查账，不再用任何固定时间猜测
+                // “Worker 可能挂了”然后补 POST。Worker 明确失败时，从 story job 的最终 handoff
+                // 把失败同步回来；用户需要重试时手动点“重新生成”。
+                const storyHandoff = await getWorkerStoryImageHandoff(localJob);
+                if (storyHandoff?.state === 'failed') {
+                    await markMonitoredJobFailed(
+                        localJob.id,
+                        storyHandoff.error || '剧情后台自动配图提交失败',
+                        options,
+                    );
+                    return;
+                }
+                if (storyHandoff?.state === 'submitted' && storyHandoff.remoteJobId) {
+                    const linked = updateJob(localJob.id, {
+                        remoteJobId: storyHandoff.remoteJobId,
+                        status: 'queued',
+                        lastCheckedAt: now(),
+                        lastError: undefined,
+                    });
+                    if (linked) remoteJob = await getRemoteJobById(linked);
+                }
+                if (!remoteJob) {
+                    updateJob(localJob.id, {
+                        status: 'submitting',
+                        lastCheckedAt: now(),
+                        lastError: undefined,
+                    });
+                    return;
+                }
             }
 
             if (localJob.submitAttempts >= MAX_SUBMIT_ATTEMPTS) {
@@ -999,7 +1073,6 @@ const reconcileOne = async (
             status: remoteStatusToLocal(remoteJob.status),
             lastCheckedAt: now(),
             lastError: remoteJob.error?.message,
-            submitNotBefore: undefined,
         });
         if (!updated) return;
 
@@ -1279,14 +1352,10 @@ export async function adoptBackgroundImageJob(
             storyTheaterTarget: context.ownerType === 'story-theater'
                 ? context.storyTheaterTarget
                 : existing.storyTheaterTarget,
-            // 已拿到 remote id 就立即解除宽限；否则保留/建立 Worker 首发窗口。
-            submitNotBefore: remote.remoteJobId
-                ? undefined
-                : (existing.submitNotBefore || now() + CLOUD_STORY_INITIAL_SUBMIT_GRACE_MS),
+            workerOwnsSubmission: true,
             lastError: undefined,
         }) || existing;
         dispatchJobEvent('updated', updated);
-        void reconcileBackgroundImageJobs();
         return queuedToolResult(updated, remote.remoteJobId ? ({
             id: remote.remoteJobId,
             clientRequestId,
@@ -1317,17 +1386,14 @@ export async function adoptBackgroundImageJob(
         status: remote.remoteJobId ? 'queued' : 'submitting',
         createdAt,
         updatedAt: createdAt,
-        // Worker 负责第一次 POST。没有 remote id 时客户端先只查询；
-        // 45 秒仍查不到才用同一 clientRequestId 灾备补交，避免两端并发双提交。
+        // Worker 独占自动配图的第一次 POST；客户端只按同一 clientRequestId / remoteJobId 查状态。
+        // 自动流程永不补交，失败后由用户手动“重新生成”。
         submitAttempts: remote.remoteJobId ? 1 : 0,
-        submitNotBefore: remote.remoteJobId
-            ? undefined
-            : createdAt + CLOUD_STORY_INITIAL_SUBMIT_GRACE_MS,
+        workerOwnsSubmission: true,
         imageBillingCapture: captureImageGenerationBilling(engineId),
     };
     upsertJob(localJob);
     dispatchJobEvent('updated', localJob);
-    void reconcileBackgroundImageJobs();
     return queuedToolResult(localJob, remote.remoteJobId ? ({
         id: remote.remoteJobId,
         clientRequestId,
