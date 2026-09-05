@@ -7,6 +7,7 @@ on:
     paths:
       - '.github/workflows/patch-story-cloud-image-handoff.yml'
       - 'scripts/patch-story-cloud-image-handoff.mjs'
+      - 'scripts/relax-story-cloud-patcher.mjs'
   workflow_dispatch:
 
 permissions:
@@ -29,6 +30,8 @@ jobs:
           node-version: 20
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - name: Relax one duplicate patch anchor
+        run: node scripts/relax-story-cloud-patcher.mjs
       - name: Apply patch
         run: node scripts/patch-story-cloud-image-handoff.mjs
       - name: Test handoff and story regressions
