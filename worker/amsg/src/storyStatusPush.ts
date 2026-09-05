@@ -37,6 +37,9 @@ export interface StoryStatusPushJob {
   title: string;
 }
 
+export const storyBackgroundStatusMessageId = (clientRequestId: string): string =>
+  `story_${clientRequestId}`;
+
 const notificationBody = (
   status: StoryBackgroundStatus,
   title: string,
@@ -95,7 +98,7 @@ export const sendStoryBackgroundStatusPush = async (
     );
 
     const body = notificationBody(status, job.title, error);
-    const messageId = `story_${job.clientRequestId}`;
+    const messageId = storyBackgroundStatusMessageId(job.clientRequestId);
     const payload = {
       messageKind: 'result',
       resultKind: STORY_BACKGROUND_STATUS_RESULT_KIND,
