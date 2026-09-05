@@ -15,7 +15,8 @@ describe('Story Theater background status notifications', () => {
 
   it('all status updates share one deterministic notification identity', () => {
     const sender = read('worker/amsg/src/storyStatusPush.ts');
-    expect(sender).toContain('const messageId = `story_${job.clientRequestId}`');
+    expect(sender).toContain('storyBackgroundStatusMessageId(job.clientRequestId)');
+    expect(sender).toContain('`story_${clientRequestId}`');
     expect(sender).toContain('tag: `story:${job.ownerKey}`');
     expect(sender).toContain("silent: status === 'running'");
     expect(sender).toContain("renotify: status !== 'running'");
