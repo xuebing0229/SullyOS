@@ -227,28 +227,51 @@ export interface NativeCloudStoryMonitorOptions {
   serverToken?: string;
 }
 
-const ensureStoryNotificationPermission = async (): Promise<boolean> => {
-  if (!isNativeStoryBackgroundRuntime()) return false;
+const ensureStoryNotificationPermission = async (): Promise<{
+  granted: boolean;
+  prompted: boolean;
+}> => {
+  if (!isNativeStoryBackgroundRuntime()) return { granted: false, prompted: false };
   const current = await LocalNotifications.checkPermissions();
-  const resolved = current.display === 'prompt'
-    ? await LocalNotifications.requestPermissions()
-    : current;
-  return resolved.display === 'granted';
+  if (current.display !== 'prompt') {
+    return { granted: current.display === 'granted', prompted: false };
+  }
+  const resolved = await LocalNotifications.requestPermissions();
+  return { granted: resolved.display === 'granted', prompted: true };
 };
 
 /**
  * 云端 Story Jobs 的系统状态牌。与主动消息 push 完全独立：Android 自己轮询同一个 job。
+ *
+ * 关键顺序：先把 startCloudMonitor 交给原生层，再做通知权限 bridge 往返。
+ * 这样用户点完“生成”立刻切屏时，WebView 即使马上冻结，原生前台服务也已经收到启动请求。
  */
 export const startNativeCloudStoryMonitor = async (
   options: NativeCloudStoryMonitorOptions,
 ): Promise<boolean> => {
   if (!isNativeStoryBackgroundRuntime()) return false;
-  const granted = await ensureStoryNotificationPermission();
-  if (!granted) {
+
+  let immediateStartError: unknown = null;
+  try {
+    // Android 13+ 即使通知权限尚未授予，也允许启动 foreground service；
+    // 权限只决定通知能否正常展示。因此先启动，不能让权限查询成为后台接管前置门槛。
+    await NativeStoryBackground.startCloudMonitor(options);
+  } catch (error) {
+    immediateStartError = error;
+  }
+
+  const permission = await ensureStoryNotificationPermission();
+  if (!permission.granted) {
     console.warn('[StoryTheater] 系统通知权限未授予，剧情后台状态牌无法显示');
+    if (immediateStartError) throw immediateStartError;
     return false;
   }
-  await NativeStoryBackground.startCloudMonitor(options);
+
+  // 如果刚刚弹过权限框，或第一次原生启动失败，重新发一次 start：
+  // 已运行的 service 会更新同一 job/notification，不会创建第二条模型请求。
+  if (permission.prompted || immediateStartError) {
+    await NativeStoryBackground.startCloudMonitor(options);
+  }
   return true;
 };
 
