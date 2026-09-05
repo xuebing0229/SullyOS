@@ -215,18 +215,46 @@ const stableImageClientRequestId = (storyClientRequestId: string): string => {
   return `storyimg_${safe || 'unknown'}`;
 };
 
-export const runStoryImageHandoff = async (
+/**
+ * 纯本地计算“这轮图应该用哪个稳定 clientRequestId / 哪组最终参数”。
+ * 不碰网络，所以正文 [DONE] 后可以先把这个占位 handoff 连同正文一起落库并立即让手机接回。
+ * 手机和 Worker 随后谁先真正 POST /jobs 都只会使用同一个 clientRequestId，服务端幂等会合并成同一张图。
+ */
+export const prepareStoryImageHandoff = (
   spec: StoryCloudImageHandoffSpec,
   storyClientRequestId: string,
   storyContent: string,
-): Promise<StoryCloudImageHandoffResult> => {
+): StoryCloudImageHandoffResult => {
   const plan = parseInlinePlan(String(storyContent || ''));
   if (!plan) return { state: 'skipped' };
   const tool = spec.tools.find(item => item.exposedName === plan.tool);
   if (!tool) return { state: 'failed', exposedTool: plan.tool, error: '正文选择的生图工具已不可用' };
 
-  const clientRequestId = stableImageClientRequestId(storyClientRequestId);
-  const finalArgs = mergeNovelAiReferences(tool, plan.arguments);
+  return {
+    state: 'submitted',
+    exposedTool: tool.exposedName,
+    toolName: tool.toolName,
+    clientRequestId: stableImageClientRequestId(storyClientRequestId),
+    arguments: mergeNovelAiReferences(tool, plan.arguments),
+    // 这里只代表“稳定任务身份已经确定”，不谎称 Worker 已拿到远端 jobId。
+    // adoptBackgroundImageJob 会先 by-client 查，同一 id 不存在时再安全补交。
+    uncertain: true,
+  };
+};
+
+export const runStoryImageHandoff = async (
+  spec: StoryCloudImageHandoffSpec,
+  storyClientRequestId: string,
+  storyContent: string,
+): Promise<StoryCloudImageHandoffResult> => {
+  const prepared = prepareStoryImageHandoff(spec, storyClientRequestId, storyContent);
+  if (prepared.state !== 'submitted' || !prepared.exposedTool || !prepared.clientRequestId) return prepared;
+
+  const tool = spec.tools.find(item => item.exposedName === prepared.exposedTool);
+  if (!tool) return { ...prepared, state: 'failed', error: '正文选择的生图工具已不可用' };
+
+  const clientRequestId = prepared.clientRequestId;
+  const finalArgs = isRecord(prepared.arguments) ? cloneRecord(prepared.arguments) : {};
   const baseResult = {
     exposedTool: tool.exposedName,
     toolName: tool.toolName,
