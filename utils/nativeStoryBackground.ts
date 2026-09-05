@@ -1,5 +1,6 @@
 import { App } from '@capacitor/app';
 import { Capacitor, registerPlugin } from '@capacitor/core';
+import { LocalNotifications } from '@capacitor/local-notifications';
 
 import type { ApiExecutionPlan } from './apiFailover';
 import { recordApiCall } from './apiCallLog';
@@ -136,6 +137,19 @@ interface SullyStoryBackgroundPlugin {
   remove(options: { jobId: string }): Promise<void>;
   acquireKeepAlive(options: { leaseId: string; title?: string }): Promise<void>;
   releaseKeepAlive(options: { leaseId: string }): Promise<void>;
+  startCloudMonitor(options: {
+    jobId: string;
+    title: string;
+    workerUrl: string;
+    userId: string;
+    serverToken?: string;
+  }): Promise<void>;
+  finishCloudMonitor(options: {
+    jobId: string;
+    title: string;
+    status: 'succeeded' | 'failed' | 'cancelled';
+    error?: string;
+  }): Promise<void>;
 }
 
 const NativeStoryBackground = registerPlugin<SullyStoryBackgroundPlugin>('SullyStoryBackground');
@@ -204,6 +218,49 @@ export const getPendingNativeStoryJob = (ownerKey: string): PendingNativeStoryJo
 
 export const isNativeStoryBackgroundRuntime = (): boolean =>
   Capacitor.isNativePlatform() && Capacitor.getPlatform() === 'android';
+
+export interface NativeCloudStoryMonitorOptions {
+  jobId: string;
+  title: string;
+  workerUrl: string;
+  userId: string;
+  serverToken?: string;
+}
+
+const ensureStoryNotificationPermission = async (): Promise<boolean> => {
+  if (!isNativeStoryBackgroundRuntime()) return false;
+  const current = await LocalNotifications.checkPermissions();
+  const resolved = current.display === 'prompt'
+    ? await LocalNotifications.requestPermissions()
+    : current;
+  return resolved.display === 'granted';
+};
+
+/**
+ * 云端 Story Jobs 的系统状态牌。与主动消息 push 完全独立：Android 自己轮询同一个 job。
+ */
+export const startNativeCloudStoryMonitor = async (
+  options: NativeCloudStoryMonitorOptions,
+): Promise<boolean> => {
+  if (!isNativeStoryBackgroundRuntime()) return false;
+  const granted = await ensureStoryNotificationPermission();
+  if (!granted) {
+    console.warn('[StoryTheater] 系统通知权限未授予，剧情后台状态牌无法显示');
+    return false;
+  }
+  await NativeStoryBackground.startCloudMonitor(options);
+  return true;
+};
+
+export const finishNativeCloudStoryMonitor = async (options: {
+  jobId: string;
+  title: string;
+  status: 'succeeded' | 'failed' | 'cancelled';
+  error?: string;
+}): Promise<void> => {
+  if (!isNativeStoryBackgroundRuntime()) return;
+  await NativeStoryBackground.finishCloudMonitor(options);
+};
 
 const makeKeepAliveLeaseId = (ownerKey: string): string => {
   const safeOwner = String(ownerKey || 'story').replace(/[^A-Za-z0-9:_-]/g, '_').slice(0, 80);

@@ -23,6 +23,7 @@ for (const name of [
   'SullyStoryBackgroundPlugin.java',
   'SullyStoryGenerationManager.java',
   'SullyStoryKeepAliveService.java',
+  'SullyStoryCloudMonitorService.java',
 ]) {
   const source = await readFile(path.join(root, 'native', 'android', name), 'utf8');
   await writeFile(path.join(pluginDir, name), source.replaceAll('__APP_ID__', appId));
@@ -75,6 +76,15 @@ if (!manifest.includes('SullyStoryKeepAliveService')) {
     '    </application>',
   ].join('\n'));
 }
+if (!manifest.includes('SullyStoryCloudMonitorService')) {
+  manifest = manifest.replace('</application>', [
+    '        <service',
+    '            android:name=".plugins.SullyStoryCloudMonitorService"',
+    '            android:exported="false"',
+    '            android:foregroundServiceType="dataSync" />',
+    '    </application>',
+  ].join('\n'));
+}
 await writeFile(manifestPath, manifest);
 
 // RikkaHub 的 OpenAI streaming provider 使用 OkHttp + okhttp-sse EventSource。
@@ -96,4 +106,4 @@ for (const dependency of okHttpDependencies.slice().reverse()) {
 }
 await writeFile(gradlePath, gradle);
 
-console.log('[SullyStoryBackground] RikkaHub-style generation manager + foreground keepalive installed');
+console.log('[SullyStoryBackground] generation manager + keepalive + cloud status monitor installed');

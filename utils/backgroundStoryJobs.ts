@@ -1,6 +1,7 @@
 import type { ApiExecutionPlan } from './apiFailover';
 import type { StoryCloudImageHandoffSpec } from './storyTheaterImage';
 import { ActiveMsgClient } from './activeMsgClient';
+import { finishNativeCloudStoryMonitor, startNativeCloudStoryMonitor } from './nativeStoryBackground';
 import {
     cloudApiCallLogId,
     recordCloudApiCall,
@@ -561,6 +562,22 @@ export const executeStoryCompletionInCloudBackground = async (
 
     }
 
+    // 一旦 Worker 明确存在这条 job，就让 Android 自己接管系统状态牌。
+    // 这条链不依赖 WebView timer / 主动消息 push；切屏和锁屏后仍会轮询同一个远端 job。
+    if (job) {
+        try {
+            await startNativeCloudStoryMonitor({
+                jobId: pending.jobId,
+                title: pending.title,
+                workerUrl: config.workerUrl,
+                userId: config.userId,
+                serverToken: config.serverToken,
+            });
+        } catch (error) {
+            console.warn('[StoryTheater] native cloud story status monitor failed to start', error);
+        }
+    }
+
     // 无论是刚提交还是进程重启后重新发现的 job，都用同一个 id 补上 API 调用记录。
     // DB 按 id 合并；重复写不会产生第二笔费用记录。
     if (job && firstRoute) {
@@ -630,13 +647,30 @@ export const executeStoryCompletionInCloudBackground = async (
                 completionTokens: Number.isFinite(completionTokens) ? completionTokens : undefined,
             });
             if (!job.response) {
+                await finishNativeCloudStoryMonitor({
+                    jobId: pending.jobId,
+                    title: pending.title,
+                    status: 'failed',
+                    error: '剧情云端任务完成了，但没有保存响应正文',
+                }).catch(() => undefined);
                 throw toCloudError('剧情云端任务完成了，但没有保存响应正文', job, config, { terminal: true });
             }
+            await finishNativeCloudStoryMonitor({
+                jobId: pending.jobId,
+                title: pending.title,
+                status: 'succeeded',
+            }).catch(() => undefined);
             return job.response;
         }
 
         if (job.status === 'failed' || job.status === 'cancelled') {
             settleCloudApiCall({ id: logId, ok: false });
+            await finishNativeCloudStoryMonitor({
+                jobId: pending.jobId,
+                title: pending.title,
+                status: job.status,
+                error: job.error,
+            }).catch(() => undefined);
             throw toCloudError(
                 job.error || (job.status === 'cancelled' ? '剧情云端任务已取消' : '剧情云端任务失败'),
                 job,

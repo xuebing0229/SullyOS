@@ -22,6 +22,18 @@ describe('Story Theater background status notifications', () => {
     expect(sender).toContain("renotify: status !== 'running'");
   });
 
+  it('Android cloud Story monitor is independent from active-message push subscriptions', () => {
+    const client = read('utils/backgroundStoryJobs.ts');
+    const native = read('utils/nativeStoryBackground.ts');
+    const service = read('native/android/SullyStoryCloudMonitorService.java');
+    const installer = read('scripts/install-android-story-background.mjs');
+    expect(client).toContain('startNativeCloudStoryMonitor');
+    expect(native).toContain('LocalNotifications.requestPermissions()');
+    expect(service).toContain('/story-jobs/');
+    expect(service).toContain('startForeground');
+    expect(installer).toContain('SullyStoryCloudMonitorService.java');
+  });
+
   it('status pushes are consumed as non-chat results and poll fallback updates by messageId', () => {
     const results = read('utils/amsgResults.ts');
     const poll = read('native/android/SullyAmsgPollService.java');

@@ -36,6 +36,42 @@ public class SullyStoryBackgroundPlugin extends Plugin {
     }
 
     @PluginMethod
+    public void startCloudMonitor(PluginCall call) {
+        String jobId = call.getString("jobId", "").trim();
+        String title = call.getString("title", "剧情");
+        String workerUrl = call.getString("workerUrl", "").trim().replaceAll("/+$", "");
+        String userId = call.getString("userId", "").trim();
+        String serverToken = call.getString("serverToken", "");
+        if (!jobId.matches("[A-Za-z0-9_-]{12,160}")) {
+            call.reject("剧情云端监控 jobId 无效");
+            return;
+        }
+        if (!workerUrl.startsWith("https://") || userId.isEmpty()) {
+            call.reject("剧情云端监控 Worker 配置无效");
+            return;
+        }
+        if (SullyStoryCloudMonitorService.start(getContext(), jobId, title, workerUrl, userId, serverToken)) {
+            call.resolve();
+        } else {
+            call.reject("无法启动剧情云端状态通知");
+        }
+    }
+
+    @PluginMethod
+    public void finishCloudMonitor(PluginCall call) {
+        String jobId = call.getString("jobId", "").trim();
+        String title = call.getString("title", "剧情");
+        String status = call.getString("status", "failed").trim();
+        String error = call.getString("error", "");
+        if (!jobId.matches("[A-Za-z0-9_-]{12,160}")) {
+            call.reject("剧情云端监控 jobId 无效");
+            return;
+        }
+        SullyStoryCloudMonitorService.finish(getContext(), jobId, title, status, error);
+        call.resolve();
+    }
+
+    @PluginMethod
     public void submit(PluginCall call) {
         JSObject spec = call.getObject("spec");
         if (spec == null) {
