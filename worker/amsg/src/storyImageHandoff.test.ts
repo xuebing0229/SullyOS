@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   normalizeStoryImageHandoffSpec,
+  prepareStoryImageHandoff,
   runStoryImageHandoff,
   type StoryCloudImageHandoffSpec,
 } from './storyImageHandoff';
@@ -29,6 +30,25 @@ describe('story cloud image handoff', () => {
     const normalized = normalizeStoryImageHandoffSpec(spec());
     expect(normalized?.tools[0].token).toBe('secret-image-token');
     expect(normalized?.tools[0].controlBaseUrl).toBe('https://image.example.test');
+  });
+
+  it('prepares a stable handoff without touching the image network', () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch');
+    const result = prepareStoryImageHandoff(
+      spec(),
+      'storyreq_fast',
+      planText('image_novelai', { prompt: 'already finished text' }),
+    );
+
+    expect(result).toMatchObject({
+      state: 'submitted',
+      uncertain: true,
+      exposedTool: 'image_novelai',
+      toolName: 'novelai_generate_image',
+      clientRequestId: 'storyimg_storyreq_fast',
+      arguments: { prompt: 'already finished text' },
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('reuses an existing remote image job and does not POST again', async () => {
