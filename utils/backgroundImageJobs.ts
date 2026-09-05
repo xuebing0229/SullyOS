@@ -36,6 +36,9 @@ const MAX_SUBMIT_ATTEMPTS = 10;
 // 12 次在快速失败时约 48 秒；若每次都等满 12s timeout，则约 3 分钟以上。
 // 真正的 queued/running 状态不会计入这里，只有查询本身失败才累计。
 const MAX_RECONCILE_FAILURES = 12;
+// 云端剧情正文会先把稳定的 image handoff 身份交给手机，再由 Worker 紧接着 POST /jobs。
+// 手机在这段宽限期只做 by-client 查询，不能和 Worker 抢首发，否则同一张图可能被并发提交两次。
+const CLOUD_STORY_INITIAL_SUBMIT_GRACE_MS = 45_000;
 
 export type LocalBackgroundImageJobStatus =
     | 'submitting'
@@ -75,6 +78,8 @@ export interface LocalBackgroundImageJob {
     updatedAt: number;
     lastCheckedAt?: number;
     submitAttempts: number;
+    /** adopt 云端任务时，早于此时间只允许查询，不允许客户端首发 POST /jobs。 */
+    submitNotBefore?: number;
     resultAppliedAt?: number;
     lastError?: string;
     imageBillingCapture?: ImageGenerationBillingCapture;
@@ -302,6 +307,10 @@ const sanitizeLoadedJob = (
             Number.isFinite(raw.submitAttempts)
                 ? Math.max(0, raw.submitAttempts)
                 : 0,
+        submitNotBefore:
+            Number.isFinite(raw.submitNotBefore)
+                ? Number(raw.submitNotBefore)
+                : undefined,
         resultAppliedAt:
             Number.isFinite(raw.resultAppliedAt)
                 ? raw.resultAppliedAt
@@ -934,6 +943,18 @@ const reconcileOne = async (
         }
 
         if (!remoteJob) {
+            // adopt 的云端剧情 handoff 可能比 Worker 真正 POST /jobs 早几十毫秒到几秒抵达手机。
+            // 宽限期内每轮仍先执行上面的 by-client 查询，但查不到也绝不由手机抢首发。
+            // 只有 Worker 长时间没有创建任务，才允许客户端用同一 clientRequestId 做灾备补交。
+            if (Number(localJob.submitNotBefore || 0) > now()) {
+                updateJob(localJob.id, {
+                    status: 'submitting',
+                    lastCheckedAt: now(),
+                    lastError: undefined,
+                });
+                return;
+            }
+
             if (localJob.submitAttempts >= MAX_SUBMIT_ATTEMPTS) {
                 await markMonitoredJobFailed(
                     localJob.id,
@@ -978,6 +999,7 @@ const reconcileOne = async (
             status: remoteStatusToLocal(remoteJob.status),
             lastCheckedAt: now(),
             lastError: remoteJob.error?.message,
+            submitNotBefore: undefined,
         });
         if (!updated) return;
 
@@ -1257,6 +1279,10 @@ export async function adoptBackgroundImageJob(
             storyTheaterTarget: context.ownerType === 'story-theater'
                 ? context.storyTheaterTarget
                 : existing.storyTheaterTarget,
+            // 已拿到 remote id 就立即解除宽限；否则保留/建立 Worker 首发窗口。
+            submitNotBefore: remote.remoteJobId
+                ? undefined
+                : (existing.submitNotBefore || now() + CLOUD_STORY_INITIAL_SUBMIT_GRACE_MS),
             lastError: undefined,
         }) || existing;
         dispatchJobEvent('updated', updated);
@@ -1291,9 +1317,12 @@ export async function adoptBackgroundImageJob(
         status: remote.remoteJobId ? 'queued' : 'submitting',
         createdAt,
         updatedAt: createdAt,
-        // Worker 已经负责第一次 POST。没有 remote id 代表响应不确定，恢复器先 by-client 查，
-        // 确认不存在后也只会用这个同一 clientRequestId 补交。
+        // Worker 负责第一次 POST。没有 remote id 时客户端先只查询；
+        // 45 秒仍查不到才用同一 clientRequestId 灾备补交，避免两端并发双提交。
         submitAttempts: remote.remoteJobId ? 1 : 0,
+        submitNotBefore: remote.remoteJobId
+            ? undefined
+            : createdAt + CLOUD_STORY_INITIAL_SUBMIT_GRACE_MS,
         imageBillingCapture: captureImageGenerationBilling(engineId),
     };
     upsertJob(localJob);

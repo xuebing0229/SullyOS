@@ -1577,6 +1577,9 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                     const imageRows = (await DB.getMessagesByCharId(threadId, true))
                         .filter(message => message.metadata?.source === 'story_theater')
                         .sort((a, b) => a.id - b.id);
+                    // 自动轮次只接受“正文同一次 completion”给出的 inline plan / Worker handoff。
+                    // 主剧情模型偶发漏掉隐藏 plan 时，不再偷偷多打一遍 Gemini「剧情自动配图规划」；
+                    // 手动“重新生成配图”仍保留旧规划器兜底。
                     const imageResult = cloudImageHandoffResult?.state === 'submitted'
                         ? await adoptStoryCloudImageHandoff({
                             entry,
@@ -1585,18 +1588,26 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                             inlinePlan: inlineImagePlan,
                             targetMessageId: assistantMessageId,
                         })
-                        : await generateStoryTheaterImage({
-                            apiConfig,
-                            plannerApiConfig: resolveStoryImagePlannerApiConfig(entry, apiConfig, apiPresets),
-                            entry,
-                            actors,
-                            userProfile,
-                            userName: promptIdentityName,
-                            messages: imageRows,
-                            inlinePlan: inlineImagePlan,
-                            targetMessageId: assistantMessageId,
+                        : inlineImagePlan
+                            ? await generateStoryTheaterImage({
+                                apiConfig,
+                                plannerApiConfig: resolveStoryImagePlannerApiConfig(entry, apiConfig, apiPresets),
+                                entry,
+                                actors,
+                                userProfile,
+                                userName: promptIdentityName,
+                                messages: imageRows,
+                                inlinePlan: inlineImagePlan,
+                                targetMessageId: assistantMessageId,
+                            })
+                            : undefined;
+                    if (!imageResult) {
+                        console.warn('[StoryTheater] automatic image skipped because story completion omitted inline image plan', {
+                            requestKey: activeRequestKey,
+                            cloudHandoffState: cloudImageHandoffResult?.state,
                         });
-                    if (imageResult.frame) {
+                        addToast('主剧情模型本轮漏掉了配图计划；已停止额外调用“剧情自动配图规划”API，避免重复请求。可以手动点「重新生成」补图。', 'info');
+                    } else if (imageResult.frame) {
                         await DB.updateMessageMetadata(assistantMessageId, previous => ({ ...previous, theaterImage: imageResult.frame }));
                         await loadMessages();
                     } else if (imageResult.queued) {
