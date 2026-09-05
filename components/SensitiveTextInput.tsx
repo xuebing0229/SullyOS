@@ -32,7 +32,8 @@ const configuredSecretFromPlaceholder = (placeholder: unknown): string => {
  * For the private image-generation settings screen, the server may return the
  * configured key in the existing "已配置：...（留空不更换）" placeholder. When the
  * controlled value is otherwise empty, surface that returned key as the actual,
- * selectable text value so it can be copied or replaced directly.
+ * selectable text value so it can be copied or replaced directly. Inputs using
+ * this configured-key placeholder are intentionally kept visible in plaintext.
  */
 export const SensitiveTextInput = forwardRef<HTMLInputElement, SensitiveTextInputProps>(
   function SensitiveTextInput(
@@ -58,7 +59,7 @@ export const SensitiveTextInput = forwardRef<HTMLInputElement, SensitiveTextInpu
     const displayValue = useConfiguredSecret ? configuredSecret : value;
     const securityStyle: WebkitSecurityStyle = {
       ...style,
-      WebkitTextSecurity: getSensitiveTextSecurity(focused, reveal || useConfiguredSecret),
+      WebkitTextSecurity: getSensitiveTextSecurity(focused, reveal || Boolean(configuredSecret)),
     };
 
     return (
