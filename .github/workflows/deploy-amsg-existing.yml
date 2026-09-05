@@ -13,6 +13,8 @@ on:
       - '.github/workflows/deploy-amsg-existing.yml'
       - 'scripts/deploy-existing-amsg.mjs'
 
+# Actions 使用 GITHUB_TOKEN 推回 master 时不会递归触发新的 workflow；
+# 因此性能补丁若由仓库内 workflow 落盘，需要一次正常提交/手动 dispatch 才会部署最新 master。
 permissions:
   contents: read
 
