@@ -20,11 +20,11 @@ jobs:
       - name: Verify diff
         run: |
           git diff --check
-          git diff -- native/android/SullyStoryBackgroundPlugin.java native/android/SullyStoryCloudMonitorService.java scripts/install-android-story-background.mjs utils/nativeStoryBackground.ts utils/backgroundStoryJobs.ts scripts/storyBackgroundStatusNotification.wiring.test.ts .github/workflows/build-apk.yml
+          git diff -- native/android/SullyStoryBackgroundPlugin.java native/android/SullyStoryCloudMonitorService.java scripts/install-android-story-background.mjs utils/nativeStoryBackground.ts utils/backgroundStoryJobs.ts scripts/storyBackgroundStatusNotification.wiring.test.ts
       - name: Commit and push patch
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add native/android/SullyStoryBackgroundPlugin.java scripts/install-android-story-background.mjs utils/nativeStoryBackground.ts utils/backgroundStoryJobs.ts scripts/storyBackgroundStatusNotification.wiring.test.ts .github/workflows/build-apk.yml
+          git add native/android/SullyStoryBackgroundPlugin.java scripts/install-android-story-background.mjs utils/nativeStoryBackground.ts utils/backgroundStoryJobs.ts scripts/storyBackgroundStatusNotification.wiring.test.ts
           git commit -m 'fix: make story status notifications native and independent'
           git push origin HEAD:master
