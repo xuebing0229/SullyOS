@@ -1029,39 +1029,43 @@ const reconcileOne = async (
                 }
             }
 
-            if (localJob.submitAttempts >= MAX_SUBMIT_ATTEMPTS) {
-                await markMonitoredJobFailed(
-                    localJob.id,
-                    '后台生图任务多次提交失败',
-                    options,
-                );
-                return;
-            }
-
-            const attempted = updateJob(localJob.id, {
-                status: 'submitting',
-                submitAttempts: localJob.submitAttempts + 1,
-                lastCheckedAt: now(),
-            });
-            if (!attempted) return;
-
-            try {
-                remoteJob = await submitRemoteJob(attempted);
-            } catch (error) {
-                if (
-                    isPermanentSubmitError(error)
-                    || isUnsupportedJobsEndpointError(error)
-                ) {
+            // 只有普通本地任务允许客户端自己 POST。Worker-owned 剧情任务如果上面已经
+            // 通过最终 handoff 找到 remoteJob，就直接进入下面的状态处理，绝不能再走这里。
+            if (!remoteJob) {
+                if (localJob.submitAttempts >= MAX_SUBMIT_ATTEMPTS) {
                     await markMonitoredJobFailed(
                         localJob.id,
-                        isUnsupportedJobsEndpointError(error)
-                            ? '当前生图服务不支持后台任务接口 /jobs，请更新服务端或重新发起直连生图。'
-                            : error,
+                        '后台生图任务多次提交失败',
                         options,
                     );
                     return;
                 }
-                throw error;
+
+                const attempted = updateJob(localJob.id, {
+                    status: 'submitting',
+                    submitAttempts: localJob.submitAttempts + 1,
+                    lastCheckedAt: now(),
+                });
+                if (!attempted) return;
+
+                try {
+                    remoteJob = await submitRemoteJob(attempted);
+                } catch (error) {
+                    if (
+                        isPermanentSubmitError(error)
+                        || isUnsupportedJobsEndpointError(error)
+                    ) {
+                        await markMonitoredJobFailed(
+                            localJob.id,
+                            isUnsupportedJobsEndpointError(error)
+                                ? '当前生图服务不支持后台任务接口 /jobs，请更新服务端或重新发起直连生图。'
+                                : error,
+                            options,
+                        );
+                        return;
+                    }
+                    throw error;
+                }
             }
         }
 
