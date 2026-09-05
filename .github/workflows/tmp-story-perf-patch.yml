@@ -1,0 +1,303 @@
+name: Temporary story background latency patch
+
+on:
+  push:
+    paths:
+      - '.github/workflows/tmp-story-perf-patch.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+
+      - name: Patch story background latency
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          # 1) Worker: publish completed text before waiting on the image control plane.
+          p = Path('worker/amsg/src/storyJobs.ts')
+          s = p.read_text()
+          old = """import {
+            normalizeStoryImageHandoffSpec,
+            runStoryImageHandoff,
+            type StoryCloudImageHandoffSpec,
+          } from './storyImageHandoff';"""
+          new = """import {
+            normalizeStoryImageHandoffSpec,
+            prepareStoryImageHandoff,
+            runStoryImageHandoff,
+            type StoryCloudImageHandoffSpec,
+          } from './storyImageHandoff';"""
+          assert old in s, 'storyJobs import anchor not found'
+          s = s.replace(old, new, 1)
+
+          start = s.index("      // 正文已经完整且 terminal 后才允许起图。配图链任何失败都不能反过来把正文标失败。")
+          end = s.index("      return;\n    } catch (error) {", start)
+          replacement = """      // 正文已经完整：先把正文标成 succeeded，让手机立刻接回。
+          // 生图控制面（查账/config/POST /jobs）是正文之后的尾活，绝不能再把已经完成的正文按住几十秒甚至几分钟。
+          // 先写入一个纯本地可计算的稳定 handoff；手机与 Worker 后续都使用同一个 clientRequestId，
+          // 即使两边同时尝试接图，生图服务的幂等也只会保留同一张任务。
+          const provisionalImageHandoff = spec.imageHandoff
+            ? prepareStoryImageHandoff(spec.imageHandoff, spec.clientRequestId, streamed.content)
+            : undefined;
+          const storedResponse = provisionalImageHandoff
+            ? { ...streamed.response, _sullyStoryImageHandoff: provisionalImageHandoff }
+            : streamed.response;
+          const responseCipher = await sealJson(env, userId, jobId, 'response', storedResponse);
+          const partialCipher = await sealJson(env, userId, jobId, 'partial', streamed.content);
+          const usage = (streamed.response as any)?.usage || {};
+          const promptTokens = Number(usage?.prompt_tokens);
+          const completionTokens = Number(usage?.completion_tokens);
+          const finishedAt = now();
+          await env.DB.prepare(
+            `UPDATE story_jobs
+             SET status = 'succeeded', response_cipher = ?, partial_cipher = ?, error = NULL,
+                 attempts_json = ?, prompt_tokens = ?, completion_tokens = ?, reasoning_chars = ?,
+                 visible_chars = ?, updated_at = ?, completed_at = ?
+             WHERE user_id = ? AND job_id = ?`,
+          ).bind(
+            responseCipher,
+            partialCipher,
+            JSON.stringify(attempts),
+            Number.isFinite(promptTokens) ? promptTokens : null,
+            Number.isFinite(completionTokens) ? completionTokens : null,
+            streamed.reasoning.length,
+            streamed.content.length,
+            finishedAt,
+            finishedAt,
+            userId,
+            jobId,
+          ).run();
+
+          // 正文已经对客户端可见以后，再完成真正的生图 handoff。
+          // 这里即使生图服务慢/失败，也只更新 response 里的 handoff 诊断，不改正文成功状态。
+          if (spec.imageHandoff && provisionalImageHandoff?.state === 'submitted') {
+            let finalImageHandoff: Awaited<ReturnType<typeof runStoryImageHandoff>>;
+            try {
+              finalImageHandoff = await runStoryImageHandoff(
+                spec.imageHandoff,
+                spec.clientRequestId,
+                streamed.content,
+              );
+            } catch (imageHandoffError) {
+              finalImageHandoff = {
+                state: 'failed',
+                error: String((imageHandoffError as Error)?.message || imageHandoffError).slice(0, 500),
+              };
+            }
+            const finalStoredResponse = {
+              ...streamed.response,
+              _sullyStoryImageHandoff: finalImageHandoff,
+            };
+            const finalResponseCipher = await sealJson(env, userId, jobId, 'response', finalStoredResponse);
+            await env.DB.prepare(
+              `UPDATE story_jobs SET response_cipher = ?, updated_at = ?
+               WHERE user_id = ? AND job_id = ? AND status = 'succeeded'`,
+            ).bind(finalResponseCipher, now(), userId, jobId).run();
+          }
+"""
+          s = s[:start] + replacement + s[end:]
+          p.write_text(s)
+
+          # 2) Client resume: when a cloud job already exists, do not re-run remote recall/archive/image preflight.
+          p = Path('components/date/story/StoryTheaterSession.tsx')
+          s = p.read_text()
+          old = """        const backgroundOwnerKey = `story-turn:${entry.id}`;
+          let usedNativeBackground = false;"""
+          new = """        const backgroundOwnerKey = `story-turn:${entry.id}`;
+          // 已有 cloud pending 代表完整 prompt 早就加密提交给 Worker 了。
+          // 恢复页面只需要查回同一 job，禁止再次做归档、向量/角色记忆召回和生图参考图预检。
+          const recoveringCloudPending = Boolean(getPendingCloudStoryJob(backgroundOwnerKey));
+          let usedNativeBackground = false;"""
+          assert old in s, 'session pending anchor not found'
+          s = s.replace(old, new, 1)
+
+          old = """            const promptEntry = await archiveIfNeeded() || entry;"""
+          new = """            const promptEntry = recoveringCloudPending ? entry : (await archiveIfNeeded() || entry);"""
+          assert old in s, 'session archive anchor not found'
+          s = s.replace(old, new, 1)
+
+          old = """            const [actorContext, maskMemoryContext, vectorRecall] = await Promise.all([
+                  buildActorContexts(modelText),
+                  buildMaskMemoryContext(modelText),
+                  independentRecall(modelText, visibleHistory.slice(-8), promptEntry),
+              ]);"""
+          new = """            const [actorContext, maskMemoryContext, vectorRecall] = recoveringCloudPending
+                  ? ['', '', '']
+                  : await Promise.all([
+                      buildActorContexts(modelText),
+                      buildMaskMemoryContext(modelText),
+                      independentRecall(modelText, visibleHistory.slice(-8), promptEntry),
+                  ]);"""
+          assert old in s, 'session recall anchor not found'
+          s = s.replace(old, new, 1)
+
+          old = """            if (entry.imageGeneration?.enabled && inlineImagePlanInstruction) {"""
+          new = """            if (entry.imageGeneration?.enabled && inlineImagePlanInstruction && !recoveringCloudPending) {"""
+          assert old in s, 'session image preflight anchor not found'
+          s = s.replace(old, new, 1)
+          p.write_text(s)
+
+          # 3) Initial submit: parallelize NovelAI actor/user/vibe reference preflight within each candidate preset.
+          p = Path('utils/storyTheaterImage.ts')
+          s = p.read_text()
+          old = """            const actorFragments: Record<string, Record<string, unknown>> = {};
+              for (const actor of input.actors) {
+                  if (!actor.novelAiReference?.enabled) continue;
+                  try {
+                      const prepared = await prepareBuiltinImageToolArguments({
+                          server: hit.server,
+                          toolName: hit.toolName,
+                          args: {
+                              prompt: '__story_cloud_reference_probe__',
+                              use_character_reference: true,
+                              use_user_reference: false,
+                              use_vibe_reference: false,
+                          },
+                          character: actor,
+                          userProfile: input.userProfile,
+                      });
+                      const fragment = pickManagedReferenceFragment(prepared);
+                      if (Object.keys(fragment).length) actorFragments[actor.id] = fragment;
+                  } catch (error) {
+                      console.warn('[StoryTheater] cloud image actor reference preflight skipped', actor.id, error);
+                  }
+              }
+              if (Object.keys(actorFragments).length) references.actors = actorFragments;
+
+              if (input.userProfile.novelAiReference?.enabled) {
+                  try {
+                      const prepared = await prepareBuiltinImageToolArguments({
+                          server: hit.server,
+                          toolName: hit.toolName,
+                          args: {
+                              prompt: '__story_cloud_user_reference_probe__',
+                              use_character_reference: false,
+                              use_user_reference: true,
+                              use_vibe_reference: false,
+                          },
+                          character: input.actors[0],
+                          userProfile: input.userProfile,
+                      });
+                      const fragment = pickManagedReferenceFragment(prepared);
+                      if (Object.keys(fragment).length) references.user = fragment;
+                  } catch (error) {
+                      console.warn('[StoryTheater] cloud image user reference preflight skipped', error);
+                  }
+              }
+
+              try {
+                  const prepared = await prepareBuiltinImageToolArguments({
+                      server: hit.server,
+                      toolName: hit.toolName,
+                      args: {
+                          prompt: '__story_cloud_vibe_reference_probe__',
+                          use_character_reference: false,
+                          use_user_reference: false,
+                          use_vibe_reference: true,
+                      },
+                      character: input.actors[0],
+                      userProfile: input.userProfile,
+                  });
+                  const fragment = pickManagedReferenceFragment(prepared);
+                  if (Object.keys(fragment).some(key => key.startsWith('vibe_'))) references.vibe = fragment;
+              } catch (error) {
+                  console.warn('[StoryTheater] cloud image vibe reference preflight skipped', error);
+              }
+"""
+          new = """            const actorFragments: Record<string, Record<string, unknown>> = {};
+              // 这些检查彼此独立；旧版逐个 await 会把每个远端 HEAD/上传延迟线性相加，
+              // 多角色 + 用户 + Vibe 时很容易在正文真正提交前白等几分钟。
+              const actorChecks = input.actors
+                  .filter(actor => actor.novelAiReference?.enabled)
+                  .map(async actor => {
+                      try {
+                          const prepared = await prepareBuiltinImageToolArguments({
+                              server: hit.server,
+                              toolName: hit.toolName,
+                              args: {
+                                  prompt: '__story_cloud_reference_probe__',
+                                  use_character_reference: true,
+                                  use_user_reference: false,
+                                  use_vibe_reference: false,
+                              },
+                              character: actor,
+                              userProfile: input.userProfile,
+                          });
+                          const fragment = pickManagedReferenceFragment(prepared);
+                          if (Object.keys(fragment).length) actorFragments[actor.id] = fragment;
+                      } catch (error) {
+                          console.warn('[StoryTheater] cloud image actor reference preflight skipped', actor.id, error);
+                      }
+                  });
+
+              const userCheck = input.userProfile.novelAiReference?.enabled
+                  ? (async () => {
+                      try {
+                          const prepared = await prepareBuiltinImageToolArguments({
+                              server: hit.server,
+                              toolName: hit.toolName,
+                              args: {
+                                  prompt: '__story_cloud_user_reference_probe__',
+                                  use_character_reference: false,
+                                  use_user_reference: true,
+                                  use_vibe_reference: false,
+                              },
+                              character: input.actors[0],
+                              userProfile: input.userProfile,
+                          });
+                          const fragment = pickManagedReferenceFragment(prepared);
+                          if (Object.keys(fragment).length) references.user = fragment;
+                      } catch (error) {
+                          console.warn('[StoryTheater] cloud image user reference preflight skipped', error);
+                      }
+                  })()
+                  : Promise.resolve();
+
+              const vibeCheck = (async () => {
+                  try {
+                      const prepared = await prepareBuiltinImageToolArguments({
+                          server: hit.server,
+                          toolName: hit.toolName,
+                          args: {
+                              prompt: '__story_cloud_vibe_reference_probe__',
+                              use_character_reference: false,
+                              use_user_reference: false,
+                              use_vibe_reference: true,
+                          },
+                          character: input.actors[0],
+                          userProfile: input.userProfile,
+                      });
+                      const fragment = pickManagedReferenceFragment(prepared);
+                      if (Object.keys(fragment).some(key => key.startsWith('vibe_'))) references.vibe = fragment;
+                  } catch (error) {
+                      console.warn('[StoryTheater] cloud image vibe reference preflight skipped', error);
+                  }
+              })();
+
+              await Promise.all([...actorChecks, userCheck, vibeCheck]);
+              if (Object.keys(actorFragments).length) references.actors = actorFragments;
+"""
+          assert old in s, 'story image preflight anchor not found'
+          s = s.replace(old, new, 1)
+          p.write_text(s)
+          PY
+
+          git diff --check
+          git status --short
+
+      - name: Commit patch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add worker/amsg/src/storyJobs.ts components/date/story/StoryTheaterSession.tsx utils/storyTheaterImage.ts
+          git commit -m "perf: remove story background recovery stalls"
+          git push origin master
