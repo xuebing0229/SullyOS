@@ -2,7 +2,7 @@ import type { APIConfig, ApiPreset, CharacterProfile, Message, StoryTheaterEntry
 import { resolveApiExecutionPlan, executeOpenAiChatPlan } from './apiFailover';
 import { storyTheaterThreadId } from './storyTheater';
 import { callMcpTool, getMcpUseNativeTools } from './mcpClient';
-import { callMcpToolWithBackgroundImage } from './backgroundImageJobs';
+import { adoptBackgroundImageJob, callMcpToolWithBackgroundImage } from './backgroundImageJobs';
 import {
     buildMcpOpenAITools,
     buildMcpRejectedToolsFallbackBody,
@@ -15,6 +15,7 @@ import { normalizeToolCallsForCompat } from './toolCallCompat';
 import { prepareBuiltinImageToolArguments } from './novelAiReference';
 import {
     applyImageGenerationPresetById,
+    getImageGenerationPresets,
     isCharacterReferenceAllowedForActivePreset,
 } from './imageGenerationPresets';
 import { persistMcpGeneratedImages } from './mcpImagePersistence';
@@ -201,6 +202,217 @@ export const buildStoryInlineImagePlanInstruction = (input: {
     })).join('\n');
 
     return `【剧情自动配图隐藏协议】\n本轮正常剧情正文全部写完以后，再额外输出且只输出一个隐藏控制块。这个控制块不是给读者看的，不属于正文、幕后、小剧场、选项或任何剧情格式。不要为了配图改变剧情走向，也不要在正文中解释它。\n\n你刚刚写出的这一轮正文就是配图依据。请从其中挑最有表现力、最具体、最值得成为插图的一个瞬间，并从下列真实可用生图工具中选择且只选择一个。多预设时根据工具 description 的用途和本轮画面自行选择，不要固定使用第一项。工具 schema 里的 use_character_reference / use_user_reference / use_vibe_reference 等开关都由你按画面需要判断；有参考图不等于必须使用。\n\n剧情：${input.entry.title}\n前提：${compact(input.entry.premise) || '沿用当前正文'}\n当前用户侧身份：${input.userName}${input.userProfile.novelAiReference?.enabled ? '（有用户精密参考图可按需使用）' : ''}\n用户外观锚点：${compact(config?.userAnchor) || '按已有设定与正文保持一致'}\n角色外观锚点：\n${actorAnchors || '无'}\n额外画风：${compact(config?.stylePrompt) || '沿用所选生图预设'}\n避免内容：${compact(config?.negativePrompt) || '遵循所选工具自身负面规则'}\n目标画幅：${config?.width || 1216}×${config?.height || 832}\n\n可用工具（每行一项，parameters 必须严格遵守）：\n${toolSchemas}\n\n最终控制块严格使用下面格式，禁止 Markdown 代码块，禁止在闭合标签后继续输出任何文字：\n${INLINE_PLAN_OPEN}\n{"tool":"上面某个真实工具名","arguments":{"严格按该工具 parameters 填参数"}}\n${INLINE_PLAN_CLOSE}\n\n特别要求：arguments 里应直接给出可执行的最终生图参数；画面人物数量、身份、动作、服装、地点与情绪必须和你这一轮刚写出的正文一致；不要文字、对白框、水印、Logo 或 UI。`;
+};
+
+export interface StoryCloudImageToolHandoff {
+    exposedName: string;
+    toolName: string;
+    engineId: 'gpt-image' | 'novelai';
+    controlBaseUrl: string;
+    token: string;
+    preset?: {
+        remoteConfig: Record<string, unknown>;
+        apiKey: string;
+    };
+    references?: {
+        actors?: Record<string, Record<string, unknown>>;
+        user?: Record<string, unknown>;
+        vibe?: Record<string, unknown>;
+    };
+}
+
+export interface StoryCloudImageHandoffSpec {
+    version: 1;
+    tools: StoryCloudImageToolHandoff[];
+}
+
+export interface StoryCloudImageHandoffResult {
+    state: 'submitted' | 'skipped' | 'failed';
+    exposedTool?: string;
+    toolName?: string;
+    clientRequestId?: string;
+    remoteJobId?: string;
+    arguments?: Record<string, any>;
+    uncertain?: boolean;
+    error?: string;
+}
+
+const MANAGED_REFERENCE_KEYS = new Set([
+    'reference_id',
+    'reference_type',
+    'reference_strength',
+    'reference_fidelity',
+    'user_reference_id',
+    'user_reference_type',
+    'user_reference_strength',
+    'user_reference_fidelity',
+    'vibe_reference_id',
+    'vibe_reference_strength',
+    'vibe_reference_information_extracted',
+]);
+
+const pickManagedReferenceFragment = (args: Record<string, any>): Record<string, unknown> => {
+    const out: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(args || {})) {
+        if (MANAGED_REFERENCE_KEYS.has(key)) out[key] = value;
+    }
+    return out;
+};
+
+/**
+ * 在正文 story job 提交前冻结“这轮可能会选到的生图服务”。
+ * 凭据只进入加密 story request，不会回显；NovelAI 参考图也在这里先确保远端槽位存在，
+ * 这样用户提交正文后立刻锁屏，Worker 仍有足够信息独立把图片 /jobs 接上。
+ */
+export const buildStoryCloudImageHandoffSpec = async (input: {
+    actors: CharacterProfile[];
+    userProfile: UserProfile;
+}): Promise<StoryCloudImageHandoffSpec | undefined> => {
+    if (!input.actors.length) return undefined;
+    const imageTools = resolveStoryImageTools(input.actors);
+    const presets = getImageGenerationPresets();
+    const tools: StoryCloudImageToolHandoff[] = [];
+
+    for (const [exposedName, hit] of imageTools.resolve) {
+        const controlBaseUrl = String(hit.server.controlBaseUrl || '').trim().replace(/\/+$/, '');
+        if (!/^https?:\/\//i.test(controlBaseUrl)) continue;
+        const engineId = hit.server.imagePresetEngineId === 'novelai' || hit.toolName === 'novelai_generate_image'
+            ? 'novelai'
+            : 'gpt-image';
+        const preset = hit.server.imagePresetId
+            ? presets.find(item => item.id === hit.server.imagePresetId)
+            : undefined;
+        const descriptor: StoryCloudImageToolHandoff = {
+            exposedName,
+            toolName: hit.toolName,
+            engineId,
+            controlBaseUrl,
+            token: String(hit.server.token || ''),
+            ...(preset ? {
+                preset: {
+                    remoteConfig: JSON.parse(JSON.stringify(preset.remoteConfig || {})),
+                    apiKey: String(preset.apiKey || ''),
+                },
+            } : {}),
+        };
+
+        if (engineId === 'novelai') {
+            const references: NonNullable<StoryCloudImageToolHandoff['references']> = {};
+            const actorFragments: Record<string, Record<string, unknown>> = {};
+            for (const actor of input.actors) {
+                if (!actor.novelAiReference?.enabled) continue;
+                try {
+                    const prepared = await prepareBuiltinImageToolArguments({
+                        server: hit.server,
+                        toolName: hit.toolName,
+                        args: {
+                            prompt: '__story_cloud_reference_probe__',
+                            use_character_reference: true,
+                            use_user_reference: false,
+                            use_vibe_reference: false,
+                        },
+                        character: actor,
+                        userProfile: input.userProfile,
+                    });
+                    const fragment = pickManagedReferenceFragment(prepared);
+                    if (Object.keys(fragment).length) actorFragments[actor.id] = fragment;
+                } catch (error) {
+                    console.warn('[StoryTheater] cloud image actor reference preflight skipped', actor.id, error);
+                }
+            }
+            if (Object.keys(actorFragments).length) references.actors = actorFragments;
+
+            if (input.userProfile.novelAiReference?.enabled) {
+                try {
+                    const prepared = await prepareBuiltinImageToolArguments({
+                        server: hit.server,
+                        toolName: hit.toolName,
+                        args: {
+                            prompt: '__story_cloud_user_reference_probe__',
+                            use_character_reference: false,
+                            use_user_reference: true,
+                            use_vibe_reference: false,
+                        },
+                        character: input.actors[0],
+                        userProfile: input.userProfile,
+                    });
+                    const fragment = pickManagedReferenceFragment(prepared);
+                    if (Object.keys(fragment).length) references.user = fragment;
+                } catch (error) {
+                    console.warn('[StoryTheater] cloud image user reference preflight skipped', error);
+                }
+            }
+
+            try {
+                const prepared = await prepareBuiltinImageToolArguments({
+                    server: hit.server,
+                    toolName: hit.toolName,
+                    args: {
+                        prompt: '__story_cloud_vibe_reference_probe__',
+                        use_character_reference: false,
+                        use_user_reference: false,
+                        use_vibe_reference: true,
+                    },
+                    character: input.actors[0],
+                    userProfile: input.userProfile,
+                });
+                const fragment = pickManagedReferenceFragment(prepared);
+                if (Object.keys(fragment).some(key => key.startsWith('vibe_'))) references.vibe = fragment;
+            } catch (error) {
+                console.warn('[StoryTheater] cloud image vibe reference preflight skipped', error);
+            }
+            if (Object.keys(references).length) descriptor.references = references;
+        }
+        tools.push(descriptor);
+    }
+    return tools.length ? { version: 1, tools } : undefined;
+};
+
+export const adoptStoryCloudImageHandoff = async (input: {
+    entry: StoryTheaterEntry;
+    actors: CharacterProfile[];
+    handoff: StoryCloudImageHandoffResult;
+    inlinePlan?: StoryInlineImagePlan;
+    targetMessageId: number;
+}): Promise<StoryTheaterImageGenerationResult> => {
+    if (input.handoff.state !== 'submitted' || !input.handoff.clientRequestId) {
+        throw new Error('云端没有可接回的生图任务');
+    }
+    const imageTools = resolveStoryImageTools(input.actors);
+    const exposedName = String(input.handoff.exposedTool || input.inlinePlan?.tool || '').trim();
+    const selected = imageTools.resolve.get(exposedName);
+    if (!selected) throw new Error('云端已经提交配图，但本机已找不到对应生图预设；为避免重复扣费不会重新生成');
+    const toolName = String(input.handoff.toolName || selected.toolName);
+    const args = input.handoff.arguments && typeof input.handoff.arguments === 'object'
+        ? input.handoff.arguments
+        : (input.inlinePlan?.arguments || {});
+    const result = await adoptBackgroundImageJob(
+        selected.server,
+        toolName,
+        args,
+        {
+            clientRequestId: input.handoff.clientRequestId,
+            remoteJobId: input.handoff.remoteJobId,
+        },
+        {
+            charId: storyTheaterThreadId(input.entry.id),
+            ownerType: 'story-theater',
+            storyTheaterTarget: {
+                entryId: input.entry.id,
+                messageId: input.targetMessageId,
+                title: input.entry.title || '剧情剧场',
+            },
+        },
+    );
+    if (!result.success || !result.backgroundJob) {
+        throw new Error(result.error || '云端生图任务接回失败');
+    }
+    return {
+        queued: {
+            localJobId: result.backgroundJob.localJobId,
+            clientRequestId: result.backgroundJob.clientRequestId,
+        },
+    };
 };
 
 const parseToolArgs = (call: any): Record<string, any> => {

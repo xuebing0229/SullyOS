@@ -1185,6 +1185,96 @@ export const updateBackgroundImageInspectStatus = (
     });
 };
 
+export async function adoptBackgroundImageJob(
+    server: McpServerConfig,
+    toolName: string,
+    args: Record<string, any>,
+    remote: {
+        clientRequestId: string;
+        remoteJobId?: string;
+    },
+    context: {
+        charId: string;
+        ownerType?: 'chat' | 'story-theater';
+        storyTheaterTarget?: {
+            entryId: string;
+            messageId: number;
+            title: string;
+        };
+    },
+): Promise<McpToolResult> {
+    const clientRequestId = String(remote.clientRequestId || '').trim();
+    if (!clientRequestId) return { success: false, error: '云端生图任务缺少 clientRequestId' };
+    const { afterGenerateAction, cleanedArgs } = parseImageToolClientOptions(args);
+    if (!isBackgroundImageToolCall(server, toolName)) {
+        return { success: false, error: '云端生图任务对应的本地工具已不可用' };
+    }
+    const engineId = engineIdFromServer(server);
+    if (!engineId || !server.controlBaseUrl) {
+        return { success: false, error: '云端生图任务对应的本地服务配置不完整' };
+    }
+
+    const state = readState();
+    const existing = state.jobs.find(job => job.clientRequestId === clientRequestId);
+    if (existing) {
+        const updated = updateJob(existing.id, {
+            remoteJobId: remote.remoteJobId || existing.remoteJobId,
+            ownerType: context.ownerType === 'story-theater' ? 'story-theater' : existing.ownerType,
+            storyTheaterTarget: context.ownerType === 'story-theater'
+                ? context.storyTheaterTarget
+                : existing.storyTheaterTarget,
+            lastError: undefined,
+        }) || existing;
+        dispatchJobEvent('updated', updated);
+        void reconcileBackgroundImageJobs();
+        return queuedToolResult(updated, remote.remoteJobId ? ({
+            id: remote.remoteJobId,
+            clientRequestId,
+            toolName,
+            status: 'queued',
+            createdAt: updated.createdAt,
+            updatedAt: now(),
+        } as RemoteImageJob) : undefined);
+    }
+
+    const createdAt = now();
+    const localJob: LocalBackgroundImageJob = {
+        id: makeLocalId(),
+        clientRequestId,
+        remoteJobId: remote.remoteJobId,
+        engineId,
+        serverId: server.id,
+        serverName: server.name,
+        controlBaseUrl: normalizeBaseUrl(server.controlBaseUrl),
+        token: String(server.token || ''),
+        charId: context.charId,
+        ownerType: context.ownerType === 'story-theater' ? 'story-theater' : 'chat',
+        storyTheaterTarget: context.ownerType === 'story-theater' ? context.storyTheaterTarget : undefined,
+        toolName,
+        toolArgs: clone(cleanedArgs),
+        afterGenerateAction,
+        inspectStatus: afterGenerateAction === 'inspect' ? 'pending' : undefined,
+        status: remote.remoteJobId ? 'queued' : 'submitting',
+        createdAt,
+        updatedAt: createdAt,
+        // Worker 已经负责第一次 POST。没有 remote id 代表响应不确定，恢复器先 by-client 查，
+        // 确认不存在后也只会用这个同一 clientRequestId 补交。
+        submitAttempts: remote.remoteJobId ? 1 : 0,
+        imageBillingCapture: captureImageGenerationBilling(engineId),
+    };
+    upsertJob(localJob);
+    dispatchJobEvent('updated', localJob);
+    void reconcileBackgroundImageJobs();
+    return queuedToolResult(localJob, remote.remoteJobId ? ({
+        id: remote.remoteJobId,
+        clientRequestId,
+        toolName,
+        status: 'queued',
+        createdAt,
+        updatedAt: createdAt,
+    } as RemoteImageJob) : undefined);
+}
+
 export async function callMcpToolWithBackgroundImage(
     server: McpServerConfig,
     toolName: string,

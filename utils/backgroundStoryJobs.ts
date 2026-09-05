@@ -1,4 +1,5 @@
 import type { ApiExecutionPlan } from './apiFailover';
+import type { StoryCloudImageHandoffSpec } from './storyTheaterImage';
 import { ActiveMsgClient } from './activeMsgClient';
 import {
     cloudApiCallLogId,
@@ -438,6 +439,8 @@ export interface ExecuteCloudStoryOptions {
     meta?: Record<string, any>;
     onPromptTokens?: (tokens: number) => void;
     onStreamText?: (fullText: string) => void;
+    /** 已冻结的生图服务/预设/参考槽描述；随 story spec 一起加密存 Worker。 */
+    imageHandoff?: StoryCloudImageHandoffSpec;
 }
 
 export const executeStoryCompletionInCloudBackground = async (
@@ -503,6 +506,7 @@ export const executeStoryCompletionInCloudBackground = async (
                 ...options.body,
                 stream: true,
             },
+            ...(options.imageHandoff ? { imageHandoff: options.imageHandoff } : {}),
         };
 
         try {
