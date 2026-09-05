@@ -163,9 +163,11 @@ export function maskSecret(secret) {
 }
 
 export function toPublicRuntimeConfig(config) {
-  const { apiKey, ...safe } = clone(config);
+  const publicConfig = clone(config);
+  const apiKey = String(publicConfig.apiKey || "");
   return {
-    ...safe,
+    ...publicConfig,
+    apiKey,
     apiKeyConfigured: Boolean(apiKey),
     apiKeyHint: maskSecret(apiKey)
   };
