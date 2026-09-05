@@ -299,68 +299,77 @@ export const buildStoryCloudImageHandoffSpec = async (input: {
         if (engineId === 'novelai') {
             const references: NonNullable<StoryCloudImageToolHandoff['references']> = {};
             const actorFragments: Record<string, Record<string, unknown>> = {};
-            for (const actor of input.actors) {
-                if (!actor.novelAiReference?.enabled) continue;
-                try {
-                    const prepared = await prepareBuiltinImageToolArguments({
-                        server: hit.server,
-                        toolName: hit.toolName,
-                        args: {
-                            prompt: '__story_cloud_reference_probe__',
-                            use_character_reference: true,
-                            use_user_reference: false,
-                            use_vibe_reference: false,
-                        },
-                        character: actor,
-                        userProfile: input.userProfile,
-                    });
-                    const fragment = pickManagedReferenceFragment(prepared);
-                    if (Object.keys(fragment).length) actorFragments[actor.id] = fragment;
-                } catch (error) {
-                    console.warn('[StoryTheater] cloud image actor reference preflight skipped', actor.id, error);
-                }
-            }
-            if (Object.keys(actorFragments).length) references.actors = actorFragments;
+            // 这些检查彼此独立；旧版逐个 await 会把每个远端 HEAD/上传延迟线性相加，
+            // 多角色 + 用户 + Vibe 时很容易在正文真正提交前白等几分钟。
+            const actorChecks = input.actors
+                .filter(actor => actor.novelAiReference?.enabled)
+                .map(async actor => {
+                    try {
+                        const prepared = await prepareBuiltinImageToolArguments({
+                            server: hit.server,
+                            toolName: hit.toolName,
+                            args: {
+                                prompt: '__story_cloud_reference_probe__',
+                                use_character_reference: true,
+                                use_user_reference: false,
+                                use_vibe_reference: false,
+                            },
+                            character: actor,
+                            userProfile: input.userProfile,
+                        });
+                        const fragment = pickManagedReferenceFragment(prepared);
+                        if (Object.keys(fragment).length) actorFragments[actor.id] = fragment;
+                    } catch (error) {
+                        console.warn('[StoryTheater] cloud image actor reference preflight skipped', actor.id, error);
+                    }
+                });
 
-            if (input.userProfile.novelAiReference?.enabled) {
+            const userCheck = input.userProfile.novelAiReference?.enabled
+                ? (async () => {
+                    try {
+                        const prepared = await prepareBuiltinImageToolArguments({
+                            server: hit.server,
+                            toolName: hit.toolName,
+                            args: {
+                                prompt: '__story_cloud_user_reference_probe__',
+                                use_character_reference: false,
+                                use_user_reference: true,
+                                use_vibe_reference: false,
+                            },
+                            character: input.actors[0],
+                            userProfile: input.userProfile,
+                        });
+                        const fragment = pickManagedReferenceFragment(prepared);
+                        if (Object.keys(fragment).length) references.user = fragment;
+                    } catch (error) {
+                        console.warn('[StoryTheater] cloud image user reference preflight skipped', error);
+                    }
+                })()
+                : Promise.resolve();
+
+            const vibeCheck = (async () => {
                 try {
                     const prepared = await prepareBuiltinImageToolArguments({
                         server: hit.server,
                         toolName: hit.toolName,
                         args: {
-                            prompt: '__story_cloud_user_reference_probe__',
+                            prompt: '__story_cloud_vibe_reference_probe__',
                             use_character_reference: false,
-                            use_user_reference: true,
-                            use_vibe_reference: false,
+                            use_user_reference: false,
+                            use_vibe_reference: true,
                         },
                         character: input.actors[0],
                         userProfile: input.userProfile,
                     });
                     const fragment = pickManagedReferenceFragment(prepared);
-                    if (Object.keys(fragment).length) references.user = fragment;
+                    if (Object.keys(fragment).some(key => key.startsWith('vibe_'))) references.vibe = fragment;
                 } catch (error) {
-                    console.warn('[StoryTheater] cloud image user reference preflight skipped', error);
+                    console.warn('[StoryTheater] cloud image vibe reference preflight skipped', error);
                 }
-            }
+            })();
 
-            try {
-                const prepared = await prepareBuiltinImageToolArguments({
-                    server: hit.server,
-                    toolName: hit.toolName,
-                    args: {
-                        prompt: '__story_cloud_vibe_reference_probe__',
-                        use_character_reference: false,
-                        use_user_reference: false,
-                        use_vibe_reference: true,
-                    },
-                    character: input.actors[0],
-                    userProfile: input.userProfile,
-                });
-                const fragment = pickManagedReferenceFragment(prepared);
-                if (Object.keys(fragment).some(key => key.startsWith('vibe_'))) references.vibe = fragment;
-            } catch (error) {
-                console.warn('[StoryTheater] cloud image vibe reference preflight skipped', error);
-            }
+            await Promise.all([...actorChecks, userCheck, vibeCheck]);
+            if (Object.keys(actorFragments).length) references.actors = actorFragments;
             if (Object.keys(references).length) descriptor.references = references;
         }
         tools.push(descriptor);

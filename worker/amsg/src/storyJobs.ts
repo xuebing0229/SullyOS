@@ -1,6 +1,7 @@
 import { constantTimeEqual } from './instantChat';
 import {
   normalizeStoryImageHandoffSpec,
+  prepareStoryImageHandoff,
   runStoryImageHandoff,
   type StoryCloudImageHandoffSpec,
 } from './storyImageHandoff';
@@ -789,25 +790,15 @@ export const runStoryJob = async (
       attempt.ok = true;
       attempts.push(attempt);
 
-      // 正文已经完整且 terminal 后才允许起图。配图链任何失败都不能反过来把正文标失败。
-      // imageHandoff/result 都存进同一份加密 response；手机醒来接正文时顺便认领远端图 job。
-      let imageHandoffResult: Awaited<ReturnType<typeof runStoryImageHandoff>> | undefined;
-      if (spec.imageHandoff) {
-        try {
-          imageHandoffResult = await runStoryImageHandoff(
-            spec.imageHandoff,
-            spec.clientRequestId,
-            streamed.content,
-          );
-        } catch (imageHandoffError) {
-          imageHandoffResult = {
-            state: 'failed',
-            error: String((imageHandoffError as Error)?.message || imageHandoffError).slice(0, 500),
-          };
-        }
-      }
-      const storedResponse = imageHandoffResult
-        ? { ...streamed.response, _sullyStoryImageHandoff: imageHandoffResult }
+      // 正文已经完整：先把正文标成 succeeded，让手机立刻接回。
+      // 生图控制面（查账/config/POST /jobs）是正文之后的尾活，绝不能再把已经完成的正文按住几十秒甚至几分钟。
+      // 先写入一个纯本地可计算的稳定 handoff；手机与 Worker 后续都使用同一个 clientRequestId，
+      // 即使两边同时尝试接图，生图服务的幂等也只会保留同一张任务。
+      const provisionalImageHandoff = spec.imageHandoff
+        ? prepareStoryImageHandoff(spec.imageHandoff, spec.clientRequestId, streamed.content)
+        : undefined;
+      const storedResponse = provisionalImageHandoff
+        ? { ...streamed.response, _sullyStoryImageHandoff: provisionalImageHandoff }
         : streamed.response;
       const responseCipher = await sealJson(env, userId, jobId, 'response', storedResponse);
       const partialCipher = await sealJson(env, userId, jobId, 'partial', streamed.content);
@@ -834,6 +825,33 @@ export const runStoryJob = async (
         userId,
         jobId,
       ).run();
+
+      // 正文已经对客户端可见以后，再完成真正的生图 handoff。
+      // 这里即使生图服务慢/失败，也只更新 response 里的 handoff 诊断，不改正文成功状态。
+      if (spec.imageHandoff && provisionalImageHandoff?.state === 'submitted') {
+        let finalImageHandoff: Awaited<ReturnType<typeof runStoryImageHandoff>>;
+        try {
+          finalImageHandoff = await runStoryImageHandoff(
+            spec.imageHandoff,
+            spec.clientRequestId,
+            streamed.content,
+          );
+        } catch (imageHandoffError) {
+          finalImageHandoff = {
+            state: 'failed',
+            error: String((imageHandoffError as Error)?.message || imageHandoffError).slice(0, 500),
+          };
+        }
+        const finalStoredResponse = {
+          ...streamed.response,
+          _sullyStoryImageHandoff: finalImageHandoff,
+        };
+        const finalResponseCipher = await sealJson(env, userId, jobId, 'response', finalStoredResponse);
+        await env.DB.prepare(
+          `UPDATE story_jobs SET response_cipher = ?, updated_at = ?
+           WHERE user_id = ? AND job_id = ? AND status = 'succeeded'`,
+        ).bind(finalResponseCipher, now(), userId, jobId).run();
+      }
       return;
     } catch (error) {
       const attempt = routeAttempt(route, index, attemptStartedAt);

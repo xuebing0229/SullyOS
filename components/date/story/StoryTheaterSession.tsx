@@ -1310,6 +1310,9 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
         let partialRerollTarget: Message | undefined;
         let partialClearInput = false;
         const backgroundOwnerKey = `story-turn:${entry.id}`;
+        // 已有 cloud pending 代表完整 prompt 早就加密提交给 Worker 了。
+        // 恢复页面只需要查回同一 job，禁止再次做归档、向量/角色记忆召回和生图参考图预检。
+        const recoveringCloudPending = Boolean(getPendingCloudStoryJob(backgroundOwnerKey));
         let usedNativeBackground = false;
         let nativeCompletionReceived = false;
         let automaticImageKeepAliveLease: string | null = null;
@@ -1384,18 +1387,20 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
 
             // 归档不能只放在成功生成之后：一旦会话已经碰到上游上下文上限，正文永远生成
             // 不出来，后置归档也就永远没有机会执行。重试已有 user 楼层时先归档，窗口可自愈。
-            const promptEntry = await archiveIfNeeded() || entry;
+            const promptEntry = recoveringCloudPending ? entry : (await archiveIfNeeded() || entry);
 
             const current = (await DB.getMessagesByCharId(threadId, true))
                 .filter(message => message.metadata?.source === 'story_theater')
                 .sort((a, b) => a.id - b.id);
             const history = current.filter(message => message.id !== userMessageId && message.id !== rerollTarget?.id);
             const visibleHistory = history.filter(message => !mirrorArchived(message, promptEntry));
-            const [actorContext, maskMemoryContext, vectorRecall] = await Promise.all([
-                buildActorContexts(modelText),
-                buildMaskMemoryContext(modelText),
-                independentRecall(modelText, visibleHistory.slice(-8), promptEntry),
-            ]);
+            const [actorContext, maskMemoryContext, vectorRecall] = recoveringCloudPending
+                ? ['', '', '']
+                : await Promise.all([
+                    buildActorContexts(modelText),
+                    buildMaskMemoryContext(modelText),
+                    independentRecall(modelText, visibleHistory.slice(-8), promptEntry),
+                ]);
             const summaries = promptEntry.archives.filter(archive => archive.summary).map((archive, index) => `事件盒 ${index + 1}：${archive.summary}`).join('\n\n');
             const scenario = [
                 `### 当前剧情\n标题：${entry.title}\n前提：${entry.premise || '沿用已经发生的正文自然继续。'}`,
@@ -1441,7 +1446,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 }
             }
             let cloudImageHandoffSpec: StoryCloudImageHandoffSpec | undefined;
-            if (entry.imageGeneration?.enabled && inlineImagePlanInstruction) {
+            if (entry.imageGeneration?.enabled && inlineImagePlanInstruction && !recoveringCloudPending) {
                 try {
                     cloudImageHandoffSpec = await buildStoryCloudImageHandoffSpec({ actors, userProfile });
                 } catch (cloudImageSetupError) {
