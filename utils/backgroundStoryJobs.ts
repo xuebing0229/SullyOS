@@ -470,14 +470,17 @@ export const executeStoryCompletionInCloudBackground = async (
     const logId = cloudApiCallLogId(pending.clientRequestId);
     let job: CloudStoryJob | null = null;
 
-    // 恢复时优先按 jobId / clientRequestId 找已有任务；只有服务端明确说不存在才允许 POST。
+    // 只有真正的旧 pending 才需要恢复查账。新任务必须先把 POST 交给 Worker，
+    // 否则这里的 visibility-aware GET 会在 WebView 进入后台时挂起，导致模型请求根本没有开始。
     let lookupFailed = false;
-    try {
-        job = await getRemoteJobById(config, pending.jobId);
-        if (!job) job = await getRemoteJobByClientId(config, pending.clientRequestId);
-    } catch {
-        // 查询本身断网时不能据此判断“任务不存在”。
-        lookupFailed = true;
+    if (recoveringExistingPending) {
+        try {
+            job = await getRemoteJobById(config, pending.jobId);
+            if (!job) job = await getRemoteJobByClientId(config, pending.clientRequestId);
+        } catch {
+            // 查询本身断网时不能据此判断“任务不存在”。
+            lookupFailed = true;
+        }
     }
 
     if (!job && recoveringExistingPending && lookupFailed) {
