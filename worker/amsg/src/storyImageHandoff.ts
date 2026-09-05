@@ -147,7 +147,9 @@ const applyPreset = async (tool: StoryCloudImageToolHandoff): Promise<void> => {
     const revision = Number(current.body?.config?.revision ?? current.body?.revision);
     if (!Number.isFinite(revision)) throw new Error('生图服务没有返回可用 revision');
     const patched = await fetchJson(configUrl, tool.token, {
-      method: 'PATCH',
+      // 与 App 侧 updateBuiltinImageRemoteConfig 保持同一份控制面契约。
+      // 生图服务的 /config 更新接口是 PUT；PATCH 会让剧情云端 handoff 独有地应用预设失败。
+      method: 'PUT',
       body: JSON.stringify({
         expectedRevision: revision,
         patch: tool.preset.remoteConfig,
