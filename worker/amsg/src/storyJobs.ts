@@ -829,28 +829,37 @@ export const runStoryJob = async (
       // 正文已经对客户端可见以后，再完成真正的生图 handoff。
       // 这里即使生图服务慢/失败，也只更新 response 里的 handoff 诊断，不改正文成功状态。
       if (spec.imageHandoff && provisionalImageHandoff?.state === 'submitted') {
-        let finalImageHandoff: Awaited<ReturnType<typeof runStoryImageHandoff>>;
+        // 从这一行开始正文已经是 succeeded。任何生图尾活错误都只能记日志，绝不能再落进
+        // 外层剧情失败 catch，把已经可读的正文反改成 failed。
         try {
-          finalImageHandoff = await runStoryImageHandoff(
-            spec.imageHandoff,
-            spec.clientRequestId,
-            streamed.content,
-          );
-        } catch (imageHandoffError) {
-          finalImageHandoff = {
-            state: 'failed',
-            error: String((imageHandoffError as Error)?.message || imageHandoffError).slice(0, 500),
+          let finalImageHandoff: Awaited<ReturnType<typeof runStoryImageHandoff>>;
+          try {
+            finalImageHandoff = await runStoryImageHandoff(
+              spec.imageHandoff,
+              spec.clientRequestId,
+              streamed.content,
+            );
+          } catch (imageHandoffError) {
+            finalImageHandoff = {
+              state: 'failed',
+              error: String((imageHandoffError as Error)?.message || imageHandoffError).slice(0, 500),
+            };
+          }
+          const finalStoredResponse = {
+            ...streamed.response,
+            _sullyStoryImageHandoff: finalImageHandoff,
           };
+          const finalResponseCipher = await sealJson(env, userId, jobId, 'response', finalStoredResponse);
+          await env.DB.prepare(
+            `UPDATE story_jobs SET response_cipher = ?, updated_at = ?
+             WHERE user_id = ? AND job_id = ? AND status = 'succeeded'`,
+          ).bind(finalResponseCipher, now(), userId, jobId).run();
+        } catch (imageTailError) {
+          console.warn('[amsg:story-job] image handoff tail failed after text succeeded', {
+            jobId,
+            error: String((imageTailError as Error)?.message || imageTailError).slice(0, 500),
+          });
         }
-        const finalStoredResponse = {
-          ...streamed.response,
-          _sullyStoryImageHandoff: finalImageHandoff,
-        };
-        const finalResponseCipher = await sealJson(env, userId, jobId, 'response', finalStoredResponse);
-        await env.DB.prepare(
-          `UPDATE story_jobs SET response_cipher = ?, updated_at = ?
-           WHERE user_id = ? AND job_id = ? AND status = 'succeeded'`,
-        ).bind(finalResponseCipher, now(), userId, jobId).run();
       }
       return;
     } catch (error) {
