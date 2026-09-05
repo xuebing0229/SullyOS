@@ -58,7 +58,13 @@ import { incrementDigestRound, runCognitiveDigestion } from '../../../utils/memo
 import StoryQuickPresetPanel from './StoryQuickPresetPanel';
 import { StoryAppearanceButton, useStoryTheaterAppearance } from './StoryTheaterTheme';
 import { shareOrDownloadFile } from '../../../utils/shareExport';
-import { generateStoryTheaterImage, resolveStoryImagePlannerApiConfig } from '../../../utils/storyTheaterImage';
+import {
+    buildStoryInlineImagePlanInstruction,
+    generateStoryTheaterImage,
+    parseStoryInlineImagePlan,
+    resolveStoryImagePlannerApiConfig,
+    storyInlineImageVisibleText,
+} from '../../../utils/storyTheaterImage';
 import StoryImageSettingsButton from './StoryImageSettings';
 import AppMemoryCandidatePanel from '../../AppMemoryCandidatePanel';
 import { generateAppMemoryCandidates } from '../../../utils/appMemoryBridge';
@@ -1412,6 +1418,20 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             const multiAffinityGuide = affinityEnabled ? buildStoryMultiAffinityGuide(actors.map(actor => ({ id: actor.id, name: actor.name }))) : '';
             const affinityAwarenessReminder = affinityInputs.map(item => buildStoryAffinityAwarenessReminder(item, item.characterName || '当前角色')).filter(Boolean).join('\n\n');
             const identityGuard = buildStoryIdentityGuard(effectivePreset.document, promptIdentityName, actors.map(actor => actor.name));
+            let inlineImagePlanInstruction = '';
+            if (entry.imageGeneration?.enabled) {
+                try {
+                    inlineImagePlanInstruction = buildStoryInlineImagePlanInstruction({
+                        entry,
+                        actors,
+                        userProfile,
+                        userName: promptIdentityName,
+                    });
+                } catch (imagePlanInstructionError) {
+                    // 配图配置坏掉不能拖死正文；这轮仍可在正文落库后走旧独立规划器兜底。
+                    console.warn('[StoryTheater] inline image plan instruction unavailable; legacy planner remains available', imagePlanInstructionError);
+                }
+            }
             const modelInput = appendStoryAffinityInputs(modelText, affinityInputs);
             const payloadBeforeTurn = [
                 ...compiled.messages,
@@ -1423,6 +1443,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 ...(affinityEnabled ? [{ role: 'system' as const, content: RELATIONSHIP_TEXTURE_GUIDE }] : []),
                 ...(affinityAwarenessReminder ? [{ role: 'system' as const, content: affinityAwarenessReminder }] : []),
                 { role: 'system' as const, content: identityGuard },
+                ...(inlineImagePlanInstruction ? [{ role: 'system' as const, content: inlineImagePlanInstruction }] : []),
             ];
             const payload = appendStoryUserTurn(payloadBeforeTurn, modelInput, compiled.assistantPrefill, promptEntry.forceUserLastMessage === true);
             let promptTokenCount = estimateStoryTokens(payload.map(message => `${message.role}\n${message.content}`).join('\n'));
@@ -1441,7 +1462,10 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 setContextTokens(reported);
                 setContextTokensExact(true);
             }, fullText => {
-                const visible = prefill && !fullText.startsWith(prefill) ? `${prefill}${fullText}` : fullText;
+                const rawVisible = prefill && !fullText.startsWith(prefill) ? `${prefill}${fullText}` : fullText;
+                const visible = entry.imageGeneration?.enabled
+                    ? storyInlineImageVisibleText(rawVisible)
+                    : rawVisible;
                 partialStreamText = visible;
                 streamingTextRef.current = visible;
                 setStreamingText(visible);
@@ -1464,7 +1488,13 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                     : undefined,
             });
             nativeCompletionReceived = usedNativeBackground;
-            const content = prefill && !generated.startsWith(prefill) ? `${prefill}${generated}` : generated;
+            const rawContent = prefill && !generated.startsWith(prefill) ? `${prefill}${generated}` : generated;
+            const parsedInlineImage = entry.imageGeneration?.enabled
+                ? parseStoryInlineImagePlan(rawContent)
+                : { content: rawContent, plan: undefined };
+            const content = parsedInlineImage.content.trim();
+            const inlineImagePlan = parsedInlineImage.plan;
+            if (!content) throw new Error('剧情正文为空：模型只返回了配图控制块，没有正文。');
             const rowsBeforeCommit = (await DB.getMessagesByCharId(threadId, true))
                 .filter(message => message.metadata?.source === 'story_theater')
                 .sort((a, b) => a.id - b.id);
@@ -1488,6 +1518,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                     theaterPromptTokensExact: promptTokenCountExact,
                     theaterRequestKey: activeRequestKey,
                     ...(affinityInputs.length > 0 ? { theaterAffinityInputs: affinityInputs } : {}),
+                    ...(inlineImagePlan ? { theaterInlineImagePlan: inlineImagePlan } : {}),
                 });
                 didCommitAssistant = true;
             }
@@ -1526,6 +1557,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                         userProfile,
                         userName: promptIdentityName,
                         messages: imageRows,
+                        inlinePlan: inlineImagePlan,
                         targetMessageId: assistantMessageId,
                     });
                     if (imageResult.frame) {
@@ -1559,11 +1591,17 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 console.error('[StoryTheater] send failed', error);
             }
 
-            const returnedPartial = String(
-                error?.partialContent
-                || error?.storyIncompleteCompletion?.content
-                || '',
-            ).trim();
+            const returnedPartial = entry.imageGeneration?.enabled
+                ? storyInlineImageVisibleText(String(
+                    error?.partialContent
+                    || error?.storyIncompleteCompletion?.content
+                    || '',
+                )).trim()
+                : String(
+                    error?.partialContent
+                    || error?.storyIncompleteCompletion?.content
+                    || '',
+                ).trim();
             const committedPartial = (partialStreamText || streamingTextRef.current || returnedPartial).trim();
             if (committedPartial) {
                 try {

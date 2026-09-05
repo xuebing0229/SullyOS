@@ -19,6 +19,11 @@ import {
 } from './imageGenerationPresets';
 import { persistMcpGeneratedImages } from './mcpImagePersistence';
 
+export interface StoryInlineImagePlan {
+    tool: string;
+    arguments: Record<string, any>;
+}
+
 interface GenerateStoryImageInput {
     /** 当前主 API；只作为旧数据/未单独选择规划器时的兜底。 */
     apiConfig: APIConfig;
@@ -29,6 +34,11 @@ interface GenerateStoryImageInput {
     userProfile: UserProfile;
     userName: string;
     messages: Message[];
+    /**
+     * 主剧情模型已经在同一次 completion 尾部给出的生图计划。
+     * 存在且工具名仍有效时直接执行，不再额外调用“快速规划模型”。
+     */
+    inlinePlan?: StoryInlineImagePlan;
     /** 要把本次配图挂回的剧情正文楼层。存在时优先走可恢复后台 /jobs。 */
     targetMessageId?: number;
 }
@@ -42,6 +52,8 @@ export interface StoryTheaterImageGenerationResult {
 }
 
 const compact = (value?: string): string => (value || '').replace(/\s+/g, ' ').trim();
+const INLINE_PLAN_OPEN = '<story_image_plan>';
+const INLINE_PLAN_CLOSE = '</story_image_plan>';
 
 export const resolveStoryImagePlannerApiConfig = (
     entry: StoryTheaterEntry,
@@ -115,6 +127,82 @@ const resolveStoryImageTools = (
     return { tools, resolve };
 };
 
+const normalizeInlinePlan = (value: unknown): StoryInlineImagePlan | undefined => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+    const raw = value as Record<string, unknown>;
+    const tool = String(raw.tool || raw.tool_name || '').trim();
+    const args = raw.arguments ?? raw.args;
+    if (!tool || !args || typeof args !== 'object' || Array.isArray(args)) return undefined;
+    return { tool, arguments: args as Record<string, any> };
+};
+
+/**
+ * 从剧情正文末尾剥离隐藏生图计划。正文永远不把控制块落到楼层里。
+ * 若模型只吐出半截控制块，也先把已开始的标签藏掉，避免 UI/记忆被协议污染。
+ */
+export const parseStoryInlineImagePlan = (
+    value: string,
+): { content: string; plan?: StoryInlineImagePlan } => {
+    const source = String(value || '');
+    const openIndex = source.lastIndexOf(INLINE_PLAN_OPEN);
+    if (openIndex < 0) return { content: source.trim() };
+
+    const visible = source.slice(0, openIndex).trim();
+    const closeIndex = source.indexOf(INLINE_PLAN_CLOSE, openIndex + INLINE_PLAN_OPEN.length);
+    if (closeIndex < 0) return { content: visible };
+
+    const rawPlan = source.slice(openIndex + INLINE_PLAN_OPEN.length, closeIndex).trim();
+    try {
+        const plan = normalizeInlinePlan(JSON.parse(rawPlan));
+        return plan ? { content: visible, plan } : { content: visible };
+    } catch {
+        return { content: visible };
+    }
+};
+
+/** 流式预览专用：隐藏完整控制块，也吃掉正在逐字出现的标签前缀。 */
+export const storyInlineImageVisibleText = (value: string): string => {
+    const source = String(value || '');
+    const openIndex = source.indexOf(INLINE_PLAN_OPEN);
+    if (openIndex >= 0) return source.slice(0, openIndex).trimEnd();
+
+    const maxPrefix = Math.min(source.length, INLINE_PLAN_OPEN.length - 1);
+    for (let size = maxPrefix; size > 0; size -= 1) {
+        if (source.endsWith(INLINE_PLAN_OPEN.slice(0, size))) {
+            return source.slice(0, -size).trimEnd();
+        }
+    }
+    return source;
+};
+
+/**
+ * 让“写正文的同一次模型调用”顺手给出本轮生图工具与参数。
+ * 这里把当前真实可用的工具 schema 原样压进 system 指令，因此仍保留：
+ * - 多生图预设由 AI 按用途选择；
+ * - 角色/用户/Vibe 参考图开关由 AI 自主判断；
+ * - NovelAI 多角色时可明确挑要锁脸的角色。
+ */
+export const buildStoryInlineImagePlanInstruction = (input: {
+    entry: StoryTheaterEntry;
+    actors: CharacterProfile[];
+    userProfile: UserProfile;
+    userName: string;
+}): string => {
+    const imageTools = resolveStoryImageTools(input.actors);
+    const config = input.entry.imageGeneration;
+    const actorAnchors = input.actors.map(actor => {
+        const referenceState = actor.novelAiReference?.enabled ? '（有角色精密参考图可按需使用）' : '';
+        return `${actor.id}=${actor.name}${referenceState}：${compact(config?.characterAnchors?.[actor.id]) || '按角色设定与本轮正文保持一致'}`;
+    }).join('\n');
+    const toolSchemas = imageTools.tools.map(tool => JSON.stringify({
+        name: tool.function.name,
+        description: tool.function.description || '',
+        parameters: tool.function.parameters || { type: 'object', properties: {} },
+    })).join('\n');
+
+    return `【剧情自动配图隐藏协议】\n本轮正常剧情正文全部写完以后，再额外输出且只输出一个隐藏控制块。这个控制块不是给读者看的，不属于正文、幕后、小剧场、选项或任何剧情格式。不要为了配图改变剧情走向，也不要在正文中解释它。\n\n你刚刚写出的这一轮正文就是配图依据。请从其中挑最有表现力、最具体、最值得成为插图的一个瞬间，并从下列真实可用生图工具中选择且只选择一个。多预设时根据工具 description 的用途和本轮画面自行选择，不要固定使用第一项。工具 schema 里的 use_character_reference / use_user_reference / use_vibe_reference 等开关都由你按画面需要判断；有参考图不等于必须使用。\n\n剧情：${input.entry.title}\n前提：${compact(input.entry.premise) || '沿用当前正文'}\n当前用户侧身份：${input.userName}${input.userProfile.novelAiReference?.enabled ? '（有用户精密参考图可按需使用）' : ''}\n用户外观锚点：${compact(config?.userAnchor) || '按已有设定与正文保持一致'}\n角色外观锚点：\n${actorAnchors || '无'}\n额外画风：${compact(config?.stylePrompt) || '沿用所选生图预设'}\n避免内容：${compact(config?.negativePrompt) || '遵循所选工具自身负面规则'}\n目标画幅：${config?.width || 1216}×${config?.height || 832}\n\n可用工具（每行一项，parameters 必须严格遵守）：\n${toolSchemas}\n\n最终控制块严格使用下面格式，禁止 Markdown 代码块，禁止在闭合标签后继续输出任何文字：\n${INLINE_PLAN_OPEN}\n{"tool":"上面某个真实工具名","arguments":{"严格按该工具 parameters 填参数"}}\n${INLINE_PLAN_CLOSE}\n\n特别要求：arguments 里应直接给出可执行的最终生图参数；画面人物数量、身份、动作、服装、地点与情绪必须和你这一轮刚写出的正文一致；不要文字、对白框、水印、Logo 或 UI。`;
+};
+
 const parseToolArgs = (call: any): Record<string, any> => {
     const raw = call?.function?.arguments ?? call?.arguments;
     if (typeof raw === 'string') {
@@ -174,93 +262,96 @@ const buildPlannerInstruction = (input: GenerateStoryImageInput, toolNames: stri
         return `${actor.name}${referenceState}：${compact(config?.characterAnchors?.[actor.id]) || '根据正文与角色设定保持外貌一致'}`;
     }).join('\n');
     const transcript = input.messages.slice(-8).map(message => `${message.role === 'user' ? input.userName : '剧场正文'}：${compact(message.content).slice(0, 1800)}`).join('\n\n');
-    return `你正在后台为剧情剧场生成一张本轮插图，不是在回复聊天。必须从本轮提供的生图工具中选择最合适的一项并调用，不要只输出文字，也不要同时调用多个生图工具。
-
-这里故意复用主聊天现有的生图决策链：当前可选工具是 ${toolNames.join('、')}。如果出现多个“生图预设”工具，必须结合每个工具描述里的“用途”和当前剧情画面自行选择；不要因为在剧情剧场就固定到某个模型/预设。工具 schema 若提供 use_character_reference / use_user_reference / use_vibe_reference 等开关，也由你根据本轮画面自主判断是否使用，不能因为参考图存在就强制带上。
-
-剧情：${input.entry.title}
-前提：${compact(input.entry.premise) || '沿用正文'}
-当前身份 ${input.userName}${input.userProfile.novelAiReference?.enabled ? '（用户也有精密参考图可按需选择）' : ''}：${compact(config?.userAnchor) || '根据正文保持一致'}
-出场角色：
-${actorAnchors}
-
-最近剧情：
-${transcript}
-
-画面要求：只画最新一轮最有表现力的具体瞬间；保持人物数量、身份、动作、服装、地点与情绪一致；构图完整、有叙事感；不要文字、对白框、水印、Logo 或 UI。${config?.stylePrompt ? `\n额外画风：${config.stylePrompt}` : ''}${config?.negativePrompt ? `\n避免内容：${config.negativePrompt}` : ''}
-目标画幅：${config?.width || 1216}×${config?.height || 832}。剧情剧场只补充这些场景要求，其余模型/预设/参考图策略遵循主聊天现有生图工具与 schema。请直接调用一个工具。`;
+    return `你正在后台为剧情剧场生成一张本轮插图，不是在回复聊天。必须从本轮提供的生图工具中选择最合适的一项并调用，不要只输出文字，也不要同时调用多个生图工具。\n\n这里故意复用主聊天现有的生图决策链：当前可选工具是 ${toolNames.join('、')}。如果出现多个“生图预设”工具，必须结合每个工具描述里的“用途”和当前剧情画面自行选择；不要因为在剧情剧场就固定到某个模型/预设。工具 schema 若提供 use_character_reference / use_user_reference / use_vibe_reference 等开关，也由你根据本轮画面自主判断是否使用，不能因为参考图存在就强制带上。\n\n剧情：${input.entry.title}\n前提：${compact(input.entry.premise) || '沿用正文'}\n当前身份 ${input.userName}${input.userProfile.novelAiReference?.enabled ? '（用户也有精密参考图可按需选择）' : ''}：${compact(config?.userAnchor) || '根据正文保持一致'}\n出场角色：\n${actorAnchors}\n\n最近剧情：\n${transcript}\n\n画面要求：只画最新一轮最有表现力的具体瞬间；保持人物数量、身份、动作、服装、地点与情绪一致；构图完整、有叙事感；不要文字、对白框、水印、Logo 或 UI。${config?.stylePrompt ? `\n额外画风：${config.stylePrompt}` : ''}${config?.negativePrompt ? `\n避免内容：${config.negativePrompt}` : ''}\n目标画幅：${config?.width || 1216}×${config?.height || 832}。剧情剧场只补充这些场景要求，其余模型/预设/参考图策略遵循主聊天现有生图工具与 schema。请直接调用一个工具。`;
 };
 
 export async function generateStoryTheaterImage(input: GenerateStoryImageInput): Promise<StoryTheaterImageGenerationResult> {
     if (!input.actors.length) throw new Error('剧情没有可用于配图的出场角色。');
 
-    const plannerApiConfig = input.plannerApiConfig || input.apiConfig;
     const imageTools = resolveStoryImageTools(input.actors);
-    const toolNames = imageTools.tools.map(tool => tool.function.name);
-    const forcedToolChoice = imageTools.tools.length === 1
-        ? {
-            type: 'function',
-            function: { name: imageTools.tools[0].function.name },
-        }
-        : 'required';
-    const nativeBody = {
-        model: plannerApiConfig.model,
-        messages: [
-            { role: 'system', content: buildPlannerInstruction(input, toolNames) },
-            { role: 'user', content: '请为上面最新一轮剧情生成插图。' },
-        ],
-        tools: imageTools.tools,
-        // 只有一个可用生图工具时不要再让模型“决定要不要调用”，直接指定函数；
-        // 多工具时 required 只负责强制“必须选一个”，具体预设仍交给规划器判断。
-        tool_choice: forcedToolChoice,
-        parallel_tool_calls: false,
-        temperature: 0.4,
-        max_tokens: 3000,
-        stream: false,
-    };
+    let selection: { selectedName: string; rawArgs: Record<string, any> } | null = null;
 
-    const runPlanner = async (body: Record<string, any>) => executeOpenAiChatPlan({
-        // 用户明确选的是“规划器快速模型”，这里固定走这一条，不借主聊天/剧情故障转移改线。
-        plan: resolveApiExecutionPlan('chat', plannerApiConfig, false),
-        body,
-        meta: { appName: '剧情剧场', purpose: '剧情自动配图规划' },
-        directMaxRetries: 1,
-    });
-
-    let response;
-    let plannerUsedTextFallback = !getMcpUseNativeTools();
-    if (plannerUsedTextFallback) {
-        response = await runPlanner(buildMcpRejectedToolsFallbackBody(nativeBody));
-    } else {
-        try {
-            response = await runPlanner(nativeBody);
-        } catch (error) {
-            if (!shouldRetryMcpWithoutTools(error)) throw error;
-            plannerUsedTextFallback = true;
-            response = await runPlanner(buildMcpRejectedToolsFallbackBody(nativeBody));
+    if (input.inlinePlan) {
+        const selectedName = String(input.inlinePlan.tool || '').trim();
+        if (selectedName && imageTools.resolve.has(selectedName)) {
+            selection = {
+                selectedName,
+                rawArgs: input.inlinePlan.arguments && typeof input.inlinePlan.arguments === 'object'
+                    ? input.inlinePlan.arguments
+                    : {},
+            };
+        } else {
+            console.warn('[StoryTheater] inline image plan selected unavailable tool; falling back to legacy planner', {
+                selectedName,
+                availableTools: imageTools.tools.map(tool => tool.function.name),
+            });
         }
     }
 
-    let selection = extractPlannerSelection(response.value, imageTools);
     if (!selection) {
-        // 规划器偶发“明明有工具却只回正文”。真正生图尚未发生，所以这里补一次规划不会重复出图。
-        // Native FC 路径先用更严格的 tool_choice/temperature=0 纠错；若本来就是文字兼容模式，
-        // 则严格要求只输出一行可解析的假调用。只补这一轮，避免规划器自己无限循环扣费。
-        console.warn('[StoryTheater] image planner omitted tool call; retrying planner once', {
-            plannerModel: plannerApiConfig.model,
-            mode: plannerUsedTextFallback ? 'text-fallback' : 'native-tools',
-            toolCount: imageTools.tools.length,
-        });
-        const repairBody = buildPlannerRepairBody(nativeBody, plannerUsedTextFallback);
-        const repairResponse = await runPlanner(repairBody);
-        selection = extractPlannerSelection(repairResponse.value, imageTools);
+        const plannerApiConfig = input.plannerApiConfig || input.apiConfig;
+        const toolNames = imageTools.tools.map(tool => tool.function.name);
+        const forcedToolChoice = imageTools.tools.length === 1
+            ? {
+                type: 'function',
+                function: { name: imageTools.tools[0].function.name },
+            }
+            : 'required';
+        const nativeBody = {
+            model: plannerApiConfig.model,
+            messages: [
+                { role: 'system', content: buildPlannerInstruction(input, toolNames) },
+                { role: 'user', content: '请为上面最新一轮剧情生成插图。' },
+            ],
+            tools: imageTools.tools,
+            // 只有一个可用生图工具时不要再让模型“决定要不要调用”，直接指定函数；
+            // 多工具时 required 只负责强制“必须选一个”，具体预设仍交给规划器判断。
+            tool_choice: forcedToolChoice,
+            parallel_tool_calls: false,
+            temperature: 0.4,
+            max_tokens: 3000,
+            stream: false,
+        };
 
-        // 有些“OpenAI 兼容”中转接受 tools 却静默无视 tool_choice。纠错轮仍没 FC 时，
-        // 不再发第三次模型请求；直接检查这次正文有没有按兼容调用格式输出。
-        if (!selection && !plannerUsedTextFallback) {
-            const repairMessage = repairResponse.value?.choices?.[0]?.message || {};
-            const faked = extractTextFakedMcpCalls(String(repairMessage.content || ''), imageTools.resolve)[0];
-            if (faked) selection = { selectedName: faked.exposedName, rawArgs: faked.args };
+        const runPlanner = async (body: Record<string, any>) => executeOpenAiChatPlan({
+            // 旧兼容兜底：只有主剧情模型没产出合法 inline plan 时才会走到这里。
+            plan: resolveApiExecutionPlan('chat', plannerApiConfig, false),
+            body,
+            meta: { appName: '剧情剧场', purpose: '剧情自动配图规划' },
+            directMaxRetries: 1,
+        });
+
+        let response;
+        let plannerUsedTextFallback = !getMcpUseNativeTools();
+        if (plannerUsedTextFallback) {
+            response = await runPlanner(buildMcpRejectedToolsFallbackBody(nativeBody));
+        } else {
+            try {
+                response = await runPlanner(nativeBody);
+            } catch (error) {
+                if (!shouldRetryMcpWithoutTools(error)) throw error;
+                plannerUsedTextFallback = true;
+                response = await runPlanner(buildMcpRejectedToolsFallbackBody(nativeBody));
+            }
+        }
+
+        selection = extractPlannerSelection(response.value, imageTools);
+        if (!selection) {
+            // 规划器偶发“明明有工具却只回正文”。真正生图尚未发生，所以这里补一次规划不会重复出图。
+            console.warn('[StoryTheater] image planner omitted tool call; retrying planner once', {
+                plannerModel: plannerApiConfig.model,
+                mode: plannerUsedTextFallback ? 'text-fallback' : 'native-tools',
+                toolCount: imageTools.tools.length,
+            });
+            const repairBody = buildPlannerRepairBody(nativeBody, plannerUsedTextFallback);
+            const repairResponse = await runPlanner(repairBody);
+            selection = extractPlannerSelection(repairResponse.value, imageTools);
+
+            if (!selection && !plannerUsedTextFallback) {
+                const repairMessage = repairResponse.value?.choices?.[0]?.message || {};
+                const faked = extractTextFakedMcpCalls(String(repairMessage.content || ''), imageTools.resolve)[0];
+                if (faked) selection = { selectedName: faked.exposedName, rawArgs: faked.args };
+            }
         }
     }
 
