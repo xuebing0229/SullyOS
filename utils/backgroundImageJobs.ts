@@ -32,6 +32,10 @@ const TERMINAL_RETENTION_MS =
 const FOREGROUND_POLL_MS = 4_000;
 const HTTP_TIMEOUT_MS = 12_000;
 const MAX_SUBMIT_ATTEMPTS = 10;
+// 连续状态查询失败不能无限假装“还在生成”。
+// 12 次在快速失败时约 48 秒；若每次都等满 12s timeout，则约 3 分钟以上。
+// 真正的 queued/running 状态不会计入这里，只有查询本身失败才累计。
+const MAX_RECONCILE_FAILURES = 12;
 
 export type LocalBackgroundImageJobStatus =
     | 'submitting'
@@ -910,6 +914,10 @@ const applySucceededJob = async (
     if (updated) dispatchJobEvent('completed', updated);
 };
 
+// 只统计“查询任务状态本身失败”的连续次数；一次成功查询立刻清零。
+// 不写进备份，避免用户切屏/重启后因为旧错误计数直接误判失败。
+const reconcileFailureCounts = new Map<string, number>();
+
 const reconcileOne = async (
     localJob: LocalBackgroundImageJob,
     options: MonitorOptions,
@@ -962,6 +970,9 @@ const reconcileOne = async (
             }
         }
 
+        // 能拿到一次真实远端状态，就说明状态通道恢复了；清掉此前的连续查询失败计数。
+        reconcileFailureCounts.delete(localJob.id);
+
         const updated = updateJob(localJob.id, {
             remoteJobId: remoteJob.id,
             status: remoteStatusToLocal(remoteJob.status),
@@ -1013,9 +1024,32 @@ const reconcileOne = async (
         }
     } catch (error) {
         if (isUnsupportedJobsEndpointError(error)) {
+            reconcileFailureCounts.delete(localJob.id);
             await markMonitoredJobFailed(
                 localJob.id,
                 '当前生图服务不支持后台任务接口 /jobs，请更新服务端或重新发起直连生图。',
+                options,
+            );
+            return;
+        }
+
+        const failureCount = (reconcileFailureCounts.get(localJob.id) || 0) + 1;
+        reconcileFailureCounts.set(localJob.id, failureCount);
+        const detail = sanitizeMcpOutcomeText(error)
+            || '后台生图状态查询失败';
+
+        // 4xx（除已单独处理的 404/405）基本不会靠继续轮询自愈，直接结束等待；
+        // 其余网络/5xx/timeout 给一段恢复窗口，连续失败到上限后也必须显式失败，不能永久挂起。
+        if (
+            isPermanentSubmitError(error)
+            || failureCount >= MAX_RECONCILE_FAILURES
+        ) {
+            reconcileFailureCounts.delete(localJob.id);
+            await markMonitoredJobFailed(
+                localJob.id,
+                isPermanentSubmitError(error)
+                    ? detail
+                    : `后台生图状态连续查询失败 ${failureCount} 次：${detail}`,
                 options,
             );
             return;
@@ -1030,7 +1064,7 @@ const reconcileOne = async (
         ) {
             updateJob(localJob.id, {
                 lastCheckedAt: now(),
-                lastError: sanitizeMcpOutcomeText(error),
+                lastError: detail,
             });
         }
     }
