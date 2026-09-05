@@ -28,6 +28,7 @@ describe('Story Theater background status notifications', () => {
     const service = read('native/android/SullyStoryCloudMonitorService.java');
     const installer = read('scripts/install-android-story-background.mjs');
     expect(client).toContain('startNativeCloudStoryMonitor');
+    expect(client).toContain('finishNativeCloudStoryMonitor');
     expect(native).toContain('LocalNotifications.requestPermissions()');
     expect(service).toContain('/story-jobs/');
     expect(service).toContain('startForeground');
