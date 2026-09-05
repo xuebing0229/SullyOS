@@ -16,7 +16,7 @@ jobs:
         with:
           ref: master
           fetch-depth: 0
-      - name: Apply patch
+      - name: Apply hardening patch
         run: python .github/scripts/patch_story_perf.py
       - name: Verify diff
         run: git diff --check
@@ -24,6 +24,6 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add worker/amsg/src/storyJobs.ts components/date/story/StoryTheaterSession.tsx utils/storyTheaterImage.ts
-          git commit -m "perf: remove story background recovery stalls"
+          git add worker/amsg/src/storyJobs.ts
+          git commit -m "fix: keep story text successful after image tail"
           git push origin master
