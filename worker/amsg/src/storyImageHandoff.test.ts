@@ -51,6 +51,18 @@ describe('story cloud image handoff', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it('skips automatic image handoff when the story completion omitted its inline plan', () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch');
+    const result = prepareStoryImageHandoff(
+      spec(),
+      'storyreq_no_plan',
+      '只有正文，没有隐藏的配图控制块。',
+    );
+
+    expect(result).toEqual({ state: 'skipped' });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it('reuses an existing remote image job and does not POST again', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response(JSON.stringify({
       job: { id: 'remote_existing', status: 'running' },
