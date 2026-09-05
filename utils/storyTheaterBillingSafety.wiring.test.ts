@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 const read = (relative: string): string =>
     readFileSync(fileURLToPath(new URL(relative, import.meta.url)), 'utf8');
 
+const appSource = read('../App.tsx');
 const storySource = read('../components/date/story/StoryTheaterSession.tsx');
 const editorSource = read('../components/date/story/StoryTheaterEditor.tsx');
 const osContextSource = read('../context/OSContext.tsx');
@@ -15,6 +16,7 @@ const nativeStoryKeepAliveSource = read('../native/android/SullyStoryKeepAliveSe
 const nativeStoryBridgeSource = read('./nativeStoryBackground.ts');
 const cloudStoryBridgeSource = read('./backgroundStoryJobs.ts');
 const storyImageSource = read('./storyTheaterImage.ts');
+const configCheckFetchGuardSource = read('./configCheckFetchGuard.ts');
 const amsgStoryJobsSource = read('../worker/amsg/src/storyJobs.ts');
 const amsgWorkerSource = read('../worker/amsg/src/index.ts');
 
@@ -44,6 +46,17 @@ describe('story theater billing safety wiring', () => {
         expect(interceptorSource.match(/await originalFetch\(/g) || []).toHaveLength(1);
         expect(interceptorSource).toContain('await originalFetch(...sendArgs)');
         expect(interceptorSource).not.toContain('回退原请求重发');
+    });
+
+    it('caps config-check probes and absorbs only lifecycle aborts before global fetch diagnostics', () => {
+        expect(appSource).toContain("import './utils/configCheckFetchGuard';");
+        expect(configCheckFetchGuardSource).toContain('const CONFIG_CHECK_TIMEOUT_MS = 8_000;');
+        expect(configCheckFetchGuardSource).toContain("pathname.endsWith('/config-check')");
+        expect(configCheckFetchGuardSource).toContain("value?.name === 'AbortError'");
+        expect(configCheckFetchGuardSource).toContain("value?.name === 'TimeoutError'");
+        expect(configCheckFetchGuardSource).toContain("code: 'CONFIG_CHECK_ABORTED'");
+        expect(configCheckFetchGuardSource).toContain('status: 200');
+        expect(configCheckFetchGuardSource).toContain('if (!controller.signal.aborted && !isAbortLike(error)) throw error;');
     });
 
     it('owns Android story generation in an app-process manager and keeps the FGS transport-free', () => {
@@ -221,9 +234,10 @@ describe('story theater billing safety wiring', () => {
         expect(cloudStoryBridgeSource).toContain("const config = await ActiveMsgClient.getGlobalConfig()");
         expect(cloudStoryBridgeSource.match(/const config = await resolveWorkerConfig\(\);/g) || []).toHaveLength(2);
         expect(cloudStoryBridgeSource).not.toContain("const config = ActiveMsgClient.getGlobalConfig()");
-        expect(cloudStoryBridgeSource).toContain("cloud story capability probe failed; trying cloud transport anyway");
-        expect(cloudStoryBridgeSource).toContain("cloud story capability probe inconclusive; trying cloud transport anyway");
+        expect(cloudStoryBridgeSource).toContain("只判断 Worker 配置是否存在，不再在提交前等待 /config-check");
+        expect(cloudStoryBridgeSource).not.toContain("fetchJson(config, '/config-check')");
         expect(cloudStoryBridgeSource).toContain("capabilityCache.available === true");
+        expect(cloudStoryBridgeSource).toContain("capabilityCache = { key, at: now(), available: true }");
         expect(cloudStoryBridgeSource).not.toContain("capabilityCache = { key, at: now(), available: false }");
         expect(amsgStoryJobsSource).toContain("CREATE TABLE IF NOT EXISTS story_jobs");
         expect(amsgStoryJobsSource).toContain("PARTIAL_PERSIST_INTERVAL_MS");
