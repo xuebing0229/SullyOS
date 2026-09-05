@@ -144,13 +144,17 @@ public class SullyAmsgPollService extends Service {
             String title = payload.optString("contactName", payload.optJSONObject("metadata") != null
                 ? payload.optJSONObject("metadata").optString("charName", "主动消息") : "主动消息");
             String body = payload.optString("message", payload.optString("body", "有一条新消息"));
+            String messageId = payload.optString("messageId", "");
+            int notificationId = messageId.isEmpty()
+                ? (int) (id & 0x7fffffff)
+                : (messageId.hashCode() & 0x7fffffff);
             Intent launch = getPackageManager().getLaunchIntentForPackage(getPackageName());
-            PendingIntent pending = PendingIntent.getActivity(this, (int) (id & 0x7fffffff), launch, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+            PendingIntent pending = PendingIntent.getActivity(this, notificationId, launch, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
             NotificationCompat.Builder notification = new NotificationCompat.Builder(this, "amsg2")
                 .setSmallIcon(getApplicationInfo().icon).setContentTitle(title).setContentText(body)
                 .setStyle(new NotificationCompat.BigTextStyle().bigText(body)).setAutoCancel(true)
                 .setContentIntent(pending).setPriority(NotificationCompat.PRIORITY_HIGH);
-            getSystemService(NotificationManager.class).notify((int) (id & 0x7fffffff), notification.build());
+            getSystemService(NotificationManager.class).notify(notificationId, notification.build());
         } catch (Exception ignored) { }
     }
 }

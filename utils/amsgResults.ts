@@ -17,6 +17,7 @@
 
 import { PLATE_CONSOLIDATE_RESULT_KIND } from './amsgPlateJob';
 import { SCHEDULE_CHANGE_RESULT_KIND } from './amsgScheduleResult';
+import { STORY_BACKGROUND_STATUS_RESULT_KIND } from './storyBackgroundStatus';
 
 const HEADER = '[amsg2:result]';
 
@@ -114,6 +115,10 @@ const dispatchOne = async (payload: unknown, context?: AmsgResultContext): Promi
         const { applyScheduleChangeResult } = await import('./amsgScheduleResultApply');
         return await applyScheduleChangeResult(payload, context);
       }
+      case STORY_BACKGROUND_STATUS_RESULT_KIND:
+        // 这类 result 的正文就是 Android / Web Push 系统通知本身；客户端只认领后销账，
+        // 绝不能把“正在生成/生成完成”当成角色聊天消息落库。
+        return true;
       default:
         // 认不出来的多半是**前端比 worker 旧**：worker 可以脱开前端单独更新（fork 的
         // Sync → Cloudflare Workers Builds），PWA 那边还可能跑着缓存下来的旧包。销账

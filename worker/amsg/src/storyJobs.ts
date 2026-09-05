@@ -5,6 +5,7 @@ import {
   runStoryImageHandoff,
   type StoryCloudImageHandoffSpec,
 } from './storyImageHandoff';
+import { sendStoryBackgroundStatusPush } from './storyStatusPush';
 
 type D1Prepared = {
   bind(...values: unknown[]): D1Prepared;
@@ -27,6 +28,12 @@ export interface StoryTickNamespace {
 export interface StoryJobsEnv {
   AMSG_MASTER_KEY: string;
   AMSG_SERVER_TOKEN?: string;
+  VAPID_EMAIL?: string;
+  VAPID_PUBLIC_KEY?: string;
+  VAPID_PRIVATE_KEY?: string;
+  FCM_PROJECT_ID?: string;
+  FCM_SERVICE_ACCOUNT_EMAIL?: string;
+  FCM_SERVICE_ACCOUNT_PRIVATE_KEY?: string;
   DB: StoryJobsDb;
   INSTANT_TICK?: StoryTickNamespace;
 }
@@ -76,6 +83,14 @@ interface StoryJobRow {
   started_at: number | null;
   completed_at: number | null;
 }
+
+const storyStatusJob = (row: StoryJobRow) => ({
+  jobId: row.job_id,
+  userId: row.user_id,
+  clientRequestId: row.client_request_id,
+  ownerKey: row.owner_key,
+  title: row.title,
+});
 
 interface StoryAttempt {
   routeIndex: number;
@@ -654,6 +669,12 @@ const finalizeFailed = async (
     row.user_id,
     row.job_id,
   ).run();
+  await sendStoryBackgroundStatusPush(
+    env as any,
+    storyStatusJob(row),
+    'failed',
+    error,
+  );
 };
 
 export const runStoryJob = async (
@@ -672,6 +693,8 @@ export const runStoryJob = async (
   if ((claimed.meta?.changes ?? 0) <= 0) return;
 
   const liveRow = { ...row, status: 'running' as StoryJobStatus, started_at: startedAt, updated_at: startedAt };
+  // 状态通知与模型请求并行起跑，不允许为了弹通知拖慢正文首字。
+  void sendStoryBackgroundStatusPush(env as any, storyStatusJob(liveRow), 'running');
   let spec: StoryJobSpec;
   try {
     spec = await openJson<StoryJobSpec>(env, userId, jobId, 'request', row.request_cipher);
@@ -825,6 +848,13 @@ export const runStoryJob = async (
         userId,
         jobId,
       ).run();
+
+      // D1 已经是 succeeded 才发完成通知；通知失败绝不影响正文，也不等待后面的配图尾活。
+      await sendStoryBackgroundStatusPush(
+        env as any,
+        storyStatusJob({ ...liveRow, status: 'succeeded', completed_at: finishedAt, updated_at: finishedAt }),
+        'succeeded',
+      );
 
       // 正文已经对客户端可见以后，再完成真正的生图 handoff。
       // 这里即使生图服务慢/失败，也只更新 response 里的 handoff 诊断，不改正文成功状态。
