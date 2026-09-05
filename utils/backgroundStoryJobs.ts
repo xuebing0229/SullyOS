@@ -445,6 +445,19 @@ export const executeStoryCompletionInCloudBackground = async (
     const logId = cloudApiCallLogId(pending.clientRequestId);
     let job: CloudStoryJob | null = null;
 
+    // 本地 jobId 一旦确定就先挂 Android 原生状态监控，不等恢复 GET，也不等 POST 响应。
+    // 原生服务允许最开始查不到 job 并继续轮询，所以用户点完生成马上切屏时，
+    // 状态牌已经开始接管，而不是等 WebView 再跑完一次网络往返才启动。
+    void startNativeCloudStoryMonitor({
+        jobId: pending.jobId,
+        title: pending.title,
+        workerUrl: config.workerUrl,
+        userId: config.userId,
+        serverToken: config.serverToken,
+    }).catch(error => {
+        console.warn('[StoryTheater] native cloud story status monitor failed to arm early', error);
+    });
+
     // 只有真正的旧 pending 才需要恢复查账。新任务必须先把 POST 交给 Worker，
     // 否则这里的 visibility-aware GET 会在 WebView 进入后台时挂起，导致模型请求根本没有开始。
     let lookupFailed = false;
@@ -496,19 +509,26 @@ export const executeStoryCompletionInCloudBackground = async (
             if (!response.ok) {
                 const code = String(body?.error?.code || '');
                 const responseJob = body?.job || null;
+                const errorMessage = body?.error?.message
+                    || body?.error
+                    || `剧情云端任务提交失败（HTTP ${response.status}）`;
                 if (response.status === 404 || code === 'INSTANT_TICK_STORY_MISSING') {
                     capabilityCache = null;
                 }
                 // 这是 Worker 明确回来的 HTTP 结论，不是“POST 响应在路上丢了”。
                 // 有 job（例如旧 Worker 缺执行能力）就保留 pending 等更新后接回；
-                // 没 job 的 4xx/5xx 则明确没有可接回任务，清掉本地指针。
+                // 没 job 的 4xx/5xx 则明确没有可接回任务，清掉本地指针，并收掉提前挂起的状态牌。
                 if (!responseJob) {
                     await clearPendingCloudStoryJob(options.ownerKey);
+                    await finishNativeCloudStoryMonitor({
+                        jobId: pending.jobId,
+                        title: pending.title,
+                        status: 'failed',
+                        error: String(errorMessage),
+                    }).catch(() => undefined);
                 }
                 throw toCloudError(
-                    body?.error?.message
-                    || body?.error
-                    || `剧情云端任务提交失败（HTTP ${response.status}）`,
+                    String(errorMessage),
                     responseJob,
                     config,
                     {
@@ -538,22 +558,6 @@ export const executeStoryCompletionInCloudBackground = async (
             }
         }
 
-    }
-
-    // 一旦 Worker 明确存在这条 job，就让 Android 自己接管系统状态牌。
-    // 这条链不依赖 WebView timer / 主动消息 push；切屏和锁屏后仍会轮询同一个远端 job。
-    if (job) {
-        try {
-            await startNativeCloudStoryMonitor({
-                jobId: pending.jobId,
-                title: pending.title,
-                workerUrl: config.workerUrl,
-                userId: config.userId,
-                serverToken: config.serverToken,
-            });
-        } catch (error) {
-            console.warn('[StoryTheater] native cloud story status monitor failed to start', error);
-        }
     }
 
     // 无论是刚提交还是进程重启后重新发现的 job，都用同一个 id 补上 API 调用记录。
