@@ -14,7 +14,7 @@ export const isStoryTheaterGalleryImage = (image: GalleryImage): boolean => {
         : undefined;
     return sourceMeta?.source === 'story-theater'
         || sourceMeta?.theaterId !== undefined
-        || String(image.charId || '').startsWith('story_theater_');
+        || String(image.charId || '').startsWith('story-theater:');
 };
 
 /**
