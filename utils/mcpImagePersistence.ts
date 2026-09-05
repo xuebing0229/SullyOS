@@ -9,6 +9,7 @@ import {
     recordSuccessfulImageGeneration,
     type ImageGenerationBillingCapture,
 } from './imageGenerationBilling';
+import { STORY_THEATER_GALLERY_CHAR_ID } from './storyTheaterGallery';
 
 export const MAX_MCP_IMAGE_BYTES = 25 * 1024 * 1024;
 export interface PersistMcpImageInput {
@@ -106,13 +107,16 @@ export async function persistMcpGeneratedImages(input: PersistMcpImageInput): Pr
     const candidates=extractMcpImageCandidates(input.result);
     const seenKeys=input.seenKeys ?? new Set<string>();
     const output:PersistMcpImageOutput={persisted:0,temporary:0,failed:0,errors:[],assets:[]};
+    const galleryCharId = input.extraGallerySourceMeta?.source === 'story-theater'
+        ? STORY_THEATER_GALLERY_CHAR_ID
+        : input.char.id;
     for (const candidate of candidates) {
         const key=getMcpImageCandidateKey(candidate); if (seenKeys.has(key)) continue; seenKeys.add(key);
         try {
             const blob=await mcpImageCandidateToBlob(candidate); const createdAt=Date.now();
             const blobId=createImageBlobId(); const blobRef=blobRefFromId(blobId); const galleryId=`gallery_mcp_${blobId}`;
             const prompt=extractPrompt(input.toolArgs); const engine=inferEngine(input.toolName,input.server?.name);
-            const gallery:GalleryImage={ id:galleryId,charId:input.char.id,url:blobRef,timestamp:createdAt,
+            const gallery:GalleryImage={ id:galleryId,charId:galleryCharId,url:blobRef,timestamp:createdAt,
                 savedDate:new Date(createdAt).toISOString().slice(0,10),chatContext:buildRecentChatContext(input.recentMessages),
                 source:'mcp-generated',sourceMeta:{serverId:input.server?.id,serverName:input.server?.name,toolName:input.toolName,engine,prompt,originalUrl:candidate.kind==='url'?candidate.url:undefined,...(input.extraGallerySourceMeta || {})} };
             if (input.ownerType === 'meeting-cg') {
