@@ -163,13 +163,13 @@ export function maskSecret(secret) {
 }
 
 export function toPublicRuntimeConfig(config) {
-  const publicConfig = clone(config);
-  const apiKey = String(publicConfig.apiKey || "");
+  const { apiKey, ...safe } = clone(config);
   return {
-    ...publicConfig,
-    apiKey,
+    ...safe,
     apiKeyConfigured: Boolean(apiKey),
-    apiKeyHint: maskSecret(apiKey)
+    // This is intentionally plaintext for this private SullyOS deployment so
+    // the settings screen can load, edit, and copy the configured upstream key.
+    apiKeyHint: apiKey || null
   };
 }
 
