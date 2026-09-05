@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useOS } from '../context/OSContext';
 import { DB } from '../utils/db';
 import { GalleryImage, CharacterProfile } from '../types';
@@ -9,6 +9,17 @@ import { saveGalleryImageToDevice } from '../utils/galleryExport';
 import { applyGalleryReview } from '../utils/galleryReview';
 import { generateGalleryReview } from '../utils/galleryReviewRequest';
 import { loadMusicPlaybackSnapshot } from '../context/MusicContext';
+import {
+    migrateStoryTheaterGalleryImages,
+    STORY_THEATER_GALLERY_CHAR_ID,
+    STORY_THEATER_GALLERY_CHAR_NAME,
+} from '../utils/storyTheaterGallery';
+
+const STORY_GALLERY_CHARACTER = {
+    id: STORY_THEATER_GALLERY_CHAR_ID,
+    name: STORY_THEATER_GALLERY_CHAR_NAME,
+    avatar: '',
+} as CharacterProfile;
 
 const Gallery: React.FC = () => {
     const {
@@ -29,6 +40,12 @@ const Gallery: React.FC = () => {
     const [isSavingImage, setIsSavingImage] = useState(false);
     const [showChatContext, setShowChatContext] = useState(false);
 
+    const galleryCharacters = useMemo<CharacterProfile[]>(() => [
+        STORY_GALLERY_CHARACTER,
+        ...characters.filter(character => character.id !== STORY_THEATER_GALLERY_CHAR_ID),
+    ], [characters]);
+    const isStoryGallery = activeCharId === STORY_THEATER_GALLERY_CHAR_ID;
+
     // Long-press delete state
     const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
     const [confirmDialog, setConfirmDialog] = useState<{ isOpen: boolean; title: string; message: string; variant: 'danger' | 'warning' | 'info'; onConfirm: () => void; } | null>(null);
@@ -37,23 +54,38 @@ const Gallery: React.FC = () => {
     const [albumCounts, setAlbumCounts] = useState<Record<string, number>>({});
 
     useEffect(() => {
-        // Load image counts for all characters
+        // Load image counts for all characters. Opening the album also repairs legacy
+        // Story Theater images that were stored under one virtual id per story save.
         const loadCounts = async () => {
+            try {
+                await migrateStoryTheaterGalleryImages();
+            } catch (error) {
+                console.warn('[Gallery] failed to migrate legacy Story Theater images', error);
+            }
             const counts: Record<string, number> = {};
-            for (const char of characters) {
+            for (const char of galleryCharacters) {
                 const imgs = await DB.getGalleryImages(char.id);
                 counts[char.id] = imgs.length;
             }
             setAlbumCounts(counts);
         };
-        if (view === 'albums') loadCounts();
-    }, [characters, view]);
+        if (view === 'albums') void loadCounts();
+    }, [galleryCharacters, view]);
 
     useEffect(() => {
         if (activeCharId) {
-            DB.getGalleryImages(activeCharId).then(imgs => {
+            const loadImages = async () => {
+                if (activeCharId === STORY_THEATER_GALLERY_CHAR_ID) {
+                    try {
+                        await migrateStoryTheaterGalleryImages();
+                    } catch (error) {
+                        console.warn('[Gallery] failed to migrate Story Theater images before opening album', error);
+                    }
+                }
+                const imgs = await DB.getGalleryImages(activeCharId);
                 setImages(imgs.sort((a, b) => b.timestamp - a.timestamp));
-            });
+            };
+            void loadImages();
         }
     }, [activeCharId]);
 
@@ -76,7 +108,7 @@ const Gallery: React.FC = () => {
     // Long-press handlers for album deletion
     const handleAlbumPressStart = useCallback((charId: string) => {
         longPressTimer.current = setTimeout(() => {
-            const char = characters.find(c => c.id === charId);
+            const char = galleryCharacters.find(c => c.id === charId);
             setConfirmDialog({
                 isOpen: true,
                 title: '删除相册',
@@ -93,7 +125,7 @@ const Gallery: React.FC = () => {
                 }
             });
         }, 600);
-    }, [characters, addToast]);
+    }, [galleryCharacters, addToast]);
 
     const handleAlbumPressEnd = useCallback(() => {
         if (longPressTimer.current) {
@@ -123,7 +155,7 @@ const Gallery: React.FC = () => {
 
     const handleSaveToDevice = async () => {
         if (!selectedImage || isSavingImage) return;
-        const character = characters.find(item => item.id === selectedImage.charId);
+        const character = galleryCharacters.find(item => item.id === selectedImage.charId);
         setIsSavingImage(true);
         try {
             const result = await saveGalleryImageToDevice(
@@ -163,6 +195,10 @@ const Gallery: React.FC = () => {
     const handleReview = async () => {
         if (!selectedImage || !activeCharId) {
             addToast('缺少图片或角色信息', 'error');
+            return;
+        }
+        if (isStoryGallery) {
+            addToast('剧情剧场相册不绑定单一角色，因此不使用角色照片点评', 'info');
             return;
         }
 
@@ -244,7 +280,7 @@ const Gallery: React.FC = () => {
 
     const renderAlbums = () => (
         <div className="grid grid-cols-2 gap-5 p-5 animate-fade-in">
-            {characters.map(char => {
+            {galleryCharacters.map(char => {
                 const count = albumCounts[char.id] || 0;
                 const status = imgStatus[char.id] || 'loading';
                 return (
@@ -266,7 +302,7 @@ const Gallery: React.FC = () => {
                                 <span className="text-white/60 text-5xl font-bold select-none drop-shadow-md">{char.name.charAt(0)}</span>
                             </div>
                             {/* Image layer - hidden until loaded to prevent blank rectangles on mobile */}
-                            {status !== 'error' && (
+                            {Boolean(char.avatar) && status !== 'error' && (
                                 <img
                                     src={char.avatar}
                                     alt={char.name}
@@ -286,7 +322,7 @@ const Gallery: React.FC = () => {
                     </button>
                 );
             })}
-            {characters.length === 0 && <div className="col-span-2 text-center text-slate-400 py-16 text-xs">暂无角色相册</div>}
+            {galleryCharacters.length === 0 && <div className="col-span-2 text-center text-slate-400 py-16 text-xs">暂无角色相册</div>}
         </div>
     );
 
@@ -316,7 +352,7 @@ const Gallery: React.FC = () => {
             {/* Header */}
             <div className="absolute top-0 left-0 w-full p-4 flex justify-between items-start z-50 pointer-events-none" style={{ paddingTop: 'max(1rem, var(--safe-top))' }}>
                 <button onClick={() => setView('grid')} className="text-white bg-black/40 backdrop-blur-md p-2 rounded-full pointer-events-auto active:scale-95 transition-transform hover:bg-black/60 border border-white/10">
-                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-6 h-6"><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" /></svg>
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-6 h-6 text-slate-600"><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" /></svg>
                 </button>
                 <div className="flex items-center gap-2 pointer-events-auto">
                     <button
@@ -353,7 +389,15 @@ const Gallery: React.FC = () => {
                 />
             </div>
 
-            {/* Review & Context Section */}
+            {isStoryGallery ? (
+                <div className="shrink-0 w-full bg-[#161616] border-t border-white/10 z-40 pb-safe px-5 py-4">
+                    <div className="text-xs font-bold text-white/70">剧情配图</div>
+                    <div className="mt-1 text-[11px] text-white/40">
+                        {String((selectedImage.sourceMeta as Record<string, unknown> | undefined)?.theaterTitle || '剧情剧场')}
+                    </div>
+                </div>
+            ) : (
+            /* Review & Context Section */
             <div className="shrink-0 w-full bg-[#161616] border-t border-white/10 z-40 pb-safe">
                 {selectedImage.review ? (
                     <div className="p-5 animate-slide-up">
@@ -428,6 +472,7 @@ const Gallery: React.FC = () => {
                     </div>
                 )}
             </div>
+            )}
         </div>
     );
 
@@ -443,7 +488,7 @@ const Gallery: React.FC = () => {
                             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6 text-slate-600"><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" /></svg>
                         </button>
                         <h1 className="text-lg font-semibold text-slate-800 ml-2 tracking-tight">
-                            {view === 'albums' ? '相册' : characters.find(c => c.id === activeCharId)?.name || '相册'}
+                            {view === 'albums' ? '相册' : galleryCharacters.find(c => c.id === activeCharId)?.name || '相册'}
                         </h1>
                         {view === 'grid' && <span className="text-xs text-slate-400 ml-2 font-mono">{images.length}</span>}
                     </div>
