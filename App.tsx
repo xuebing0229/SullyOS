@@ -1,4 +1,5 @@
 
+import './utils/configCheckFetchGuard';
 import GameHallAutoplayHost from './components/GameHallAutoplayHost';
 import ChatImageViewerHost from './components/media/ChatImageViewerHost';
 import React from 'react';
