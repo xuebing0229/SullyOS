@@ -12,10 +12,12 @@ import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.IBinder;
 import android.os.PowerManager;
+import android.util.Log;
 import androidx.core.app.NotificationCompat;
 import androidx.core.app.ServiceCompat;
 import androidx.core.content.ContextCompat;
 import java.io.BufferedReader;
+import java.io.IOException;
 import java.io.InputStreamReader;
 import java.net.HttpURLConnection;
 import java.net.URL;
@@ -26,14 +28,14 @@ import org.json.JSONObject;
 /**
  * 云端 Story Jobs 的 Android 侧状态牌。
  *
- * 这条链不依赖 WebView timer，也不依赖主动消息 push subscription：只要 POST /story-jobs
- * 已经成功，原生前台服务就自己轮询同一个 job，并用同一个 notification id 从“生成中”
- * 更新到“完成/失败”。因此切屏、锁屏、WebView 冻结都不会让通知凭空消失。
+ * 这条链不依赖 WebView timer，也不依赖主动消息 push subscription：原生前台服务自己轮询
+ * 同一个 Worker job，并用同一个 notification id 从“生成中”更新到“完成/失败”。
  */
 public class SullyStoryCloudMonitorService extends Service {
     public static final String ACTION_START = "SULLY_STORY_CLOUD_MONITOR_START";
     public static final String ACTION_FINISH = "SULLY_STORY_CLOUD_MONITOR_FINISH";
     public static final String EXTRA_JOB_ID = "jobId";
+    public static final String EXTRA_CLIENT_REQUEST_ID = "clientRequestId";
     public static final String EXTRA_TITLE = "title";
     public static final String EXTRA_WORKER_URL = "workerUrl";
     public static final String EXTRA_USER_ID = "userId";
@@ -41,16 +43,21 @@ public class SullyStoryCloudMonitorService extends Service {
     public static final String EXTRA_STATUS = "status";
     public static final String EXTRA_ERROR = "error";
 
+    private static final String TAG = "SullyStoryCloudMonitor";
     private static final String CHANNEL_ID = "sully_story_cloud_status_v1";
     private static final int NOTIFICATION_ID = 23033;
     private static final long POLL_MS = 3000L;
     private static final long WAKE_LOCK_TIMEOUT_MS = 30L * 60L * 1000L;
+    private static final int SYNC_WARNING_AFTER_FAILURES = 5;
 
     private HandlerThread workerThread;
     private Handler handler;
     private PowerManager.WakeLock wakeLock;
     private int generation = 0;
+    private int consecutiveLookupFailures = 0;
+    private boolean showingSyncWarning = false;
     private String jobId = "";
+    private String clientRequestId = "";
     private String title = "剧情";
     private String workerUrl = "";
     private String userId = "";
@@ -59,6 +66,7 @@ public class SullyStoryCloudMonitorService extends Service {
     public static boolean start(
         Context context,
         String jobId,
+        String clientRequestId,
         String title,
         String workerUrl,
         String userId,
@@ -67,6 +75,7 @@ public class SullyStoryCloudMonitorService extends Service {
         Intent intent = new Intent(context, SullyStoryCloudMonitorService.class)
             .setAction(ACTION_START)
             .putExtra(EXTRA_JOB_ID, jobId)
+            .putExtra(EXTRA_CLIENT_REQUEST_ID, clientRequestId == null ? "" : clientRequestId)
             .putExtra(EXTRA_TITLE, title)
             .putExtra(EXTRA_WORKER_URL, workerUrl)
             .putExtra(EXTRA_USER_ID, userId)
@@ -74,7 +83,8 @@ public class SullyStoryCloudMonitorService extends Service {
         try {
             ContextCompat.startForegroundService(context, intent);
             return true;
-        } catch (Exception ignored) {
+        } catch (Exception error) {
+            Log.e(TAG, "Unable to start cloud story foreground service", error);
             return false;
         }
     }
@@ -88,7 +98,9 @@ public class SullyStoryCloudMonitorService extends Service {
             .putExtra(EXTRA_ERROR, error == null ? "" : error);
         try {
             context.startService(intent);
-        } catch (Exception ignored) { }
+        } catch (Exception finishError) {
+            Log.w(TAG, "Unable to deliver cloud story terminal state", finishError);
+        }
     }
 
     @Override
@@ -134,6 +146,7 @@ public class SullyStoryCloudMonitorService extends Service {
 
     private void handleStart(Intent intent) {
         String nextJobId = clean(intent.getStringExtra(EXTRA_JOB_ID));
+        String nextClientRequestId = clean(intent.getStringExtra(EXTRA_CLIENT_REQUEST_ID));
         String nextWorkerUrl = clean(intent.getStringExtra(EXTRA_WORKER_URL)).replaceAll("/+$", "");
         String nextUserId = clean(intent.getStringExtra(EXTRA_USER_ID));
         if (!nextJobId.matches("[A-Za-z0-9_-]{12,160}") || !nextWorkerUrl.startsWith("https://") || nextUserId.isEmpty()) {
@@ -141,10 +154,15 @@ public class SullyStoryCloudMonitorService extends Service {
             return;
         }
         this.jobId = nextJobId;
+        this.clientRequestId = nextClientRequestId.matches("[A-Za-z0-9_-]{12,160}")
+            ? nextClientRequestId
+            : "";
         this.title = fallbackTitle(intent.getStringExtra(EXTRA_TITLE));
         this.workerUrl = nextWorkerUrl;
         this.userId = nextUserId;
         this.serverToken = clean(intent.getStringExtra(EXTRA_SERVER_TOKEN));
+        this.consecutiveLookupFailures = 0;
+        this.showingSyncWarning = false;
         final int token = ++generation;
         enterForeground(buildRunningNotification(this.title));
         acquireWakeLock();
@@ -165,59 +183,125 @@ public class SullyStoryCloudMonitorService extends Service {
         if (token != generation || jobId.isEmpty()) return;
         try {
             JSONObject job = fetchJob();
-            if (job != null) {
-                String status = job.optString("status", "");
-                if ("succeeded".equals(status) || "failed".equals(status) || "cancelled".equals(status)) {
-                    finishTerminal(status, title, job.optString("error", ""));
-                    return;
-                }
+            consecutiveLookupFailures = 0;
+            if (showingSyncWarning) {
+                showingSyncWarning = false;
+                updateRunningNotification(buildRunningNotification(title));
             }
-        } catch (Exception ignored) {
-            // 网络暂时不可用时继续守着同一 job；绝不因为状态查询失败把正文任务判失败。
+            String status = job.optString("status", "");
+            if ("succeeded".equals(status) || "failed".equals(status) || "cancelled".equals(status)) {
+                finishTerminal(status, title, job.optString("error", ""));
+                return;
+            }
+        } catch (Exception error) {
+            consecutiveLookupFailures += 1;
+            Log.w(
+                TAG,
+                "Story status lookup failed #" + consecutiveLookupFailures
+                    + " jobId=" + jobId
+                    + (clientRequestId.isEmpty() ? "" : " clientRequestId=" + clientRequestId),
+                error
+            );
+            if (consecutiveLookupFailures >= SYNC_WARNING_AFTER_FAILURES && !showingSyncWarning) {
+                showingSyncWarning = true;
+                updateRunningNotification(buildSyncWarningNotification(title));
+            }
         }
         if (token == generation && handler != null) handler.postDelayed(() -> poll(token), POLL_MS);
     }
 
+    /**
+     * 先按 jobId 查；若这一条因为 404/缓存/路由异常拿不到，再按 clientRequestId 查同一任务。
+     * 两条都是只读 GET，不会创建第二次模型请求。
+     */
     private JSONObject fetchJob() throws Exception {
-        String encoded = URLEncoder.encode(jobId, StandardCharsets.UTF_8.name());
-        HttpURLConnection connection = (HttpURLConnection) new URL(workerUrl + "/story-jobs/" + encoded).openConnection();
-        connection.setRequestMethod("GET");
-        connection.setConnectTimeout(10000);
-        connection.setReadTimeout(12000);
-        connection.setRequestProperty("Accept", "application/json");
-        connection.setRequestProperty("X-User-Id", userId);
-        if (!serverToken.isEmpty()) connection.setRequestProperty("X-Client-Token", serverToken);
-        int code = connection.getResponseCode();
-        if (code != 200) {
-            connection.disconnect();
-            return null;
+        Exception jobIdFailure;
+        try {
+            return fetchJobAtPath("/story-jobs/" + encode(jobId));
+        } catch (Exception error) {
+            jobIdFailure = error;
         }
-        StringBuilder text = new StringBuilder();
-        try (BufferedReader reader = new BufferedReader(new InputStreamReader(connection.getInputStream(), StandardCharsets.UTF_8))) {
-            String line;
-            while ((line = reader.readLine()) != null) text.append(line);
+
+        if (!clientRequestId.isEmpty()) {
+            try {
+                return fetchJobAtPath("/story-jobs/by-client/" + encode(clientRequestId));
+            } catch (Exception clientError) {
+                clientError.addSuppressed(jobIdFailure);
+                throw clientError;
+            }
+        }
+        throw jobIdFailure;
+    }
+
+    /**
+     * 原生监控会先于 POST 启动，所以第一轮 GET 很可能先拿到 404。必须彻底禁用缓存并给每次
+     * 查询加 cache-buster；否则某些 WebView/代理/CDN 链路会反复复用最初的“任务不存在”，
+     * 表现就是正文早已完成，但通知永远卡在“正在生成”。
+     */
+    private JSONObject fetchJobAtPath(String path) throws Exception {
+        String separator = path.contains("?") ? "&" : "?";
+        URL url = new URL(workerUrl + path + separator + "_sullyPoll=" + System.currentTimeMillis());
+        HttpURLConnection connection = (HttpURLConnection) url.openConnection();
+        try {
+            connection.setRequestMethod("GET");
+            connection.setConnectTimeout(10000);
+            connection.setReadTimeout(12000);
+            connection.setUseCaches(false);
+            connection.setRequestProperty("Accept", "application/json");
+            connection.setRequestProperty("Cache-Control", "no-cache, no-store, max-age=0");
+            connection.setRequestProperty("Pragma", "no-cache");
+            connection.setRequestProperty("Connection", "close");
+            connection.setRequestProperty("X-User-Id", userId);
+            if (!serverToken.isEmpty()) connection.setRequestProperty("X-Client-Token", serverToken);
+            int code = connection.getResponseCode();
+            if (code != 200) {
+                throw new IOException("剧情状态查询 HTTP " + code + " @ " + path);
+            }
+            StringBuilder text = new StringBuilder();
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(connection.getInputStream(), StandardCharsets.UTF_8))) {
+                String line;
+                while ((line = reader.readLine()) != null) text.append(line);
+            }
+            JSONObject root = new JSONObject(text.toString());
+            JSONObject job = root.optJSONObject("job");
+            if (job == null) {
+                JSONObject data = root.optJSONObject("data");
+                job = data == null ? null : data.optJSONObject("job");
+            }
+            if (job == null) {
+                throw new IOException("剧情状态查询 HTTP 200 但没有 job @ " + path);
+            }
+            return job;
         } finally {
             connection.disconnect();
         }
-        JSONObject root = new JSONObject(text.toString());
-        JSONObject job = root.optJSONObject("job");
-        if (job != null) return job;
-        JSONObject data = root.optJSONObject("data");
-        return data == null ? null : data.optJSONObject("job");
+    }
+
+    private static String encode(String value) throws Exception {
+        return URLEncoder.encode(value, StandardCharsets.UTF_8.name());
     }
 
     private void acquireWakeLock() {
         if (wakeLock == null || wakeLock.isHeld()) return;
         try {
             wakeLock.acquire(WAKE_LOCK_TIMEOUT_MS);
-        } catch (Exception ignored) { }
+        } catch (Exception error) {
+            Log.w(TAG, "Unable to acquire story monitor wake lock", error);
+        }
     }
 
     private void releaseWakeLock() {
         if (wakeLock == null || !wakeLock.isHeld()) return;
         try {
             wakeLock.release();
-        } catch (Exception ignored) { }
+        } catch (Exception error) {
+            Log.w(TAG, "Unable to release story monitor wake lock", error);
+        }
+    }
+
+    private void updateRunningNotification(android.app.Notification notification) {
+        NotificationManager manager = getSystemService(NotificationManager.class);
+        if (manager != null) manager.notify(NOTIFICATION_ID, notification);
     }
 
     private void finishTerminal(String status, String title, String error) {
@@ -230,10 +314,10 @@ public class SullyStoryCloudMonitorService extends Service {
             //noinspection deprecation
             stopForeground(true);
         }
-        getSystemService(NotificationManager.class).notify(
-            NOTIFICATION_ID,
-            buildTerminalNotification(status, title, error).build()
-        );
+        NotificationManager manager = getSystemService(NotificationManager.class);
+        if (manager != null) {
+            manager.notify(NOTIFICATION_ID, buildTerminalNotification(status, title, error).build());
+        }
         stopSelf();
     }
 
@@ -255,6 +339,19 @@ public class SullyStoryCloudMonitorService extends Service {
             .setContentTitle("剧情剧场")
             .setContentText("正在后台生成《" + title + "》")
             .setStyle(new NotificationCompat.BigTextStyle().bigText("正在后台生成《" + title + "》"))
+            .setCategory(NotificationCompat.CATEGORY_PROGRESS)
+            .setOngoing(true)
+            .setOnlyAlertOnce(true)
+            .setSilent(true)
+            .build();
+    }
+
+    private android.app.Notification buildSyncWarningNotification(String title) {
+        String body = "《" + title + "》仍在后台生成 · 状态同步暂时中断，正在重试";
+        return baseBuilder()
+            .setContentTitle("剧情剧场")
+            .setContentText(body)
+            .setStyle(new NotificationCompat.BigTextStyle().bigText(body))
             .setCategory(NotificationCompat.CATEGORY_PROGRESS)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
@@ -294,10 +391,9 @@ public class SullyStoryCloudMonitorService extends Service {
             launch,
             PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
         );
-        NotificationCompat.Builder builder = new NotificationCompat.Builder(this, CHANNEL_ID)
+        return new NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(__APP_ID__.R.drawable.sully_story_notification)
             .setContentIntent(pending);
-        return builder;
     }
 
     private void createChannel() {
