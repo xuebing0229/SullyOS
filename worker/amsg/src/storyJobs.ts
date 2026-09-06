@@ -117,6 +117,7 @@ const MAX_REQUEST_BYTES = 2_000_000;
 const PARTIAL_PERSIST_INTERVAL_MS = 900;
 const PARTIAL_PERSIST_CHAR_STEP = 512;
 const CANCEL_POLL_INTERVAL_MS = 750;
+const RESOURCE_EXHAUSTED_MAX_TOKENS_RETRY = 8_000;
 
 const jsonSize = (value: unknown): number => new TextEncoder().encode(JSON.stringify(value)).byteLength;
 const now = (): number => Date.now();
@@ -743,13 +744,23 @@ export const runStoryJob = async (
     let response: Response;
     let routeRequest: StoryRouteRequest | null = null;
     let explicitErrorText = '';
+    let resourceRetryFromMaxTokens: number | null = null;
 
-    const requestRoute = async (includeUsage: boolean): Promise<StoryRouteRequest> => {
+    const requestRoute = async (
+      includeUsage: boolean,
+      maxTokensOverride?: number,
+    ): Promise<StoryRouteRequest> => {
       const body: Record<string, unknown> = {
         ...spec.baseBody,
         model: route.model,
         stream: true,
       };
+      if (
+        typeof maxTokensOverride === 'number'
+        && Number(body.max_tokens) > maxTokensOverride
+      ) {
+        body.max_tokens = maxTokensOverride;
+      }
       if (
         Object.prototype.hasOwnProperty.call(body, 'temperature')
         && typeof route.temperature === 'number'
@@ -820,7 +831,8 @@ export const runStoryJob = async (
     };
 
     try {
-      routeRequest = await requestRoute(true);
+      let includeUsage = true;
+      routeRequest = await requestRoute(includeUsage);
       response = routeRequest.response;
       if (response.status === 400) {
         explicitErrorText = (await response.text().catch(() => '')).slice(0, 1000);
@@ -833,7 +845,39 @@ export const runStoryJob = async (
         // 模型尚未执行，才允许同线路去掉 stream_options 再发一次。
         if (lower.includes('stream_options') || lower.includes('include_usage')) {
           routeRequest.stopCancelWatch();
-          routeRequest = await requestRoute(false);
+          includeUsage = false;
+          routeRequest = await requestRoute(includeUsage);
+          response = routeRequest.response;
+          explicitErrorText = '';
+        }
+      }
+
+      if (response.status === 429) {
+        const resourceErrorText = (await response.text().catch(() => '')).slice(0, 1000);
+        explicitErrorText = resourceErrorText;
+        const originalMaxTokens = Number(spec.baseBody.max_tokens);
+        const lower = resourceErrorText.toLowerCase();
+        const resourceExhausted = lower.includes('resource has been exhausted')
+          || lower.includes('resource_exhausted');
+
+        // Gemini/兼容网关可能把过大的请求输出预算当作资源配额拒绝。这里仅在上游已经
+        // 明确以 429 拒绝、尚未产生任何流输出时，同一线路把 32k 一类的大预算降到
+        // 主聊天长期使用的 8k 再试一次。其他 429 一律保持原语义，不掩盖真实配额不足。
+        if (
+          resourceExhausted
+          && Number.isFinite(originalMaxTokens)
+          && originalMaxTokens > RESOURCE_EXHAUSTED_MAX_TOKENS_RETRY
+        ) {
+          if (routeRequest.wasCancelled() || await isStoryJobCancelled(env, userId, jobId)) {
+            routeRequest.stopCancelWatch();
+            return;
+          }
+          routeRequest.stopCancelWatch();
+          resourceRetryFromMaxTokens = originalMaxTokens;
+          routeRequest = await requestRoute(
+            includeUsage,
+            RESOURCE_EXHAUSTED_MAX_TOKENS_RETRY,
+          );
           response = routeRequest.response;
           explicitErrorText = '';
         }
@@ -855,12 +899,15 @@ export const runStoryJob = async (
       const cancelled = routeRequest?.wasCancelled() || await isStoryJobCancelled(env, userId, jobId);
       routeRequest?.stopCancelWatch();
       if (cancelled) return;
+      const retryNote = resourceRetryFromMaxTokens != null
+        ? `已将 max_tokens ${resourceRetryFromMaxTokens}→${RESOURCE_EXHAUSTED_MAX_TOKENS_RETRY} 同线路兼容重试；`
+        : '';
       const attempt = routeAttempt(route, index, attemptStartedAt);
       attempt.status = response.status;
-      attempt.error = text || `HTTP ${response.status}`;
+      attempt.error = `${retryNote}${text || `HTTP ${response.status}`}`;
       attempt.durationMs = now() - attemptStartedAt;
       attempts.push(attempt);
-      lastError = `剧情上游返回 HTTP ${response.status}${text ? `：${text}` : ''}`;
+      lastError = `剧情上游返回 HTTP ${response.status}${retryNote ? `（${retryNote.slice(0, -1)}）` : ''}${text ? `：${text}` : ''}`;
       if (spec.mode === 'failover' && index < spec.routes.length - 1) continue;
       await finalizeFailed(env, liveRow, attempts, lastError);
       return;
