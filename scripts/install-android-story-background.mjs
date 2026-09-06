@@ -76,14 +76,23 @@ if (!manifest.includes('SullyStoryKeepAliveService')) {
     '    </application>',
   ].join('\n'));
 }
-if (!manifest.includes('SullyStoryCloudMonitorService')) {
-  manifest = manifest.replace('</application>', [
-    '        <service',
-    '            android:name=".plugins.SullyStoryCloudMonitorService"',
-    '            android:exported="false"',
-    '            android:foregroundServiceType="dataSync" />',
-    '    </application>',
-  ].join('\n'));
+
+// 状态监控必须和 WebView 主进程分开。部分国产 ROM 在用户切到别的 App 后会冻结主进程里的
+// HandlerThread，即便 foreground notification 还留在系统栏里，于是状态牌永远停在“生成中”。
+// 独立 :story_monitor 进程仍由自己的 FGS 保活，正文完成后可继续查 Worker 并原地更新通知。
+const cloudMonitorService = [
+  '        <service',
+  '            android:name=".plugins.SullyStoryCloudMonitorService"',
+  '            android:exported="false"',
+  '            android:process=":story_monitor"',
+  '            android:stopWithTask="false"',
+  '            android:foregroundServiceType="dataSync" />',
+].join('\n');
+const cloudMonitorPattern = /\s*<service\s+android:name="\.plugins\.SullyStoryCloudMonitorService"[\s\S]*?\/>/g;
+if (cloudMonitorPattern.test(manifest)) {
+  manifest = manifest.replace(cloudMonitorPattern, `\n${cloudMonitorService}`);
+} else {
+  manifest = manifest.replace('</application>', `${cloudMonitorService}\n    </application>`);
 }
 await writeFile(manifestPath, manifest);
 
@@ -106,4 +115,4 @@ for (const dependency of okHttpDependencies.slice().reverse()) {
 }
 await writeFile(gradlePath, gradle);
 
-console.log('[SullyStoryBackground] generation manager + keepalive + cloud status monitor installed');
+console.log('[SullyStoryBackground] generation manager + keepalive + isolated cloud status monitor installed');
