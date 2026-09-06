@@ -45,32 +45,42 @@ public class SullyStoryCloudMonitorServiceTest {
 
     @After public void teardown() { if (controller != null) controller.destroy(); }
 
-    @Test public void lateFifthLookupFailureCannotOverwriteCompletedPush() throws Exception {
-        set("consecutiveLookupFailures", 4);
-        finish();
-        Notification completed = shadowOf(notifications).getNotification(TERMINAL_NOTIFICATION_ID);
-        assertNotNull(completed);
-        assertTrue(completed.extras.getCharSequence(Notification.EXTRA_TEXT).toString().contains("已生成完成"));
+    @Test public void successDismissesRunningNotificationWithoutPostingCompletedNotification() throws Exception {
+        finish("succeeded", "");
+
         assertNull(shadowOf(notifications).getNotification(RUNNING_NOTIFICATION_ID));
+        assertNull(shadowOf(notifications).getNotification(TERMINAL_NOTIFICATION_ID));
+    }
+
+    @Test public void lateLookupCannotRestoreNotificationAfterSuccess() throws Exception {
+        set("consecutiveLookupFailures", 4);
+        finish("succeeded", "");
 
         deliverResult(7, null, new IOException("read timed out"));
+        deliverResult(7, new JSONObject().put("status", "running"), null);
+        deliverResult(7, new JSONObject().put("status", "succeeded"), null);
+        finish("succeeded", ""); // duplicate push is stale after the first terminal cleared the active task
 
-        assertSame(completed, shadowOf(notifications).getNotification(TERMINAL_NOTIFICATION_ID));
+        assertNull(shadowOf(notifications).getNotification(RUNNING_NOTIFICATION_ID));
+        assertNull(shadowOf(notifications).getNotification(TERMINAL_NOTIFICATION_ID));
+    }
+
+    @Test public void failureStillLeavesTerminalNotification() throws Exception {
+        finish("failed", "upstream timeout");
+
+        Notification failed = shadowOf(notifications).getNotification(TERMINAL_NOTIFICATION_ID);
+        assertNotNull(failed);
+        assertTrue(failed.extras.getCharSequence(Notification.EXTRA_TEXT).toString().contains("生成失败"));
+        assertTrue(failed.extras.getCharSequence(Notification.EXTRA_TEXT).toString().contains("upstream timeout"));
         assertNull(shadowOf(notifications).getNotification(RUNNING_NOTIFICATION_ID));
     }
 
-    @Test public void lateSuccessCannotRestoreRunningNotificationOrRepeatTerminalAlert() throws Exception {
-        set("showingSyncWarning", true);
-        finish();
-        Notification completed = shadowOf(notifications).getNotification(TERMINAL_NOTIFICATION_ID);
-        assertNotNull(completed);
-        assertNull(shadowOf(notifications).getNotification(RUNNING_NOTIFICATION_ID));
+    @Test public void cancellationStillLeavesTerminalNotification() throws Exception {
+        finish("cancelled", "");
 
-        deliverResult(7, new JSONObject().put("status", "running"), null);
-        deliverResult(7, new JSONObject().put("status", "succeeded"), null);
-        finish(); // duplicate push is stale after the first terminal cleared the active task
-
-        assertSame(completed, shadowOf(notifications).getNotification(TERMINAL_NOTIFICATION_ID));
+        Notification cancelled = shadowOf(notifications).getNotification(TERMINAL_NOTIFICATION_ID);
+        assertNotNull(cancelled);
+        assertTrue(cancelled.extras.getCharSequence(Notification.EXTRA_TEXT).toString().contains("已取消"));
         assertNull(shadowOf(notifications).getNotification(RUNNING_NOTIFICATION_ID));
     }
 
@@ -85,11 +95,13 @@ public class SullyStoryCloudMonitorServiceTest {
         assertEquals("story_new_job_2", job.get(service));
     }
 
-    private void finish() {
+    private void finish(String status, String error) {
         service.onStartCommand(new Intent(SullyStoryCloudMonitorService.ACTION_FINISH)
             .putExtra("jobId", "story_test_job_1")
             .putExtra("clientRequestId", "story_test_client_1")
-            .putExtra("title", "测试剧情").putExtra("status", "succeeded"), 0, 1);
+            .putExtra("title", "测试剧情")
+            .putExtra("status", status)
+            .putExtra("error", error), 0, 1);
     }
 
     private void deliverResult(int token, JSONObject job, Exception error) throws Exception {
