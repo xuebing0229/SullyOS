@@ -4,8 +4,10 @@ import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
+import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.content.pm.ServiceInfo;
 import android.os.Build;
@@ -55,6 +57,7 @@ public class SullyStoryCloudMonitorService extends Service {
     private HandlerThread workerThread;
     private Handler handler;
     private PowerManager.WakeLock wakeLock;
+    private BroadcastReceiver terminalReceiver;
     private int generation = 0;
     private int consecutiveLookupFailures = 0;
     private boolean showingSyncWarning = false;
@@ -91,24 +94,48 @@ public class SullyStoryCloudMonitorService extends Service {
         }
     }
 
-    public static void finish(Context context, String jobId, String title, String status, String error) {
-        Intent intent = new Intent(context, SullyStoryCloudMonitorService.class)
-            .setAction(ACTION_FINISH)
-            .putExtra(EXTRA_JOB_ID, jobId)
+    public static void finish(
+        Context context,
+        String jobId,
+        String clientRequestId,
+        String title,
+        String status,
+        String error
+    ) {
+        // 终态可能从 UnifiedPush / 原生轮询在主进程收到。不能从后台进程再 startService：
+        // Android 12+ 可能直接拒绝。已有 monitor 在 :story_monitor 进程注册同 UID receiver，
+        // 用显式包内广播把 ACTION_FINISH 直接交给正在运行的 Service 实例；若 Service 恰好被
+        // 系统重建，原有 3 秒状态轮询仍会从 Worker 查到同一终态作为补偿。
+        Intent intent = new Intent(ACTION_FINISH)
+            .setPackage(context.getPackageName())
+            .putExtra(EXTRA_JOB_ID, jobId == null ? "" : jobId)
+            .putExtra(EXTRA_CLIENT_REQUEST_ID, clientRequestId == null ? "" : clientRequestId)
             .putExtra(EXTRA_TITLE, title)
             .putExtra(EXTRA_STATUS, status)
             .putExtra(EXTRA_ERROR, error == null ? "" : error);
-        try {
-            context.startService(intent);
-        } catch (Exception finishError) {
-            Log.w(TAG, "Unable to deliver cloud story terminal state", finishError);
-        }
+        context.sendBroadcast(intent);
+    }
+
+    /** 兼容已有插件/提交失败路径；新 native status push 会同时传 jobId + clientRequestId。 */
+    public static void finish(Context context, String jobId, String title, String status, String error) {
+        finish(context, jobId, "", title, status, error);
     }
 
     @Override
     public void onCreate() {
         super.onCreate();
         createChannel();
+        terminalReceiver = new BroadcastReceiver() {
+            @Override public void onReceive(Context context, Intent intent) {
+                if (intent != null && ACTION_FINISH.equals(intent.getAction())) handleFinish(intent);
+            }
+        };
+        ContextCompat.registerReceiver(
+            this,
+            terminalReceiver,
+            new IntentFilter(ACTION_FINISH),
+            ContextCompat.RECEIVER_NOT_EXPORTED
+        );
         PowerManager powerManager = (PowerManager) getSystemService(POWER_SERVICE);
         if (powerManager != null) {
             wakeLock = powerManager.newWakeLock(
@@ -141,6 +168,7 @@ public class SullyStoryCloudMonitorService extends Service {
         if (ACTION_START.equals(action)) {
             handleStart(intent);
         } else if (ACTION_FINISH.equals(action)) {
+            // 兼容旧版本/同进程调用；正常 native push 终态走上面的包内广播，不需要后台拉起 Service。
             handleFinish(intent);
         }
         return START_STICKY;
@@ -151,6 +179,10 @@ public class SullyStoryCloudMonitorService extends Service {
         generation += 1;
         if (handler != null) handler.removeCallbacksAndMessages(null);
         if (workerThread != null) workerThread.quitSafely();
+        if (terminalReceiver != null) {
+            try { unregisterReceiver(terminalReceiver); } catch (Exception ignored) { }
+            terminalReceiver = null;
+        }
         releaseWakeLock();
         super.onDestroy();
     }
@@ -179,11 +211,43 @@ public class SullyStoryCloudMonitorService extends Service {
 
     private void handleFinish(Intent intent) {
         String targetJobId = clean(intent.getStringExtra(EXTRA_JOB_ID));
-        if (!targetJobId.isEmpty() && !jobId.isEmpty() && !targetJobId.equals(jobId)) return;
-        String nextTitle = fallbackTitle(intent.getStringExtra(EXTRA_TITLE));
+        String targetClientRequestId = clean(intent.getStringExtra(EXTRA_CLIENT_REQUEST_ID));
         String status = clean(intent.getStringExtra(EXTRA_STATUS));
+        if (!isTerminalStatus(status)) return;
+        if (!matchesCurrentTask(targetJobId, targetClientRequestId)) {
+            Log.d(
+                TAG,
+                "Ignoring stale story terminal status targetJobId=" + targetJobId
+                    + " targetClientRequestId=" + targetClientRequestId
+                    + " currentJobId=" + jobId
+                    + " currentClientRequestId=" + clientRequestId
+            );
+            return;
+        }
+        String nextTitle = fallbackTitle(intent.getStringExtra(EXTRA_TITLE));
         String error = clean(intent.getStringExtra(EXTRA_ERROR));
         finishTerminal(status, nextTitle, error);
+    }
+
+    /**
+     * 至少一个任务标识必须精确命中。若终态同时携带 jobId/clientRequestId，任何一个已知标识
+     * 出现冲突都拒绝，避免旧任务的迟到终态停掉刚开始的新任务。
+     */
+    private boolean matchesCurrentTask(String targetJobId, String targetClientRequestId) {
+        boolean matched = false;
+        if (!targetJobId.isEmpty()) {
+            if (jobId.isEmpty() || !targetJobId.equals(jobId)) return false;
+            matched = true;
+        }
+        if (!targetClientRequestId.isEmpty()) {
+            if (!clientRequestId.isEmpty() && !targetClientRequestId.equals(clientRequestId)) return false;
+            if (!clientRequestId.isEmpty()) matched = true;
+        }
+        return matched;
+    }
+
+    private static boolean isTerminalStatus(String status) {
+        return "succeeded".equals(status) || "failed".equals(status) || "cancelled".equals(status);
     }
 
     private boolean applyMonitorState(
@@ -263,7 +327,7 @@ public class SullyStoryCloudMonitorService extends Service {
             }
             String status = job.optString("status", "");
             Log.d(TAG, "Story status poll jobId=" + jobId + " status=" + status);
-            if ("succeeded".equals(status) || "failed".equals(status) || "cancelled".equals(status)) {
+            if (isTerminalStatus(status)) {
                 finishTerminal(status, title, job.optString("error", ""));
                 return;
             }
