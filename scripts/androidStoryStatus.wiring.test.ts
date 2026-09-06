@@ -69,8 +69,22 @@ describe('Android story terminal status native routing', () => {
       'finishTerminal(status, nextTitle, error);',
     ]);
     expect(monitor).toContain('clearPersistedMonitor();');
-    expect(monitor).toContain('stopForeground(STOP_FOREGROUND_DETACH);');
     expect(monitor).toContain('stopSelf();');
+  });
+
+  it('removes the foreground notification before posting a separate terminal notification', () => {
+    const monitor = source('native/android/SullyStoryCloudMonitorService.java');
+    expect(monitor).toContain('private static final int NOTIFICATION_ID = 23033;');
+    expect(monitor).toContain('private static final int TERMINAL_NOTIFICATION_ID = 23034;');
+    expectOrdered(monitor, [
+      'stopForeground(STOP_FOREGROUND_REMOVE);',
+      'manager.notify(',
+      'TERMINAL_NOTIFICATION_ID,',
+      'buildTerminalNotification(normalizedStatus, resolvedTitle, error).build()',
+      'stopSelf();',
+    ]);
+    expect(monitor).not.toContain('stopForeground(STOP_FOREGROUND_DETACH);');
+    expect(monitor).toContain('manager.cancel(TERMINAL_NOTIFICATION_ID);');
   });
 
   it('installs the router into the regenerated Capacitor Android project', () => {
