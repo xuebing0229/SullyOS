@@ -370,10 +370,39 @@ export function resolveApiExecutionPlanWithData(
     const group = normalizeApiFailoverGroup(rawGroup, scope);
     const analysis = analyzeApiFailoverGroup(group, presets);
 
-    // 剧情线路与主聊天解耦：只要配置了第一线路，即使“回退”开关关闭，
-    // 剧情也固定使用自己的第一线路；没有配置时才继续沿用当前 API。
+    // 剧情线路与主聊天解耦：关闭“备用回退”时只能使用用户摆在第一行的
+    // 剧情主线路。不能用 analysis.routes[0]，因为它是“第一条解析成功的线路”，
+    // 会在第一行缺失/停用/模型失效时越过它，偷偷跑到后面的旧备用预设。
     if (scope === 'story' && !group.enabled) {
-        const selected = analysis.routes[0] || directRoute;
+        const primaryMember = group.members[0];
+        if (!primaryMember) {
+            return {
+                mode: 'direct',
+                scope,
+                primaryApi: fallbackApi,
+                routes: [directRoute],
+                group,
+                cacheIdentity: [
+                    'direct-story-unconfigured-v1',
+                    directRoute.presetId,
+                    fallbackApi.baseUrl?.trim().replace(/\/+$/, ''),
+                    fallbackApi.model,
+                ].join('|'),
+            };
+        }
+
+        const primaryAnalysis = analysis.members[0];
+        const selected = primaryAnalysis?.route;
+        if (!selected) {
+            const requestedModel = String(
+                primaryMember.model || primaryAnalysis?.model || '',
+            ).trim();
+            const issue = primaryAnalysis?.issue || 'unresolved';
+            throw new Error(
+                `剧情专用主线路不可用（presetId=${primaryMember.presetId}${requestedModel ? `, model=${requestedModel}` : ''}, issue=${issue}）。请在设置里重新选择剧情线路。`,
+            );
+        }
+
         return {
             mode: 'direct',
             scope,
@@ -381,12 +410,26 @@ export function resolveApiExecutionPlanWithData(
             routes: [{ ...selected, routeIndex: 0 }],
             group,
             cacheIdentity: [
-                'direct-story-route-v1',
+                'direct-story-route-v2',
                 selected.presetId,
                 selected.api.baseUrl?.trim().replace(/\/+$/, ''),
                 selected.api.model,
             ].join('|'),
         };
+    }
+
+    // Story 已明确配置了线路时，哪怕备用回退开着，只要当前一条可用线路都
+    // 解析不出来，也必须把配置问题暴露出来，绝不能静默退回主聊天 API。
+    if (scope === 'story' && group.members.length > 0 && analysis.routes.length === 0) {
+        const primaryMember = group.members[0];
+        const primaryAnalysis = analysis.members[0];
+        const requestedModel = String(
+            primaryMember?.model || primaryAnalysis?.model || '',
+        ).trim();
+        const issue = primaryAnalysis?.issue || analysis.reason || 'unresolved';
+        throw new Error(
+            `剧情 API 线路不可用（presetId=${primaryMember?.presetId || 'unknown'}${requestedModel ? `, model=${requestedModel}` : ''}, issue=${issue}）。请在设置里重新选择剧情线路。`,
+        );
     }
 
     if (!analysis.canEnable) {
