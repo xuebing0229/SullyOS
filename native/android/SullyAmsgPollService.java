@@ -90,8 +90,10 @@ public class SullyAmsgPollService extends Service {
             long id = item.optLong("id", 0);
             String payload = item.optString("payload", "");
             if (id <= 0 || payload.isEmpty()) continue;
+            // 与 UnifiedPush 一致：story-status 仍保存给 WebView 补账，但由剧情状态牌消费通知。
             savePending(payload);
-            showMessage(id, payload);
+            boolean storyStatus = SullyStoryStatusPush.handle(this, payload);
+            if (!storyStatus) showMessage(id, payload);
             ids.add(id);
         }
         if (!ids.isEmpty()) acknowledge(base, token, ids);
