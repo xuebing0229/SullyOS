@@ -47,6 +47,7 @@ jobs:
           utils/apiFailover.test.ts
           utils/storyTheaterBillingSafety.wiring.test.ts
           utils/storyTheaterImage.inlinePlan.test.ts
+          utils/storyPollingVisibilityGuard.wiring.test.ts
           worker/amsg/src/storyImageHandoff.test.ts
 
       - name: Build worker bundles
