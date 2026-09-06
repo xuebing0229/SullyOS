@@ -69,26 +69,19 @@ jobs:
               'remove inline image system prompt',
           )
 
-          replace_once(
-          """            }, fullText => {
-                  const rawVisible = prefill && !fullText.startsWith(prefill) ? `${prefill}${fullText}` : fullText;
-                  const visible = entry.imageGeneration?.enabled
-                      ? storyInlineImageVisibleText(rawVisible)
-                      : rawVisible;
-                  partialStreamText = visible;
-                  streamingTextRef.current = visible;
-                  setStreamingText(visible);
-              }, {""",
-          """            }, fullText => {
+          sub_once(
+              r"            \}, fullText => \{\n\s+const rawVisible = prefill && !fullText\.startsWith\(prefill\) \? `\$\{prefill\}\$\{fullText\}` : fullText;\n\s+const visible = entry\.imageGeneration\?\.enabled\n\s+\? storyInlineImageVisibleText\(rawVisible\)\n\s+: rawVisible;\n\s+partialStreamText = visible;\n\s+streamingTextRef\.current = visible;\n\s+setStreamingText\(visible\);\n\s+\}, \{",
+              """            }, fullText => {
                   const visible = prefill && !fullText.startsWith(prefill) ? `${prefill}${fullText}` : fullText;
                   partialStreamText = visible;
                   streamingTextRef.current = visible;
                   setStreamingText(visible);
               }, {""",
-          'restore plain streaming text')
+              'restore plain streaming text',
+          )
 
           sub_once(
-              r"\n                imageHandoff: cloudImageHandoffSpec,\n                onCloudCompleted: data => \{\n                    const raw = data\?_sullyStoryImageHandoff;.*?\n                \},",
+              r"\n                imageHandoff: cloudImageHandoffSpec,\n                onCloudCompleted: data => \{\n                    const raw = data\?\._sullyStoryImageHandoff;.*?\n                \},",
               '',
               'remove cloud image handoff from story request',
               re.S,
@@ -148,7 +141,8 @@ jobs:
           if leftovers:
               raise SystemExit(f'inline image leftovers in StoryTheaterSession: {leftovers}')
 
-          if "purpose: '剧情自动配图规划'" not in Path('utils/storyTheaterImage.ts').read_text(encoding='utf-8'):
+          image_impl = Path('utils/storyTheaterImage.ts').read_text(encoding='utf-8')
+          if "purpose: '剧情自动配图规划'" not in image_impl or "tool_choice: forcedToolChoice" not in image_impl:
               raise SystemExit('separate image planner implementation is missing')
 
           path.write_text(s, encoding='utf-8')
