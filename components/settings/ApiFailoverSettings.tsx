@@ -192,6 +192,10 @@ const ApiFailoverSettings: React.FC<Props> = ({ addToast }) => {
                         ...member,
                         presetId: next.presetId,
                         model: next.model,
+                        // The current UI has no per-route disable control. A legacy disabled
+                        // member must not stay invisibly disabled after the user explicitly
+                        // selects a new preset/model for this row.
+                        enabled: true,
                     }
                     : member
             ),
