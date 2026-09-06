@@ -18,26 +18,16 @@ import {
 import type { McpServerConfig } from './mcpClient';
 import { getActiveVibeReference } from './vibeReference';
 import { isCharacterReferenceAllowedForActivePreset } from './imageGenerationPresets';
+import {
+    resolveNovelAiReferenceArguments,
+    sanitizeNovelAiReferenceArguments,
+    type NovelAiReferenceFragments,
+    type NovelAiReferencePolicy,
+} from './novelAiReferencePolicy';
 
 const SLOT_RE = /^[a-f0-9]{64}$/;
 const SHA_RE = /^[a-f0-9]{64}$/;
 const MAX_SOURCE_BYTES = 20 * 1024 * 1024;
-const REFERENCE_FIELDS = [
-    'reference_id',
-    'reference_type',
-    'reference_strength',
-    'reference_fidelity',
-    'user_reference_id',
-    'user_reference_type',
-    'user_reference_strength',
-    'user_reference_fidelity',
-    'vibe_reference_id',
-    'vibe_reference_strength',
-    'vibe_reference_information_extracted',
-    'use_character_reference',
-    'use_user_reference',
-    'use_vibe_reference',
-] as const;
 
 export interface PreparedReferenceImage {
     blob: Blob;
@@ -327,9 +317,7 @@ export async function deleteRemoteNovelAiVibeReference(
 export function sanitizeNovelAiReferenceToolArguments(
     args: Record<string, any>,
 ): Record<string, any> {
-    const clean = { ...(args || {}) };
-    for (const key of REFERENCE_FIELDS) delete clean[key];
-    return clean;
+    return sanitizeNovelAiReferenceArguments(args);
 }
 
 export function applyManagedNovelAiReferenceArguments(
@@ -359,6 +347,26 @@ export function applyManagedNovelAiReferenceArguments(
     return result;
 }
 
+const preciseReferenceFragment = (
+    config: NovelAiPreciseReferenceConfig | undefined,
+    prefix: 'character' | 'user',
+): Record<string, unknown> | undefined => {
+    if (!config?.enabled) return undefined;
+    return prefix === 'character'
+        ? {
+            reference_id: config.slotId,
+            reference_type: config.type,
+            reference_strength: config.strength,
+            reference_fidelity: config.fidelity,
+        }
+        : {
+            user_reference_id: config.slotId,
+            user_reference_type: config.type,
+            user_reference_strength: config.strength,
+            user_reference_fidelity: config.fidelity,
+        };
+};
+
 export async function prepareBuiltinImageToolArguments({
     server,
     toolName,
@@ -385,64 +393,64 @@ export async function prepareBuiltinImageToolArguments({
         return args;
     }
 
-    // 预设里的“允许角色参考”其实控制的是整类 Precise Reference 能力。
-    // 当前角色参考与用户参考只是同一种 Precise Reference 的两个来源，必须同开同关。
+    // 预设里的“允许角色参考”控制整类 Precise Reference；角色与用户两个来源同开同关。
+    // 角色自动选预设时必须看“被实际选中的 server”，不能看其他预设是否允许。
     const preciseReferenceAllowed = server.imagePresetId
         ? server.imagePresetAllowCharacterReference !== false
         : isCharacterReferenceAllowedForActivePreset();
-    const requestedSelection = {
-        character: preciseReferenceAllowed
-            && args?.use_character_reference !== false,
-        user: preciseReferenceAllowed
-            && args?.use_user_reference !== false,
-        vibe: args?.use_vibe_reference !== false,
+    const policy: NovelAiReferencePolicy = {
+        allowCharacterReference: preciseReferenceAllowed,
+        allowUserReference: preciseReferenceAllowed,
+        allowVibeReference: true,
     };
-    const clean = sanitizeNovelAiReferenceToolArguments(args);
     const characterReference = character?.novelAiReference;
     const userReference = userProfile?.novelAiReference;
-    const vibeReference = requestedSelection.vibe ? getActiveVibeReference() : null;
-    const vibeActive = Boolean(vibeReference?.enabled);
-
-    // NovelAI 官方当前不允许 Vibe Transfer 与 Precise Reference 同时使用。
-    // 用户明确打开 Vibe 时让 Vibe 优先，避免把两套互斥字段一起发给上游。
-    const preciseSelection = {
-        character: requestedSelection.character && !vibeActive,
-        user: requestedSelection.user && !vibeActive,
+    const vibeReference = getActiveVibeReference();
+    const references: NovelAiReferenceFragments = {
+        ...(characterReference?.enabled
+            ? { character: preciseReferenceFragment(characterReference, 'character') }
+            : {}),
+        ...(userReference?.enabled
+            ? { user: preciseReferenceFragment(userReference, 'user') }
+            : {}),
+        ...(vibeReference?.enabled ? {
+            vibe: {
+                vibe_reference_id: vibeReference.slotId,
+                vibe_reference_strength: vibeReference.strength,
+                vibe_reference_information_extracted: vibeReference.informationExtracted,
+            },
+        } : {}),
     };
+    const resolved = resolveNovelAiReferenceArguments({ args, policy, references });
+
+    // 保持旧前台错误语义：只有这次真正会被发送的参考图才做完整性检查和远端 HEAD/PUT。
     const enabledReferences = [
-        { label: '当前角色', value: characterReference, selected: preciseSelection.character },
-        { label: '用户', value: userReference, selected: preciseSelection.user },
-    ].filter(item => item.value?.enabled && item.selected) as Array<{ label: string; value: NovelAiPreciseReferenceConfig; selected: boolean }>;
+        { label: '当前角色', value: characterReference, selected: resolved.selected.character },
+        { label: '用户', value: userReference, selected: resolved.selected.user },
+    ].filter(item => item.value?.enabled && item.selected) as Array<{
+        label: string;
+        value: NovelAiPreciseReferenceConfig;
+        selected: boolean;
+    }>;
 
     for (const item of enabledReferences) {
         if (!item.value.imageRef) throw new Error(`${item.label}已开启精密参照，但没有参考图`);
         if (!SLOT_RE.test(item.value.slotId)) throw new Error(`${item.label}的精密参照槽位无效`);
     }
-    if (vibeActive) {
+    if (resolved.selected.vibe) {
         if (!vibeReference?.imageRef) throw new Error('Vibe 已开启，但没有参考图');
         if (!SLOT_RE.test(vibeReference.slotId)) throw new Error('Vibe 参考图槽位无效');
     }
-    if (!enabledReferences.length && !vibeActive) return clean;
+    if (!enabledReferences.length && !resolved.selected.vibe) return resolved.arguments;
 
     await Promise.all([
         ...enabledReferences.map(item => ensureNovelAiReferenceUploaded(item.value)),
-        ...(vibeActive ? [ensureNovelAiReferenceUploaded(vibeReference as any)] : []),
+        ...(resolved.selected.vibe && vibeReference
+            ? [ensureNovelAiReferenceUploaded(vibeReference as any)]
+            : []),
     ]);
 
-    const result = applyManagedNovelAiReferenceArguments(
-        clean,
-        characterReference,
-        userReference,
-        preciseSelection,
-    );
-    if (vibeActive && vibeReference) {
-        Object.assign(result, {
-            vibe_reference_id: vibeReference.slotId,
-            vibe_reference_strength: vibeReference.strength,
-            vibe_reference_information_extracted: vibeReference.informationExtracted,
-        });
-    }
-    return result;
+    return resolved.arguments;
 }
 
 export function stripNovelAiReferenceForTextOnlyBackup(character: CharacterProfile): CharacterProfile {
