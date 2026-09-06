@@ -24,6 +24,7 @@ for (const name of [
   'SullyStoryGenerationManager.java',
   'SullyStoryKeepAliveService.java',
   'SullyStoryCloudMonitorService.java',
+  'SullyStoryStatusPush.java',
 ]) {
   const source = await readFile(path.join(root, 'native', 'android', name), 'utf8');
   await writeFile(path.join(pluginDir, name), source.replaceAll('__APP_ID__', appId));
