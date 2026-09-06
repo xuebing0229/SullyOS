@@ -5,6 +5,7 @@ import type {
     ResolvedApiRoute,
 } from './apiFailover';
 import { isSameCoreModel } from './apiCallLog';
+import { normalizeApiPreset } from './apiConfigNormalize';
 import { apiPresetHasModel } from './apiPresetModels';
 
 export type ApiFailoverMemberIssue =
@@ -53,8 +54,15 @@ export function analyzeApiFailoverGroup(
     group: ApiFailoverGroup,
     presets: ApiPreset[],
 ): ApiFailoverGroupAnalysis {
+    // 线路解析是保存预设进入聊天/剧情执行链的统一边界。这里必须先做与设置页相同的
+    // 归一化，不能把 localStorage 里的历史/脏凭据原样塞给后台 Story Worker。
+    // 尤其 apiKey 可能带有复制粘贴产生的零宽字符/BOM/首尾空白；前台当前配置已经
+    // 归一化时可正常调用，而剧情线路若继续读 raw preset，就会表现成上游 Invalid token。
     const presetMap = new Map(
-        presets.map(preset => [preset.id, preset]),
+        presets.map(preset => {
+            const normalized = normalizeApiPreset(preset);
+            return [normalized.id, normalized] as const;
+        }),
     );
     const members: ApiFailoverMemberAnalysis[] = [];
     const valid: Array<{
