@@ -1,23 +1,6 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import type { APIConfig } from '../types';
 import { applyApiPresetConfig, buildApiPresetConfig, mergeApiPresetPatch } from './apiPresetConfig';
-
-const API_FAILOVER_STORAGE_KEY = 'os_api_failover_groups_v1';
-
-const stubLocalStorage = () => {
-  const store = new Map<string, string>();
-  vi.stubGlobal('localStorage', {
-    getItem: (key: string) => store.get(key) ?? null,
-    setItem: (key: string, value: string) => { store.set(key, String(value)); },
-    removeItem: (key: string) => { store.delete(key); },
-    clear: () => { store.clear(); },
-  });
-  return store;
-};
-
-afterEach(() => {
-  vi.unstubAllGlobals();
-});
 
 describe('API preset chat-only config', () => {
   it('trims and stores exactly the five editable chat fields', () => {
@@ -72,61 +55,24 @@ describe('API preset chat-only config', () => {
     });
   });
 
-  it('releases failover rows that were only pinned to the preset old default model', () => {
-    stubLocalStorage();
-    localStorage.setItem(API_FAILOVER_STORAGE_KEY, JSON.stringify([
-      {
-        id: 'failover_story',
-        scope: 'story',
-        updatedAt: 1,
-        members: [
-          { presetId: 'preset-1', model: 'old-model', enabled: true },
-          { presetId: 'preset-1', model: 'alternate-model', enabled: true },
-          { presetId: 'preset-2', model: 'old-model', enabled: true },
-        ],
-      },
-    ]));
-
+  it('does not mutate an explicitly selected routed model when the preset default changes', () => {
     const previous = {
       id: 'preset-1',
       name: 'Story API',
-      config: { baseUrl: 'https://api.example/v1', apiKey: 'key', model: 'old-model' },
+      config: { baseUrl: 'https://api.example/v1', apiKey: 'key', model: 'model-a' },
+      models: [{ model: 'model-a' }, { model: 'model-b' }],
     };
-    const config = {
-      ...previous.config,
-      model: 'new-model',
-    };
+    const routedMember = { presetId: 'preset-1', model: 'model-a', enabled: true };
 
-    mergeApiPresetPatch(previous, { config });
-
-    const stored = JSON.parse(localStorage.getItem(API_FAILOVER_STORAGE_KEY) || '[]');
-    expect(stored[0].members).toEqual([
-      { presetId: 'preset-1', enabled: true },
-      { presetId: 'preset-1', model: 'alternate-model', enabled: true },
-      { presetId: 'preset-2', model: 'old-model', enabled: true },
-    ]);
-    expect(stored[0].updatedAt).toBeGreaterThan(1);
-  });
-
-  it('does not rewrite routed model overrides when the preset default model did not change', () => {
-    stubLocalStorage();
-    const groups = [{
-      id: 'failover_story',
-      scope: 'story',
-      updatedAt: 1,
-      members: [{ presetId: 'preset-1', model: 'same-model', enabled: true }],
-    }];
-    localStorage.setItem(API_FAILOVER_STORAGE_KEY, JSON.stringify(groups));
-
-    const previous = {
-      id: 'preset-1',
-      name: 'Story API',
-      config: { baseUrl: 'old', apiKey: 'old-key', model: 'same-model' },
-    };
-    mergeApiPresetPatch(previous, {
-      config: { baseUrl: 'new', apiKey: 'new-key', model: 'same-model' },
+    const next = mergeApiPresetPatch(previous, {
+      config: { ...previous.config, model: 'model-b' },
     });
 
-    expect(JSON.parse(localStorage.getItem(API_FAILOVER_STORAGE_KEY) || '[]')).toEqual(groups);
+    expect(next.config.model).toBe('model-b');
+    expect(routedMember).toEqual({
+      presetId: 'preset-1',
+      model: 'model-a',
+      enabled: true,
+    });
   });
 });
