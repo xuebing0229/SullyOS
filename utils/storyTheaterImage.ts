@@ -19,6 +19,7 @@ import {
     isCharacterReferenceAllowedForActivePreset,
 } from './imageGenerationPresets';
 import { persistMcpGeneratedImages } from './mcpImagePersistence';
+import { getActiveVibeReference } from './vibeReference';
 
 export interface StoryInlineImagePlan {
     tool: string;
@@ -221,9 +222,19 @@ export interface StoryCloudImageToolHandoff {
     };
 }
 
+export interface StoryCloudImagePlannerSpec {
+    baseUrl: string;
+    apiKey: string;
+    model: string;
+    systemPrompt: string;
+    tools: OpenAIMcpTool[];
+}
+
 export interface StoryCloudImageHandoffSpec {
     version: 1;
     tools: StoryCloudImageToolHandoff[];
+    /** 正文完成后由 Worker 独立执行的二段式配图规划器。 */
+    planner?: StoryCloudImagePlannerSpec;
 }
 
 export interface StoryCloudImageHandoffResult {
@@ -267,11 +278,48 @@ const pickManagedReferenceFragment = (args: Record<string, any>): Record<string,
 export const buildStoryCloudImageHandoffSpec = async (input: {
     actors: CharacterProfile[];
     userProfile: UserProfile;
+    entry?: StoryTheaterEntry;
+    userName?: string;
+    plannerApiConfig?: APIConfig;
+    messages?: Message[];
 }): Promise<StoryCloudImageHandoffSpec | undefined> => {
     if (!input.actors.length) return undefined;
     const imageTools = resolveStoryImageTools(input.actors);
     const presets = getImageGenerationPresets();
     const tools: StoryCloudImageToolHandoff[] = [];
+    const activeVibe = getActiveVibeReference();
+
+    // 这里只冻结“已经存在的远端 slot 身份”，绝不在正文 POST 前做 HEAD/PUT。
+    // 参考图通常在设置/既往生图时已经上传；即便某个 slot 后续失效，也只影响配图，
+    // 不能再让 WebView 因为参考图预检而把整轮正文卡在前台。
+    const actorReferenceFragment = (actor: CharacterProfile): Record<string, unknown> | undefined => {
+        const config = actor.novelAiReference;
+        if (!config?.enabled || !config.slotId) return undefined;
+        return {
+            reference_id: config.slotId,
+            reference_type: config.type,
+            reference_strength: config.strength,
+            reference_fidelity: config.fidelity,
+        };
+    };
+    const userReferenceFragment = (): Record<string, unknown> | undefined => {
+        const config = input.userProfile.novelAiReference;
+        if (!config?.enabled || !config.slotId) return undefined;
+        return {
+            user_reference_id: config.slotId,
+            user_reference_type: config.type,
+            user_reference_strength: config.strength,
+            user_reference_fidelity: config.fidelity,
+        };
+    };
+    const vibeReferenceFragment = (): Record<string, unknown> | undefined => {
+        if (!activeVibe?.slotId) return undefined;
+        return {
+            vibe_reference_id: activeVibe.slotId,
+            vibe_reference_strength: activeVibe.strength,
+            vibe_reference_information_extracted: activeVibe.informationExtracted,
+        };
+    };
 
     for (const [exposedName, hit] of imageTools.resolve) {
         const controlBaseUrl = String(hit.server.controlBaseUrl || '').trim().replace(/\/+$/, '');
@@ -297,84 +345,52 @@ export const buildStoryCloudImageHandoffSpec = async (input: {
         };
 
         if (engineId === 'novelai') {
-            const references: NonNullable<StoryCloudImageToolHandoff['references']> = {};
-            const actorFragments: Record<string, Record<string, unknown>> = {};
-            // 这些检查彼此独立；旧版逐个 await 会把每个远端 HEAD/上传延迟线性相加，
-            // 多角色 + 用户 + Vibe 时很容易在正文真正提交前白等几分钟。
-            const actorChecks = input.actors
-                .filter(actor => actor.novelAiReference?.enabled)
-                .map(async actor => {
-                    try {
-                        const prepared = await prepareBuiltinImageToolArguments({
-                            server: hit.server,
-                            toolName: hit.toolName,
-                            args: {
-                                prompt: '__story_cloud_reference_probe__',
-                                use_character_reference: true,
-                                use_user_reference: false,
-                                use_vibe_reference: false,
-                            },
-                            character: actor,
-                            userProfile: input.userProfile,
-                        });
-                        const fragment = pickManagedReferenceFragment(prepared);
-                        if (Object.keys(fragment).length) actorFragments[actor.id] = fragment;
-                    } catch (error) {
-                        console.warn('[StoryTheater] cloud image actor reference preflight skipped', actor.id, error);
-                    }
-                });
-
-            const userCheck = input.userProfile.novelAiReference?.enabled
-                ? (async () => {
-                    try {
-                        const prepared = await prepareBuiltinImageToolArguments({
-                            server: hit.server,
-                            toolName: hit.toolName,
-                            args: {
-                                prompt: '__story_cloud_user_reference_probe__',
-                                use_character_reference: false,
-                                use_user_reference: true,
-                                use_vibe_reference: false,
-                            },
-                            character: input.actors[0],
-                            userProfile: input.userProfile,
-                        });
-                        const fragment = pickManagedReferenceFragment(prepared);
-                        if (Object.keys(fragment).length) references.user = fragment;
-                    } catch (error) {
-                        console.warn('[StoryTheater] cloud image user reference preflight skipped', error);
-                    }
-                })()
-                : Promise.resolve();
-
-            const vibeCheck = (async () => {
-                try {
-                    const prepared = await prepareBuiltinImageToolArguments({
-                        server: hit.server,
-                        toolName: hit.toolName,
-                        args: {
-                            prompt: '__story_cloud_vibe_reference_probe__',
-                            use_character_reference: false,
-                            use_user_reference: false,
-                            use_vibe_reference: true,
-                        },
-                        character: input.actors[0],
-                        userProfile: input.userProfile,
-                    });
-                    const fragment = pickManagedReferenceFragment(prepared);
-                    if (Object.keys(fragment).some(key => key.startsWith('vibe_'))) references.vibe = fragment;
-                } catch (error) {
-                    console.warn('[StoryTheater] cloud image vibe reference preflight skipped', error);
-                }
-            })();
-
-            await Promise.all([...actorChecks, userCheck, vibeCheck]);
-            if (Object.keys(actorFragments).length) references.actors = actorFragments;
-            if (Object.keys(references).length) descriptor.references = references;
+            const actors: Record<string, Record<string, unknown>> = {};
+            for (const actor of input.actors) {
+                const fragment = actorReferenceFragment(actor);
+                if (fragment) actors[actor.id] = fragment;
+            }
+            const user = userReferenceFragment();
+            const vibe = vibeReferenceFragment();
+            if (Object.keys(actors).length || user || vibe) {
+                descriptor.references = {
+                    ...(Object.keys(actors).length ? { actors } : {}),
+                    ...(user ? { user } : {}),
+                    ...(vibe ? { vibe } : {}),
+                };
+            }
         }
         tools.push(descriptor);
     }
-    return tools.length ? { version: 1, tools } : undefined;
+
+    if (!tools.length) return undefined;
+    const plannerApi = input.plannerApiConfig;
+    const plannerBaseUrl = String(plannerApi?.baseUrl || '').trim().replace(/\/+$/, '');
+    const plannerModel = String(plannerApi?.model || '').trim();
+    const toolNames = imageTools.tools.map(tool => tool.function.name);
+    const planner = input.entry && plannerApi && plannerModel && /^https?:\/\//i.test(plannerBaseUrl)
+        ? {
+            baseUrl: plannerBaseUrl,
+            apiKey: String(plannerApi.apiKey || ''),
+            model: plannerModel,
+            systemPrompt: buildPlannerInstruction({
+                apiConfig: plannerApi,
+                plannerApiConfig: plannerApi,
+                entry: input.entry,
+                actors: input.actors,
+                userProfile: input.userProfile,
+                userName: input.userName || input.userProfile.name || '用户',
+                messages: input.messages || [],
+            }, toolNames),
+            tools: imageTools.tools.map(tool => JSON.parse(JSON.stringify(tool))) as OpenAIMcpTool[],
+        }
+        : undefined;
+
+    return {
+        version: 1,
+        tools,
+        ...(planner ? { planner } : {}),
+    };
 };
 
 export const adoptStoryCloudImageHandoff = async (input: {
