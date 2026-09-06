@@ -1,9 +1,15 @@
 import { parseImageToolClientOptions } from '../../../utils/imageToolPostAction';
 import {
+  extractTextFakedMcpCalls,
+  type McpFireServer,
+  type McpResolvedToolCore,
+} from '../../../utils/mcpFireCore';
+import {
   normalizeNovelAiReferencePolicy,
   resolveNovelAiReferenceArguments,
   type NovelAiReferencePolicy,
 } from '../../../utils/novelAiReferencePolicy';
+import { normalizeToolCallsForCompat } from '../../../utils/toolCallCompat';
 
 export interface StoryCloudImageReferenceFragments {
   actors?: Record<string, Record<string, unknown>>;
@@ -368,39 +374,102 @@ const parsePlannerText = (
           const args = parsePlannerArgs(parsed.arguments ?? parsed.args);
           if (tool && allowedNames.has(tool) && args) return { tool, arguments: args };
         }
-      } catch { /* try text-style call below */ }
+      } catch { /* try shared text-call parser below */ }
     }
   }
-  for (const name of allowedNames) {
-    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const match = clean.match(new RegExp(`${escaped}\\s*\\((\\{[\\s\\S]*\\})\\)`, 'm'));
-    if (!match) continue;
-    const args = parsePlannerArgs(match[1]);
-    if (args) return { tool: name, arguments: args };
-  }
   return null;
+};
+
+type PlannerTextResolve = Map<string, McpResolvedToolCore<McpFireServer>>;
+
+const buildPlannerTextResolve = (
+  plannerTools: StoryCloudImagePlannerSpec['tools'],
+  allowedTools: StoryCloudImageToolHandoff[],
+): PlannerTextResolve => {
+  const resolve: PlannerTextResolve = new Map();
+  const server: McpFireServer = {
+    id: 'story-image-planner',
+    name: '剧情配图规划器',
+    url: 'https://story-image-planner.invalid',
+    tools: [],
+  };
+  for (const plannerTool of plannerTools) {
+    const exposedName = String(plannerTool.function.name || '').trim();
+    if (!exposedName) continue;
+    const handoff = allowedTools.find(tool => tool.exposedName === exposedName);
+    const toolName = handoff?.toolName || exposedName;
+    resolve.set(exposedName, {
+      server,
+      toolName,
+      tool: {
+        name: toolName,
+        description: plannerTool.function.description,
+        inputSchema: plannerTool.function.parameters || { type: 'object', properties: {} },
+      },
+    });
+  }
+  return resolve;
+};
+
+const plannerResponseShape = (body: any): Record<string, unknown> => {
+  const choices = Array.isArray(body?.choices) ? body.choices : [];
+  const message = choices[0]?.message || {};
+  return {
+    choiceCount: choices.length,
+    toolCallCount: Array.isArray(message.tool_calls) ? message.tool_calls.length : 0,
+    hasFunctionCall: Boolean(message.function_call),
+    contentType: Array.isArray(message.content) ? 'array' : typeof message.content,
+    contentLength: typeof message.content === 'string' ? message.content.length : 0,
+  };
 };
 
 const extractPlannerSelection = (
   body: any,
   allowedNames: Set<string>,
+  textResolve: PlannerTextResolve,
 ): { tool: string; arguments: Record<string, unknown> } | null => {
   const message = body?.choices?.[0]?.message || {};
-  const calls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
+
+  // 与旧 App 端剧情配图规划器复用同一份 Gemini/OpenAI tool_calls 规范化逻辑。
+  const calls = normalizeToolCallsForCompat(message.tool_calls, 'story-theater-image');
   for (const call of calls) {
     const tool = String(call?.function?.name || call?.name || '').trim();
     if (!tool || !allowedNames.has(tool)) continue;
     const args = parsePlannerArgs(call?.function?.arguments ?? call?.arguments);
     if (args) return { tool, arguments: args };
   }
+
+  // 兼容旧式 OpenAI function_call。
   const functionCall = message.function_call;
   if (functionCall) {
     const tool = String(functionCall.name || '').trim();
     const args = parsePlannerArgs(functionCall.arguments);
     if (tool && allowedNames.has(tool) && args) return { tool, arguments: args };
   }
-  return parsePlannerText(String(message.content || ''), allowedNames);
+
+  const content = String(message.content || '');
+
+  // 先复用旧 App/主聊天已经吃过大量站子格式的“正文假工具调用”解析器：
+  // exposedName / 原始 toolName、括号 JSON、kwargs、位置参数、冒号形式都沿用同一套规则。
+  const faked = extractTextFakedMcpCalls(content, textResolve)[0];
+  if (faked) return { tool: faked.exposedName, arguments: cloneRecord(faked.args) };
+
+  // Worker 原有的 {"tool":"...","arguments":{...}} 兼容返回继续保留。
+  return parsePlannerText(content, allowedNames);
 };
+
+const buildNativeRepairBody = (nativeBody: Record<string, unknown>): Record<string, unknown> => ({
+  ...nativeBody,
+  temperature: 0,
+  parallel_tool_calls: false,
+  messages: [
+    ...((nativeBody.messages as unknown[]) || []),
+    {
+      role: 'system',
+      content: '纠错重试：上一轮没有返回可执行的 tool_calls。你现在必须调用且只能调用一个本轮提供的生图工具；禁止只输出文字，禁止返回空白，禁止同时调用多个工具。',
+    },
+  ],
+});
 
 const runSeparatePlanner = async (
   planner: StoryCloudImagePlannerSpec,
@@ -410,6 +479,7 @@ const runSeparatePlanner = async (
   const allowedNames = new Set(allowedTools.map(tool => tool.exposedName));
   const plannerTools = planner.tools.filter(tool => allowedNames.has(tool.function.name));
   if (!plannerTools.length) throw new Error('配图规划器没有可用生图工具');
+  const textResolve = buildPlannerTextResolve(plannerTools, allowedTools);
   const latestStory = String(storyContent || '').slice(-24_000);
   const systemPrompt = `${planner.systemPrompt}\n\n【刚完成的最新一轮正文——以这一段作为画面最高优先级】\n${latestStory}`;
   const url = `${cleanBaseUrl(planner.baseUrl)}/chat/completions`;
@@ -429,28 +499,59 @@ const runSeparatePlanner = async (
     stream: false,
   };
 
-  let nativeError = '';
+  let native: { response: Response; body: any };
   try {
-    const native = await fetchJson(url, planner.apiKey, {
+    native = await fetchJson(url, planner.apiKey, {
       method: 'POST',
       body: JSON.stringify(nativeBody),
     }, 90_000);
-    if (native.response.ok) {
-      const selection = extractPlannerSelection(native.body, allowedNames);
-      if (selection) return selection;
-      nativeError = '规划器没有返回可执行的 tool_calls';
-    } else {
-      nativeError = remoteError(native.body, native.response.status);
-      if (![400, 404, 405, 415, 422].includes(native.response.status)) {
-        throw new Error(`配图规划器请求失败：${nativeError}`);
-      }
-    }
   } catch (error) {
-    nativeError = String((error as Error)?.message || error);
+    throw new Error(`配图规划器请求失败：${String((error as Error)?.message || error).slice(0, 500)}`);
   }
 
-  // OpenAI-compatible 站点偶尔拒绝 tools/tool_choice。与 App 侧兼容策略一致，
-  // 真正的生图尚未发生，因此可以只补一次“严格 JSON 选工具”规划，不会重复出图。
+  if (native.response.ok) {
+    const selection = extractPlannerSelection(native.body, allowedNames, textResolve);
+    if (selection) return selection;
+
+    console.warn('[StoryImageHandoff] image planner omitted executable tool call; retrying native planner once', {
+      plannerModel: planner.model,
+      toolCount: plannerTools.length,
+      response: plannerResponseShape(native.body),
+    });
+
+    // 旧 App 端的成熟行为：原生 tools 请求成功但模型漏调工具时，第二次仍使用原生 tools
+    // 做纠错，而不是擅自切成另一套 JSON 协议。这样前台/后台看到同一种模型返回时行为一致。
+    let repair: { response: Response; body: any };
+    try {
+      repair = await fetchJson(url, planner.apiKey, {
+        method: 'POST',
+        body: JSON.stringify(buildNativeRepairBody(nativeBody)),
+      }, 90_000);
+    } catch (error) {
+      throw new Error(`配图规划器纠错重试失败：${String((error as Error)?.message || error).slice(0, 500)}`);
+    }
+    if (!repair.response.ok) {
+      throw new Error(`配图规划器纠错重试失败：${remoteError(repair.body, repair.response.status)}`);
+    }
+    const repaired = extractPlannerSelection(repair.body, allowedNames, textResolve);
+    if (repaired) return repaired;
+
+    console.warn('[StoryImageHandoff] image planner repair still omitted executable tool call', {
+      plannerModel: planner.model,
+      toolCount: plannerTools.length,
+      response: plannerResponseShape(repair.body),
+    });
+    throw new Error('配图规划器连续两次没有返回可执行的生图调用');
+  }
+
+  const nativeError = remoteError(native.body, native.response.status);
+  if (![400, 404, 405, 415, 422].includes(native.response.status)) {
+    // 不再把鉴权、限流、服务器故障等真实错误吞掉后伪装成“模型没调用工具”。
+    throw new Error(`配图规划器请求失败：${nativeError}`);
+  }
+
+  // 只有站点明确拒绝 tools/tool_choice 时才切一次文字兼容模式；复用主聊天的假工具调用解析器，
+  // 不再发明 Worker 专属格式。真正生图尚未发生，所以这一轮兼容重试不会重复出图。
   const schemaText = plannerTools.map(tool => JSON.stringify(tool)).join('\n');
   const fallback = await fetchJson(url, planner.apiKey, {
     method: 'POST',
@@ -459,7 +560,7 @@ const runSeparatePlanner = async (
       messages: [
         {
           role: 'system',
-          content: `${systemPrompt}\n\n工具兼容模式：上一次原生工具调用不可用（${nativeError.slice(0, 300)}）。下面是允许选择的生图工具 schema：\n${schemaText}\n\n你必须只输出一行 JSON：{"tool":"工具名","arguments":{...}}。禁止解释、代码块和额外文本。`,
+          content: `${systemPrompt}\n\n工具兼容模式：原生 tools/tool_choice 被上游拒绝（${nativeError.slice(0, 300)}）。下面是允许选择的生图工具 schema：\n${schemaText}\n\n你必须只输出一行生图工具调用，严格使用 tool_name({JSON})；禁止解释、分析、道歉、代码块、自然语言前后缀，也禁止返回空白。`,
         },
         { role: 'user', content: '选择一个最适合最新剧情画面的工具，并给出完整参数。' },
       ],
@@ -471,8 +572,15 @@ const runSeparatePlanner = async (
   if (!fallback.response.ok) {
     throw new Error(`配图规划器兼容重试失败：${remoteError(fallback.body, fallback.response.status)}`);
   }
-  const selection = extractPlannerSelection(fallback.body, allowedNames);
-  if (!selection) throw new Error('配图规划器连续两次没有返回可执行的生图调用');
+  const selection = extractPlannerSelection(fallback.body, allowedNames, textResolve);
+  if (!selection) {
+    console.warn('[StoryImageHandoff] text fallback omitted executable tool call', {
+      plannerModel: planner.model,
+      toolCount: plannerTools.length,
+      response: plannerResponseShape(fallback.body),
+    });
+    throw new Error('配图规划器连续两次没有返回可执行的生图调用');
+  }
   return selection;
 };
 
