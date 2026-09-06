@@ -120,7 +120,7 @@ jobs:
         working-directory: android
         run: |
           chmod +x gradlew
-          ./gradlew assembleRelease
+          ./gradlew testDebugUnitTest assembleRelease
 
       - name: Prepare release files
         shell: bash

@@ -14,6 +14,7 @@ import android.os.Build;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.IBinder;
+import android.os.Looper;
 import android.os.PowerManager;
 import android.util.Log;
 import androidx.core.app.NotificationCompat;
@@ -56,6 +57,8 @@ public class SullyStoryCloudMonitorService extends Service {
 
     private HandlerThread workerThread;
     private Handler handler;
+    // Service lifecycle, push reception and every state/notification mutation share this looper.
+    private final Handler stateHandler = new Handler(Looper.getMainLooper());
     private PowerManager.WakeLock wakeLock;
     private BroadcastReceiver terminalReceiver;
     private int generation = 0;
@@ -177,6 +180,7 @@ public class SullyStoryCloudMonitorService extends Service {
     @Override
     public void onDestroy() {
         generation += 1;
+        stateHandler.removeCallbacksAndMessages(null);
         if (handler != null) handler.removeCallbacksAndMessages(null);
         if (workerThread != null) workerThread.quitSafely();
         if (terminalReceiver != null) {
@@ -282,7 +286,8 @@ public class SullyStoryCloudMonitorService extends Service {
         enterForeground(buildRunningNotification(this.title));
         acquireWakeLock();
         handler.removeCallbacksAndMessages(null);
-        handler.post(() -> poll(token));
+        stateHandler.removeCallbacksAndMessages(null);
+        stateHandler.post(() -> poll(token));
         return true;
     }
 
@@ -318,8 +323,26 @@ public class SullyStoryCloudMonitorService extends Service {
 
     private void poll(int token) {
         if (token != generation || jobId.isEmpty()) return;
-        try {
-            JSONObject job = fetchJob();
+        final String lookupJobId = jobId;
+        final String lookupClientId = clientRequestId;
+        final String lookupUrl = workerUrl;
+        final String lookupUser = userId;
+        final String lookupToken = serverToken;
+        handler.post(() -> {
+            try {
+                JSONObject job = fetchJob(lookupJobId, lookupClientId, lookupUrl, lookupUser, lookupToken);
+                stateHandler.post(() -> handlePollResult(token, job, null));
+            } catch (Exception error) {
+                stateHandler.post(() -> handlePollResult(token, null, error));
+            }
+        });
+    }
+
+    private void handlePollResult(int token, JSONObject job, Exception error) {
+        // Clearing queued callbacks cannot cancel an in-flight HTTP request. Check both successful
+        // and failed completions here, on the same thread that applies terminal pushes/new tasks.
+        if (token != generation || jobId.isEmpty()) return;
+        if (error == null) {
             consecutiveLookupFailures = 0;
             if (showingSyncWarning) {
                 showingSyncWarning = false;
@@ -331,7 +354,7 @@ public class SullyStoryCloudMonitorService extends Service {
                 finishTerminal(status, title, job.optString("error", ""));
                 return;
             }
-        } catch (Exception error) {
+        } else {
             consecutiveLookupFailures += 1;
             Log.w(
                 TAG,
@@ -345,24 +368,24 @@ public class SullyStoryCloudMonitorService extends Service {
                 updateRunningNotification(buildSyncWarningNotification(title));
             }
         }
-        if (token == generation && handler != null) handler.postDelayed(() -> poll(token), POLL_MS);
+        if (token == generation) stateHandler.postDelayed(() -> poll(token), POLL_MS);
     }
 
     /**
      * 先按 jobId 查；拿不到时再按 clientRequestId 查同一任务。
      * 两条都是只读 GET，不会创建第二次模型请求。
      */
-    private JSONObject fetchJob() throws Exception {
+    private static JSONObject fetchJob(String jobId, String clientRequestId, String workerUrl, String userId, String serverToken) throws Exception {
         Exception jobIdFailure;
         try {
-            return fetchJobAtPath("/story-jobs/" + encode(jobId));
+            return fetchJobAtPath(workerUrl, userId, serverToken, "/story-jobs/" + encode(jobId));
         } catch (Exception error) {
             jobIdFailure = error;
         }
 
         if (!clientRequestId.isEmpty()) {
             try {
-                return fetchJobAtPath("/story-jobs/by-client/" + encode(clientRequestId));
+                return fetchJobAtPath(workerUrl, userId, serverToken, "/story-jobs/by-client/" + encode(clientRequestId));
             } catch (Exception clientError) {
                 clientError.addSuppressed(jobIdFailure);
                 throw clientError;
@@ -371,7 +394,7 @@ public class SullyStoryCloudMonitorService extends Service {
         throw jobIdFailure;
     }
 
-    private JSONObject fetchJobAtPath(String path) throws Exception {
+    private static JSONObject fetchJobAtPath(String workerUrl, String userId, String serverToken, String path) throws Exception {
         String separator = path.contains("?") ? "&" : "?";
         URL url = new URL(workerUrl + path + separator + "_sullyPoll=" + System.currentTimeMillis());
         HttpURLConnection connection = (HttpURLConnection) url.openConnection();
@@ -439,6 +462,9 @@ public class SullyStoryCloudMonitorService extends Service {
 
     private void finishTerminal(String status, String terminalTitle, String error) {
         generation += 1;
+        jobId = "";
+        clientRequestId = "";
+        stateHandler.removeCallbacksAndMessages(null);
         if (handler != null) handler.removeCallbacksAndMessages(null);
         releaseWakeLock();
         clearPersistedMonitor();

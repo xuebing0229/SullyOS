@@ -25,6 +25,7 @@ for (const name of [
   'SullyStoryKeepAliveService.java',
   'SullyStoryCloudMonitorService.java',
   'SullyStoryStatusPush.java',
+  'SullyStoryReferenceUploads.java',
 ]) {
   const source = await readFile(path.join(root, 'native', 'android', name), 'utf8');
   await writeFile(path.join(pluginDir, name), source.replaceAll('__APP_ID__', appId));
@@ -33,6 +34,22 @@ await writeFile(
   path.join(drawableDir, 'sully_story_notification.xml'),
   await readFile(path.join(root, 'native', 'android', 'sully_story_notification.xml'), 'utf8'),
 );
+// Behaviour tests exercise real notification updates, including late HTTP completions.
+const testDir = path.join(root, 'android', 'app', 'src', 'test', 'java', ...appId.split('.'), 'plugins');
+await mkdir(testDir, { recursive: true });
+for (const name of ['SullyStoryCloudMonitorServiceTest.java', 'SullyStoryReferenceUploadsTest.java']) {
+  const source = await readFile(path.join(root, 'native', 'android', 'tests', name), 'utf8');
+  await writeFile(path.join(testDir, name), source.replaceAll('__APP_ID__', appId));
+}
+let testGradle = await readFile(gradlePath, 'utf8');
+if (!testGradle.includes('org.robolectric:robolectric')) {
+  testGradle += `\nandroid { testOptions { unitTests.includeAndroidResources = true } }\ndependencies { testImplementation 'org.robolectric:robolectric:4.16' }\n`;
+  await writeFile(gradlePath, testGradle);
+}
+if (!testGradle.includes('com.squareup.okhttp3:mockwebserver')) {
+  testGradle += `\ndependencies { testImplementation 'com.squareup.okhttp3:mockwebserver:5.1.0' }\n`;
+  await writeFile(gradlePath, testGradle);
+}
 // 9/3 早期试验版把 HTTP 直接塞进 Service；新架构明确删除该类。
 await rm(path.join(pluginDir, 'SullyStoryBackgroundService.java'), { force: true });
 

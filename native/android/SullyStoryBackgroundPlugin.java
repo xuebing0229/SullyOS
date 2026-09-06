@@ -81,7 +81,9 @@ public class SullyStoryBackgroundPlugin extends Plugin {
             final String submitSpec = specJson;
             Thread submitThread = new Thread(() -> {
                 try {
-                    int status = submitCloudStoryJob(workerUrl, userId, serverToken, submitSpec);
+                    JSONObject readySpec = new JSONObject(submitSpec);
+                    SullyStoryReferenceUploads.prepare(readySpec.optJSONObject("imageHandoff"));
+                    int status = submitCloudStoryJob(workerUrl, userId, serverToken, readySpec.toString());
                     if (status >= 200 && status < 300) {
                         call.resolve();
                         return;

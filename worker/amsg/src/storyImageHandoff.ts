@@ -22,6 +22,7 @@ export interface StoryCloudImageToolHandoff {
     apiKey: string;
   };
   referencePolicy?: NovelAiReferencePolicy;
+  referenceErrors?: Record<string, string>;
   references?: StoryCloudImageReferenceFragments;
 }
 
@@ -121,6 +122,11 @@ export const normalizeStoryImageHandoffSpec = (value: unknown): StoryCloudImageH
       token: String(rawTool.token || ''),
       ...(preset ? { preset } : {}),
       ...(referencePolicy ? { referencePolicy } : {}),
+      ...(isRecord(rawTool.referenceErrors) ? {
+        referenceErrors: Object.fromEntries(Object.entries(rawTool.referenceErrors)
+          .filter(([, error]) => typeof error === 'string')
+          .map(([slot, error]) => [slot, String(error).slice(0, 300)])),
+      } : {}),
       ...(referencesRaw ? {
         references: {
           ...(Object.keys(actors).length ? { actors } : {}),
@@ -507,6 +513,13 @@ export const runStoryImageHandoff = async (
     arguments: finalArgs,
     ...(afterGenerateAction !== 'none' ? { afterGenerateAction } : {}),
   };
+
+  // A failed unused reference must not fail the picture. A selected unsynced slot must never
+  // silently use the previous image on the MCP server (replacement retains the same slot id).
+  for (const key of ['reference_id', 'user_reference_id', 'vibe_reference_id']) {
+    const error = tool.referenceErrors?.[String(finalArgs[key] || '')];
+    if (error) return { ...baseResult, state: 'failed', error: `配图参考图同步失败：${error}` };
+  }
 
   try {
     try {

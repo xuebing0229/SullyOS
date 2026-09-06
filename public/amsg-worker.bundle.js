@@ -3,7 +3,7 @@
 // worker/amsg/src/index.ts
 import { DurableObject } from "cloudflare:workers";
 
-// node_modules/.pnpm/@rei-standard+amsg-server@2.6.0-next.23_@neondatabase+serverless@1.1.0_pg@8.22.0/node_modules/@rei-standard/amsg-server/dist/chunk-GN44PST5.mjs
+// node_modules/.pnpm/@rei-standard+amsg-server@2_c57770165a8a2256e4acaa4bae2ba803/node_modules/@rei-standard/amsg-server/dist/chunk-GN44PST5.mjs
 var UPDATABLE_COLUMNS = /* @__PURE__ */ new Set([
   "user_id",
   "uuid",
@@ -1121,7 +1121,7 @@ function stringifyDecisionForError(value) {
   }
 }
 
-// node_modules/.pnpm/@rei-standard+amsg-server@2.6.0-next.23_@neondatabase+serverless@1.1.0_pg@8.22.0/node_modules/@rei-standard/amsg-server/dist/chunk-3JEWYDM4.mjs
+// node_modules/.pnpm/@rei-standard+amsg-server@2_c57770165a8a2256e4acaa4bae2ba803/node_modules/@rei-standard/amsg-server/dist/chunk-3JEWYDM4.mjs
 var DAY_MS = 24 * 60 * 60 * 1e3;
 var MAX_LISTED_SKIPPED_OCCURRENCES = 32;
 var MAX_ADJUST_STEPS = 32;
@@ -12637,35 +12637,150 @@ var isFcmConfigured = (env) => Boolean(
   env.FCM_PROJECT_ID?.trim() && env.FCM_SERVICE_ACCOUNT_EMAIL?.trim() && env.FCM_SERVICE_ACCOUNT_PRIVATE_KEY?.trim()
 );
 
+// utils/imageToolPostAction.ts
+var parseImageToolClientOptions = (args) => {
+  const raw = String(
+    args?.after_generate_action ?? args?.afterGenerateAction ?? "none"
+  ).trim().toLowerCase();
+  const cleanedArgs = { ...args || {} };
+  delete cleanedArgs.after_generate_action;
+  delete cleanedArgs.afterGenerateAction;
+  return {
+    afterGenerateAction: raw === "inspect" ? "inspect" : "none",
+    cleanedArgs
+  };
+};
+
+// utils/novelAiReferencePolicy.ts
+var MANAGED_REFERENCE_KEYS = /* @__PURE__ */ new Set([
+  "reference_id",
+  "reference_type",
+  "reference_strength",
+  "reference_fidelity",
+  "user_reference_id",
+  "user_reference_type",
+  "user_reference_strength",
+  "user_reference_fidelity",
+  "vibe_reference_id",
+  "vibe_reference_strength",
+  "vibe_reference_information_extracted",
+  "use_character_reference",
+  "use_user_reference",
+  "use_vibe_reference",
+  "story_reference_actor_id",
+  "story_use_character_reference",
+  "story_use_user_reference",
+  "story_use_vibe_reference"
+]);
+var CHARACTER_FRAGMENT_KEYS = /* @__PURE__ */ new Set([
+  "reference_id",
+  "reference_type",
+  "reference_strength",
+  "reference_fidelity"
+]);
+var USER_FRAGMENT_KEYS = /* @__PURE__ */ new Set([
+  "user_reference_id",
+  "user_reference_type",
+  "user_reference_strength",
+  "user_reference_fidelity"
+]);
+var VIBE_FRAGMENT_KEYS = /* @__PURE__ */ new Set([
+  "vibe_reference_id",
+  "vibe_reference_strength",
+  "vibe_reference_information_extracted"
+]);
+var isRecord2 = (value) => Boolean(value && typeof value === "object" && !Array.isArray(value));
+var hasFragment = (value) => isRecord2(value) && Object.keys(value).length > 0;
+var copyFragment = (value, allowed) => {
+  const out = {};
+  if (!value) return out;
+  for (const [key, field] of Object.entries(value)) {
+    if (allowed.has(key)) out[key] = field;
+  }
+  return out;
+};
+var sanitizeNovelAiReferenceArguments = (args) => {
+  const clean = { ...args || {} };
+  for (const key of MANAGED_REFERENCE_KEYS) delete clean[key];
+  return clean;
+};
+var normalizeNovelAiReferencePolicy = (value) => ({
+  allowCharacterReference: value?.allowCharacterReference !== false,
+  allowUserReference: value?.allowUserReference !== false,
+  allowVibeReference: value?.allowVibeReference !== false
+});
+var resolveNovelAiReferenceArguments = (input) => {
+  const source = input.args || {};
+  const policy = normalizeNovelAiReferencePolicy(input.policy);
+  const requested = {
+    character: source.story_use_character_reference !== false && source.use_character_reference !== false,
+    user: source.story_use_user_reference !== false && source.use_user_reference !== false,
+    vibe: source.story_use_vibe_reference !== false && source.use_vibe_reference !== false
+  };
+  const references = input.references || {};
+  const vibeSelected = Boolean(
+    policy.allowVibeReference && requested.vibe && hasFragment(references.vibe)
+  );
+  const selected = {
+    character: Boolean(
+      !vibeSelected && policy.allowCharacterReference && requested.character && hasFragment(references.character)
+    ),
+    user: Boolean(
+      !vibeSelected && policy.allowUserReference && requested.user && hasFragment(references.user)
+    ),
+    vibe: vibeSelected
+  };
+  const finalArgs = sanitizeNovelAiReferenceArguments(source);
+  if (selected.vibe) {
+    Object.assign(finalArgs, copyFragment(references.vibe, VIBE_FRAGMENT_KEYS));
+  } else {
+    if (selected.character) {
+      Object.assign(finalArgs, copyFragment(references.character, CHARACTER_FRAGMENT_KEYS));
+    }
+    if (selected.user) {
+      Object.assign(finalArgs, copyFragment(references.user, USER_FRAGMENT_KEYS));
+    }
+  }
+  return { arguments: finalArgs, requested, selected };
+};
+
 // worker/amsg/src/storyImageHandoff.ts
 var INLINE_PLAN_OPEN = "<story_image_plan>";
 var INLINE_PLAN_CLOSE = "</story_image_plan>";
 var MAX_TOOLS = 16;
 var HTTP_TIMEOUT_MS = 2e4;
 var cleanBaseUrl = (value) => String(value || "").trim().replace(/\/+$/, "");
-var isRecord2 = (value) => Boolean(value && typeof value === "object" && !Array.isArray(value));
+var isRecord3 = (value) => Boolean(value && typeof value === "object" && !Array.isArray(value));
 var cloneRecord = (value) => JSON.parse(JSON.stringify(value));
-var normalizeFragment = (value) => isRecord2(value) ? cloneRecord(value) : void 0;
+var normalizeFragment = (value) => isRecord3(value) ? cloneRecord(value) : void 0;
 var normalizeStoryImageHandoffSpec = (value) => {
-  if (!isRecord2(value) || value.version !== 1 || !Array.isArray(value.tools)) return void 0;
+  if (!isRecord3(value) || value.version !== 1 || !Array.isArray(value.tools)) return void 0;
   const tools = [];
   for (const rawTool of value.tools.slice(0, MAX_TOOLS)) {
-    if (!isRecord2(rawTool)) continue;
+    if (!isRecord3(rawTool)) continue;
     const exposedName = String(rawTool.exposedName || "").trim();
     const toolName = String(rawTool.toolName || "").trim();
     const engineId = rawTool.engineId === "novelai" ? "novelai" : rawTool.engineId === "gpt-image" ? "gpt-image" : "";
     const controlBaseUrl = cleanBaseUrl(rawTool.controlBaseUrl);
     if (!exposedName || !toolName || !engineId || !/^https?:\/\//i.test(controlBaseUrl)) continue;
-    const referencesRaw = isRecord2(rawTool.references) ? rawTool.references : void 0;
-    const actorsRaw = referencesRaw && isRecord2(referencesRaw.actors) ? referencesRaw.actors : void 0;
+    const policyRaw = isRecord3(rawTool.referencePolicy) ? rawTool.referencePolicy : void 0;
+    const referencePolicy = engineId === "novelai" ? normalizeNovelAiReferencePolicy(policyRaw ? {
+      allowCharacterReference: policyRaw.allowCharacterReference !== false,
+      allowUserReference: policyRaw.allowUserReference !== false,
+      allowVibeReference: policyRaw.allowVibeReference !== false
+    } : void 0) : void 0;
+    const referencesRaw = isRecord3(rawTool.references) ? rawTool.references : void 0;
+    const actorsRaw = referencesRaw && isRecord3(referencesRaw.actors) ? referencesRaw.actors : void 0;
     const actors = {};
-    if (actorsRaw) {
+    if (actorsRaw && referencePolicy?.allowCharacterReference !== false) {
       for (const [actorId, fragment] of Object.entries(actorsRaw)) {
-        if (actorId && isRecord2(fragment)) actors[actorId] = cloneRecord(fragment);
+        if (actorId && isRecord3(fragment)) actors[actorId] = cloneRecord(fragment);
       }
     }
-    const presetRaw = isRecord2(rawTool.preset) ? rawTool.preset : void 0;
-    const preset = presetRaw && isRecord2(presetRaw.remoteConfig) ? {
+    const user = referencePolicy?.allowUserReference === false ? void 0 : normalizeFragment(referencesRaw?.user);
+    const vibe = referencePolicy?.allowVibeReference === false ? void 0 : normalizeFragment(referencesRaw?.vibe);
+    const presetRaw = isRecord3(rawTool.preset) ? rawTool.preset : void 0;
+    const preset = presetRaw && isRecord3(presetRaw.remoteConfig) ? {
       remoteConfig: cloneRecord(presetRaw.remoteConfig),
       apiKey: String(presetRaw.apiKey || "")
     } : void 0;
@@ -12676,20 +12791,24 @@ var normalizeStoryImageHandoffSpec = (value) => {
       controlBaseUrl,
       token: String(rawTool.token || ""),
       ...preset ? { preset } : {},
+      ...referencePolicy ? { referencePolicy } : {},
+      ...isRecord3(rawTool.referenceErrors) ? {
+        referenceErrors: Object.fromEntries(Object.entries(rawTool.referenceErrors).filter(([, error]) => typeof error === "string").map(([slot, error]) => [slot, String(error).slice(0, 300)]))
+      } : {},
       ...referencesRaw ? {
         references: {
           ...Object.keys(actors).length ? { actors } : {},
-          ...normalizeFragment(referencesRaw.user) ? { user: normalizeFragment(referencesRaw.user) } : {},
-          ...normalizeFragment(referencesRaw.vibe) ? { vibe: normalizeFragment(referencesRaw.vibe) } : {}
+          ...user ? { user } : {},
+          ...vibe ? { vibe } : {}
         }
       } : {}
     });
   }
-  const plannerRaw = isRecord2(value.planner) ? value.planner : void 0;
+  const plannerRaw = isRecord3(value.planner) ? value.planner : void 0;
   const plannerTools = [];
   if (plannerRaw && Array.isArray(plannerRaw.tools)) {
     for (const rawPlannerTool of plannerRaw.tools.slice(0, MAX_TOOLS)) {
-      if (!isRecord2(rawPlannerTool) || rawPlannerTool.type !== "function" || !isRecord2(rawPlannerTool.function)) continue;
+      if (!isRecord3(rawPlannerTool) || rawPlannerTool.type !== "function" || !isRecord3(rawPlannerTool.function)) continue;
       const name = String(rawPlannerTool.function.name || "").trim();
       if (!name) continue;
       plannerTools.push({
@@ -12697,7 +12816,7 @@ var normalizeStoryImageHandoffSpec = (value) => {
         function: {
           name,
           ...typeof rawPlannerTool.function.description === "string" ? { description: rawPlannerTool.function.description.slice(0, 4e3) } : {},
-          ...isRecord2(rawPlannerTool.function.parameters) ? { parameters: cloneRecord(rawPlannerTool.function.parameters) } : {}
+          ...isRecord3(rawPlannerTool.function.parameters) ? { parameters: cloneRecord(rawPlannerTool.function.parameters) } : {}
         }
       });
     }
@@ -12722,10 +12841,10 @@ var parseInlinePlan = (content) => {
   const raw = content.slice(openIndex + INLINE_PLAN_OPEN.length, closeIndex).trim();
   try {
     const parsed = JSON.parse(raw);
-    if (!isRecord2(parsed)) return null;
+    if (!isRecord3(parsed)) return null;
     const tool = String(parsed.tool || parsed.tool_name || "").trim();
     const args = parsed.arguments ?? parsed.args;
-    return tool && isRecord2(args) ? { tool, arguments: cloneRecord(args) } : null;
+    return tool && isRecord3(args) ? { tool, arguments: cloneRecord(args) } : null;
   } catch {
     return null;
   }
@@ -12778,12 +12897,8 @@ var applyPreset = async (tool) => {
     }
   }
 };
-var mergeNovelAiReferences = (tool, rawArgs) => {
+var stripReferenceSelectorsForNonNovelAi = (rawArgs) => {
   const args = cloneRecord(rawArgs);
-  const requestedActorId = typeof args.story_reference_actor_id === "string" ? args.story_reference_actor_id : "";
-  const useCharacter = args.story_use_character_reference !== false && args.use_character_reference !== false;
-  const useUser = args.story_use_user_reference !== false && args.use_user_reference !== false;
-  const useVibe = args.story_use_vibe_reference !== false && args.use_vibe_reference !== false;
   delete args.story_reference_actor_id;
   delete args.story_use_character_reference;
   delete args.story_use_user_reference;
@@ -12791,18 +12906,22 @@ var mergeNovelAiReferences = (tool, rawArgs) => {
   delete args.use_character_reference;
   delete args.use_user_reference;
   delete args.use_vibe_reference;
-  if (tool.engineId !== "novelai") return args;
-  const refs = tool.references;
-  if (useVibe && refs?.vibe && Object.keys(refs.vibe).length) {
-    Object.assign(args, refs.vibe);
-    return args;
-  }
-  if (useCharacter && refs?.actors) {
-    const actorFragment = requestedActorId && refs.actors[requestedActorId] || Object.values(refs.actors)[0];
-    if (actorFragment) Object.assign(args, actorFragment);
-  }
-  if (useUser && refs?.user) Object.assign(args, refs.user);
   return args;
+};
+var mergeNovelAiReferences = (tool, rawArgs) => {
+  if (tool.engineId !== "novelai") return stripReferenceSelectorsForNonNovelAi(rawArgs);
+  const requestedActorId = typeof rawArgs.story_reference_actor_id === "string" ? rawArgs.story_reference_actor_id : "";
+  const refs = tool.references;
+  const actorFragment = refs?.actors ? requestedActorId && refs.actors[requestedActorId] || Object.values(refs.actors)[0] : void 0;
+  return resolveNovelAiReferenceArguments({
+    args: rawArgs,
+    policy: tool.referencePolicy,
+    references: {
+      ...actorFragment ? { character: actorFragment } : {},
+      ...refs?.user ? { user: refs.user } : {},
+      ...refs?.vibe ? { vibe: refs.vibe } : {}
+    }
+  }).arguments;
 };
 var findExistingJob = async (tool, clientRequestId) => {
   const { response, body } = await fetchJson(
@@ -12830,11 +12949,11 @@ var prepareStoryImageHandoffFromPlan = (spec, storyClientRequestId, plan) => {
   };
 };
 var parsePlannerArgs = (value) => {
-  if (isRecord2(value)) return cloneRecord(value);
+  if (isRecord3(value)) return cloneRecord(value);
   if (typeof value !== "string") return null;
   try {
     const parsed = JSON.parse(value);
-    return isRecord2(parsed) ? cloneRecord(parsed) : null;
+    return isRecord3(parsed) ? cloneRecord(parsed) : null;
   } catch {
     return null;
   }
@@ -12847,7 +12966,7 @@ var parsePlannerText = (text, allowedNames) => {
     if (first >= 0 && last > first) {
       try {
         const parsed = JSON.parse(clean.slice(first, last + 1));
-        if (isRecord2(parsed)) {
+        if (isRecord3(parsed)) {
           const tool = String(parsed.tool || parsed.tool_name || parsed.name || "").trim();
           const args = parsePlannerArgs(parsed.arguments ?? parsed.args);
           if (tool && allowedNames.has(tool) && args) return { tool, arguments: args };
@@ -12971,13 +13090,20 @@ var runStoryImageHandoff = async (spec, storyClientRequestId, storyContent) => {
   const tool = spec.tools.find((item) => item.exposedName === prepared.exposedTool);
   if (!tool) return { ...prepared, state: "failed", error: "\u6B63\u6587\u9009\u62E9\u7684\u751F\u56FE\u5DE5\u5177\u5DF2\u4E0D\u53EF\u7528" };
   const clientRequestId = prepared.clientRequestId;
-  const finalArgs = isRecord2(prepared.arguments) ? cloneRecord(prepared.arguments) : {};
+  const preparedArgs = isRecord3(prepared.arguments) ? cloneRecord(prepared.arguments) : {};
+  const { afterGenerateAction, cleanedArgs } = parseImageToolClientOptions(preparedArgs);
+  const finalArgs = cleanedArgs;
   const baseResult = {
     exposedTool: tool.exposedName,
     toolName: tool.toolName,
     clientRequestId,
-    arguments: finalArgs
+    arguments: finalArgs,
+    ...afterGenerateAction !== "none" ? { afterGenerateAction } : {}
   };
+  for (const key of ["reference_id", "user_reference_id", "vibe_reference_id"]) {
+    const error = tool.referenceErrors?.[String(finalArgs[key] || "")];
+    if (error) return { ...baseResult, state: "failed", error: `\u914D\u56FE\u53C2\u8003\u56FE\u540C\u6B65\u5931\u8D25\uFF1A${error}` };
+  }
   try {
     try {
       const existing = await findExistingJob(tool, clientRequestId);

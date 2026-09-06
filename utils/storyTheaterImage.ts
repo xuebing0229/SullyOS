@@ -21,6 +21,7 @@ import {
 } from './imageGenerationPresets';
 import { persistMcpGeneratedImages } from './mcpImagePersistence';
 import { getActiveVibeReference } from './vibeReference';
+import { snapshotStoryReference, type StoryReferenceUpload } from './storyImageReferenceUploads';
 
 export interface StoryInlineImagePlan {
     tool: string;
@@ -218,6 +219,9 @@ export interface StoryCloudImageToolHandoff {
     };
     /** 冻结实际选中工具/预设的参考图权限，Worker 不再猜当前/全局预设。 */
     referencePolicy?: NovelAiReferencePolicy;
+    /** Local/native attachments, stripped after upload and never stored in the cloud job. */
+    referenceUploads?: Array<Omit<StoryReferenceUpload, 'base64'>>;
+    referenceErrors?: Record<string, string>;
     references?: {
         actors?: Record<string, Record<string, unknown>>;
         user?: Record<string, unknown>;
@@ -236,6 +240,8 @@ export interface StoryCloudImagePlannerSpec {
 export interface StoryCloudImageHandoffSpec {
     version: 1;
     tools: StoryCloudImageToolHandoff[];
+    /** Local attachments shared across presets; removed before POST /story-jobs. */
+    referenceSources?: Record<string, string>;
     /** 正文完成后由 Worker 独立执行的二段式配图规划器。 */
     planner?: StoryCloudImagePlannerSpec;
 }
@@ -255,8 +261,8 @@ export interface StoryCloudImageHandoffResult {
 
 /**
  * 在正文 story job 提交前冻结“这轮可能会选到的生图服务”。
- * 凭据只进入加密 story request，不会回显；参考图只冻结已有远端 slot 身份，
- * 绝不在正文 POST 前做 HEAD/PUT，避免参考图预检卡住正文提交。
+ * 凭据只进入加密 story request，不会回显；参考图在此读取本地快照，
+ * HEAD/PUT 交给原生提交线程（浏览器端使用异步回退），不依赖后台 WebView 继续运行。
  */
 export const buildStoryCloudImageHandoffSpec = async (input: {
     actors: CharacterProfile[];
@@ -271,6 +277,8 @@ export const buildStoryCloudImageHandoffSpec = async (input: {
     const presets = getImageGenerationPresets();
     const tools: StoryCloudImageToolHandoff[] = [];
     const activeVibe = getActiveVibeReference();
+    const snapshots = new Map<string, Promise<StoryReferenceUpload>>();
+    const referenceSources: Record<string, string> = {};
 
     const actorReferenceFragment = (actor: CharacterProfile): Record<string, unknown> | undefined => {
         const config = actor.novelAiReference;
@@ -352,6 +360,30 @@ export const buildStoryCloudImageHandoffSpec = async (input: {
                     ...(user ? { user } : {}),
                     ...(vibe ? { vibe } : {}),
                 };
+                const configs = [
+                    ...(preciseReferenceAllowed ? input.actors.map(actor => actor.novelAiReference) : []),
+                    ...(preciseReferenceAllowed ? [input.userProfile.novelAiReference] : []),
+                    activeVibe,
+                ].filter(config => config?.enabled && config.slotId);
+                descriptor.referenceUploads = [];
+                descriptor.referenceErrors = {};
+                for (const config of configs) {
+                    if (!config) continue;
+                    try {
+                        // Only read local bytes here. Slow HEAD/PUT belongs to the native submit thread.
+                        const key = `${config.slotId}:${config.imageRef}`;
+                        let snapshot = snapshots.get(key);
+                        if (!snapshot) {
+                            snapshot = snapshotStoryReference(config);
+                            snapshots.set(key, snapshot);
+                        }
+                        const { base64, ...upload } = await snapshot;
+                        referenceSources[upload.slotId] = base64;
+                        descriptor.referenceUploads.push(upload);
+                    } catch (error) {
+                        descriptor.referenceErrors[config.slotId] = String((error as Error)?.message || error).slice(0, 300);
+                    }
+                }
             }
         }
         tools.push(descriptor);
@@ -383,6 +415,7 @@ export const buildStoryCloudImageHandoffSpec = async (input: {
     return {
         version: 1,
         tools,
+        ...(Object.keys(referenceSources).length ? { referenceSources } : {}),
         ...(planner ? { planner } : {}),
     };
 };

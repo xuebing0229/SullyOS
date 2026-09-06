@@ -1,5 +1,6 @@
 import type { ApiExecutionPlan } from './apiFailover';
 import type { StoryCloudImageHandoffSpec } from './storyTheaterImage';
+import { prepareStoryReferenceUploads } from './storyImageReferenceUploads';
 import { ActiveMsgClient } from './activeMsgClient';
 import {
     finishNativeCloudStoryMonitor,
@@ -537,6 +538,9 @@ export const executeStoryCompletionInCloudBackground = async (
         // 前台时下面会很快 GET 到 job，后台时则由原生 ForegroundService 自己轮询并更新通知。
     } else if (!job) {
         try {
+            // Android consumes these local attachments on its submission thread. Browser-only
+            // sessions perform the same preparation here; only small slot/error metadata goes to D1.
+            if (spec.imageHandoff) spec.imageHandoff = await prepareStoryReferenceUploads(spec.imageHandoff);
             const { response, body } = await fetchJson(config, '/story-jobs', {
                 method: 'POST',
                 body: JSON.stringify(spec),

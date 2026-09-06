@@ -54,6 +54,7 @@ jobs:
         run: >-
           pnpm exec vitest run
           utils/novelAiReferencePolicy.test.ts
+          utils/storyImageReferenceUploads.test.ts
           worker/amsg/src/storyImageHandoff.test.ts
           worker/amsg/src/storyImageReferencePolicy.test.ts
 
