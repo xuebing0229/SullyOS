@@ -22,23 +22,21 @@ jobs:
         run: |
           python3 - <<'PY'
           from pathlib import Path
+          from textwrap import dedent
 
-          def replace_one(path, old, new):
+          def replace_one(path, label, old, new):
               p = Path(path)
               text = p.read_text()
               count = text.count(old)
+              print(f'{label}: {count} match(es)')
               if count != 1:
-                  raise SystemExit(f'{path}: expected exactly one match, got {count}')
+                  raise SystemExit(f'{label}: expected exactly one match, got {count}')
               p.write_text(text.replace(old, new, 1))
 
-          cloud_getter = """export const getPendingCloudStoryJob = (
-              ownerKey: string,
-          ): PendingCloudStoryJob | null => {
-              const pending = readPendingMap()[ownerKey];
-              return pending?.jobId && pending?.clientRequestId ? pending : null;
-          };
-          """
-          cloud_getter_new = cloud_getter + """
+          def insert_before(path, label, anchor, addition):
+              replace_one(path, label, anchor, addition + anchor)
+
+          cloud_helpers = dedent('''
           const pendingCloudStoryBelongsToEntry = (
               pending: PendingCloudStoryJob,
               entryId: string,
@@ -78,13 +76,16 @@ jobs:
               }
               if (changed) writePendingMap(map);
           };
-          """
-          replace_one('utils/backgroundStoryJobs.ts', cloud_getter, cloud_getter_new)
 
-          native_getter = """export const getPendingNativeStoryJob = (ownerKey: string): PendingNativeStoryJob | null =>
-            readPending()[ownerKey] || null;
-          """
-          native_getter_new = native_getter + """
+          ''')
+          insert_before(
+              'utils/backgroundStoryJobs.ts',
+              'cloud helper insertion',
+              'const savePendingCloudStoryJob = (pending: PendingCloudStoryJob): void => {\n',
+              cloud_helpers,
+          )
+
+          native_helpers = dedent('''
           const pendingNativeStoryBelongsToEntry = (
             pending: PendingNativeStoryJob,
             entryId: string,
@@ -124,135 +125,119 @@ jobs:
             }
             if (changed) writePending(map);
           };
-          """
-          replace_one('utils/nativeStoryBackground.ts', native_getter, native_getter_new)
 
-          replace_one(
-              'components/date/story/StoryTheaterSession.tsx',
-              """    clearPendingNativeStoryJob,
-              executeStoryCompletionInNativeBackground,
-              getPendingNativeStoryJob,
-              isNativeStoryBackgroundRuntime,
-          """,
-              """    clearOtherPendingNativeStoryJobsForStory,
-              clearPendingNativeStoryJob,
-              executeStoryCompletionInNativeBackground,
-              findPendingNativeStoryJobForStory,
-              getPendingNativeStoryJob,
-              isNativeStoryBackgroundRuntime,
-          """,
+          ''')
+          insert_before(
+              'utils/nativeStoryBackground.ts',
+              'native helper insertion',
+              'export const isNativeStoryBackgroundRuntime = (): boolean =>\n',
+              native_helpers,
           )
 
+          story = 'components/date/story/StoryTheaterSession.tsx'
           replace_one(
-              'components/date/story/StoryTheaterSession.tsx',
-              """    clearPendingCloudStoryJob,
-              executeStoryCompletionInCloudBackground,
-              getPendingCloudStoryJob,
-              isCloudStoryJobsAvailable,
-          """,
-              """    clearOtherPendingCloudStoryJobsForStory,
-              clearPendingCloudStoryJob,
-              executeStoryCompletionInCloudBackground,
-              findPendingCloudStoryJobForStory,
-              getPendingCloudStoryJob,
-              isCloudStoryJobsAvailable,
-          """,
+              story,
+              'native import clear helper',
+              '    clearPendingNativeStoryJob,\n',
+              '    clearOtherPendingNativeStoryJobsForStory,\n    clearPendingNativeStoryJob,\n',
           )
-
           replace_one(
-              'components/date/story/StoryTheaterSession.tsx',
-              """                && !background.ownerKey.startsWith('story-turn:')
-          """,
-              """                && !background.meta?.storyRequestKey
-          """,
+              story,
+              'native import find helper',
+              '    getPendingNativeStoryJob,\n',
+              '    findPendingNativeStoryJobForStory,\n    getPendingNativeStoryJob,\n',
           )
-
           replace_one(
-              'components/date/story/StoryTheaterSession.tsx',
-              """    const send = useCallback(async (rerollTarget?: Message, continueRequested = false) => {
-          """,
-              """    const send = useCallback(async (rerollTarget?: Message, continueRequested = false, recoveryOwnerKey?: string) => {
-          """,
+              story,
+              'cloud import clear helper',
+              '    clearPendingCloudStoryJob,\n',
+              '    clearOtherPendingCloudStoryJobsForStory,\n    clearPendingCloudStoryJob,\n',
           )
-
           replace_one(
-              'components/date/story/StoryTheaterSession.tsx',
-              """        let partialClearInput = false;
-              const backgroundOwnerKey = `story-turn:${entry.id}`;
-              // 已有 cloud pending 代表完整 prompt 早就加密提交给 Worker 了。
-              // 恢复页面只需要查回同一 job，禁止再次做归档、向量/角色记忆召回和生图参考图预检。
-              const recoveringCloudPending = Boolean(getPendingCloudStoryJob(backgroundOwnerKey));
-              let usedNativeBackground = false;
-          """,
-              """        let partialClearInput = false;
-              let backgroundOwnerKey = '';
-              let recoveringCloudPending = false;
-              let usedNativeBackground = false;
-          """,
+              story,
+              'cloud import find helper',
+              '    getPendingCloudStoryJob,\n',
+              '    findPendingCloudStoryJobForStory,\n    getPendingCloudStoryJob,\n',
           )
-
-          active_key = """            activeRequestKey = isReroll && rerollTarget
-                  ? `story-reroll:${entry.id}:${rerollTarget.id}`
-                  : retry
-                      ? String(latest?.metadata?.theaterRequestKey || `story-turn:${entry.id}:${latest?.id || makeStoryTheaterId()}`)
-                      : assistantOpening
-                          ? `story-opening:${entry.id}`
-                          : `story-turn:${entry.id}:${makeStoryTheaterId()}`;
-          """
-          active_key_new = active_key + """            // 每一轮正文拥有独立 owner。只有自动恢复旧任务时才显式沿用原 owner，
-              // 这样切换剧情 API 后的新一轮不会被上一轮 pending 劫持回旧上游。
-              backgroundOwnerKey = recoveryOwnerKey || activeRequestKey;
-              recoveringCloudPending = Boolean(getPendingCloudStoryJob(backgroundOwnerKey));
-              if (!recoveryOwnerKey) {
-                  await clearOtherPendingCloudStoryJobsForStory(entry.id, backgroundOwnerKey);
-                  if (isNativeStoryBackgroundRuntime()) {
-                      await clearOtherPendingNativeStoryJobsForStory(entry.id, backgroundOwnerKey);
-                  }
-              }
-          """
-          replace_one('components/date/story/StoryTheaterSession.tsx', active_key, active_key_new)
-
           replace_one(
-              'components/date/story/StoryTheaterSession.tsx',
-              """                meta: {
-                      ...(isReroll && rerollTarget ? { rerollTargetId: rerollTarget.id } : {}),
-                      ...(affinityInputs.length > 0 ? { affinityInputs } : {}),
-                      isContinueTurn,
-                  },
-          """,
-              """                meta: {
-                      storyEntryId: entry.id,
-                      storyRequestKey: activeRequestKey,
-                      ...(isReroll && rerollTarget ? { rerollTargetId: rerollTarget.id } : {}),
-                      ...(affinityInputs.length > 0 ? { affinityInputs } : {}),
-                      isContinueTurn,
-                  },
-          """,
+              story,
+              'main job delayed cloud clear',
+              "                && !background.ownerKey.startsWith('story-turn:')\n",
+              '                && !background.meta?.storyRequestKey\n',
           )
-
           replace_one(
-              'components/date/story/StoryTheaterSession.tsx',
-              """        const ownerKey = `story-turn:${entry.id}`;
-              const cloudPending = getPendingCloudStoryJob(ownerKey);
-              const nativePending = !cloudPending && isNativeStoryBackgroundRuntime()
-                  ? getPendingNativeStoryJob(ownerKey)
-                  : null;
-          """,
-              """        const cloudPending = findPendingCloudStoryJobForStory(entry.id);
-              const nativePending = !cloudPending && isNativeStoryBackgroundRuntime()
-                  ? findPendingNativeStoryJobForStory(entry.id)
-                  : null;
-          """,
+              story,
+              'send recovery owner parameter',
+              '    const send = useCallback(async (rerollTarget?: Message, continueRequested = false) => {\n',
+              '    const send = useCallback(async (rerollTarget?: Message, continueRequested = false, recoveryOwnerKey?: string) => {\n',
           )
-
           replace_one(
-              'components/date/story/StoryTheaterSession.tsx',
-              """            if (!cancelled) void send(rerollTarget);
-          """,
-              """            if (!cancelled) void send(rerollTarget, false, pending.ownerKey);
-          """,
+              story,
+              'request-scoped owner variable',
+              '        const backgroundOwnerKey = `story-turn:${entry.id}`;\n',
+              "        let backgroundOwnerKey = '';\n",
+          )
+          replace_one(
+              story,
+              'deferred recovery check',
+              '        const recoveringCloudPending = Boolean(getPendingCloudStoryJob(backgroundOwnerKey));\n',
+              '        let recoveringCloudPending = false;\n',
+          )
+          replace_one(
+              story,
+              'bind owner after request key',
+              '                        : `story-turn:${entry.id}:${makeStoryTheaterId()}`;\n',
+              dedent('''
+                                      : `story-turn:${entry.id}:${makeStoryTheaterId()}`;
+                          // 每一轮正文拥有独立 owner。只有自动恢复旧任务时才显式沿用原 owner，
+                          // 这样切换剧情 API 后的新一轮不会被上一轮 pending 劫持回旧上游。
+                          backgroundOwnerKey = recoveryOwnerKey || activeRequestKey;
+                          recoveringCloudPending = Boolean(getPendingCloudStoryJob(backgroundOwnerKey));
+                          if (!recoveryOwnerKey) {
+                              await clearOtherPendingCloudStoryJobsForStory(entry.id, backgroundOwnerKey);
+                              if (isNativeStoryBackgroundRuntime()) {
+                                  await clearOtherPendingNativeStoryJobsForStory(entry.id, backgroundOwnerKey);
+                              }
+                          }
+              ''').replace('            : `story-turn', '                        : `story-turn', 1).replace('\n// 每一轮', '\n            // 每一轮').replace('\n// 这样', '\n            // 这样').replace('\nbackgroundOwnerKey', '\n            backgroundOwnerKey').replace('\nrecoveringCloudPending', '\n            recoveringCloudPending').replace('\nif (!recoveryOwnerKey)', '\n            if (!recoveryOwnerKey)').replace('\n    await clearOtherPendingCloudStoryJobsForStory', '\n                await clearOtherPendingCloudStoryJobsForStory').replace('\n    if (isNativeStoryBackgroundRuntime())', '\n                if (isNativeStoryBackgroundRuntime())').replace('\n        await clearOtherPendingNativeStoryJobsForStory', '\n                    await clearOtherPendingNativeStoryJobsForStory').replace('\n    }', '\n                }').replace('\n}', '\n            }'),
+          )
+          replace_one(
+              story,
+              'story request metadata',
+              '                    ...(isReroll && rerollTarget ? { rerollTargetId: rerollTarget.id } : {}),\n',
+              '                    storyEntryId: entry.id,\n                    storyRequestKey: activeRequestKey,\n                    ...(isReroll && rerollTarget ? { rerollTargetId: rerollTarget.id } : {}),\n',
+          )
+          replace_one(
+              story,
+              'drop legacy static recovery owner',
+              '        const ownerKey = `story-turn:${entry.id}`;\n',
+              '',
+          )
+          replace_one(
+              story,
+              'find cloud pending by story',
+              '        const cloudPending = getPendingCloudStoryJob(ownerKey);\n',
+              '        const cloudPending = findPendingCloudStoryJobForStory(entry.id);\n',
+          )
+          replace_one(
+              story,
+              'find native pending by story',
+              '            ? getPendingNativeStoryJob(ownerKey)\n',
+              '            ? findPendingNativeStoryJobForStory(entry.id)\n',
+          )
+          replace_one(
+              story,
+              'recover exact pending owner',
+              '            if (!cancelled) void send(rerollTarget);\n',
+              '            if (!cancelled) void send(rerollTarget, false, pending.ownerKey);\n',
           )
           PY
+
+      - name: Validate TypeScript build
+        shell: bash
+        run: |
+          npm ci
+          npm run build
 
       - name: Commit narrow patch and remove helper workflow
         shell: bash
