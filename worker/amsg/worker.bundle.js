@@ -12685,7 +12685,34 @@ var normalizeStoryImageHandoffSpec = (value) => {
       } : {}
     });
   }
-  return tools.length ? { version: 1, tools } : void 0;
+  const plannerRaw = isRecord2(value.planner) ? value.planner : void 0;
+  const plannerTools = [];
+  if (plannerRaw && Array.isArray(plannerRaw.tools)) {
+    for (const rawPlannerTool of plannerRaw.tools.slice(0, MAX_TOOLS)) {
+      if (!isRecord2(rawPlannerTool) || rawPlannerTool.type !== "function" || !isRecord2(rawPlannerTool.function)) continue;
+      const name = String(rawPlannerTool.function.name || "").trim();
+      if (!name) continue;
+      plannerTools.push({
+        type: "function",
+        function: {
+          name,
+          ...typeof rawPlannerTool.function.description === "string" ? { description: rawPlannerTool.function.description.slice(0, 4e3) } : {},
+          ...isRecord2(rawPlannerTool.function.parameters) ? { parameters: cloneRecord(rawPlannerTool.function.parameters) } : {}
+        }
+      });
+    }
+  }
+  const plannerBaseUrl = cleanBaseUrl(plannerRaw?.baseUrl);
+  const plannerModel = String(plannerRaw?.model || "").trim();
+  const plannerSystemPrompt = String(plannerRaw?.systemPrompt || "").trim();
+  const planner = plannerRaw && /^https?:\/\//i.test(plannerBaseUrl) && plannerModel && plannerSystemPrompt && plannerTools.length ? {
+    baseUrl: plannerBaseUrl,
+    apiKey: String(plannerRaw.apiKey || ""),
+    model: plannerModel,
+    systemPrompt: plannerSystemPrompt.slice(0, 8e4),
+    tools: plannerTools
+  } : void 0;
+  return tools.length ? { version: 1, tools, ...planner ? { planner } : {} } : void 0;
 };
 var parseInlinePlan = (content) => {
   const openIndex = content.lastIndexOf(INLINE_PLAN_OPEN);
@@ -12703,9 +12730,9 @@ var parseInlinePlan = (content) => {
     return null;
   }
 };
-var fetchJson = async (url, token, init = {}) => {
+var fetchJson = async (url, token, init = {}, timeoutMs = HTTP_TIMEOUT_MS) => {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), HTTP_TIMEOUT_MS);
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const headers = new Headers(init.headers || {});
     headers.set("Accept", "application/json");
@@ -12736,7 +12763,9 @@ var applyPreset = async (tool) => {
     const revision = Number(current.body?.config?.revision ?? current.body?.revision);
     if (!Number.isFinite(revision)) throw new Error("\u751F\u56FE\u670D\u52A1\u6CA1\u6709\u8FD4\u56DE\u53EF\u7528 revision");
     const patched = await fetchJson(configUrl, tool.token, {
-      method: "PATCH",
+      // 与 App 侧 updateBuiltinImageRemoteConfig 保持同一份控制面契约。
+      // 生图服务的 /config 更新接口是 PUT；PATCH 会让剧情云端 handoff 独有地应用预设失败。
+      method: "PUT",
       body: JSON.stringify({
         expectedRevision: revision,
         patch: tool.preset.remoteConfig,
@@ -12788,13 +12817,161 @@ var stableImageClientRequestId = (storyClientRequestId) => {
   const safe = String(storyClientRequestId || "").replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 130);
   return `storyimg_${safe || "unknown"}`;
 };
-var runStoryImageHandoff = async (spec, storyClientRequestId, storyContent) => {
-  const plan = parseInlinePlan(String(storyContent || ""));
-  if (!plan) return { state: "skipped" };
+var prepareStoryImageHandoffFromPlan = (spec, storyClientRequestId, plan) => {
   const tool = spec.tools.find((item) => item.exposedName === plan.tool);
-  if (!tool) return { state: "failed", exposedTool: plan.tool, error: "\u6B63\u6587\u9009\u62E9\u7684\u751F\u56FE\u5DE5\u5177\u5DF2\u4E0D\u53EF\u7528" };
-  const clientRequestId = stableImageClientRequestId(storyClientRequestId);
-  const finalArgs = mergeNovelAiReferences(tool, plan.arguments);
+  if (!tool) return { state: "failed", exposedTool: plan.tool, error: "\u914D\u56FE\u89C4\u5212\u5668\u9009\u62E9\u7684\u751F\u56FE\u5DE5\u5177\u5DF2\u4E0D\u53EF\u7528" };
+  return {
+    state: "submitted",
+    exposedTool: tool.exposedName,
+    toolName: tool.toolName,
+    clientRequestId: stableImageClientRequestId(storyClientRequestId),
+    arguments: mergeNovelAiReferences(tool, plan.arguments),
+    uncertain: true
+  };
+};
+var parsePlannerArgs = (value) => {
+  if (isRecord2(value)) return cloneRecord(value);
+  if (typeof value !== "string") return null;
+  try {
+    const parsed = JSON.parse(value);
+    return isRecord2(parsed) ? cloneRecord(parsed) : null;
+  } catch {
+    return null;
+  }
+};
+var parsePlannerText = (text, allowedNames) => {
+  const clean = String(text || "").trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
+  if (clean) {
+    const first = clean.indexOf("{");
+    const last = clean.lastIndexOf("}");
+    if (first >= 0 && last > first) {
+      try {
+        const parsed = JSON.parse(clean.slice(first, last + 1));
+        if (isRecord2(parsed)) {
+          const tool = String(parsed.tool || parsed.tool_name || parsed.name || "").trim();
+          const args = parsePlannerArgs(parsed.arguments ?? parsed.args);
+          if (tool && allowedNames.has(tool) && args) return { tool, arguments: args };
+        }
+      } catch {
+      }
+    }
+  }
+  for (const name of allowedNames) {
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const match = clean.match(new RegExp(`${escaped}\\s*\\((\\{[\\s\\S]*\\})\\)`, "m"));
+    if (!match) continue;
+    const args = parsePlannerArgs(match[1]);
+    if (args) return { tool: name, arguments: args };
+  }
+  return null;
+};
+var extractPlannerSelection = (body, allowedNames) => {
+  const message = body?.choices?.[0]?.message || {};
+  const calls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
+  for (const call of calls) {
+    const tool = String(call?.function?.name || call?.name || "").trim();
+    if (!tool || !allowedNames.has(tool)) continue;
+    const args = parsePlannerArgs(call?.function?.arguments ?? call?.arguments);
+    if (args) return { tool, arguments: args };
+  }
+  const functionCall = message.function_call;
+  if (functionCall) {
+    const tool = String(functionCall.name || "").trim();
+    const args = parsePlannerArgs(functionCall.arguments);
+    if (tool && allowedNames.has(tool) && args) return { tool, arguments: args };
+  }
+  return parsePlannerText(String(message.content || ""), allowedNames);
+};
+var runSeparatePlanner = async (planner, allowedTools, storyContent) => {
+  const allowedNames = new Set(allowedTools.map((tool) => tool.exposedName));
+  const plannerTools = planner.tools.filter((tool) => allowedNames.has(tool.function.name));
+  if (!plannerTools.length) throw new Error("\u914D\u56FE\u89C4\u5212\u5668\u6CA1\u6709\u53EF\u7528\u751F\u56FE\u5DE5\u5177");
+  const latestStory = String(storyContent || "").slice(-24e3);
+  const systemPrompt = `${planner.systemPrompt}
+
+\u3010\u521A\u5B8C\u6210\u7684\u6700\u65B0\u4E00\u8F6E\u6B63\u6587\u2014\u2014\u4EE5\u8FD9\u4E00\u6BB5\u4F5C\u4E3A\u753B\u9762\u6700\u9AD8\u4F18\u5148\u7EA7\u3011
+${latestStory}`;
+  const url = `${cleanBaseUrl(planner.baseUrl)}/chat/completions`;
+  const nativeBody = {
+    model: planner.model,
+    messages: [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: "\u8BF7\u4E3A\u521A\u5B8C\u6210\u7684\u6700\u65B0\u4E00\u8F6E\u5267\u60C5\u751F\u6210\u63D2\u56FE\u3002\u5FC5\u987B\u9009\u62E9\u5E76\u8C03\u7528\u4E00\u4E2A\u751F\u56FE\u5DE5\u5177\u3002" }
+    ],
+    tools: plannerTools,
+    tool_choice: plannerTools.length === 1 ? { type: "function", function: { name: plannerTools[0].function.name } } : "required",
+    parallel_tool_calls: false,
+    temperature: 0.4,
+    max_tokens: 3e3,
+    stream: false
+  };
+  let nativeError = "";
+  try {
+    const native = await fetchJson(url, planner.apiKey, {
+      method: "POST",
+      body: JSON.stringify(nativeBody)
+    }, 9e4);
+    if (native.response.ok) {
+      const selection2 = extractPlannerSelection(native.body, allowedNames);
+      if (selection2) return selection2;
+      nativeError = "\u89C4\u5212\u5668\u6CA1\u6709\u8FD4\u56DE\u53EF\u6267\u884C\u7684 tool_calls";
+    } else {
+      nativeError = remoteError(native.body, native.response.status);
+      if (![400, 404, 405, 415, 422].includes(native.response.status)) {
+        throw new Error(`\u914D\u56FE\u89C4\u5212\u5668\u8BF7\u6C42\u5931\u8D25\uFF1A${nativeError}`);
+      }
+    }
+  } catch (error) {
+    nativeError = String(error?.message || error);
+  }
+  const schemaText = plannerTools.map((tool) => JSON.stringify(tool)).join("\n");
+  const fallback = await fetchJson(url, planner.apiKey, {
+    method: "POST",
+    body: JSON.stringify({
+      model: planner.model,
+      messages: [
+        {
+          role: "system",
+          content: `${systemPrompt}
+
+\u5DE5\u5177\u517C\u5BB9\u6A21\u5F0F\uFF1A\u4E0A\u4E00\u6B21\u539F\u751F\u5DE5\u5177\u8C03\u7528\u4E0D\u53EF\u7528\uFF08${nativeError.slice(0, 300)}\uFF09\u3002\u4E0B\u9762\u662F\u5141\u8BB8\u9009\u62E9\u7684\u751F\u56FE\u5DE5\u5177 schema\uFF1A
+${schemaText}
+
+\u4F60\u5FC5\u987B\u53EA\u8F93\u51FA\u4E00\u884C JSON\uFF1A{"tool":"\u5DE5\u5177\u540D","arguments":{...}}\u3002\u7981\u6B62\u89E3\u91CA\u3001\u4EE3\u7801\u5757\u548C\u989D\u5916\u6587\u672C\u3002`
+        },
+        { role: "user", content: "\u9009\u62E9\u4E00\u4E2A\u6700\u9002\u5408\u6700\u65B0\u5267\u60C5\u753B\u9762\u7684\u5DE5\u5177\uFF0C\u5E76\u7ED9\u51FA\u5B8C\u6574\u53C2\u6570\u3002" }
+      ],
+      temperature: 0,
+      max_tokens: 3e3,
+      stream: false
+    })
+  }, 9e4);
+  if (!fallback.response.ok) {
+    throw new Error(`\u914D\u56FE\u89C4\u5212\u5668\u517C\u5BB9\u91CD\u8BD5\u5931\u8D25\uFF1A${remoteError(fallback.body, fallback.response.status)}`);
+  }
+  const selection = extractPlannerSelection(fallback.body, allowedNames);
+  if (!selection) throw new Error("\u914D\u56FE\u89C4\u5212\u5668\u8FDE\u7EED\u4E24\u6B21\u6CA1\u6709\u8FD4\u56DE\u53EF\u6267\u884C\u7684\u751F\u56FE\u8C03\u7528");
+  return selection;
+};
+var runStoryImageHandoff = async (spec, storyClientRequestId, storyContent) => {
+  let plan = parseInlinePlan(String(storyContent || ""));
+  if (!plan && spec.planner) {
+    try {
+      plan = await runSeparatePlanner(spec.planner, spec.tools, storyContent);
+    } catch (error) {
+      return {
+        state: "failed",
+        error: String(error?.message || error).slice(0, 500)
+      };
+    }
+  }
+  if (!plan) return { state: "skipped" };
+  const prepared = prepareStoryImageHandoffFromPlan(spec, storyClientRequestId, plan);
+  if (prepared.state !== "submitted" || !prepared.exposedTool || !prepared.clientRequestId) return prepared;
+  const tool = spec.tools.find((item) => item.exposedName === prepared.exposedTool);
+  if (!tool) return { ...prepared, state: "failed", error: "\u6B63\u6587\u9009\u62E9\u7684\u751F\u56FE\u5DE5\u5177\u5DF2\u4E0D\u53EF\u7528" };
+  const clientRequestId = prepared.clientRequestId;
+  const finalArgs = isRecord2(prepared.arguments) ? cloneRecord(prepared.arguments) : {};
   const baseResult = {
     exposedTool: tool.exposedName,
     toolName: tool.toolName,
@@ -12821,7 +12998,7 @@ var runStoryImageHandoff = async (spec, storyClientRequestId, storyContent) => {
           arguments: finalArgs
         })
       });
-    } catch (error) {
+    } catch {
       return { ...baseResult, state: "submitted", uncertain: true };
     }
     if (submitted.response.ok && submitted.body?.job?.id) {
@@ -12844,7 +13021,98 @@ var runStoryImageHandoff = async (spec, storyClientRequestId, storyContent) => {
   }
 };
 
+// utils/storyBackgroundStatus.ts
+var STORY_BACKGROUND_STATUS_RESULT_KIND = "story-background-status";
+
+// worker/amsg/src/storyStatusPush.ts
+var storyBackgroundStatusMessageId = (clientRequestId) => `story_${clientRequestId}`;
+var notificationBody = (status, title, error) => {
+  const label = title.trim() || "\u5267\u60C5";
+  if (status === "running") return `\u300A${label}\u300B\u6B63\u5728\u540E\u53F0\u751F\u6210`;
+  if (status === "succeeded") return `\u300A${label}\u300B\u5267\u60C5\u5DF2\u751F\u6210\u5B8C\u6210\uFF0C\u70B9\u5F00\u5373\u53EF\u67E5\u770B`;
+  if (status === "cancelled") return `\u300A${label}\u300B\u540E\u53F0\u751F\u6210\u5DF2\u53D6\u6D88`;
+  const detail = String(error || "").trim().replace(/\s+/g, " ").slice(0, 120);
+  return detail ? `\u300A${label}\u300B\u540E\u53F0\u751F\u6210\u5931\u8D25\uFF1A${detail}` : `\u300A${label}\u300B\u540E\u53F0\u751F\u6210\u5931\u8D25\uFF0C\u70B9\u5F00\u53EF\u91CD\u8BD5`;
+};
+var sendStoryBackgroundStatusPush = async (env, job, status, error) => {
+  if (!env.AMSG_MASTER_KEY?.trim()) return;
+  try {
+    const row = await env.DB.prepare(
+      "SELECT user_id, subscription FROM push_subscriptions WHERE user_id = ? LIMIT 1"
+    ).bind(job.userId).first();
+    const stored = row?.subscription;
+    const userId = row?.user_id;
+    if (typeof stored !== "string" || !stored || typeof userId !== "string" || !userId) return;
+    let subscription;
+    try {
+      const userKey = await deriveUserEncryptionKey(userId, env.AMSG_MASTER_KEY);
+      subscription = JSON.parse(await decryptFromStorage(stored, userKey));
+    } catch {
+      subscription = JSON.parse(stored);
+    }
+    const nativeReady = isFcmConfigured(env);
+    const vapid = {
+      email: env.VAPID_EMAIL?.trim() || "mailto:noreply@sullyos.app",
+      publicKey: env.VAPID_PUBLIC_KEY,
+      privateKey: env.VAPID_PRIVATE_KEY
+    };
+    const effectiveVapid = nativeReady && (!vapid.publicKey?.trim() || !vapid.privateKey?.trim()) ? { email: vapid.email, publicKey: "native-fcm", privateKey: "native-fcm" } : vapid;
+    const transport = createHybridPushTransport(
+      env,
+      createWebCryptoWebPush(effectiveVapid)
+    );
+    const body = notificationBody(status, job.title, error);
+    const messageId = storyBackgroundStatusMessageId(job.clientRequestId);
+    const payload = {
+      messageKind: "result",
+      resultKind: STORY_BACKGROUND_STATUS_RESULT_KIND,
+      messageType: "story-background",
+      messageId,
+      contactName: "\u5267\u60C5\u5267\u573A",
+      message: body,
+      timestamp: (/* @__PURE__ */ new Date()).toISOString(),
+      storyStatus: status,
+      storyJobId: job.jobId,
+      storyClientRequestId: job.clientRequestId,
+      storyOwnerKey: job.ownerKey,
+      storyTitle: job.title,
+      ...error ? { error: String(error).slice(0, 500) } : {},
+      metadata: {
+        amsgStoryBackgroundStatus: true,
+        storyStatus: status,
+        storyJobId: job.jobId,
+        storyClientRequestId: job.clientRequestId,
+        storyOwnerKey: job.ownerKey,
+        storyTitle: job.title
+      },
+      notification: {
+        title: "\u5267\u60C5\u5267\u573A",
+        body,
+        show: "always",
+        // running 只是状态牌，不叫人；终态一定重新提醒一次。
+        silent: status === "running",
+        tag: `story:${job.ownerKey}`,
+        renotify: status !== "running"
+      }
+    };
+    await transport.sendNotification(subscription, JSON.stringify(payload));
+  } catch (pushError) {
+    console.warn("[amsg:story-job] \u5267\u60C5\u540E\u53F0\u72B6\u6001\u901A\u77E5\u53D1\u9001\u5931\u8D25\uFF08\u5267\u60C5\u4EFB\u52A1\u672C\u8EAB\u4E0D\u53D7\u5F71\u54CD\uFF09", {
+      jobId: job.jobId,
+      status,
+      error: String(pushError?.message || pushError).slice(0, 500)
+    });
+  }
+};
+
 // worker/amsg/src/storyJobs.ts
+var storyStatusJob = (row) => ({
+  jobId: row.job_id,
+  userId: row.user_id,
+  clientRequestId: row.client_request_id,
+  ownerKey: row.owner_key,
+  title: row.title
+});
 var UUID_V4_RE2 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 var JOB_ID_RE = /^[A-Za-z0-9_-]{12,160}$/;
 var TERMINAL_RETENTION_MS = 7 * 24 * 60 * 60 * 1e3;
@@ -13304,6 +13572,12 @@ var finalizeFailed = async (env, row, attempts, error, content = "", reasoningCh
     row.user_id,
     row.job_id
   ).run();
+  await sendStoryBackgroundStatusPush(
+    env,
+    storyStatusJob(row),
+    "failed",
+    error
+  );
 };
 var runStoryJob = async (env, userId, jobId) => {
   await ensureStoryJobsSchema(env.DB);
@@ -13315,6 +13589,7 @@ var runStoryJob = async (env, userId, jobId) => {
   ).bind(startedAt, startedAt, userId, jobId).run();
   if ((claimed.meta?.changes ?? 0) <= 0) return;
   const liveRow = { ...row, status: "running", started_at: startedAt, updated_at: startedAt };
+  void sendStoryBackgroundStatusPush(env, storyStatusJob(liveRow), "running");
   let spec;
   try {
     spec = await openJson(env, userId, jobId, "request", row.request_cipher);
@@ -13413,22 +13688,22 @@ var runStoryJob = async (env, userId, jobId) => {
       }
       attempt.ok = true;
       attempts.push(attempt);
-      let imageHandoffResult;
+      let finalImageHandoff;
       if (spec.imageHandoff) {
         try {
-          imageHandoffResult = await runStoryImageHandoff(
+          finalImageHandoff = await runStoryImageHandoff(
             spec.imageHandoff,
             spec.clientRequestId,
             streamed.content
           );
         } catch (imageHandoffError) {
-          imageHandoffResult = {
+          finalImageHandoff = {
             state: "failed",
             error: String(imageHandoffError?.message || imageHandoffError).slice(0, 500)
           };
         }
       }
-      const storedResponse = imageHandoffResult ? { ...streamed.response, _sullyStoryImageHandoff: imageHandoffResult } : streamed.response;
+      const storedResponse = finalImageHandoff ? { ...streamed.response, _sullyStoryImageHandoff: finalImageHandoff } : streamed.response;
       const responseCipher = await sealJson(env, userId, jobId, "response", storedResponse);
       const partialCipher = await sealJson(env, userId, jobId, "partial", streamed.content);
       const usage = streamed.response?.usage || {};
@@ -13454,6 +13729,11 @@ var runStoryJob = async (env, userId, jobId) => {
         userId,
         jobId
       ).run();
+      await sendStoryBackgroundStatusPush(
+        env,
+        storyStatusJob({ ...liveRow, status: "succeeded", completed_at: finishedAt, updated_at: finishedAt }),
+        "succeeded"
+      );
       return;
     } catch (error) {
       const attempt = routeAttempt(route, index, attemptStartedAt);

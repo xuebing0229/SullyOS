@@ -58,7 +58,13 @@ import { incrementDigestRound, runCognitiveDigestion } from '../../../utils/memo
 import StoryQuickPresetPanel from './StoryQuickPresetPanel';
 import { StoryAppearanceButton, useStoryTheaterAppearance } from './StoryTheaterTheme';
 import { shareOrDownloadFile } from '../../../utils/shareExport';
-import { generateStoryTheaterImage, resolveStoryImagePlannerApiConfig } from '../../../utils/storyTheaterImage';
+import {
+    adoptStoryCloudImageHandoff,
+    buildStoryCloudImageHandoffSpec,
+    generateStoryTheaterImage,
+    resolveStoryImagePlannerApiConfig,
+    type StoryCloudImageHandoffResult,
+} from '../../../utils/storyTheaterImage';
 import StoryImageSettingsButton from './StoryImageSettings';
 import AppMemoryCandidatePanel from '../../AppMemoryCandidatePanel';
 import { generateAppMemoryCandidates } from '../../../utils/appMemoryBridge';
@@ -1441,6 +1447,17 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             setContextTokens(promptTokenCount);
             setContextTokensExact(false);
             const prefill = compiled.assistantPrefill?.content || '';
+            let cloudImageHandoffResult: StoryCloudImageHandoffResult | undefined;
+            const cloudImageHandoff = entry.imageGeneration?.enabled
+                ? await buildStoryCloudImageHandoffSpec({
+                    actors,
+                    userProfile,
+                    entry,
+                    userName: promptIdentityName,
+                    plannerApiConfig: resolveStoryImagePlannerApiConfig(entry, apiConfig, apiPresets),
+                    messages: visibleHistory,
+                })
+                : undefined;
             usedNativeBackground = isNativeStoryBackgroundRuntime();
             const generated = await callCompletion(payload, compiled.settings, reported => {
                 promptTokenCount = reported;
@@ -1461,6 +1478,10 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                     ...(isReroll && rerollTarget ? { rerollTargetId: rerollTarget.id } : {}),
                     ...(affinityInputs.length > 0 ? { affinityInputs } : {}),
                     isContinueTurn,
+                },
+                imageHandoff: cloudImageHandoff,
+                onCloudCompleted: data => {
+                    cloudImageHandoffResult = data?._sullyStoryImageHandoff as StoryCloudImageHandoffResult | undefined;
                 },
                 beforeRelease: entry.imageGeneration?.enabled && isNativeStoryBackgroundRuntime()
                     ? async () => {
@@ -1527,19 +1548,32 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                     const imageRows = (await DB.getMessagesByCharId(threadId, true))
                         .filter(message => message.metadata?.source === 'story_theater')
                         .sort((a, b) => a.id - b.id);
-                    // 正文已经独立完成并落库；配图始终再单独调用一次规划器。
-            // 不再要求主剧情模型输出隐藏 story_image_plan，也不把配图协议混进正文预设。
-            const imageResult = await generateStoryTheaterImage({
-                apiConfig,
-                plannerApiConfig: resolveStoryImagePlannerApiConfig(entry, apiConfig, apiPresets),
-                entry,
-                actors,
-                userProfile,
-                userName: promptIdentityName,
-                messages: imageRows,
-                targetMessageId: assistantMessageId,
-            });
-            if (imageResult.frame) {
+                    // 云端 Story Worker 已经在正文完成后独立跑过“配图规划 → /jobs”。
+                    // 回前台只负责把那个稳定 clientRequestId 接到刚落库的 messageId，绝不再规划第二遍。
+                    // 老 Worker / 非云端路径拿不到 handoff 时才保留原来的本机规划器作为兼容兜底。
+                    let imageResult;
+                    if (cloudImageHandoffResult?.state === 'submitted') {
+                        imageResult = await adoptStoryCloudImageHandoff({
+                            entry,
+                            actors,
+                            handoff: cloudImageHandoffResult,
+                            targetMessageId: assistantMessageId,
+                        });
+                    } else if (cloudImageHandoffResult?.state === 'failed') {
+                        throw new Error(cloudImageHandoffResult.error || '云端配图规划失败');
+                    } else {
+                        imageResult = await generateStoryTheaterImage({
+                            apiConfig,
+                            plannerApiConfig: resolveStoryImagePlannerApiConfig(entry, apiConfig, apiPresets),
+                            entry,
+                            actors,
+                            userProfile,
+                            userName: promptIdentityName,
+                            messages: imageRows,
+                            targetMessageId: assistantMessageId,
+                        });
+                    }
+                    if (imageResult.frame) {
                         await DB.updateMessageMetadata(assistantMessageId, previous => ({ ...previous, theaterImage: imageResult.frame }));
                         await loadMessages();
                     } else if (imageResult.queued) {

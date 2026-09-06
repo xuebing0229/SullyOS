@@ -17,9 +17,21 @@ export interface StoryCloudImageToolHandoff {
   references?: StoryCloudImageReferenceFragments;
 }
 
+export interface StoryCloudImagePlannerSpec {
+  baseUrl: string;
+  apiKey: string;
+  model: string;
+  systemPrompt: string;
+  tools: Array<{
+    type: 'function';
+    function: { name: string; description?: string; parameters?: Record<string, unknown> };
+  }>;
+}
+
 export interface StoryCloudImageHandoffSpec {
   version: 1;
   tools: StoryCloudImageToolHandoff[];
+  planner?: StoryCloudImagePlannerSpec;
 }
 
 export interface StoryCloudImageHandoffResult {
@@ -90,7 +102,45 @@ export const normalizeStoryImageHandoffSpec = (value: unknown): StoryCloudImageH
       } : {}),
     });
   }
-  return tools.length ? { version: 1, tools } : undefined;
+  const plannerRaw = isRecord(value.planner) ? value.planner : undefined;
+  const plannerTools: StoryCloudImagePlannerSpec['tools'] = [];
+  if (plannerRaw && Array.isArray(plannerRaw.tools)) {
+    for (const rawPlannerTool of plannerRaw.tools.slice(0, MAX_TOOLS)) {
+      if (!isRecord(rawPlannerTool) || rawPlannerTool.type !== 'function' || !isRecord(rawPlannerTool.function)) continue;
+      const name = String(rawPlannerTool.function.name || '').trim();
+      if (!name) continue;
+      plannerTools.push({
+        type: 'function',
+        function: {
+          name,
+          ...(typeof rawPlannerTool.function.description === 'string'
+            ? { description: rawPlannerTool.function.description.slice(0, 4000) }
+            : {}),
+          ...(isRecord(rawPlannerTool.function.parameters)
+            ? { parameters: cloneRecord(rawPlannerTool.function.parameters) }
+            : {}),
+        },
+      });
+    }
+  }
+  const plannerBaseUrl = cleanBaseUrl(plannerRaw?.baseUrl);
+  const plannerModel = String(plannerRaw?.model || '').trim();
+  const plannerSystemPrompt = String(plannerRaw?.systemPrompt || '').trim();
+  const planner = plannerRaw
+    && /^https?:\/\//i.test(plannerBaseUrl)
+    && plannerModel
+    && plannerSystemPrompt
+    && plannerTools.length
+    ? {
+        baseUrl: plannerBaseUrl,
+        apiKey: String(plannerRaw.apiKey || ''),
+        model: plannerModel,
+        systemPrompt: plannerSystemPrompt.slice(0, 80_000),
+        tools: plannerTools,
+      }
+    : undefined;
+
+  return tools.length ? { version: 1, tools, ...(planner ? { planner } : {}) } : undefined;
 };
 
 const parseInlinePlan = (content: string): { tool: string; arguments: Record<string, unknown> } | null => {
@@ -114,9 +164,10 @@ const fetchJson = async (
   url: string,
   token: string,
   init: RequestInit = {},
+  timeoutMs = HTTP_TIMEOUT_MS,
 ): Promise<{ response: Response; body: any }> => {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), HTTP_TIMEOUT_MS);
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const headers = new Headers(init.headers || {});
     headers.set('Accept', 'application/json');
@@ -220,26 +271,167 @@ const stableImageClientRequestId = (storyClientRequestId: string): string => {
  * 不碰网络，所以正文 [DONE] 后可以先把这个占位 handoff 连同正文一起落库并立即让手机接回。
  * 手机和 Worker 随后谁先真正 POST /jobs 都只会使用同一个 clientRequestId，服务端幂等会合并成同一张图。
  */
-export const prepareStoryImageHandoff = (
+const prepareStoryImageHandoffFromPlan = (
   spec: StoryCloudImageHandoffSpec,
   storyClientRequestId: string,
-  storyContent: string,
+  plan: { tool: string; arguments: Record<string, unknown> },
 ): StoryCloudImageHandoffResult => {
-  const plan = parseInlinePlan(String(storyContent || ''));
-  if (!plan) return { state: 'skipped' };
   const tool = spec.tools.find(item => item.exposedName === plan.tool);
-  if (!tool) return { state: 'failed', exposedTool: plan.tool, error: '正文选择的生图工具已不可用' };
-
+  if (!tool) return { state: 'failed', exposedTool: plan.tool, error: '配图规划器选择的生图工具已不可用' };
   return {
     state: 'submitted',
     exposedTool: tool.exposedName,
     toolName: tool.toolName,
     clientRequestId: stableImageClientRequestId(storyClientRequestId),
     arguments: mergeNovelAiReferences(tool, plan.arguments),
-    // 这里只代表“稳定任务身份已经确定”，不谎称 Worker 已拿到远端 jobId。
-    // adoptBackgroundImageJob 会先 by-client 查，同一 id 不存在时再安全补交。
     uncertain: true,
   };
+};
+
+export const prepareStoryImageHandoff = (
+  spec: StoryCloudImageHandoffSpec,
+  storyClientRequestId: string,
+  storyContent: string,
+): StoryCloudImageHandoffResult => {
+  const plan = parseInlinePlan(String(storyContent || ''));
+  return plan
+    ? prepareStoryImageHandoffFromPlan(spec, storyClientRequestId, plan)
+    : { state: 'skipped' };
+};
+
+const parsePlannerArgs = (value: unknown): Record<string, unknown> | null => {
+  if (isRecord(value)) return cloneRecord(value);
+  if (typeof value !== 'string') return null;
+  try {
+    const parsed = JSON.parse(value);
+    return isRecord(parsed) ? cloneRecord(parsed) : null;
+  } catch {
+    return null;
+  }
+};
+
+const parsePlannerText = (
+  text: string,
+  allowedNames: Set<string>,
+): { tool: string; arguments: Record<string, unknown> } | null => {
+  const clean = String(text || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
+  if (clean) {
+    const first = clean.indexOf('{');
+    const last = clean.lastIndexOf('}');
+    if (first >= 0 && last > first) {
+      try {
+        const parsed = JSON.parse(clean.slice(first, last + 1));
+        if (isRecord(parsed)) {
+          const tool = String(parsed.tool || parsed.tool_name || parsed.name || '').trim();
+          const args = parsePlannerArgs(parsed.arguments ?? parsed.args);
+          if (tool && allowedNames.has(tool) && args) return { tool, arguments: args };
+        }
+      } catch { /* try text-style call below */ }
+    }
+  }
+  for (const name of allowedNames) {
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const match = clean.match(new RegExp(`${escaped}\\s*\\((\\{[\\s\\S]*\\})\\)`, 'm'));
+    if (!match) continue;
+    const args = parsePlannerArgs(match[1]);
+    if (args) return { tool: name, arguments: args };
+  }
+  return null;
+};
+
+const extractPlannerSelection = (
+  body: any,
+  allowedNames: Set<string>,
+): { tool: string; arguments: Record<string, unknown> } | null => {
+  const message = body?.choices?.[0]?.message || {};
+  const calls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
+  for (const call of calls) {
+    const tool = String(call?.function?.name || call?.name || '').trim();
+    if (!tool || !allowedNames.has(tool)) continue;
+    const args = parsePlannerArgs(call?.function?.arguments ?? call?.arguments);
+    if (args) return { tool, arguments: args };
+  }
+  const functionCall = message.function_call;
+  if (functionCall) {
+    const tool = String(functionCall.name || '').trim();
+    const args = parsePlannerArgs(functionCall.arguments);
+    if (tool && allowedNames.has(tool) && args) return { tool, arguments: args };
+  }
+  return parsePlannerText(String(message.content || ''), allowedNames);
+};
+
+const runSeparatePlanner = async (
+  planner: StoryCloudImagePlannerSpec,
+  allowedTools: StoryCloudImageToolHandoff[],
+  storyContent: string,
+): Promise<{ tool: string; arguments: Record<string, unknown> }> => {
+  const allowedNames = new Set(allowedTools.map(tool => tool.exposedName));
+  const plannerTools = planner.tools.filter(tool => allowedNames.has(tool.function.name));
+  if (!plannerTools.length) throw new Error('配图规划器没有可用生图工具');
+  const latestStory = String(storyContent || '').slice(-24_000);
+  const systemPrompt = `${planner.systemPrompt}\n\n【刚完成的最新一轮正文——以这一段作为画面最高优先级】\n${latestStory}`;
+  const url = `${cleanBaseUrl(planner.baseUrl)}/chat/completions`;
+  const nativeBody = {
+    model: planner.model,
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: '请为刚完成的最新一轮剧情生成插图。必须选择并调用一个生图工具。' },
+    ],
+    tools: plannerTools,
+    tool_choice: plannerTools.length === 1
+      ? { type: 'function', function: { name: plannerTools[0].function.name } }
+      : 'required',
+    parallel_tool_calls: false,
+    temperature: 0.4,
+    max_tokens: 3000,
+    stream: false,
+  };
+
+  let nativeError = '';
+  try {
+    const native = await fetchJson(url, planner.apiKey, {
+      method: 'POST',
+      body: JSON.stringify(nativeBody),
+    }, 90_000);
+    if (native.response.ok) {
+      const selection = extractPlannerSelection(native.body, allowedNames);
+      if (selection) return selection;
+      nativeError = '规划器没有返回可执行的 tool_calls';
+    } else {
+      nativeError = remoteError(native.body, native.response.status);
+      if (![400, 404, 405, 415, 422].includes(native.response.status)) {
+        throw new Error(`配图规划器请求失败：${nativeError}`);
+      }
+    }
+  } catch (error) {
+    nativeError = String((error as Error)?.message || error);
+  }
+
+  // OpenAI-compatible 站点偶尔拒绝 tools/tool_choice。与 App 侧兼容策略一致，
+  // 真正的生图尚未发生，因此可以只补一次“严格 JSON 选工具”规划，不会重复出图。
+  const schemaText = plannerTools.map(tool => JSON.stringify(tool)).join('\n');
+  const fallback = await fetchJson(url, planner.apiKey, {
+    method: 'POST',
+    body: JSON.stringify({
+      model: planner.model,
+      messages: [
+        {
+          role: 'system',
+          content: `${systemPrompt}\n\n工具兼容模式：上一次原生工具调用不可用（${nativeError.slice(0, 300)}）。下面是允许选择的生图工具 schema：\n${schemaText}\n\n你必须只输出一行 JSON：{"tool":"工具名","arguments":{...}}。禁止解释、代码块和额外文本。`,
+        },
+        { role: 'user', content: '选择一个最适合最新剧情画面的工具，并给出完整参数。' },
+      ],
+      temperature: 0,
+      max_tokens: 3000,
+      stream: false,
+    }),
+  }, 90_000);
+  if (!fallback.response.ok) {
+    throw new Error(`配图规划器兼容重试失败：${remoteError(fallback.body, fallback.response.status)}`);
+  }
+  const selection = extractPlannerSelection(fallback.body, allowedNames);
+  if (!selection) throw new Error('配图规划器连续两次没有返回可执行的生图调用');
+  return selection;
 };
 
 export const runStoryImageHandoff = async (
@@ -247,7 +439,20 @@ export const runStoryImageHandoff = async (
   storyClientRequestId: string,
   storyContent: string,
 ): Promise<StoryCloudImageHandoffResult> => {
-  const prepared = prepareStoryImageHandoff(spec, storyClientRequestId, storyContent);
+  let plan = parseInlinePlan(String(storyContent || ''));
+  if (!plan && spec.planner) {
+    try {
+      plan = await runSeparatePlanner(spec.planner, spec.tools, storyContent);
+    } catch (error) {
+      return {
+        state: 'failed',
+        error: String((error as Error)?.message || error).slice(0, 500),
+      };
+    }
+  }
+  if (!plan) return { state: 'skipped' };
+
+  const prepared = prepareStoryImageHandoffFromPlan(spec, storyClientRequestId, plan);
   if (prepared.state !== 'submitted' || !prepared.exposedTool || !prepared.clientRequestId) return prepared;
 
   const tool = spec.tools.find(item => item.exposedName === prepared.exposedTool);
@@ -263,14 +468,12 @@ export const runStoryImageHandoff = async (
   };
 
   try {
-    // 按 clientRequestId 先查账：Durable Object 被重试/恢复时绝不重复提交同一张图。
     try {
       const existing = await findExistingJob(tool, clientRequestId);
       if (existing?.id) {
         return { ...baseResult, state: 'submitted', remoteJobId: String(existing.id) };
       }
     } catch (lookupError) {
-      // 查询失败不能证明任务不存在。后面 POST 仍使用同一个稳定 id；服务端自身幂等。
       console.warn('[StoryImageHandoff] pre-submit lookup inconclusive', String((lookupError as any)?.message || lookupError));
     }
 
@@ -285,8 +488,7 @@ export const runStoryImageHandoff = async (
           arguments: finalArgs,
         }),
       });
-    } catch (error) {
-      // POST 响应丢失时任务可能已接单。把同一个 id 交给手机恢复查询，禁止另造请求。
+    } catch {
       return { ...baseResult, state: 'submitted', uncertain: true };
     }
 
