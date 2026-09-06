@@ -11,6 +11,7 @@ import android.os.Build;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.IBinder;
+import android.os.PowerManager;
 import androidx.core.app.NotificationCompat;
 import androidx.core.app.ServiceCompat;
 import androidx.core.content.ContextCompat;
@@ -43,9 +44,11 @@ public class SullyStoryCloudMonitorService extends Service {
     private static final String CHANNEL_ID = "sully_story_cloud_status_v1";
     private static final int NOTIFICATION_ID = 23033;
     private static final long POLL_MS = 3000L;
+    private static final long WAKE_LOCK_TIMEOUT_MS = 30L * 60L * 1000L;
 
     private HandlerThread workerThread;
     private Handler handler;
+    private PowerManager.WakeLock wakeLock;
     private int generation = 0;
     private String jobId = "";
     private String title = "剧情";
@@ -92,6 +95,14 @@ public class SullyStoryCloudMonitorService extends Service {
     public void onCreate() {
         super.onCreate();
         createChannel();
+        PowerManager powerManager = (PowerManager) getSystemService(POWER_SERVICE);
+        if (powerManager != null) {
+            wakeLock = powerManager.newWakeLock(
+                PowerManager.PARTIAL_WAKE_LOCK,
+                getPackageName() + ":story-cloud-monitor"
+            );
+            wakeLock.setReferenceCounted(false);
+        }
         workerThread = new HandlerThread("SullyStoryCloudMonitor");
         workerThread.start();
         handler = new Handler(workerThread.getLooper());
@@ -117,6 +128,7 @@ public class SullyStoryCloudMonitorService extends Service {
         generation += 1;
         if (handler != null) handler.removeCallbacksAndMessages(null);
         if (workerThread != null) workerThread.quitSafely();
+        releaseWakeLock();
         super.onDestroy();
     }
 
@@ -135,6 +147,7 @@ public class SullyStoryCloudMonitorService extends Service {
         this.serverToken = clean(intent.getStringExtra(EXTRA_SERVER_TOKEN));
         final int token = ++generation;
         enterForeground(buildRunningNotification(this.title));
+        acquireWakeLock();
         handler.removeCallbacksAndMessages(null);
         handler.post(() -> poll(token));
     }
@@ -193,9 +206,24 @@ public class SullyStoryCloudMonitorService extends Service {
         return data == null ? null : data.optJSONObject("job");
     }
 
+    private void acquireWakeLock() {
+        if (wakeLock == null || wakeLock.isHeld()) return;
+        try {
+            wakeLock.acquire(WAKE_LOCK_TIMEOUT_MS);
+        } catch (Exception ignored) { }
+    }
+
+    private void releaseWakeLock() {
+        if (wakeLock == null || !wakeLock.isHeld()) return;
+        try {
+            wakeLock.release();
+        } catch (Exception ignored) { }
+    }
+
     private void finishTerminal(String status, String title, String error) {
         generation += 1;
         if (handler != null) handler.removeCallbacksAndMessages(null);
+        releaseWakeLock();
         if (Build.VERSION.SDK_INT >= 24) {
             stopForeground(STOP_FOREGROUND_REMOVE);
         } else {
