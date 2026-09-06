@@ -15,7 +15,8 @@ describe('story cloud resource-exhaustion compatibility retry', () => {
     expect(storyJobsSource).toContain("lower.includes('resource_exhausted')");
     expect(storyJobsSource).toContain('originalMaxTokens > RESOURCE_EXHAUSTED_MAX_TOKENS_RETRY');
     expect(storyJobsSource).toContain('resourceRetryFromMaxTokens = originalMaxTokens;');
-    expect(storyJobsSource).toContain('RESOURCE_EXHAUSTED_MAX_TOKENS_RETRY,');
+    expect(storyJobsSource).toContain('routeRequest.stopCancelWatch();\n          resourceRetryFromMaxTokens = originalMaxTokens;');
+    expect(storyJobsSource).toContain('routeRequest = await requestRoute(\n            includeUsage,\n            RESOURCE_EXHAUSTED_MAX_TOKENS_RETRY,');
     expect(storyJobsSource).toContain('let includeUsage = true;');
   });
 });
