@@ -203,19 +203,19 @@ const waitUntilDocumentVisible = (): Promise<void> => {
 };
 
 /**
- * 只给 GET /story-jobs* 的状态查询用。
- *
- * 真正生成在 Worker/DO，手机锁屏后完全没必要继续打状态 GET。更重要的是 Android WebView
- * 会冻结 JS timer：旧实现的 20 秒 AbortController timeout 会在锁屏几十秒后、回前台那一刻
- * 才突然执行，于是一个已经成功的远端 job 旁边凭空多出 “signal is aborted” 红日志。
- *
- * 这里不取消远端 job、不取消模型请求，也不改 POST；只是让轮询的超时只在页面可见时走钟。
+ * Web/PWA 没有原生前台服务托底时，隐藏页面仍暂停状态 GET，避免浏览器后台冻结造成伪超时。
+ * Android App 已经由 SullyStoryCloudMonitorService 接管为前台服务；这里必须继续查同一个 job，
+ * 否则正文虽然在 Worker 里完成了，JS 永远等到回前台才知道“完成”，自动配图也就被硬生生
+ * 拖到用户切回来才开始。
  */
+const pauseStoryPollingWhenHidden = (): boolean => !isNativeStoryBackgroundRuntime();
+
 const fetchPollingJson = async (
     config: WorkerConfig,
     path: string,
 ): Promise<{ response: Response; body: any }> => {
-    await waitUntilDocumentVisible();
+    const pauseWhenHidden = pauseStoryPollingWhenHidden();
+    if (pauseWhenHidden) await waitUntilDocumentVisible();
 
     const controller = new AbortController();
     let timeout: ReturnType<typeof setTimeout> | null = null;
@@ -231,16 +231,21 @@ const fetchPollingJson = async (
         clearVisibleTimeout();
         if (
             settled
-            || (typeof document !== 'undefined' && document.visibilityState !== 'visible')
+            || (
+                pauseWhenHidden
+                && typeof document !== 'undefined'
+                && document.visibilityState !== 'visible'
+            )
         ) return;
         timeout = setTimeout(() => controller.abort(), HTTP_TIMEOUT_MS);
     };
     const onVisibility = () => {
+        if (!pauseWhenHidden) return;
         if (document.visibilityState === 'visible') armVisibleTimeout();
         else clearVisibleTimeout();
     };
 
-    if (typeof document !== 'undefined') {
+    if (pauseWhenHidden && typeof document !== 'undefined') {
         document.addEventListener('visibilitychange', onVisibility);
     }
     armVisibleTimeout();
@@ -259,7 +264,7 @@ const fetchPollingJson = async (
     } finally {
         settled = true;
         clearVisibleTimeout();
-        if (typeof document !== 'undefined') {
+        if (pauseWhenHidden && typeof document !== 'undefined') {
             document.removeEventListener('visibilitychange', onVisibility);
         }
     }
@@ -322,6 +327,13 @@ const getRemoteJobByClientId = async (
 };
 
 const sleepUntilPollOrVisible = async (): Promise<void> => {
+    // Android 原生 App 有 foreground service 托底，不能再把 JS 状态机绑到 visibility。
+    // 让它在后台继续知道正文何时完成，后续自动配图才能无需用户切回就接着起跑。
+    if (!pauseStoryPollingWhenHidden()) {
+        await new Promise(resolve => setTimeout(resolve, POLL_MS));
+        return;
+    }
+
     await waitUntilDocumentVisible();
 
     if (typeof document === 'undefined') {
@@ -348,7 +360,7 @@ const sleepUntilPollOrVisible = async (): Promise<void> => {
         };
         const onVisibility = () => {
             if (document.visibilityState === 'visible') return;
-            // 进入后台就停止这次 1s 轮询时钟；回来后立刻查同一个 job。
+            // Web/PWA 进入后台就停止这次 1s 轮询时钟；回来后立刻查同一个 job。
             cleanup();
             void waitUntilDocumentVisible().then(finish);
         };
@@ -688,8 +700,8 @@ export const executeStoryCompletionInCloudBackground = async (
         try {
             job = await getRemoteJobById(config, pending.jobId);
         } catch {
-            // 手机后台时状态 GET 断掉无所谓；真正 LLM 流在 Worker/DO 里。
-            // 回前台后继续查同一个 job，不删除、不取消、不重发。
+            // Android 原生 App 在后台也会继续查同一 job；真正 LLM 流仍然在 Worker/DO 里。
+            // 短暂网络失败只跳过这一轮，不删除、不取消、不重发。
         }
     }
 };
