@@ -1,4 +1,9 @@
 import { parseImageToolClientOptions } from '../../../utils/imageToolPostAction';
+import {
+  normalizeNovelAiReferencePolicy,
+  resolveNovelAiReferenceArguments,
+  type NovelAiReferencePolicy,
+} from '../../../utils/novelAiReferencePolicy';
 
 export interface StoryCloudImageReferenceFragments {
   actors?: Record<string, Record<string, unknown>>;
@@ -16,6 +21,7 @@ export interface StoryCloudImageToolHandoff {
     remoteConfig: Record<string, unknown>;
     apiKey: string;
   };
+  referencePolicy?: NovelAiReferencePolicy;
   references?: StoryCloudImageReferenceFragments;
 }
 
@@ -74,14 +80,31 @@ export const normalizeStoryImageHandoffSpec = (value: unknown): StoryCloudImageH
     const controlBaseUrl = cleanBaseUrl(rawTool.controlBaseUrl);
     if (!exposedName || !toolName || !engineId || !/^https?:\/\//i.test(controlBaseUrl)) continue;
 
+    const policyRaw = isRecord(rawTool.referencePolicy) ? rawTool.referencePolicy : undefined;
+    // Old encrypted jobs did not carry policy. Keep them backward-compatible by defaulting to the
+    // previous allow-all semantics; every newly built descriptor freezes the actually selected preset.
+    const referencePolicy = engineId === 'novelai'
+      ? normalizeNovelAiReferencePolicy(policyRaw ? {
+          allowCharacterReference: policyRaw.allowCharacterReference !== false,
+          allowUserReference: policyRaw.allowUserReference !== false,
+          allowVibeReference: policyRaw.allowVibeReference !== false,
+        } : undefined)
+      : undefined;
+
     const referencesRaw = isRecord(rawTool.references) ? rawTool.references : undefined;
     const actorsRaw = referencesRaw && isRecord(referencesRaw.actors) ? referencesRaw.actors : undefined;
     const actors: Record<string, Record<string, unknown>> = {};
-    if (actorsRaw) {
+    if (actorsRaw && referencePolicy?.allowCharacterReference !== false) {
       for (const [actorId, fragment] of Object.entries(actorsRaw)) {
         if (actorId && isRecord(fragment)) actors[actorId] = cloneRecord(fragment);
       }
     }
+    const user = referencePolicy?.allowUserReference === false
+      ? undefined
+      : normalizeFragment(referencesRaw?.user);
+    const vibe = referencePolicy?.allowVibeReference === false
+      ? undefined
+      : normalizeFragment(referencesRaw?.vibe);
     const presetRaw = isRecord(rawTool.preset) ? rawTool.preset : undefined;
     const preset = presetRaw && isRecord(presetRaw.remoteConfig)
       ? {
@@ -97,11 +120,12 @@ export const normalizeStoryImageHandoffSpec = (value: unknown): StoryCloudImageH
       controlBaseUrl,
       token: String(rawTool.token || ''),
       ...(preset ? { preset } : {}),
+      ...(referencePolicy ? { referencePolicy } : {}),
       ...(referencesRaw ? {
         references: {
           ...(Object.keys(actors).length ? { actors } : {}),
-          ...(normalizeFragment(referencesRaw.user) ? { user: normalizeFragment(referencesRaw.user)! } : {}),
-          ...(normalizeFragment(referencesRaw.vibe) ? { vibe: normalizeFragment(referencesRaw.vibe)! } : {}),
+          ...(user ? { user } : {}),
+          ...(vibe ? { vibe } : {}),
         },
       } : {}),
     });
@@ -218,17 +242,10 @@ const applyPreset = async (tool: StoryCloudImageToolHandoff): Promise<void> => {
   }
 };
 
-const mergeNovelAiReferences = (
-  tool: StoryCloudImageToolHandoff,
+const stripReferenceSelectorsForNonNovelAi = (
   rawArgs: Record<string, unknown>,
 ): Record<string, unknown> => {
   const args = cloneRecord(rawArgs);
-  const requestedActorId = typeof args.story_reference_actor_id === 'string'
-    ? args.story_reference_actor_id
-    : '';
-  const useCharacter = args.story_use_character_reference !== false && args.use_character_reference !== false;
-  const useUser = args.story_use_user_reference !== false && args.use_user_reference !== false;
-  const useVibe = args.story_use_vibe_reference !== false && args.use_vibe_reference !== false;
   delete args.story_reference_actor_id;
   delete args.story_use_character_reference;
   delete args.story_use_user_reference;
@@ -236,20 +253,35 @@ const mergeNovelAiReferences = (
   delete args.use_character_reference;
   delete args.use_user_reference;
   delete args.use_vibe_reference;
-
-  if (tool.engineId !== 'novelai') return args;
-  const refs = tool.references;
-  if (useVibe && refs?.vibe && Object.keys(refs.vibe).length) {
-    Object.assign(args, refs.vibe);
-    return args;
-  }
-  if (useCharacter && refs?.actors) {
-    const actorFragment = (requestedActorId && refs.actors[requestedActorId])
-      || Object.values(refs.actors)[0];
-    if (actorFragment) Object.assign(args, actorFragment);
-  }
-  if (useUser && refs?.user) Object.assign(args, refs.user);
   return args;
+};
+
+const mergeNovelAiReferences = (
+  tool: StoryCloudImageToolHandoff,
+  rawArgs: Record<string, unknown>,
+): Record<string, unknown> => {
+  if (tool.engineId !== 'novelai') return stripReferenceSelectorsForNonNovelAi(rawArgs);
+
+  const requestedActorId = typeof rawArgs.story_reference_actor_id === 'string'
+    ? rawArgs.story_reference_actor_id
+    : '';
+  const refs = tool.references;
+  const actorFragment = refs?.actors
+    ? ((requestedActorId && refs.actors[requestedActorId]) || Object.values(refs.actors)[0])
+    : undefined;
+
+  // This is the same pure resolver used by foreground prepareBuiltinImageToolArguments.
+  // The planner may choose use_* switches, but selected-tool policy is authoritative and every
+  // planner-supplied managed slot/strength/fidelity is stripped before trusted fragments are merged.
+  return resolveNovelAiReferenceArguments({
+    args: rawArgs,
+    policy: tool.referencePolicy,
+    references: {
+      ...(actorFragment ? { character: actorFragment } : {}),
+      ...(refs?.user ? { user: refs.user } : {}),
+      ...(refs?.vibe ? { vibe: refs.vibe } : {}),
+    },
+  }).arguments;
 };
 
 const findExistingJob = async (
