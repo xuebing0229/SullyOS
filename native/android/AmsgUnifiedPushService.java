@@ -42,8 +42,11 @@ public class AmsgUnifiedPushService extends PushService {
             return;
         }
         String payload = new String(message.getContent(), StandardCharsets.UTF_8);
+        // story-status 仍然进入 pending / Capacitor 事件，保证 WebView 恢复后可以补账；
+        // 但通知由独立的剧情 monitor 原地更新，不能再额外冒出一条普通“主动消息”。
         savePending(payload);
-        showNotification(payload);
+        boolean storyStatus = SullyStoryStatusPush.handle(this, payload);
+        if (!storyStatus) showNotification(payload);
         JSObjectCompat.emitPush(payload);
     }
 
