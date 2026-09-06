@@ -58,17 +58,7 @@ import { incrementDigestRound, runCognitiveDigestion } from '../../../utils/memo
 import StoryQuickPresetPanel from './StoryQuickPresetPanel';
 import { StoryAppearanceButton, useStoryTheaterAppearance } from './StoryTheaterTheme';
 import { shareOrDownloadFile } from '../../../utils/shareExport';
-import {
-    adoptStoryCloudImageHandoff,
-    buildStoryCloudImageHandoffSpec,
-    buildStoryInlineImagePlanInstruction,
-    generateStoryTheaterImage,
-    parseStoryInlineImagePlan,
-    resolveStoryImagePlannerApiConfig,
-    storyInlineImageVisibleText,
-    type StoryCloudImageHandoffResult,
-    type StoryCloudImageHandoffSpec,
-} from '../../../utils/storyTheaterImage';
+import { generateStoryTheaterImage, resolveStoryImagePlannerApiConfig } from '../../../utils/storyTheaterImage';
 import StoryImageSettingsButton from './StoryImageSettings';
 import AppMemoryCandidatePanel from '../../AppMemoryCandidatePanel';
 import { generateAppMemoryCandidates } from '../../../utils/appMemoryBridge';
@@ -1431,30 +1421,6 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             const multiAffinityGuide = affinityEnabled ? buildStoryMultiAffinityGuide(actors.map(actor => ({ id: actor.id, name: actor.name }))) : '';
             const affinityAwarenessReminder = affinityInputs.map(item => buildStoryAffinityAwarenessReminder(item, item.characterName || '当前角色')).filter(Boolean).join('\n\n');
             const identityGuard = buildStoryIdentityGuard(effectivePreset.document, promptIdentityName, actors.map(actor => actor.name));
-            let inlineImagePlanInstruction = '';
-            if (entry.imageGeneration?.enabled) {
-                try {
-                    inlineImagePlanInstruction = buildStoryInlineImagePlanInstruction({
-                        entry,
-                        actors,
-                        userProfile,
-                        userName: promptIdentityName,
-                    });
-                } catch (imagePlanInstructionError) {
-                    // 配图配置坏掉不能拖死正文；这轮仍可在正文落库后走旧独立规划器兜底。
-                    console.warn('[StoryTheater] inline image plan instruction unavailable; legacy planner remains available', imagePlanInstructionError);
-                }
-            }
-            let cloudImageHandoffSpec: StoryCloudImageHandoffSpec | undefined;
-            if (entry.imageGeneration?.enabled && inlineImagePlanInstruction && !recoveringCloudPending) {
-                try {
-                    cloudImageHandoffSpec = await buildStoryCloudImageHandoffSpec({ actors, userProfile });
-                } catch (cloudImageSetupError) {
-                    // 云端接力准备失败不影响正文；正文回来后仍走现有客户端配图兜底。
-                    console.warn('[StoryTheater] cloud image handoff preflight unavailable', cloudImageSetupError);
-                }
-            }
-            let cloudImageHandoffResult: StoryCloudImageHandoffResult | undefined;
             const modelInput = appendStoryAffinityInputs(modelText, affinityInputs);
             const payloadBeforeTurn = [
                 ...compiled.messages,
@@ -1466,7 +1432,6 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 ...(affinityEnabled ? [{ role: 'system' as const, content: RELATIONSHIP_TEXTURE_GUIDE }] : []),
                 ...(affinityAwarenessReminder ? [{ role: 'system' as const, content: affinityAwarenessReminder }] : []),
                 { role: 'system' as const, content: identityGuard },
-                ...(inlineImagePlanInstruction ? [{ role: 'system' as const, content: inlineImagePlanInstruction }] : []),
             ];
             const payload = appendStoryUserTurn(payloadBeforeTurn, modelInput, compiled.assistantPrefill, promptEntry.forceUserLastMessage === true);
             let promptTokenCount = estimateStoryTokens(payload.map(message => `${message.role}\n${message.content}`).join('\n'));
@@ -1485,21 +1450,13 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 setContextTokens(reported);
                 setContextTokensExact(true);
             }, fullText => {
-                const rawVisible = prefill && !fullText.startsWith(prefill) ? `${prefill}${fullText}` : fullText;
-                const visible = entry.imageGeneration?.enabled
-                    ? storyInlineImageVisibleText(rawVisible)
-                    : rawVisible;
-                partialStreamText = visible;
-                streamingTextRef.current = visible;
-                setStreamingText(visible);
-            }, {
+        const visible = prefill && !fullText.startsWith(prefill) ? `${prefill}${fullText}` : fullText;
+        partialStreamText = visible;
+        streamingTextRef.current = visible;
+        setStreamingText(visible);
+    }, {
                 ownerKey: backgroundOwnerKey,
                 title: entry.title,
-                imageHandoff: cloudImageHandoffSpec,
-                onCloudCompleted: data => {
-                    const raw = data?._sullyStoryImageHandoff;
-                    if (raw && typeof raw === 'object') cloudImageHandoffResult = raw as StoryCloudImageHandoffResult;
-                },
                 meta: {
                     ...(isReroll && rerollTarget ? { rerollTargetId: rerollTarget.id } : {}),
                     ...(affinityInputs.length > 0 ? { affinityInputs } : {}),
@@ -1516,13 +1473,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                     : undefined,
             });
             nativeCompletionReceived = usedNativeBackground;
-            const rawContent = prefill && !generated.startsWith(prefill) ? `${prefill}${generated}` : generated;
-            const parsedInlineImage = entry.imageGeneration?.enabled
-                ? parseStoryInlineImagePlan(rawContent)
-                : { content: rawContent, plan: undefined };
-            const content = parsedInlineImage.content.trim();
-            const inlineImagePlan = parsedInlineImage.plan;
-            if (!content) throw new Error('剧情正文为空：模型只返回了配图控制块，没有正文。');
+            const content = prefill && !generated.startsWith(prefill) ? `${prefill}${generated}` : generated;
             const rowsBeforeCommit = (await DB.getMessagesByCharId(threadId, true))
                 .filter(message => message.metadata?.source === 'story_theater')
                 .sort((a, b) => a.id - b.id);
@@ -1546,7 +1497,6 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                     theaterPromptTokensExact: promptTokenCountExact,
                     theaterRequestKey: activeRequestKey,
                     ...(affinityInputs.length > 0 ? { theaterAffinityInputs: affinityInputs } : {}),
-                    ...(inlineImagePlan ? { theaterInlineImagePlan: inlineImagePlan } : {}),
                 });
                 didCommitAssistant = true;
             }
@@ -1577,37 +1527,19 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                     const imageRows = (await DB.getMessagesByCharId(threadId, true))
                         .filter(message => message.metadata?.source === 'story_theater')
                         .sort((a, b) => a.id - b.id);
-                    // 自动轮次只接受“正文同一次 completion”给出的 inline plan / Worker handoff。
-                    // 主剧情模型偶发漏掉隐藏 plan 时，不再偷偷多打一遍 Gemini「剧情自动配图规划」；
-                    // 手动“重新生成配图”仍保留旧规划器兜底。
-                    const imageResult = cloudImageHandoffResult?.state === 'submitted'
-                        ? await adoptStoryCloudImageHandoff({
-                            entry,
-                            actors,
-                            handoff: cloudImageHandoffResult,
-                            inlinePlan: inlineImagePlan,
-                            targetMessageId: assistantMessageId,
-                        })
-                        : inlineImagePlan
-                            ? await generateStoryTheaterImage({
-                                apiConfig,
-                                plannerApiConfig: resolveStoryImagePlannerApiConfig(entry, apiConfig, apiPresets),
-                                entry,
-                                actors,
-                                userProfile,
-                                userName: promptIdentityName,
-                                messages: imageRows,
-                                inlinePlan: inlineImagePlan,
-                                targetMessageId: assistantMessageId,
-                            })
-                            : undefined;
-                    if (!imageResult) {
-                        console.warn('[StoryTheater] automatic image skipped because story completion omitted inline image plan', {
-                            requestKey: activeRequestKey,
-                            cloudHandoffState: cloudImageHandoffResult?.state,
-                        });
-                        addToast('主剧情模型本轮漏掉了配图计划；已停止额外调用“剧情自动配图规划”API，避免重复请求。可以手动点「重新生成」补图。', 'info');
-                    } else if (imageResult.frame) {
+                    // 正文已经独立完成并落库；配图始终再单独调用一次规划器。
+            // 不再要求主剧情模型输出隐藏 story_image_plan，也不把配图协议混进正文预设。
+            const imageResult = await generateStoryTheaterImage({
+                apiConfig,
+                plannerApiConfig: resolveStoryImagePlannerApiConfig(entry, apiConfig, apiPresets),
+                entry,
+                actors,
+                userProfile,
+                userName: promptIdentityName,
+                messages: imageRows,
+                targetMessageId: assistantMessageId,
+            });
+            if (imageResult.frame) {
                         await DB.updateMessageMetadata(assistantMessageId, previous => ({ ...previous, theaterImage: imageResult.frame }));
                         await loadMessages();
                     } else if (imageResult.queued) {
@@ -1638,17 +1570,11 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 console.error('[StoryTheater] send failed', error);
             }
 
-            const returnedPartial = entry.imageGeneration?.enabled
-                ? storyInlineImageVisibleText(String(
-                    error?.partialContent
-                    || error?.storyIncompleteCompletion?.content
-                    || '',
-                )).trim()
-                : String(
-                    error?.partialContent
-                    || error?.storyIncompleteCompletion?.content
-                    || '',
-                ).trim();
+            const returnedPartial = String(
+        error?.partialContent
+        || error?.storyIncompleteCompletion?.content
+        || '',
+    ).trim();
             const committedPartial = (partialStreamText || streamingTextRef.current || returnedPartial).trim();
             if (committedPartial) {
                 try {
