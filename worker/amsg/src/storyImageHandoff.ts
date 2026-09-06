@@ -1,3 +1,5 @@
+import { parseImageToolClientOptions } from '../../../utils/imageToolPostAction';
+
 export interface StoryCloudImageReferenceFragments {
   actors?: Record<string, Record<string, unknown>>;
   user?: Record<string, unknown>;
@@ -41,6 +43,8 @@ export interface StoryCloudImageHandoffResult {
   clientRequestId?: string;
   remoteJobId?: string;
   arguments?: Record<string, unknown>;
+  /** 客户端专用动作，永远不进入生图服务 /jobs.arguments。 */
+  afterGenerateAction?: 'none' | 'inspect';
   uncertain?: boolean;
   error?: string;
 }
@@ -459,12 +463,17 @@ export const runStoryImageHandoff = async (
   if (!tool) return { ...prepared, state: 'failed', error: '正文选择的生图工具已不可用' };
 
   const clientRequestId = prepared.clientRequestId;
-  const finalArgs = isRecord(prepared.arguments) ? cloneRecord(prepared.arguments) : {};
+  const preparedArgs = isRecord(prepared.arguments) ? cloneRecord(prepared.arguments) : {};
+  // 与主线后台生图完全复用同一份客户端字段解析器：动作字段只供本机结果回挂使用，
+  // 严格后端只接收 cleanedArgs，不能看到 after_generate_action / afterGenerateAction。
+  const { afterGenerateAction, cleanedArgs } = parseImageToolClientOptions(preparedArgs);
+  const finalArgs = cleanedArgs;
   const baseResult = {
     exposedTool: tool.exposedName,
     toolName: tool.toolName,
     clientRequestId,
     arguments: finalArgs,
+    ...(afterGenerateAction !== 'none' ? { afterGenerateAction } : {}),
   };
 
   try {
