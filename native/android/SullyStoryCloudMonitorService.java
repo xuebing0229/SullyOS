@@ -6,6 +6,7 @@ import android.app.PendingIntent;
 import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.content.pm.ServiceInfo;
 import android.os.Build;
 import android.os.Handler;
@@ -28,8 +29,8 @@ import org.json.JSONObject;
 /**
  * 云端 Story Jobs 的 Android 侧状态牌。
  *
- * 这条链不依赖 WebView timer，也不依赖主动消息 push subscription：原生前台服务自己轮询
- * 同一个 Worker job，并用同一个 notification id 从“生成中”更新到“完成/失败”。
+ * 这条链必须独立于 WebView：App 一切到后台，正文/配图继续在 Worker 跑，
+ * 这里仍然自己查同一个 job，并把同一条通知从“生成中”原地更新成“完成/失败”。
  */
 public class SullyStoryCloudMonitorService extends Service {
     public static final String ACTION_START = "SULLY_STORY_CLOUD_MONITOR_START";
@@ -45,9 +46,10 @@ public class SullyStoryCloudMonitorService extends Service {
 
     private static final String TAG = "SullyStoryCloudMonitor";
     private static final String CHANNEL_ID = "sully_story_cloud_status_v1";
+    private static final String PREFS = "sully_story_cloud_monitor_v1";
     private static final int NOTIFICATION_ID = 23033;
     private static final long POLL_MS = 3000L;
-    private static final long WAKE_LOCK_TIMEOUT_MS = 30L * 60L * 1000L;
+    private static final long WAKE_LOCK_TIMEOUT_MS = 2L * 60L * 60L * 1000L;
     private static final int SYNC_WARNING_AFTER_FAILURES = 5;
 
     private HandlerThread workerThread;
@@ -125,14 +127,23 @@ public class SullyStoryCloudMonitorService extends Service {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        if (intent == null) return START_NOT_STICKY;
+        // START_STICKY 被系统重建时 intent 可能为 null。以前这里直接放弃，留下的只会是
+        // 一条永远不更新的“正在生成”通知。现在从进程私有 prefs 恢复同一任务继续查账。
+        if (intent == null) {
+            if (!restorePersistedMonitor()) {
+                stopSelf();
+                return START_NOT_STICKY;
+            }
+            return START_STICKY;
+        }
+
         String action = intent.getAction();
         if (ACTION_START.equals(action)) {
             handleStart(intent);
         } else if (ACTION_FINISH.equals(action)) {
             handleFinish(intent);
         }
-        return START_NOT_STICKY;
+        return START_STICKY;
     }
 
     @Override
@@ -149,25 +160,21 @@ public class SullyStoryCloudMonitorService extends Service {
         String nextClientRequestId = clean(intent.getStringExtra(EXTRA_CLIENT_REQUEST_ID));
         String nextWorkerUrl = clean(intent.getStringExtra(EXTRA_WORKER_URL)).replaceAll("/+$", "");
         String nextUserId = clean(intent.getStringExtra(EXTRA_USER_ID));
-        if (!nextJobId.matches("[A-Za-z0-9_-]{12,160}") || !nextWorkerUrl.startsWith("https://") || nextUserId.isEmpty()) {
+        String nextTitle = fallbackTitle(intent.getStringExtra(EXTRA_TITLE));
+        String nextServerToken = clean(intent.getStringExtra(EXTRA_SERVER_TOKEN));
+
+        if (!applyMonitorState(
+            nextJobId,
+            nextClientRequestId,
+            nextTitle,
+            nextWorkerUrl,
+            nextUserId,
+            nextServerToken,
+            true
+        )) {
+            clearPersistedMonitor();
             stopSelf();
-            return;
         }
-        this.jobId = nextJobId;
-        this.clientRequestId = nextClientRequestId.matches("[A-Za-z0-9_-]{12,160}")
-            ? nextClientRequestId
-            : "";
-        this.title = fallbackTitle(intent.getStringExtra(EXTRA_TITLE));
-        this.workerUrl = nextWorkerUrl;
-        this.userId = nextUserId;
-        this.serverToken = clean(intent.getStringExtra(EXTRA_SERVER_TOKEN));
-        this.consecutiveLookupFailures = 0;
-        this.showingSyncWarning = false;
-        final int token = ++generation;
-        enterForeground(buildRunningNotification(this.title));
-        acquireWakeLock();
-        handler.removeCallbacksAndMessages(null);
-        handler.post(() -> poll(token));
     }
 
     private void handleFinish(Intent intent) {
@@ -177,6 +184,72 @@ public class SullyStoryCloudMonitorService extends Service {
         String status = clean(intent.getStringExtra(EXTRA_STATUS));
         String error = clean(intent.getStringExtra(EXTRA_ERROR));
         finishTerminal(status, nextTitle, error);
+    }
+
+    private boolean applyMonitorState(
+        String nextJobId,
+        String nextClientRequestId,
+        String nextTitle,
+        String nextWorkerUrl,
+        String nextUserId,
+        String nextServerToken,
+        boolean persist
+    ) {
+        if (!nextJobId.matches("[A-Za-z0-9_-]{12,160}")
+            || !nextWorkerUrl.startsWith("https://")
+            || nextUserId.isEmpty()) {
+            return false;
+        }
+
+        this.jobId = nextJobId;
+        this.clientRequestId = nextClientRequestId.matches("[A-Za-z0-9_-]{12,160}")
+            ? nextClientRequestId
+            : "";
+        this.title = fallbackTitle(nextTitle);
+        this.workerUrl = nextWorkerUrl.replaceAll("/+$", "");
+        this.userId = nextUserId;
+        this.serverToken = nextServerToken;
+        this.consecutiveLookupFailures = 0;
+        this.showingSyncWarning = false;
+
+        if (persist) persistMonitor();
+
+        final int token = ++generation;
+        enterForeground(buildRunningNotification(this.title));
+        acquireWakeLock();
+        handler.removeCallbacksAndMessages(null);
+        handler.post(() -> poll(token));
+        return true;
+    }
+
+    private void persistMonitor() {
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+            .putString(EXTRA_JOB_ID, jobId)
+            .putString(EXTRA_CLIENT_REQUEST_ID, clientRequestId)
+            .putString(EXTRA_TITLE, title)
+            .putString(EXTRA_WORKER_URL, workerUrl)
+            .putString(EXTRA_USER_ID, userId)
+            .putString(EXTRA_SERVER_TOKEN, serverToken)
+            .apply();
+    }
+
+    private boolean restorePersistedMonitor() {
+        SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
+        String restoredJobId = clean(prefs.getString(EXTRA_JOB_ID, ""));
+        if (restoredJobId.isEmpty()) return false;
+        return applyMonitorState(
+            restoredJobId,
+            clean(prefs.getString(EXTRA_CLIENT_REQUEST_ID, "")),
+            fallbackTitle(prefs.getString(EXTRA_TITLE, "剧情")),
+            clean(prefs.getString(EXTRA_WORKER_URL, "")),
+            clean(prefs.getString(EXTRA_USER_ID, "")),
+            clean(prefs.getString(EXTRA_SERVER_TOKEN, "")),
+            false
+        );
+    }
+
+    private void clearPersistedMonitor() {
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit().clear().apply();
     }
 
     private void poll(int token) {
@@ -189,6 +262,7 @@ public class SullyStoryCloudMonitorService extends Service {
                 updateRunningNotification(buildRunningNotification(title));
             }
             String status = job.optString("status", "");
+            Log.d(TAG, "Story status poll jobId=" + jobId + " status=" + status);
             if ("succeeded".equals(status) || "failed".equals(status) || "cancelled".equals(status)) {
                 finishTerminal(status, title, job.optString("error", ""));
                 return;
@@ -211,7 +285,7 @@ public class SullyStoryCloudMonitorService extends Service {
     }
 
     /**
-     * 先按 jobId 查；若这一条因为 404/缓存/路由异常拿不到，再按 clientRequestId 查同一任务。
+     * 先按 jobId 查；拿不到时再按 clientRequestId 查同一任务。
      * 两条都是只读 GET，不会创建第二次模型请求。
      */
     private JSONObject fetchJob() throws Exception {
@@ -233,11 +307,6 @@ public class SullyStoryCloudMonitorService extends Service {
         throw jobIdFailure;
     }
 
-    /**
-     * 原生监控会先于 POST 启动，所以第一轮 GET 很可能先拿到 404。必须彻底禁用缓存并给每次
-     * 查询加 cache-buster；否则某些 WebView/代理/CDN 链路会反复复用最初的“任务不存在”，
-     * 表现就是正文早已完成，但通知永远卡在“正在生成”。
-     */
     private JSONObject fetchJobAtPath(String path) throws Exception {
         String separator = path.contains("?") ? "&" : "?";
         URL url = new URL(workerUrl + path + separator + "_sullyPoll=" + System.currentTimeMillis());
@@ -304,19 +373,31 @@ public class SullyStoryCloudMonitorService extends Service {
         if (manager != null) manager.notify(NOTIFICATION_ID, notification);
     }
 
-    private void finishTerminal(String status, String title, String error) {
+    private void finishTerminal(String status, String terminalTitle, String error) {
         generation += 1;
         if (handler != null) handler.removeCallbacksAndMessages(null);
         releaseWakeLock();
-        if (Build.VERSION.SDK_INT >= 24) {
-            stopForeground(STOP_FOREGROUND_REMOVE);
-        } else {
-            //noinspection deprecation
-            stopForeground(true);
-        }
+        clearPersistedMonitor();
+
+        String normalizedStatus = "succeeded".equals(status) || "cancelled".equals(status)
+            ? status
+            : "failed";
+        String resolvedTitle = fallbackTitle(terminalTitle);
+
+        // 不再先 REMOVE 再重发同一 id。先把正在生成的 foreground notification 原地改成终态，
+        // 再 DETACH 服务；这样即使系统处理 stopForeground 有延迟，也不会把完成通知一起删掉。
         NotificationManager manager = getSystemService(NotificationManager.class);
         if (manager != null) {
-            manager.notify(NOTIFICATION_ID, buildTerminalNotification(status, title, error).build());
+            manager.notify(
+                NOTIFICATION_ID,
+                buildTerminalNotification(normalizedStatus, resolvedTitle, error).build()
+            );
+        }
+        if (Build.VERSION.SDK_INT >= 24) {
+            stopForeground(STOP_FOREGROUND_DETACH);
+        } else {
+            //noinspection deprecation
+            stopForeground(false);
         }
         stopSelf();
     }
@@ -334,11 +415,11 @@ public class SullyStoryCloudMonitorService extends Service {
         }
     }
 
-    private android.app.Notification buildRunningNotification(String title) {
+    private android.app.Notification buildRunningNotification(String notificationTitle) {
         return baseBuilder()
             .setContentTitle("剧情剧场")
-            .setContentText("正在后台生成《" + title + "》")
-            .setStyle(new NotificationCompat.BigTextStyle().bigText("正在后台生成《" + title + "》"))
+            .setContentText("正在后台生成《" + notificationTitle + "》")
+            .setStyle(new NotificationCompat.BigTextStyle().bigText("正在后台生成《" + notificationTitle + "》"))
             .setCategory(NotificationCompat.CATEGORY_PROGRESS)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
@@ -346,8 +427,8 @@ public class SullyStoryCloudMonitorService extends Service {
             .build();
     }
 
-    private android.app.Notification buildSyncWarningNotification(String title) {
-        String body = "《" + title + "》仍在后台生成 · 状态同步暂时中断，正在重试";
+    private android.app.Notification buildSyncWarningNotification(String notificationTitle) {
+        String body = "《" + notificationTitle + "》仍在后台生成 · 状态同步暂时中断，正在重试";
         return baseBuilder()
             .setContentTitle("剧情剧场")
             .setContentText(body)
@@ -359,18 +440,18 @@ public class SullyStoryCloudMonitorService extends Service {
             .build();
     }
 
-    private NotificationCompat.Builder buildTerminalNotification(String status, String title, String error) {
+    private NotificationCompat.Builder buildTerminalNotification(String status, String notificationTitle, String error) {
         String body;
         if ("succeeded".equals(status)) {
-            body = "《" + title + "》剧情已生成完成，点开即可查看";
+            body = "《" + notificationTitle + "》剧情已生成完成，点开即可查看";
         } else if ("cancelled".equals(status)) {
-            body = "《" + title + "》后台生成已取消";
+            body = "《" + notificationTitle + "》后台生成已取消";
         } else {
             String detail = error == null ? "" : error.replaceAll("\\s+", " ").trim();
             if (detail.length() > 120) detail = detail.substring(0, 120);
             body = detail.isEmpty()
-                ? "《" + title + "》后台生成失败，点开可重试"
-                : "《" + title + "》后台生成失败：" + detail;
+                ? "《" + notificationTitle + "》后台生成失败，点开可重试"
+                : "《" + notificationTitle + "》后台生成失败：" + detail;
         }
         return baseBuilder()
             .setContentTitle("剧情剧场")
