@@ -54,8 +54,8 @@ const waitUntilStoryPollingVisible = async (): Promise<void> => {
 
 const requestUrl = (input: RequestInfo | URL): string => {
   if (typeof input === 'string') return input;
-  if (typeof URL !== 'undefined' && input instanceof URL) return input.toString();
-  return input.url;
+  if (typeof Request !== 'undefined' && input instanceof Request) return input.url;
+  return String(input);
 };
 
 const requestMethod = (input: RequestInfo | URL, init?: RequestInit): string => {
