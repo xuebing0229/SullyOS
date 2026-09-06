@@ -244,6 +244,8 @@ export interface StoryCloudImageHandoffResult {
     clientRequestId?: string;
     remoteJobId?: string;
     arguments?: Record<string, any>;
+    /** Worker 已从后端参数中剥离、仅供本机结果回挂消费的客户端动作。 */
+    afterGenerateAction?: 'none' | 'inspect';
     uncertain?: boolean;
     error?: string;
 }
@@ -408,9 +410,15 @@ export const adoptStoryCloudImageHandoff = async (input: {
     const selected = imageTools.resolve.get(exposedName);
     if (!selected) throw new Error('云端已经提交配图，但本机已找不到对应生图预设；为避免重复扣费不会重新生成');
     const toolName = String(input.handoff.toolName || selected.toolName);
-    const args = input.handoff.arguments && typeof input.handoff.arguments === 'object'
+    const serverArgs = input.handoff.arguments && typeof input.handoff.arguments === 'object'
         ? input.handoff.arguments
         : (input.inlinePlan?.arguments || {});
+    // 新 Worker 把客户端动作与 /jobs.arguments 分开保存；在本机 adopt 时再交还给
+    // adoptBackgroundImageJob 的既有 parseImageToolClientOptions 处理。旧 handoff 若动作仍在
+    // arguments 里也继续兼容，不会重复提交生图。
+    const args = input.handoff.afterGenerateAction === 'inspect'
+        ? { ...serverArgs, afterGenerateAction: 'inspect' }
+        : serverArgs;
     const result = await adoptBackgroundImageJob(
         selected.server,
         toolName,
