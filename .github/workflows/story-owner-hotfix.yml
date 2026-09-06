@@ -1,0 +1,266 @@
+name: Story owner hotfix
+
+on:
+  push:
+    branches:
+      - fix/story-request-owner-20260906
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/story-request-owner-20260906
+          fetch-depth: 0
+
+      - name: Apply narrow story owner patch
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_one(path, old, new):
+              p = Path(path)
+              text = p.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{path}: expected exactly one match, got {count}')
+              p.write_text(text.replace(old, new, 1))
+
+          cloud_getter = """export const getPendingCloudStoryJob = (
+              ownerKey: string,
+          ): PendingCloudStoryJob | null => {
+              const pending = readPendingMap()[ownerKey];
+              return pending?.jobId && pending?.clientRequestId ? pending : null;
+          };
+          """
+          cloud_getter_new = cloud_getter + """
+          const pendingCloudStoryBelongsToEntry = (
+              pending: PendingCloudStoryJob,
+              entryId: string,
+          ): boolean => {
+              const ownerKey = String(pending?.ownerKey || '');
+              return String(pending?.meta?.storyEntryId || '') === entryId
+                  || ownerKey === `story-turn:${entryId}`
+                  || ownerKey.startsWith(`story-turn:${entryId}:`)
+                  || ownerKey.startsWith(`story-reroll:${entryId}:`)
+                  || ownerKey === `story-opening:${entryId}`;
+          };
+
+          export const findPendingCloudStoryJobForStory = (
+              entryId: string,
+          ): PendingCloudStoryJob | null => {
+              const normalizedEntryId = String(entryId || '').trim();
+              if (!normalizedEntryId) return null;
+              const pending = Object.values(readPendingMap())
+                  .filter(item => item?.jobId && item?.clientRequestId && pendingCloudStoryBelongsToEntry(item, normalizedEntryId))
+                  .sort((left, right) => Number(right.createdAt || 0) - Number(left.createdAt || 0));
+              return pending[0] || null;
+          };
+
+          export const clearOtherPendingCloudStoryJobsForStory = async (
+              entryId: string,
+              keepOwnerKey: string,
+          ): Promise<void> => {
+              const normalizedEntryId = String(entryId || '').trim();
+              if (!normalizedEntryId) return;
+              const map = readPendingMap();
+              let changed = false;
+              for (const [ownerKey, pending] of Object.entries(map)) {
+                  if (ownerKey === keepOwnerKey) continue;
+                  if (!pendingCloudStoryBelongsToEntry(pending, normalizedEntryId)) continue;
+                  delete map[ownerKey];
+                  changed = true;
+              }
+              if (changed) writePendingMap(map);
+          };
+          """
+          replace_one('utils/backgroundStoryJobs.ts', cloud_getter, cloud_getter_new)
+
+          native_getter = """export const getPendingNativeStoryJob = (ownerKey: string): PendingNativeStoryJob | null =>
+            readPending()[ownerKey] || null;
+          """
+          native_getter_new = native_getter + """
+          const pendingNativeStoryBelongsToEntry = (
+            pending: PendingNativeStoryJob,
+            entryId: string,
+          ): boolean => {
+            const ownerKey = String(pending?.ownerKey || '');
+            return String(pending?.meta?.storyEntryId || '') === entryId
+              || ownerKey === `story-turn:${entryId}`
+              || ownerKey.startsWith(`story-turn:${entryId}:`)
+              || ownerKey.startsWith(`story-reroll:${entryId}:`)
+              || ownerKey === `story-opening:${entryId}`;
+          };
+
+          export const findPendingNativeStoryJobForStory = (
+            entryId: string,
+          ): PendingNativeStoryJob | null => {
+            const normalizedEntryId = String(entryId || '').trim();
+            if (!normalizedEntryId) return null;
+            const pending = Object.values(readPending())
+              .filter(item => item?.jobId && pendingNativeStoryBelongsToEntry(item, normalizedEntryId))
+              .sort((left, right) => Number(right.createdAt || 0) - Number(left.createdAt || 0));
+            return pending[0] || null;
+          };
+
+          export const clearOtherPendingNativeStoryJobsForStory = async (
+            entryId: string,
+            keepOwnerKey: string,
+          ): Promise<void> => {
+            const normalizedEntryId = String(entryId || '').trim();
+            if (!normalizedEntryId) return;
+            const map = readPending();
+            let changed = false;
+            for (const [ownerKey, pending] of Object.entries(map)) {
+              if (ownerKey === keepOwnerKey) continue;
+              if (!pendingNativeStoryBelongsToEntry(pending, normalizedEntryId)) continue;
+              delete map[ownerKey];
+              changed = true;
+            }
+            if (changed) writePending(map);
+          };
+          """
+          replace_one('utils/nativeStoryBackground.ts', native_getter, native_getter_new)
+
+          replace_one(
+              'components/date/story/StoryTheaterSession.tsx',
+              """    clearPendingNativeStoryJob,
+              executeStoryCompletionInNativeBackground,
+              getPendingNativeStoryJob,
+              isNativeStoryBackgroundRuntime,
+          """,
+              """    clearOtherPendingNativeStoryJobsForStory,
+              clearPendingNativeStoryJob,
+              executeStoryCompletionInNativeBackground,
+              findPendingNativeStoryJobForStory,
+              getPendingNativeStoryJob,
+              isNativeStoryBackgroundRuntime,
+          """,
+          )
+
+          replace_one(
+              'components/date/story/StoryTheaterSession.tsx',
+              """    clearPendingCloudStoryJob,
+              executeStoryCompletionInCloudBackground,
+              getPendingCloudStoryJob,
+              isCloudStoryJobsAvailable,
+          """,
+              """    clearOtherPendingCloudStoryJobsForStory,
+              clearPendingCloudStoryJob,
+              executeStoryCompletionInCloudBackground,
+              findPendingCloudStoryJobForStory,
+              getPendingCloudStoryJob,
+              isCloudStoryJobsAvailable,
+          """,
+          )
+
+          replace_one(
+              'components/date/story/StoryTheaterSession.tsx',
+              """                && !background.ownerKey.startsWith('story-turn:')
+          """,
+              """                && !background.meta?.storyRequestKey
+          """,
+          )
+
+          replace_one(
+              'components/date/story/StoryTheaterSession.tsx',
+              """    const send = useCallback(async (rerollTarget?: Message, continueRequested = false) => {
+          """,
+              """    const send = useCallback(async (rerollTarget?: Message, continueRequested = false, recoveryOwnerKey?: string) => {
+          """,
+          )
+
+          replace_one(
+              'components/date/story/StoryTheaterSession.tsx',
+              """        let partialClearInput = false;
+              const backgroundOwnerKey = `story-turn:${entry.id}`;
+              // 已有 cloud pending 代表完整 prompt 早就加密提交给 Worker 了。
+              // 恢复页面只需要查回同一 job，禁止再次做归档、向量/角色记忆召回和生图参考图预检。
+              const recoveringCloudPending = Boolean(getPendingCloudStoryJob(backgroundOwnerKey));
+              let usedNativeBackground = false;
+          """,
+              """        let partialClearInput = false;
+              let backgroundOwnerKey = '';
+              let recoveringCloudPending = false;
+              let usedNativeBackground = false;
+          """,
+          )
+
+          active_key = """            activeRequestKey = isReroll && rerollTarget
+                  ? `story-reroll:${entry.id}:${rerollTarget.id}`
+                  : retry
+                      ? String(latest?.metadata?.theaterRequestKey || `story-turn:${entry.id}:${latest?.id || makeStoryTheaterId()}`)
+                      : assistantOpening
+                          ? `story-opening:${entry.id}`
+                          : `story-turn:${entry.id}:${makeStoryTheaterId()}`;
+          """
+          active_key_new = active_key + """            // 每一轮正文拥有独立 owner。只有自动恢复旧任务时才显式沿用原 owner，
+              // 这样切换剧情 API 后的新一轮不会被上一轮 pending 劫持回旧上游。
+              backgroundOwnerKey = recoveryOwnerKey || activeRequestKey;
+              recoveringCloudPending = Boolean(getPendingCloudStoryJob(backgroundOwnerKey));
+              if (!recoveryOwnerKey) {
+                  await clearOtherPendingCloudStoryJobsForStory(entry.id, backgroundOwnerKey);
+                  if (isNativeStoryBackgroundRuntime()) {
+                      await clearOtherPendingNativeStoryJobsForStory(entry.id, backgroundOwnerKey);
+                  }
+              }
+          """
+          replace_one('components/date/story/StoryTheaterSession.tsx', active_key, active_key_new)
+
+          replace_one(
+              'components/date/story/StoryTheaterSession.tsx',
+              """                meta: {
+                      ...(isReroll && rerollTarget ? { rerollTargetId: rerollTarget.id } : {}),
+                      ...(affinityInputs.length > 0 ? { affinityInputs } : {}),
+                      isContinueTurn,
+                  },
+          """,
+              """                meta: {
+                      storyEntryId: entry.id,
+                      storyRequestKey: activeRequestKey,
+                      ...(isReroll && rerollTarget ? { rerollTargetId: rerollTarget.id } : {}),
+                      ...(affinityInputs.length > 0 ? { affinityInputs } : {}),
+                      isContinueTurn,
+                  },
+          """,
+          )
+
+          replace_one(
+              'components/date/story/StoryTheaterSession.tsx',
+              """        const ownerKey = `story-turn:${entry.id}`;
+              const cloudPending = getPendingCloudStoryJob(ownerKey);
+              const nativePending = !cloudPending && isNativeStoryBackgroundRuntime()
+                  ? getPendingNativeStoryJob(ownerKey)
+                  : null;
+          """,
+              """        const cloudPending = findPendingCloudStoryJobForStory(entry.id);
+              const nativePending = !cloudPending && isNativeStoryBackgroundRuntime()
+                  ? findPendingNativeStoryJobForStory(entry.id)
+                  : null;
+          """,
+          )
+
+          replace_one(
+              'components/date/story/StoryTheaterSession.tsx',
+              """            if (!cancelled) void send(rerollTarget);
+          """,
+              """            if (!cancelled) void send(rerollTarget, false, pending.ownerKey);
+          """,
+          )
+          PY
+
+      - name: Commit narrow patch and remove helper workflow
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/story-owner-hotfix.yml
+          git add components/date/story/StoryTheaterSession.tsx utils/backgroundStoryJobs.ts utils/nativeStoryBackground.ts
+          git diff --cached --check
+          git commit -m "fix: isolate story background jobs per request"
+          git push origin HEAD:fix/story-request-owner-20260906
