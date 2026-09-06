@@ -1,0 +1,173 @@
+name: Restore separate story image planner
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - '.github/workflows/revert-story-inline-image.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Restore正文/配图分离调用
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+
+          path = Path('components/date/story/StoryTheaterSession.tsx')
+          s = path.read_text(encoding='utf-8')
+
+          def replace_once(old, new, label):
+              global s
+              count = s.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected 1 exact match, got {count}')
+              s = s.replace(old, new, 1)
+
+          def sub_once(pattern, repl, label, flags=0):
+              global s
+              s2, count = re.subn(pattern, repl, s, count=1, flags=flags)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected 1 regex match, got {count}')
+              s = s2
+
+          replace_once(
+          """import {
+              adoptStoryCloudImageHandoff,
+              buildStoryCloudImageHandoffSpec,
+              buildStoryInlineImagePlanInstruction,
+              generateStoryTheaterImage,
+              parseStoryInlineImagePlan,
+              resolveStoryImagePlannerApiConfig,
+              storyInlineImageVisibleText,
+              type StoryCloudImageHandoffResult,
+              type StoryCloudImageHandoffSpec,
+          } from '../../../utils/storyTheaterImage';""",
+          """import { generateStoryTheaterImage, resolveStoryImagePlannerApiConfig } from '../../../utils/storyTheaterImage';""",
+          'story image import')
+
+          sub_once(
+              r"\n            let inlineImagePlanInstruction = '';.*?\n            let cloudImageHandoffResult: StoryCloudImageHandoffResult \| undefined;\n            const modelInput",
+              "\n            const modelInput",
+              'remove inline image planning setup',
+              re.S,
+          )
+
+          replace_once(
+              "                ...(inlineImagePlanInstruction ? [{ role: 'system' as const, content: inlineImagePlanInstruction }] : []),\n",
+              '',
+              'remove inline image system prompt',
+          )
+
+          replace_once(
+          """            }, fullText => {
+                  const rawVisible = prefill && !fullText.startsWith(prefill) ? `${prefill}${fullText}` : fullText;
+                  const visible = entry.imageGeneration?.enabled
+                      ? storyInlineImageVisibleText(rawVisible)
+                      : rawVisible;
+                  partialStreamText = visible;
+                  streamingTextRef.current = visible;
+                  setStreamingText(visible);
+              }, {""",
+          """            }, fullText => {
+                  const visible = prefill && !fullText.startsWith(prefill) ? `${prefill}${fullText}` : fullText;
+                  partialStreamText = visible;
+                  streamingTextRef.current = visible;
+                  setStreamingText(visible);
+              }, {""",
+          'restore plain streaming text')
+
+          sub_once(
+              r"\n                imageHandoff: cloudImageHandoffSpec,\n                onCloudCompleted: data => \{\n                    const raw = data\?_sullyStoryImageHandoff;.*?\n                \},",
+              '',
+              'remove cloud image handoff from story request',
+              re.S,
+          )
+
+          sub_once(
+              r"            const rawContent = prefill && !generated\.startsWith\(prefill\) \? `\$\{prefill\}\$\{generated\}` : generated;\n            const parsedInlineImage = entry\.imageGeneration\?\.enabled\n                \? parseStoryInlineImagePlan\(rawContent\)\n                : \{ content: rawContent, plan: undefined \};\n            const content = parsedInlineImage\.content\.trim\(\);\n            const inlineImagePlan = parsedInlineImage\.plan;\n            if \(!content\) throw new Error\('剧情正文为空：模型只返回了配图控制块，没有正文。'\);",
+              "            const content = prefill && !generated.startsWith(prefill) ? `${prefill}${generated}` : generated;",
+              'restore plain story completion',
+          )
+
+          replace_once(
+              "                    ...(inlineImagePlan ? { theaterInlineImagePlan: inlineImagePlan } : {}),\n",
+              '',
+              'remove inline plan metadata',
+          )
+
+          sub_once(
+              r"                    // 自动轮次只接受“正文同一次 completion”给出的 inline plan / Worker handoff。.*?                    \} else if \(imageResult\.frame\) \{",
+              """                    // 正文已经独立完成并落库；配图始终再单独调用一次规划器。
+                      // 不再要求主剧情模型输出隐藏 story_image_plan，也不把配图协议混进正文预设。
+                      const imageResult = await generateStoryTheaterImage({
+                          apiConfig,
+                          plannerApiConfig: resolveStoryImagePlannerApiConfig(entry, apiConfig, apiPresets),
+                          entry,
+                          actors,
+                          userProfile,
+                          userName: promptIdentityName,
+                          messages: imageRows,
+                          targetMessageId: assistantMessageId,
+                      });
+                      if (imageResult.frame) {""",
+              'restore separate automatic image planner call',
+              re.S,
+          )
+
+          sub_once(
+              r"            const returnedPartial = entry\.imageGeneration\?\.enabled\n                \? storyInlineImageVisibleText\(String\(\n                    error\?\.partialContent\n                    \|\| error\?\.storyIncompleteCompletion\?\.content\n                    \|\| '',\n                \)\)\.trim\(\)\n                : String\(\n                    error\?\.partialContent\n                    \|\| error\?\.storyIncompleteCompletion\?\.content\n                    \|\| '',\n                \)\.trim\(\);",
+              """            const returnedPartial = String(
+                  error?.partialContent
+                  || error?.storyIncompleteCompletion?.content
+                  || '',
+              ).trim();""",
+              'restore plain partial recovery',
+          )
+
+          forbidden = [
+              'buildStoryInlineImagePlanInstruction',
+              'parseStoryInlineImagePlan',
+              'storyInlineImageVisibleText',
+              'cloudImageHandoffSpec',
+              'cloudImageHandoffResult',
+              'theaterInlineImagePlan',
+              'adoptStoryCloudImageHandoff',
+          ]
+          leftovers = [token for token in forbidden if token in s]
+          if leftovers:
+              raise SystemExit(f'inline image leftovers in StoryTheaterSession: {leftovers}')
+
+          if "purpose: '剧情自动配图规划'" not in Path('utils/storyTheaterImage.ts').read_text(encoding='utf-8'):
+              raise SystemExit('separate image planner implementation is missing')
+
+          path.write_text(s, encoding='utf-8')
+          PY
+
+      - name: Install dependencies
+        run: |
+          corepack enable
+          pnpm install --frozen-lockfile
+
+      - name: Verify build
+        run: pnpm run build
+
+      - name: Commit restore and remove temporary workflow
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add components/date/story/StoryTheaterSession.tsx
+          git rm .github/workflows/revert-story-inline-image.yml
+          git commit -m "fix(story): restore separate image planning call"
+          git push origin HEAD:master
