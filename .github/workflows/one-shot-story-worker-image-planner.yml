@@ -1,0 +1,54 @@
+name: One-shot story worker image planner migration
+
+on:
+  push:
+    branches:
+      - fix/story-worker-image-planner-v1
+
+permissions:
+  contents: write
+
+jobs:
+  migrate-and-verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout migration branch
+        uses: actions/checkout@v4
+        with:
+          ref: fix/story-worker-image-planner-v1
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+          run_install: false
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Patch story worker planner handoff
+        run: python3 scripts/one-shot-story-worker-image-planner.py
+
+      - name: Verify worker handoff tests
+        run: pnpm exec vitest run worker/amsg/src/storyImageHandoff.test.ts
+
+      - name: Build app and worker bundles
+        run: pnpm run build
+
+      - name: Commit verified migration
+        shell: bash
+        run: |
+          rm -f scripts/one-shot-story-worker-image-planner.py
+          rm -f .github/workflows/one-shot-story-worker-image-planner.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --stat
+          git commit -m "fix: run story image planner fully in worker"
+          git push origin HEAD:fix/story-worker-image-planner-v1
