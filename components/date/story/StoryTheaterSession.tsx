@@ -64,6 +64,7 @@ import {
     generateStoryTheaterImage,
     resolveStoryImagePlannerApiConfig,
     type StoryCloudImageHandoffResult,
+    type StoryCloudImageHandoffSpec,
 } from '../../../utils/storyTheaterImage';
 import StoryImageSettingsButton from './StoryImageSettings';
 import AppMemoryCandidatePanel from '../../AppMemoryCandidatePanel';

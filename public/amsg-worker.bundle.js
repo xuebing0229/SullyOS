@@ -13179,8 +13179,8 @@ var sendStoryBackgroundStatusPush = async (env, job, status, error) => {
     const nativeReady = isFcmConfigured(env);
     const vapid = {
       email: env.VAPID_EMAIL?.trim() || "mailto:noreply@sullyos.app",
-      publicKey: env.VAPID_PUBLIC_KEY,
-      privateKey: env.VAPID_PRIVATE_KEY
+      publicKey: env.VAPID_PUBLIC_KEY?.trim() || "",
+      privateKey: env.VAPID_PRIVATE_KEY?.trim() || ""
     };
     const effectiveVapid = nativeReady && (!vapid.publicKey?.trim() || !vapid.privateKey?.trim()) ? { email: vapid.email, publicKey: "native-fcm", privateKey: "native-fcm" } : vapid;
     const transport = createHybridPushTransport(

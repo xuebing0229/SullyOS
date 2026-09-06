@@ -228,7 +228,7 @@ async function readError(response: Response): Promise<string> {
 }
 
 export async function ensureNovelAiReferenceUploaded(
-    config: NovelAiPreciseReferenceConfig,
+    config: Pick<NovelAiPreciseReferenceConfig, 'imageRef' | 'imageSha256' | 'slotId'>,
 ): Promise<{ uploaded: boolean; sha256: string }> {
     if (!config.imageRef) throw new Error('角色没有参考图');
     if (!SLOT_RE.test(config.slotId)) throw new Error('角色锁脸槽位无效，请重新选择参考图');
@@ -446,7 +446,7 @@ export async function prepareBuiltinImageToolArguments({
     await Promise.all([
         ...enabledReferences.map(item => ensureNovelAiReferenceUploaded(item.value)),
         ...(resolved.selected.vibe && vibeReference
-            ? [ensureNovelAiReferenceUploaded(vibeReference as any)]
+            ? [ensureNovelAiReferenceUploaded(vibeReference)]
             : []),
     ]);
 

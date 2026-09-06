@@ -158,12 +158,13 @@ import {
 import { buildScheduleChangeResult } from '../../../utils/amsgScheduleResult';
 import type { ActiveMsg2TaskRecord } from '../../../types';
 import { createHybridPushTransport, isFcmConfigured, type NativeFcmEnv } from './nativeFcm';
-import { handleNativePollRequest, type NativePollDb } from './nativePoll';
+import { handleNativePollRequest } from './nativePoll';
 import {
   failRunningStoryJob,
   handleStoryJobsRequest,
   kickQueuedStoryJobs,
   runStoryJob,
+  type StoryJobsDb,
 } from './storyJobs';
 
 interface Env extends NativeFcmEnv {
@@ -174,7 +175,7 @@ interface Env extends NativeFcmEnv {
   /** 可选共享密钥；配了才校验 X-Client-Token，不配则端点全开。 */
   AMSG_SERVER_TOKEN?: string;
   /** D1 binding（factory 默认 createD1Adapter(env.DB)，这里只是标注存在）。 */
-  DB: NativePollDb;
+  DB: StoryJobsDb;
   /** 以下三项给 /self-update 用，都可选；没配 CF_API_TOKEN 就是不开自更新。见 ./selfUpdate。 */
   CF_API_TOKEN?: string;
   CF_ACCOUNT_ID?: string;

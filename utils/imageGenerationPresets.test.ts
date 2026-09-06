@@ -257,13 +257,13 @@ describe('image generation presets', () => {
 
     it('round trips the Vibe library in full backups without leaving dead image refs in text-only backups', () => {
         saveVibeReferenceLibrary({
-            version: 1,
+            version: 2,
             enabled: true,
             activeId: 'vibe-1',
             items: [{
                 id: 'vibe-1', name: '雨夜霓虹', enabled: true,
                 imageRef: 'blobref:sha256:0123456789abcdef', imageSha256: 'a'.repeat(64), slotId: 'b'.repeat(64),
-                type: 'style', strength: 0.55, fidelity: 0.8, updatedAt: 1,
+                strength: 0.55, informationExtracted: 0.8, updatedAt: 1,
             }],
         });
 
