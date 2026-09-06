@@ -5,6 +5,10 @@ import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
+import java.io.OutputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.nio.charset.StandardCharsets;
 import org.json.JSONObject;
 
 @CapacitorPlugin(name = "SullyStoryBackground")
@@ -42,6 +46,7 @@ public class SullyStoryBackgroundPlugin extends Plugin {
         String workerUrl = call.getString("workerUrl", "").trim().replaceAll("/+$", "");
         String userId = call.getString("userId", "").trim();
         String serverToken = call.getString("serverToken", "");
+        String specJson = call.getString("specJson", "");
         if (!jobId.matches("[A-Za-z0-9_-]{12,160}")) {
             call.reject("剧情云端监控 jobId 无效");
             return;
@@ -50,10 +55,67 @@ public class SullyStoryBackgroundPlugin extends Plugin {
             call.reject("剧情云端监控 Worker 配置无效");
             return;
         }
-        if (SullyStoryCloudMonitorService.start(getContext(), jobId, title, workerUrl, userId, serverToken)) {
-            call.resolve();
-        } else {
+        if (!SullyStoryCloudMonitorService.start(getContext(), jobId, title, workerUrl, userId, serverToken)) {
             call.reject("无法启动剧情云端状态通知");
+            return;
+        }
+
+        // 新任务可以把完整 story spec 一起交给这里。先启动 ForegroundService，再在
+        // Android 原生线程里 POST /story-jobs：即使用户点完生成马上切屏，WebView 冻住了，
+        // 真正的云端任务提交和后续状态轮询也已经脱离 WebView 生命周期。
+        if (specJson != null && !specJson.trim().isEmpty()) {
+            final String submitSpec = specJson;
+            Thread submitThread = new Thread(() -> {
+                try {
+                    int status = submitCloudStoryJob(workerUrl, userId, serverToken, submitSpec);
+                    if (status >= 200 && status < 300) {
+                        call.resolve();
+                        return;
+                    }
+                    String message = "剧情云端任务提交失败（HTTP " + status + "）";
+                    SullyStoryCloudMonitorService.finish(getContext(), jobId, title, "failed", message);
+                    call.reject(message);
+                } catch (Exception error) {
+                    // 连接异常时无法判断 POST 是否已抵达 Worker，所以不把状态牌直接判失败。
+                    // JS 恢复后会用同一个 jobId/clientRequestId 再查账；必要时同 ID 重交也是幂等的。
+                    String detail = error.getMessage() == null ? error.getClass().getSimpleName() : error.getMessage();
+                    call.reject("剧情云端任务提交结果不确定：" + detail);
+                }
+            }, "SullyStoryCloudSubmit");
+            submitThread.start();
+            return;
+        }
+
+        call.resolve();
+    }
+
+    private static int submitCloudStoryJob(
+        String workerUrl,
+        String userId,
+        String serverToken,
+        String specJson
+    ) throws Exception {
+        byte[] body = specJson.getBytes(StandardCharsets.UTF_8);
+        HttpURLConnection connection = (HttpURLConnection) new URL(workerUrl + "/story-jobs").openConnection();
+        try {
+            connection.setRequestMethod("POST");
+            connection.setConnectTimeout(10000);
+            connection.setReadTimeout(20000);
+            connection.setDoOutput(true);
+            connection.setRequestProperty("Accept", "application/json");
+            connection.setRequestProperty("Content-Type", "application/json");
+            connection.setRequestProperty("X-User-Id", userId);
+            if (serverToken != null && !serverToken.trim().isEmpty()) {
+                connection.setRequestProperty("X-Client-Token", serverToken.trim());
+            }
+            connection.setFixedLengthStreamingMode(body.length);
+            try (OutputStream output = connection.getOutputStream()) {
+                output.write(body);
+                output.flush();
+            }
+            return connection.getResponseCode();
+        } finally {
+            connection.disconnect();
         }
     }
 
