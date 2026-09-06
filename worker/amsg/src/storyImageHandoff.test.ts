@@ -125,6 +125,52 @@ describe('story cloud image handoff', () => {
     expect(posted.arguments.reference_id).toBe('slot_actor_a');
   });
 
+  it('strips image client actions from /jobs arguments while preserving legal image parameters', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: 'job_not_found' }), { status: 404 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        job: { id: 'remote_action', status: 'queued' },
+      }), { status: 202, headers: { 'Content-Type': 'application/json' } }));
+
+    const result = await runStoryImageHandoff(
+      spec(),
+      'storyreq_action',
+      planText('image_novelai', {
+        prompt: 'city rain',
+        width: 1216,
+        height: 832,
+        steps: 28,
+        after_generate_action: 'inspect',
+        afterGenerateAction: 'none',
+      }),
+    );
+
+    expect(result).toMatchObject({
+      state: 'submitted',
+      remoteJobId: 'remote_action',
+      afterGenerateAction: 'inspect',
+      arguments: {
+        prompt: 'city rain',
+        width: 1216,
+        height: 832,
+        steps: 28,
+      },
+    });
+    expect(result.arguments).not.toHaveProperty('after_generate_action');
+    expect(result.arguments).not.toHaveProperty('afterGenerateAction');
+
+    const submitInit = fetchMock.mock.calls[1][1] as RequestInit;
+    const posted = JSON.parse(String(submitInit.body));
+    expect(posted.arguments).toEqual({
+      prompt: 'city rain',
+      width: 1216,
+      height: 832,
+      steps: 28,
+    });
+    expect(posted.arguments).not.toHaveProperty('after_generate_action');
+    expect(posted.arguments).not.toHaveProperty('afterGenerateAction');
+  });
+
   it('lets an active Vibe fragment win over precise references', async () => {
     vi.spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(new Response(JSON.stringify({ error: 'job_not_found' }), { status: 404 }))
