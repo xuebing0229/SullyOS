@@ -1,0 +1,37 @@
+name: Verify native story status routing
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+    paths:
+      - 'native/android/AmsgUnifiedPushService.java'
+      - 'native/android/SullyAmsgPollService.java'
+      - 'native/android/SullyStoryCloudMonitorService.java'
+      - 'native/android/SullyStoryStatusPush.java'
+      - 'scripts/install-android-story-background.mjs'
+      - 'scripts/androidNativePush.wiring.test.ts'
+      - 'scripts/androidStoryStatus.wiring.test.ts'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - '.github/workflows/native-story-status-check.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Run native push/status wiring regressions
+        run: pnpm exec vitest run scripts/androidNativePush.wiring.test.ts scripts/androidStoryStatus.wiring.test.ts
