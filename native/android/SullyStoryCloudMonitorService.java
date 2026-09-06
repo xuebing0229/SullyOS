@@ -33,7 +33,7 @@ import org.json.JSONObject;
  * 云端 Story Jobs 的 Android 侧状态牌。
  *
  * 这条链必须独立于 WebView：App 一切到后台，正文/配图继续在 Worker 跑，
- * 这里仍然自己查同一个 job，并把同一条通知从“生成中”原地更新成“完成/失败”。
+ * 这里仍然自己查同一个 job，并把“生成中”前台服务通知收尾后留下独立终态通知。
  */
 public class SullyStoryCloudMonitorService extends Service {
     public static final String ACTION_START = "SULLY_STORY_CLOUD_MONITOR_START";
@@ -51,6 +51,7 @@ public class SullyStoryCloudMonitorService extends Service {
     private static final String CHANNEL_ID = "sully_story_cloud_status_v1";
     private static final String PREFS = "sully_story_cloud_monitor_v1";
     private static final int NOTIFICATION_ID = 23033;
+    private static final int TERMINAL_NOTIFICATION_ID = 23034;
     private static final long POLL_MS = 3000L;
     private static final long WAKE_LOCK_TIMEOUT_MS = 2L * 60L * 60L * 1000L;
     private static final int SYNC_WARNING_AFTER_FAILURES = 5;
@@ -282,6 +283,9 @@ public class SullyStoryCloudMonitorService extends Service {
 
         if (persist) persistMonitor();
 
+        NotificationManager manager = getSystemService(NotificationManager.class);
+        if (manager != null) manager.cancel(TERMINAL_NOTIFICATION_ID);
+
         final int token = ++generation;
         enterForeground(buildRunningNotification(this.title));
         acquireWakeLock();
@@ -474,20 +478,21 @@ public class SullyStoryCloudMonitorService extends Service {
             : "failed";
         String resolvedTitle = fallbackTitle(terminalTitle);
 
-        // 不再先 REMOVE 再重发同一 id。先把正在生成的 foreground notification 原地改成终态，
-        // 再 DETACH 服务；这样即使系统处理 stopForeground 有延迟，也不会把完成通知一起删掉。
+        // ColorOS/OxygenOS 等系统可能在前台 Service stopSelf() 时把 DETACH 后的同 ID 通知也一起回收。
+        // 所以终态不要再复用 foreground notification：先明确 REMOVE 23033，再用独立 23034 发布普通通知。
+        // 普通通知与 Service 生命周期脱钩，即使 :story_monitor 进程随后退出也会继续留在通知栏。
+        if (Build.VERSION.SDK_INT >= 24) {
+            stopForeground(STOP_FOREGROUND_REMOVE);
+        } else {
+            //noinspection deprecation
+            stopForeground(true);
+        }
         NotificationManager manager = getSystemService(NotificationManager.class);
         if (manager != null) {
             manager.notify(
-                NOTIFICATION_ID,
+                TERMINAL_NOTIFICATION_ID,
                 buildTerminalNotification(normalizedStatus, resolvedTitle, error).build()
             );
-        }
-        if (Build.VERSION.SDK_INT >= 24) {
-            stopForeground(STOP_FOREGROUND_DETACH);
-        } else {
-            //noinspection deprecation
-            stopForeground(false);
         }
         stopSelf();
     }
