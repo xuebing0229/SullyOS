@@ -9,7 +9,12 @@ import { VRScheduler } from './utils/vrWorld/scheduler';
 import { installIOSStandaloneWorkaround } from './utils/iosStandalone';
 import { installWakeListener } from './utils/proactivePushConfig';
 import { initAnalytics } from './utils/analytics';
+import { installStoryPollingVisibilityGuard } from './utils/storyPollingVisibilityGuard';
 import { Capacitor } from '@capacitor/core';
+
+// Android WebView 退到后台后不再自己轮询 story-jobs；原生 monitor 继续盯任务，
+// 回前台时 JS 立即接回同一个 job，避免后台冻结被误判成网络/SYSTEM ERROR。
+installStoryPollingVisibilityGuard();
 
 // 普通网页不加载原生推送插件；只有显式开启的 Capacitor 构建才初始化。
 const nativePushMode = import.meta.env.VITE_AMSG_NATIVE_PUSH;
