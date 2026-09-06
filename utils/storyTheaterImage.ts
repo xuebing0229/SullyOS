@@ -13,6 +13,7 @@ import {
 } from './mcpToolBridge';
 import { normalizeToolCallsForCompat } from './toolCallCompat';
 import { prepareBuiltinImageToolArguments } from './novelAiReference';
+import type { NovelAiReferencePolicy } from './novelAiReferencePolicy';
 import {
     applyImageGenerationPresetById,
     getImageGenerationPresets,
@@ -215,6 +216,8 @@ export interface StoryCloudImageToolHandoff {
         remoteConfig: Record<string, unknown>;
         apiKey: string;
     };
+    /** 冻结实际选中工具/预设的参考图权限，Worker 不再猜当前/全局预设。 */
+    referencePolicy?: NovelAiReferencePolicy;
     references?: {
         actors?: Record<string, Record<string, unknown>>;
         user?: Record<string, unknown>;
@@ -250,32 +253,10 @@ export interface StoryCloudImageHandoffResult {
     error?: string;
 }
 
-const MANAGED_REFERENCE_KEYS = new Set([
-    'reference_id',
-    'reference_type',
-    'reference_strength',
-    'reference_fidelity',
-    'user_reference_id',
-    'user_reference_type',
-    'user_reference_strength',
-    'user_reference_fidelity',
-    'vibe_reference_id',
-    'vibe_reference_strength',
-    'vibe_reference_information_extracted',
-]);
-
-const pickManagedReferenceFragment = (args: Record<string, any>): Record<string, unknown> => {
-    const out: Record<string, unknown> = {};
-    for (const [key, value] of Object.entries(args || {})) {
-        if (MANAGED_REFERENCE_KEYS.has(key)) out[key] = value;
-    }
-    return out;
-};
-
 /**
  * 在正文 story job 提交前冻结“这轮可能会选到的生图服务”。
- * 凭据只进入加密 story request，不会回显；NovelAI 参考图也在这里先确保远端槽位存在，
- * 这样用户提交正文后立刻锁屏，Worker 仍有足够信息独立把图片 /jobs 接上。
+ * 凭据只进入加密 story request，不会回显；参考图只冻结已有远端 slot 身份，
+ * 绝不在正文 POST 前做 HEAD/PUT，避免参考图预检卡住正文提交。
  */
 export const buildStoryCloudImageHandoffSpec = async (input: {
     actors: CharacterProfile[];
@@ -291,9 +272,6 @@ export const buildStoryCloudImageHandoffSpec = async (input: {
     const tools: StoryCloudImageToolHandoff[] = [];
     const activeVibe = getActiveVibeReference();
 
-    // 这里只冻结“已经存在的远端 slot 身份”，绝不在正文 POST 前做 HEAD/PUT。
-    // 参考图通常在设置/既往生图时已经上传；即便某个 slot 后续失效，也只影响配图，
-    // 不能再让 WebView 因为参考图预检而把整轮正文卡在前台。
     const actorReferenceFragment = (actor: CharacterProfile): Record<string, unknown> | undefined => {
         const config = actor.novelAiReference;
         if (!config?.enabled || !config.slotId) return undefined;
@@ -347,12 +325,26 @@ export const buildStoryCloudImageHandoffSpec = async (input: {
         };
 
         if (engineId === 'novelai') {
+            // 与 prepareBuiltinImageToolArguments 使用完全相同的“实际 selected server”判定。
+            // 角色自动预设绝不能退化成“只要任意一个预设允许就全都允许”。
+            const preciseReferenceAllowed = hit.server.imagePresetId
+                ? hit.server.imagePresetAllowCharacterReference !== false
+                : isCharacterReferenceAllowedForActivePreset();
+            const referencePolicy: NovelAiReferencePolicy = {
+                allowCharacterReference: preciseReferenceAllowed,
+                allowUserReference: preciseReferenceAllowed,
+                allowVibeReference: true,
+            };
+            descriptor.referencePolicy = referencePolicy;
+
             const actors: Record<string, Record<string, unknown>> = {};
-            for (const actor of input.actors) {
-                const fragment = actorReferenceFragment(actor);
-                if (fragment) actors[actor.id] = fragment;
+            if (preciseReferenceAllowed) {
+                for (const actor of input.actors) {
+                    const fragment = actorReferenceFragment(actor);
+                    if (fragment) actors[actor.id] = fragment;
+                }
             }
-            const user = userReferenceFragment();
+            const user = preciseReferenceAllowed ? userReferenceFragment() : undefined;
             const vibe = vibeReferenceFragment();
             if (Object.keys(actors).length || user || vibe) {
                 descriptor.references = {
