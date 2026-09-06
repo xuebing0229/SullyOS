@@ -47,6 +47,12 @@ public class SullyStoryBackgroundPlugin extends Plugin {
         String userId = call.getString("userId", "").trim();
         String serverToken = call.getString("serverToken", "");
         String specJson = call.getString("specJson", "");
+        String clientRequestId = call.getString("clientRequestId", "").trim();
+        if (clientRequestId.isEmpty() && specJson != null && !specJson.trim().isEmpty()) {
+            try {
+                clientRequestId = new JSONObject(specJson).optString("clientRequestId", "").trim();
+            } catch (Exception ignored) { }
+        }
         if (!jobId.matches("[A-Za-z0-9_-]{12,160}")) {
             call.reject("剧情云端监控 jobId 无效");
             return;
@@ -55,7 +61,15 @@ public class SullyStoryBackgroundPlugin extends Plugin {
             call.reject("剧情云端监控 Worker 配置无效");
             return;
         }
-        if (!SullyStoryCloudMonitorService.start(getContext(), jobId, title, workerUrl, userId, serverToken)) {
+        if (!SullyStoryCloudMonitorService.start(
+            getContext(),
+            jobId,
+            clientRequestId,
+            title,
+            workerUrl,
+            userId,
+            serverToken
+        )) {
             call.reject("无法启动剧情云端状态通知");
             return;
         }
@@ -102,8 +116,11 @@ public class SullyStoryBackgroundPlugin extends Plugin {
             connection.setConnectTimeout(10000);
             connection.setReadTimeout(20000);
             connection.setDoOutput(true);
+            connection.setUseCaches(false);
             connection.setRequestProperty("Accept", "application/json");
             connection.setRequestProperty("Content-Type", "application/json");
+            connection.setRequestProperty("Cache-Control", "no-cache, no-store, max-age=0");
+            connection.setRequestProperty("Pragma", "no-cache");
             connection.setRequestProperty("X-User-Id", userId);
             if (serverToken != null && !serverToken.trim().isEmpty()) {
                 connection.setRequestProperty("X-Client-Token", serverToken.trim());
