@@ -216,6 +216,47 @@ export const clearPendingNativeStoryJob = async (ownerKey: string): Promise<void
 export const getPendingNativeStoryJob = (ownerKey: string): PendingNativeStoryJob | null =>
   readPending()[ownerKey] || null;
 
+
+const pendingNativeStoryBelongsToEntry = (
+  pending: PendingNativeStoryJob,
+  entryId: string,
+): boolean => {
+  const ownerKey = String(pending?.ownerKey || '');
+  return String(pending?.meta?.storyEntryId || '') === entryId
+    || ownerKey === `story-turn:${entryId}`
+    || ownerKey.startsWith(`story-turn:${entryId}:`)
+    || ownerKey.startsWith(`story-reroll:${entryId}:`)
+    || ownerKey === `story-opening:${entryId}`;
+};
+
+export const findPendingNativeStoryJobForStory = (
+  entryId: string,
+): PendingNativeStoryJob | null => {
+  const normalizedEntryId = String(entryId || '').trim();
+  if (!normalizedEntryId) return null;
+  const pending = Object.values(readPending())
+    .filter(item => item?.jobId && pendingNativeStoryBelongsToEntry(item, normalizedEntryId))
+    .sort((left, right) => Number(right.createdAt || 0) - Number(left.createdAt || 0));
+  return pending[0] || null;
+};
+
+export const clearOtherPendingNativeStoryJobsForStory = async (
+  entryId: string,
+  keepOwnerKey: string,
+): Promise<void> => {
+  const normalizedEntryId = String(entryId || '').trim();
+  if (!normalizedEntryId) return;
+  const map = readPending();
+  let changed = false;
+  for (const [ownerKey, pending] of Object.entries(map)) {
+    if (ownerKey === keepOwnerKey) continue;
+    if (!pendingNativeStoryBelongsToEntry(pending, normalizedEntryId)) continue;
+    delete map[ownerKey];
+    changed = true;
+  }
+  if (changed) writePending(map);
+};
+
 export const isNativeStoryBackgroundRuntime = (): boolean =>
   Capacitor.isNativePlatform() && Capacitor.getPlatform() === 'android';
 

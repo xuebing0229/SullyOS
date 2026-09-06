@@ -71,15 +71,19 @@ import AppMemoryCandidatePanel from '../../AppMemoryCandidatePanel';
 import { generateAppMemoryCandidates } from '../../../utils/appMemoryBridge';
 import {
     acquireNativeStoryKeepAlive,
+    clearOtherPendingNativeStoryJobsForStory,
     clearPendingNativeStoryJob,
     executeStoryCompletionInNativeBackground,
+    findPendingNativeStoryJobForStory,
     getPendingNativeStoryJob,
     isNativeStoryBackgroundRuntime,
     releaseNativeStoryKeepAlive,
 } from '../../../utils/nativeStoryBackground';
 import {
+    clearOtherPendingCloudStoryJobsForStory,
     clearPendingCloudStoryJob,
     executeStoryCompletionInCloudBackground,
+    findPendingCloudStoryJobForStory,
     getPendingCloudStoryJob,
     isCloudStoryJobsAvailable,
 } from '../../../utils/backgroundStoryJobs';
@@ -1121,7 +1125,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 completionSucceeded
                 && background
                 && useCloudStoryTransport
-                && !background.ownerKey.startsWith('story-turn:')
+                && !background.meta?.storyRequestKey
             ) {
                 await clearPendingCloudStoryJob(background.ownerKey);
             }
@@ -1291,7 +1295,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
         }
     }, [addToast, apiConfig, callCompletion, entry, loadMessages, mask.name, memoryPalaceConfig, onEntryChange, threadId]);
 
-    const send = useCallback(async (rerollTarget?: Message, continueRequested = false) => {
+    const send = useCallback(async (rerollTarget?: Message, continueRequested = false, recoveryOwnerKey?: string) => {
         if (sendLock.current || actors.length === 0) return;
         sendLock.current = true;
         streamingTextRef.current = '';
@@ -1306,10 +1310,10 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
         let partialIsReroll = false;
         let partialRerollTarget: Message | undefined;
         let partialClearInput = false;
-        const backgroundOwnerKey = `story-turn:${entry.id}`;
+        let backgroundOwnerKey = '';
         // 已有 cloud pending 代表完整 prompt 早就加密提交给 Worker 了。
         // 恢复页面只需要查回同一 job，禁止再次做归档、向量/角色记忆召回和生图参考图预检。
-        const recoveringCloudPending = Boolean(getPendingCloudStoryJob(backgroundOwnerKey));
+        let recoveringCloudPending = false;
         let usedNativeBackground = false;
         let nativeCompletionReceived = false;
         let automaticImageKeepAliveLease: string | null = null;
@@ -1341,7 +1345,18 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                     ? String(latest?.metadata?.theaterRequestKey || `story-turn:${entry.id}:${latest?.id || makeStoryTheaterId()}`)
                     : assistantOpening
                         ? `story-opening:${entry.id}`
+
                         : `story-turn:${entry.id}:${makeStoryTheaterId()}`;
+            // 每一轮正文拥有独立 owner。只有自动恢复旧任务时才显式沿用原 owner，
+            // 这样切换剧情 API 后的新一轮不会被上一轮 pending 劫持回旧上游。
+            backgroundOwnerKey = recoveryOwnerKey || activeRequestKey;
+            recoveringCloudPending = Boolean(getPendingCloudStoryJob(backgroundOwnerKey));
+            if (!recoveryOwnerKey) {
+                await clearOtherPendingCloudStoryJobsForStory(entry.id, backgroundOwnerKey);
+                if (isNativeStoryBackgroundRuntime()) {
+                    await clearOtherPendingNativeStoryJobsForStory(entry.id, backgroundOwnerKey);
+                }
+            }
             // 重新生成与失败重试都从消息标记恢复“继续”，模型始终收到模式专属调度词；
             // 数据库、阅读页与角色镜像只留下简洁的“（继续）”。
             const isContinueTurn = isReroll
@@ -1476,6 +1491,8 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 ownerKey: backgroundOwnerKey,
                 title: entry.title,
                 meta: {
+                    storyEntryId: entry.id,
+                    storyRequestKey: activeRequestKey,
                     ...(isReroll && rerollTarget ? { rerollTargetId: rerollTarget.id } : {}),
                     ...(affinityInputs.length > 0 ? { affinityInputs } : {}),
                     isContinueTurn,
@@ -1714,10 +1731,9 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
     // 只接回同一个 job，绝不重新创建模型请求。云端优先，因为它不依赖手机后台 socket。
     useEffect(() => {
         if (sending || sendLock.current) return;
-        const ownerKey = `story-turn:${entry.id}`;
-        const cloudPending = getPendingCloudStoryJob(ownerKey);
+        const cloudPending = findPendingCloudStoryJobForStory(entry.id);
         const nativePending = !cloudPending && isNativeStoryBackgroundRuntime()
-            ? getPendingNativeStoryJob(ownerKey)
+            ? findPendingNativeStoryJobForStory(entry.id)
             : null;
         const pending = cloudPending || nativePending;
         if (!pending) return;
@@ -1731,7 +1747,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                     .filter(message => message.metadata?.source === 'story_theater');
                 rerollTarget = rows.find(message => message.id === rerollTargetId);
             }
-            if (!cancelled) void send(rerollTarget);
+            if (!cancelled) void send(rerollTarget, false, pending.ownerKey);
         })();
 
         return () => { cancelled = true; };

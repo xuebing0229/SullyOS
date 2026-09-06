@@ -103,6 +103,47 @@ export const getPendingCloudStoryJob = (
     return pending?.jobId && pending?.clientRequestId ? pending : null;
 };
 
+
+const pendingCloudStoryBelongsToEntry = (
+    pending: PendingCloudStoryJob,
+    entryId: string,
+): boolean => {
+    const ownerKey = String(pending?.ownerKey || '');
+    return String(pending?.meta?.storyEntryId || '') === entryId
+        || ownerKey === `story-turn:${entryId}`
+        || ownerKey.startsWith(`story-turn:${entryId}:`)
+        || ownerKey.startsWith(`story-reroll:${entryId}:`)
+        || ownerKey === `story-opening:${entryId}`;
+};
+
+export const findPendingCloudStoryJobForStory = (
+    entryId: string,
+): PendingCloudStoryJob | null => {
+    const normalizedEntryId = String(entryId || '').trim();
+    if (!normalizedEntryId) return null;
+    const pending = Object.values(readPendingMap())
+        .filter(item => item?.jobId && item?.clientRequestId && pendingCloudStoryBelongsToEntry(item, normalizedEntryId))
+        .sort((left, right) => Number(right.createdAt || 0) - Number(left.createdAt || 0));
+    return pending[0] || null;
+};
+
+export const clearOtherPendingCloudStoryJobsForStory = async (
+    entryId: string,
+    keepOwnerKey: string,
+): Promise<void> => {
+    const normalizedEntryId = String(entryId || '').trim();
+    if (!normalizedEntryId) return;
+    const map = readPendingMap();
+    let changed = false;
+    for (const [ownerKey, pending] of Object.entries(map)) {
+        if (ownerKey === keepOwnerKey) continue;
+        if (!pendingCloudStoryBelongsToEntry(pending, normalizedEntryId)) continue;
+        delete map[ownerKey];
+        changed = true;
+    }
+    if (changed) writePendingMap(map);
+};
+
 const savePendingCloudStoryJob = (pending: PendingCloudStoryJob): void => {
     const map = readPendingMap();
     map[pending.ownerKey] = pending;
