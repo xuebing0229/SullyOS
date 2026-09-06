@@ -33,7 +33,18 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Patch story worker planner handoff
-        run: python3 scripts/one-shot-story-worker-image-planner.py
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('scripts/one-shot-story-worker-image-planner.py')
+          text = path.read_text(encoding='utf-8')
+          old = "new_text, count = re.subn(pattern, replacement, text, count=1, flags=re.S)"
+          new = "new_text, count = re.subn(pattern, lambda _match: replacement, text, count=1, flags=re.S)"
+          if old not in text:
+              raise SystemExit('one-shot regex helper marker missing')
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
+          python3 scripts/one-shot-story-worker-image-planner.py
 
       - name: Verify worker handoff tests
         run: pnpm exec vitest run worker/amsg/src/storyImageHandoff.test.ts
