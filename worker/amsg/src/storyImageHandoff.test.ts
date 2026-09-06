@@ -54,6 +54,54 @@ describe('story cloud image handoff', () => {
     expect(normalized?.tools[0].controlBaseUrl).toBe('https://image.example.test');
   });
 
+  it('reuses shared API normalizers for invisible edges in encrypted handoff credentials', () => {
+    const dirty = plannerSpec();
+    dirty.tools[0] = {
+      ...dirty.tools[0],
+      controlBaseUrl: '\u200B https://image.example.test/ \uFEFF',
+      token: '\uFEFF secret-image-token \u200B',
+      preset: {
+        remoteConfig: { model: 'nai-model' },
+        apiKey: '\u200B nai-api-key \uFEFF',
+      },
+    };
+    dirty.planner = {
+      ...dirty.planner!,
+      baseUrl: '\uFEFF https://planner.example.test/v1/ \u200B',
+      apiKey: '\u200B planner-secret \uFEFF',
+      model: '\uFEFF gemini-compatible-planner \u200B',
+    };
+
+    const normalized = normalizeStoryImageHandoffSpec(dirty);
+    expect(normalized?.tools[0].controlBaseUrl).toBe('https://image.example.test');
+    expect(normalized?.tools[0].token).toBe('secret-image-token');
+    expect(normalized?.tools[0].preset?.apiKey).toBe('nai-api-key');
+    expect(normalized?.planner?.baseUrl).toBe('https://planner.example.test/v1');
+    expect(normalized?.planner?.apiKey).toBe('planner-secret');
+    expect(normalized?.planner?.model).toBe('gemini-compatible-planner');
+  });
+
+  it('normalizes planner authorization again at request time for older encrypted jobs', async () => {
+    const dirty = plannerSpec();
+    dirty.planner = {
+      ...dirty.planner!,
+      apiKey: '\uFEFF planner-secret \u200B',
+    };
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        choices: [{ message: { content: 'image_novelai({"prompt":"clean auth"})' } }],
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        job: { id: 'remote_clean_auth', status: 'running' },
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+
+    const result = await runStoryImageHandoff(dirty, 'storyreq_clean_auth', '最新正文。');
+
+    expect(result).toMatchObject({ state: 'submitted', remoteJobId: 'remote_clean_auth' });
+    const plannerHeaders = new Headers((fetchMock.mock.calls[0][1] as RequestInit).headers);
+    expect(plannerHeaders.get('Authorization')).toBe('Bearer planner-secret');
+  });
+
   it('prepares a stable handoff without touching the image network', () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch');
     const result = prepareStoryImageHandoff(

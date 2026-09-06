@@ -1,5 +1,10 @@
 import { parseImageToolClientOptions } from '../../../utils/imageToolPostAction';
 import {
+  normalizeApiBaseUrl,
+  normalizeApiCredential,
+  normalizeApiModel,
+} from '../../../utils/apiConfigNormalize';
+import {
   extractTextFakedMcpCalls,
   type McpFireServer,
   type McpResolvedToolCore,
@@ -67,7 +72,7 @@ const INLINE_PLAN_CLOSE = '</story_image_plan>';
 const MAX_TOOLS = 16;
 const HTTP_TIMEOUT_MS = 20_000;
 
-const cleanBaseUrl = (value: unknown): string => String(value || '').trim().replace(/\/+$/, '');
+const cleanBaseUrl = (value: unknown): string => normalizeApiBaseUrl(value);
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   Boolean(value && typeof value === 'object' && !Array.isArray(value));
 const cloneRecord = (value: Record<string, unknown>): Record<string, unknown> =>
@@ -116,7 +121,7 @@ export const normalizeStoryImageHandoffSpec = (value: unknown): StoryCloudImageH
     const preset = presetRaw && isRecord(presetRaw.remoteConfig)
       ? {
           remoteConfig: cloneRecord(presetRaw.remoteConfig),
-          apiKey: String(presetRaw.apiKey || ''),
+          apiKey: normalizeApiCredential(presetRaw.apiKey),
         }
       : undefined;
 
@@ -125,7 +130,7 @@ export const normalizeStoryImageHandoffSpec = (value: unknown): StoryCloudImageH
       toolName,
       engineId,
       controlBaseUrl,
-      token: String(rawTool.token || ''),
+      token: normalizeApiCredential(rawTool.token),
       ...(preset ? { preset } : {}),
       ...(referencePolicy ? { referencePolicy } : {}),
       ...(isRecord(rawTool.referenceErrors) ? {
@@ -164,7 +169,7 @@ export const normalizeStoryImageHandoffSpec = (value: unknown): StoryCloudImageH
     }
   }
   const plannerBaseUrl = cleanBaseUrl(plannerRaw?.baseUrl);
-  const plannerModel = String(plannerRaw?.model || '').trim();
+  const plannerModel = normalizeApiModel(plannerRaw?.model);
   const plannerSystemPrompt = String(plannerRaw?.systemPrompt || '').trim();
   const planner = plannerRaw
     && /^https?:\/\//i.test(plannerBaseUrl)
@@ -173,7 +178,7 @@ export const normalizeStoryImageHandoffSpec = (value: unknown): StoryCloudImageH
     && plannerTools.length
     ? {
         baseUrl: plannerBaseUrl,
-        apiKey: String(plannerRaw.apiKey || ''),
+        apiKey: normalizeApiCredential(plannerRaw.apiKey),
         model: plannerModel,
         systemPrompt: plannerSystemPrompt.slice(0, 80_000),
         tools: plannerTools,
@@ -211,7 +216,8 @@ const fetchJson = async (
   try {
     const headers = new Headers(init.headers || {});
     headers.set('Accept', 'application/json');
-    if (token) headers.set('Authorization', `Bearer ${token}`);
+    const normalizedToken = normalizeApiCredential(token);
+    if (normalizedToken) headers.set('Authorization', `Bearer ${normalizedToken}`);
     if (init.body !== undefined) headers.set('Content-Type', 'application/json');
     const response = await fetch(url, { ...init, headers, cache: 'no-store', signal: controller.signal });
     const text = await response.text();
