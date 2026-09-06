@@ -50,6 +50,13 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Verify story image reference policy
+        run: >-
+          pnpm exec vitest run
+          utils/novelAiReferencePolicy.test.ts
+          worker/amsg/src/storyImageHandoff.test.ts
+          worker/amsg/src/storyImageReferencePolicy.test.ts
+
       - name: Build AMSG bundle
         run: pnpm run build:workers
 
