@@ -1,7 +1,11 @@
 import type { ApiExecutionPlan } from './apiFailover';
 import type { StoryCloudImageHandoffSpec } from './storyTheaterImage';
 import { ActiveMsgClient } from './activeMsgClient';
-import { finishNativeCloudStoryMonitor, startNativeCloudStoryMonitor } from './nativeStoryBackground';
+import {
+    finishNativeCloudStoryMonitor,
+    isNativeStoryBackgroundRuntime,
+    startNativeCloudStoryMonitor,
+} from './nativeStoryBackground';
 import {
     cloudApiCallLogId,
     recordCloudApiCall,
@@ -444,22 +448,64 @@ export const executeStoryCompletionInCloudBackground = async (
     const firstRoute = options.plan.routes[0];
     const logId = cloudApiCallLogId(pending.clientRequestId);
     let job: CloudStoryJob | null = null;
+    const spec = {
+        jobId: pending.jobId,
+        clientRequestId: pending.clientRequestId,
+        ownerKey: pending.ownerKey,
+        title: pending.title,
+        mode: options.plan.mode,
+        routes: options.plan.routes.map(route => ({
+            presetId: route.presetId,
+            presetName: route.presetName,
+            baseUrl: route.api.baseUrl,
+            apiKey: route.api.apiKey,
+            model: route.api.model,
+            ...(typeof route.api.temperature === 'number'
+                ? { temperature: route.api.temperature }
+                : {}),
+            ...(route.firstByteTimeoutMs
+                ? { firstByteTimeoutMs: route.firstByteTimeoutMs }
+                : {}),
+        })),
+        baseBody: {
+            ...options.body,
+            stream: true,
+        },
+        ...(options.imageHandoff ? { imageHandoff: options.imageHandoff } : {}),
+    };
 
-    // 本地 jobId 一旦确定就先挂 Android 原生状态监控，不等恢复 GET，也不等 POST 响应。
-    // 原生服务允许最开始查不到 job 并继续轮询，所以用户点完生成马上切屏时，
-    // 状态牌已经开始接管，而不是等 WebView 再跑完一次网络往返才启动。
-    void startNativeCloudStoryMonitor({
+    let nativeSubmissionOwnsPost = false;
+    const monitorOptions = {
         jobId: pending.jobId,
         title: pending.title,
         workerUrl: config.workerUrl,
         userId: config.userId,
         serverToken: config.serverToken,
-    }).catch(error => {
-        console.warn('[StoryTheater] native cloud story status monitor failed to arm early', error);
-    });
+    };
 
-    // 只有真正的旧 pending 才需要恢复查账。新任务必须先把 POST 交给 Worker，
-    // 否则这里的 visibility-aware GET 会在 WebView 进入后台时挂起，导致模型请求根本没有开始。
+    if (!recoveringExistingPending && isNativeStoryBackgroundRuntime()) {
+        try {
+            // 新任务把完整 spec 一次性交给 Android。原生插件会先挂前台状态牌，再在自己的线程里
+            // POST /story-jobs；WebView 随后哪怕立刻被冻结，模型请求也已经由原生层负责送达。
+            // specJson 是原生桥的向后兼容扩展字段，旧 TS 类型无需参与运行时传递。
+            await startNativeCloudStoryMonitor({
+                ...monitorOptions,
+                specJson: JSON.stringify(spec),
+            } as any);
+            nativeSubmissionOwnsPost = true;
+        } catch (error) {
+            // 原生提交失败/结果不确定时，下面仍可用完全相同的 jobId/clientRequestId 走浏览器 POST。
+            // Worker 对 clientRequestId/jobId 有唯一索引，因此同 ID 重交只会命中同一条任务，不会重复模型计费。
+            console.warn('[StoryTheater] native cloud story submit handoff failed; falling back to browser POST', error);
+        }
+    } else {
+        // 旧 pending 只重新挂监控，绝不把历史 spec 再 POST 一遍。
+        void startNativeCloudStoryMonitor(monitorOptions).catch(error => {
+            console.warn('[StoryTheater] native cloud story status monitor failed to arm early', error);
+        });
+    }
+
+    // 只有真正的旧 pending 才需要恢复查账。新任务已经由原生层或下面的浏览器 POST 负责提交。
     let lookupFailed = false;
     if (recoveringExistingPending) {
         try {
@@ -474,33 +520,10 @@ export const executeStoryCompletionInCloudBackground = async (
     if (!job && recoveringExistingPending && lookupFailed) {
         // 旧 pending 最危险：它可能已经在 Worker 里生成，只是手机此刻查不到。
         // 绝不因为一次 GET 失败就再 POST；直接进入下面的恢复轮询。
+    } else if (!job && nativeSubmissionOwnsPost) {
+        // Android 已经接管新任务的真正 POST。这里故意不再从 WebView 重发；
+        // 前台时下面会很快 GET 到 job，后台时则由原生 ForegroundService 自己轮询并更新通知。
     } else if (!job) {
-        const spec = {
-            jobId: pending.jobId,
-            clientRequestId: pending.clientRequestId,
-            ownerKey: pending.ownerKey,
-            title: pending.title,
-            mode: options.plan.mode,
-            routes: options.plan.routes.map(route => ({
-                presetId: route.presetId,
-                presetName: route.presetName,
-                baseUrl: route.api.baseUrl,
-                apiKey: route.api.apiKey,
-                model: route.api.model,
-                ...(typeof route.api.temperature === 'number'
-                    ? { temperature: route.api.temperature }
-                    : {}),
-                ...(route.firstByteTimeoutMs
-                    ? { firstByteTimeoutMs: route.firstByteTimeoutMs }
-                    : {}),
-            })),
-            baseBody: {
-                ...options.body,
-                stream: true,
-            },
-            ...(options.imageHandoff ? { imageHandoff: options.imageHandoff } : {}),
-        };
-
         try {
             const { response, body } = await fetchJson(config, '/story-jobs', {
                 method: 'POST',
