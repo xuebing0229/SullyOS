@@ -798,9 +798,7 @@ export const runStoryJob = async (
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'Accept': 'text/event-stream',
             'Authorization': `Bearer ${route.apiKey || 'sk-none'}`,
-            'User-Agent': 'SullyOS-StoryWorker/1.0',
           },
           body: JSON.stringify(body),
           signal: controller.signal,
