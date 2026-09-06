@@ -243,6 +243,112 @@ describe('plan resolution', () => {
         });
     });
 
+    it('uses selected story preset B instead of current/global preset A', () => {
+        const storyGroup = {
+            ...createDefaultApiFailoverGroup('story'),
+            enabled: false,
+            members: [
+                { presetId: 'b', enabled: true },
+                { presetId: 'a', enabled: true },
+            ],
+            updatedAt: 12,
+        };
+
+        const resolved = resolveApiExecutionPlanWithData(
+            'story',
+            api('https://a.example/v1'),
+            [storyGroup],
+            presets,
+            true,
+        );
+
+        expect(resolved.routes[0]).toMatchObject({
+            presetId: 'b',
+            api: { baseUrl: 'https://b.example/v1' },
+        });
+    });
+
+    it('does not skip a disabled selected story B and silently run old A', () => {
+        const storyGroup = {
+            ...createDefaultApiFailoverGroup('story'),
+            enabled: false,
+            members: [
+                { presetId: 'b', enabled: false },
+                { presetId: 'a', enabled: true },
+            ],
+            updatedAt: 13,
+        };
+
+        expect(() => resolveApiExecutionPlanWithData(
+            'story',
+            api('https://a.example/v1'),
+            [storyGroup],
+            presets,
+            true,
+        )).toThrow(/presetId=b.*issue=disabled/);
+    });
+
+    it('does not skip a missing selected story B and silently run old A', () => {
+        const storyGroup = {
+            ...createDefaultApiFailoverGroup('story'),
+            enabled: false,
+            members: [
+                { presetId: 'missing-b', enabled: true },
+                { presetId: 'a', enabled: true },
+            ],
+            updatedAt: 14,
+        };
+
+        expect(() => resolveApiExecutionPlanWithData(
+            'story',
+            api('https://a.example/v1'),
+            [storyGroup],
+            presets,
+            true,
+        )).toThrow(/presetId=missing-b.*issue=missing_preset/);
+    });
+
+    it('uses current/global API only when no story primary is configured', () => {
+        const storyGroup = {
+            ...createDefaultApiFailoverGroup('story'),
+            enabled: false,
+            members: [],
+            updatedAt: 15,
+        };
+
+        const resolved = resolveApiExecutionPlanWithData(
+            'story',
+            api('https://a.example/v1'),
+            [storyGroup],
+            presets,
+            true,
+        );
+
+        expect(resolved.routes[0]).toMatchObject({
+            presetId: 'a',
+            api: { baseUrl: 'https://a.example/v1' },
+        });
+    });
+
+    it('never falls back to global A when enabled story routing has no usable route', () => {
+        const storyGroup = {
+            ...createDefaultApiFailoverGroup('story'),
+            enabled: true,
+            members: [
+                { presetId: 'missing-b', enabled: true },
+            ],
+            updatedAt: 16,
+        };
+
+        expect(() => resolveApiExecutionPlanWithData(
+            'story',
+            api('https://a.example/v1'),
+            [storyGroup],
+            presets,
+            true,
+        )).toThrow(/剧情 API 线路不可用.*presetId=missing-b/);
+    });
+
     it('lets story failover mix model families independently from chat', () => {
         const storyGroup = {
             ...createDefaultApiFailoverGroup('story'),
@@ -251,7 +357,7 @@ describe('plan resolution', () => {
                 { presetId: 'a', enabled: true },
                 { presetId: 'c', enabled: true },
             ],
-            updatedAt: 12,
+            updatedAt: 17,
         };
 
         const resolved = resolveApiExecutionPlanWithData(
