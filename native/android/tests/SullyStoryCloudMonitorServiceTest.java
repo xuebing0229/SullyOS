@@ -24,6 +24,9 @@ import org.robolectric.annotation.LooperMode;
 @Config(sdk = 28)
 @LooperMode(LooperMode.Mode.PAUSED)
 public class SullyStoryCloudMonitorServiceTest {
+    private static final int RUNNING_NOTIFICATION_ID = 23033;
+    private static final int TERMINAL_NOTIFICATION_ID = 23034;
+
     private ServiceController<SullyStoryCloudMonitorService> controller;
     private SullyStoryCloudMonitorService service;
     private NotificationManager notifications;
@@ -45,27 +48,38 @@ public class SullyStoryCloudMonitorServiceTest {
     @Test public void lateFifthLookupFailureCannotOverwriteCompletedPush() throws Exception {
         set("consecutiveLookupFailures", 4);
         finish();
-        Notification completed = shadowOf(notifications).getNotification(23033);
+        Notification completed = shadowOf(notifications).getNotification(TERMINAL_NOTIFICATION_ID);
+        assertNotNull(completed);
         assertTrue(completed.extras.getCharSequence(Notification.EXTRA_TEXT).toString().contains("已生成完成"));
+        assertNull(shadowOf(notifications).getNotification(RUNNING_NOTIFICATION_ID));
+
         deliverResult(7, null, new IOException("read timed out"));
-        assertSame(completed, shadowOf(notifications).getNotification(23033));
+
+        assertSame(completed, shadowOf(notifications).getNotification(TERMINAL_NOTIFICATION_ID));
+        assertNull(shadowOf(notifications).getNotification(RUNNING_NOTIFICATION_ID));
     }
 
     @Test public void lateSuccessCannotRestoreRunningNotificationOrRepeatTerminalAlert() throws Exception {
         set("showingSyncWarning", true);
         finish();
-        Notification completed = shadowOf(notifications).getNotification(23033);
+        Notification completed = shadowOf(notifications).getNotification(TERMINAL_NOTIFICATION_ID);
+        assertNotNull(completed);
+        assertNull(shadowOf(notifications).getNotification(RUNNING_NOTIFICATION_ID));
+
         deliverResult(7, new JSONObject().put("status", "running"), null);
         deliverResult(7, new JSONObject().put("status", "succeeded"), null);
-        finish(); // duplicate push
-        assertSame(completed, shadowOf(notifications).getNotification(23033));
+        finish(); // duplicate push is stale after the first terminal cleared the active task
+
+        assertSame(completed, shadowOf(notifications).getNotification(TERMINAL_NOTIFICATION_ID));
+        assertNull(shadowOf(notifications).getNotification(RUNNING_NOTIFICATION_ID));
     }
 
     @Test public void oldLookupCannotFinishANewTask() throws Exception {
         set("generation", 8);
         set("jobId", "story_new_job_2");
         deliverResult(7, new JSONObject().put("status", "succeeded"), null);
-        assertNull(shadowOf(notifications).getNotification(23033));
+        assertNull(shadowOf(notifications).getNotification(RUNNING_NOTIFICATION_ID));
+        assertNull(shadowOf(notifications).getNotification(TERMINAL_NOTIFICATION_ID));
         Field job = SullyStoryCloudMonitorService.class.getDeclaredField("jobId");
         job.setAccessible(true);
         assertEquals("story_new_job_2", job.get(service));
