@@ -33,7 +33,7 @@ import org.json.JSONObject;
  * 云端 Story Jobs 的 Android 侧状态牌。
  *
  * 这条链必须独立于 WebView：App 一切到后台，正文/配图继续在 Worker 跑，
- * 这里仍然自己查同一个 job，并把“生成中”前台服务通知收尾后留下独立终态通知。
+ * 这里仍然自己查同一个 job。生成成功时主动撤销“生成中”状态；失败/取消才留下终态通知。
  */
 public class SullyStoryCloudMonitorService extends Service {
     public static final String ACTION_START = "SULLY_STORY_CLOUD_MONITOR_START";
@@ -478,9 +478,8 @@ public class SullyStoryCloudMonitorService extends Service {
             : "failed";
         String resolvedTitle = fallbackTitle(terminalTitle);
 
-        // ColorOS/OxygenOS 等系统可能在前台 Service stopSelf() 时把 DETACH 后的同 ID 通知也一起回收。
-        // 所以终态不要再复用 foreground notification：先明确 REMOVE 23033，再用独立 23034 发布普通通知。
-        // 普通通知与 Service 生命周期脱钩，即使 :story_monitor 进程随后退出也会继续留在通知栏。
+        // “成功后生成中状态消失”是正式交互，不再依赖终态通知发布失败这一偶发现象。
+        // 先明确撤销 foreground notification；成功到此结束，失败/取消才另外留下普通终态通知。
         if (Build.VERSION.SDK_INT >= 24) {
             stopForeground(STOP_FOREGROUND_REMOVE);
         } else {
@@ -489,10 +488,15 @@ public class SullyStoryCloudMonitorService extends Service {
         }
         NotificationManager manager = getSystemService(NotificationManager.class);
         if (manager != null) {
-            manager.notify(
-                TERMINAL_NOTIFICATION_ID,
-                buildTerminalNotification(normalizedStatus, resolvedTitle, error).build()
-            );
+            if ("succeeded".equals(normalizedStatus)) {
+                // 防止旧版本遗留的成功终态通知或竞态通知继续挂在状态栏。
+                manager.cancel(TERMINAL_NOTIFICATION_ID);
+            } else {
+                manager.notify(
+                    TERMINAL_NOTIFICATION_ID,
+                    buildTerminalNotification(normalizedStatus, resolvedTitle, error).build()
+                );
+            }
         }
         stopSelf();
     }
@@ -537,9 +541,7 @@ public class SullyStoryCloudMonitorService extends Service {
 
     private NotificationCompat.Builder buildTerminalNotification(String status, String notificationTitle, String error) {
         String body;
-        if ("succeeded".equals(status)) {
-            body = "《" + notificationTitle + "》剧情已生成完成，点开即可查看";
-        } else if ("cancelled".equals(status)) {
+        if ("cancelled".equals(status)) {
             body = "《" + notificationTitle + "》后台生成已取消";
         } else {
             String detail = error == null ? "" : error.replaceAll("\\s+", " ").trim();
@@ -580,7 +582,7 @@ public class SullyStoryCloudMonitorService extends Service {
             "剧情后台状态",
             NotificationManager.IMPORTANCE_DEFAULT
         );
-        channel.setDescription("剧情剧场后台生成的进行中、完成与失败状态");
+        channel.setDescription("剧情剧场后台生成的进行中、取消与失败状态");
         manager.createNotificationChannel(channel);
     }
 
