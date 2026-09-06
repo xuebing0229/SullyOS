@@ -103,6 +103,12 @@ interface StoryAttempt {
   durationMs: number;
 }
 
+interface StoryRouteRequest {
+  response: Response;
+  wasCancelled(): boolean;
+  stopCancelWatch(): void;
+}
+
 const UUID_V4_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const JOB_ID_RE = /^[A-Za-z0-9_-]{12,160}$/;
 const TERMINAL_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
@@ -110,6 +116,7 @@ const MAX_ROUTES = 8;
 const MAX_REQUEST_BYTES = 2_000_000;
 const PARTIAL_PERSIST_INTERVAL_MS = 900;
 const PARTIAL_PERSIST_CHAR_STEP = 512;
+const CANCEL_POLL_INTERVAL_MS = 750;
 
 const jsonSize = (value: unknown): number => new TextEncoder().encode(JSON.stringify(value)).byteLength;
 const now = (): number => Date.now();
@@ -224,6 +231,26 @@ const loadRowByClient = async (
   db.prepare('SELECT * FROM story_jobs WHERE user_id = ? AND client_request_id = ? LIMIT 1')
     .bind(userId, clientRequestId)
     .first<StoryJobRow>();
+
+const isStoryJobCancelled = async (
+  env: StoryJobsEnv,
+  userId: string,
+  jobId: string,
+): Promise<boolean> => {
+  try {
+    return (await loadRowById(env.DB, userId, jobId))?.status === 'cancelled';
+  } catch {
+    // D1 的一次瞬时读取失败不能反过来误杀正在生成的正文；下一轮继续检查。
+    return false;
+  }
+};
+
+class StoryJobCancelledError extends Error {
+  constructor() {
+    super('剧情云端任务已取消');
+    this.name = 'StoryJobCancelledError';
+  }
+}
 
 const parseAttempts = (raw: string | null): StoryAttempt[] => {
   if (!raw) return [];
@@ -643,7 +670,9 @@ const finalizeFailed = async (
 ): Promise<void> => {
   // readStreamingResponse 会边收边把 partial 写进 D1。若 reader 本身抛异常，调用栈拿不到
   // 当时的 state，但 D1 里已经有字；失败收尾必须先读最新行，绝不能拿启动时的 null 覆盖它。
+  // 用户主动取消优先级更高：取消后绝不允许晚到的异常把 cancelled 覆盖成 failed。
   const latest = await loadRowById(env.DB, row.user_id, row.job_id);
+  if (latest?.status === 'cancelled') return;
   const partialCipher = content
     ? await sealJson(env, row.user_id, row.job_id, 'partial', content)
     : latest?.partial_cipher ?? row.partial_cipher;
@@ -653,10 +682,10 @@ const finalizeFailed = async (
   const keptReasoningChars = reasoningChars > 0
     ? reasoningChars
     : latest?.reasoning_chars ?? row.reasoning_chars ?? 0;
-  await env.DB.prepare(
+  const failed = await env.DB.prepare(
     `UPDATE story_jobs
      SET status = 'failed', partial_cipher = ?, error = ?, attempts_json = ?, reasoning_chars = ?, visible_chars = ?, updated_at = ?, completed_at = ?
-     WHERE user_id = ? AND job_id = ?`,
+     WHERE user_id = ? AND job_id = ? AND status = 'running'`,
   ).bind(
     partialCipher,
     error.slice(0, 2000),
@@ -668,6 +697,7 @@ const finalizeFailed = async (
     row.user_id,
     row.job_id,
   ).run();
+  if ((failed.meta?.changes ?? 0) <= 0) return;
   await sendStoryBackgroundStatusPush(
     env as any,
     storyStatusJob(row),
@@ -706,11 +736,15 @@ export const runStoryJob = async (
   let lastError = '剧情后台生成失败';
 
   for (let index = 0; index < spec.routes.length; index += 1) {
+    if (await isStoryJobCancelled(env, userId, jobId)) return;
+
     const route = spec.routes[index];
     const attemptStartedAt = now();
     let response: Response;
+    let routeRequest: StoryRouteRequest | null = null;
     let explicitErrorText = '';
-    const requestRoute = async (includeUsage: boolean): Promise<Response> => {
+
+    const requestRoute = async (includeUsage: boolean): Promise<StoryRouteRequest> => {
       const body: Record<string, unknown> = {
         ...spec.baseBody,
         model: route.model,
@@ -732,31 +766,81 @@ export const runStoryJob = async (
       } else {
         delete body.stream_options;
       }
-      return fetch(`${normalizeBaseUrl(route.baseUrl)}/chat/completions`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'text/event-stream',
-          'Authorization': `Bearer ${route.apiKey || 'sk-none'}`,
-          'User-Agent': 'SullyOS-StoryWorker/1.0',
-        },
-        body: JSON.stringify(body),
-      });
+
+      const controller = new AbortController();
+      let cancelled = false;
+      let checking = false;
+      let cancelTimer: ReturnType<typeof setInterval> | null = null;
+      const stopCancelWatch = () => {
+        if (cancelTimer !== null) {
+          clearInterval(cancelTimer);
+          cancelTimer = null;
+        }
+      };
+      const checkCancelled = async () => {
+        if (cancelled || checking) return;
+        checking = true;
+        try {
+          if (await isStoryJobCancelled(env, userId, jobId)) {
+            cancelled = true;
+            controller.abort();
+          }
+        } finally {
+          checking = false;
+        }
+      };
+
+      cancelTimer = setInterval(() => { void checkCancelled(); }, CANCEL_POLL_INTERVAL_MS);
+      void checkCancelled();
+
+      try {
+        const upstream = await fetch(`${normalizeBaseUrl(route.baseUrl)}/chat/completions`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'text/event-stream',
+            'Authorization': `Bearer ${route.apiKey || 'sk-none'}`,
+            'User-Agent': 'SullyOS-StoryWorker/1.0',
+          },
+          body: JSON.stringify(body),
+          signal: controller.signal,
+        });
+        return {
+          response: upstream,
+          wasCancelled: () => cancelled,
+          stopCancelWatch,
+        };
+      } catch (error) {
+        stopCancelWatch();
+        if (cancelled || await isStoryJobCancelled(env, userId, jobId)) {
+          throw new StoryJobCancelledError();
+        }
+        throw error;
+      }
     };
 
     try {
-      response = await requestRoute(true);
+      routeRequest = await requestRoute(true);
+      response = routeRequest.response;
       if (response.status === 400) {
         explicitErrorText = (await response.text().catch(() => '')).slice(0, 1000);
+        if (routeRequest.wasCancelled() || await isStoryJobCancelled(env, userId, jobId)) {
+          routeRequest.stopCancelWatch();
+          return;
+        }
         const lower = explicitErrorText.toLowerCase();
         // 与当前 native/safeApi 同一条兼容规则：明确 400 指向 usage 选项时，
         // 模型尚未执行，才允许同线路去掉 stream_options 再发一次。
         if (lower.includes('stream_options') || lower.includes('include_usage')) {
-          response = await requestRoute(false);
+          routeRequest.stopCancelWatch();
+          routeRequest = await requestRoute(false);
+          response = routeRequest.response;
           explicitErrorText = '';
         }
       }
     } catch (error) {
+      routeRequest?.stopCancelWatch();
+      if (error instanceof StoryJobCancelledError || await isStoryJobCancelled(env, userId, jobId)) return;
       const attempt = routeAttempt(route, index, attemptStartedAt);
       attempt.error = (error as Error)?.message || String(error);
       attempt.durationMs = now() - attemptStartedAt;
@@ -768,6 +852,9 @@ export const runStoryJob = async (
 
     if (!response.ok) {
       const text = explicitErrorText || (await response.text().catch(() => '')).slice(0, 1000);
+      const cancelled = routeRequest?.wasCancelled() || await isStoryJobCancelled(env, userId, jobId);
+      routeRequest?.stopCancelWatch();
+      if (cancelled) return;
       const attempt = routeAttempt(route, index, attemptStartedAt);
       attempt.status = response.status;
       attempt.error = text || `HTTP ${response.status}`;
@@ -781,11 +868,16 @@ export const runStoryJob = async (
 
     try {
       const streamed = await readStreamingResponse(env, liveRow, response, route.model);
+      if (routeRequest?.wasCancelled() || await isStoryJobCancelled(env, userId, jobId)) {
+        routeRequest?.stopCancelWatch();
+        return;
+      }
       const attempt = routeAttempt(route, index, attemptStartedAt);
       attempt.status = response.status;
       attempt.durationMs = now() - attemptStartedAt;
 
       if (!streamed.content.trim()) {
+        routeRequest?.stopCancelWatch();
         attempt.error = streamed.reasoning
           ? '上游只返回了思考内容，没有正文'
           : '上游没有返回正文';
@@ -796,6 +888,7 @@ export const runStoryJob = async (
       }
 
       if (!streamed.terminal) {
+        routeRequest?.stopCancelWatch();
         attempt.error = '流式连接结束时没有收到模型完成标记';
         attempts.push(attempt);
         await finalizeFailed(
@@ -831,6 +924,11 @@ export const runStoryJob = async (
         }
       }
 
+      if (routeRequest?.wasCancelled() || await isStoryJobCancelled(env, userId, jobId)) {
+        routeRequest?.stopCancelWatch();
+        return;
+      }
+
       const storedResponse = finalImageHandoff
         ? { ...streamed.response, _sullyStoryImageHandoff: finalImageHandoff }
         : streamed.response;
@@ -840,12 +938,12 @@ export const runStoryJob = async (
       const promptTokens = Number(usage?.prompt_tokens);
       const completionTokens = Number(usage?.completion_tokens);
       const finishedAt = now();
-      await env.DB.prepare(
+      const succeeded = await env.DB.prepare(
         `UPDATE story_jobs
          SET status = 'succeeded', response_cipher = ?, partial_cipher = ?, error = NULL,
              attempts_json = ?, prompt_tokens = ?, completion_tokens = ?, reasoning_chars = ?,
              visible_chars = ?, updated_at = ?, completed_at = ?
-         WHERE user_id = ? AND job_id = ?`,
+         WHERE user_id = ? AND job_id = ? AND status = 'running'`,
       ).bind(
         responseCipher,
         partialCipher,
@@ -859,6 +957,8 @@ export const runStoryJob = async (
         userId,
         jobId,
       ).run();
+      routeRequest?.stopCancelWatch();
+      if ((succeeded.meta?.changes ?? 0) <= 0) return;
 
       // 到这里正文与“配图是否已接单”的结论都已经落库。原生通知随后看到 succeeded，
       // App 即使仍在后台也不会再阻断真正的配图规划或生成。
@@ -869,6 +969,9 @@ export const runStoryJob = async (
       );
       return;
     } catch (error) {
+      const cancelled = routeRequest?.wasCancelled() || await isStoryJobCancelled(env, userId, jobId);
+      routeRequest?.stopCancelWatch();
+      if (cancelled || error instanceof StoryJobCancelledError) return;
       const attempt = routeAttempt(route, index, attemptStartedAt);
       attempt.status = response.status;
       attempt.error = (error as Error)?.message || String(error);
@@ -1043,7 +1146,7 @@ export const handleStoryJobsRequest = async (
     const jobId = decodeURIComponent(tail[0]);
     const t = now();
     await env.DB.prepare(
-      "UPDATE story_jobs SET status = 'cancelled', updated_at = ?, completed_at = ? WHERE user_id = ? AND job_id = ? AND status IN ('queued','running')",
+      "UPDATE story_jobs SET status = 'cancelled', error = '已由用户停止', updated_at = ?, completed_at = ? WHERE user_id = ? AND job_id = ? AND status IN ('queued','running')",
     ).bind(t, t, userId, jobId).run();
     const row = await loadRowById(env.DB, userId, jobId);
     return { status: 200, body: { success: true, job: row ? await publicJob(env, row) : null } };

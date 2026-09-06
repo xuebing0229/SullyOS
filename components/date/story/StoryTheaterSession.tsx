@@ -87,6 +87,7 @@ import {
     getPendingCloudStoryJob,
     isCloudStoryJobsAvailable,
 } from '../../../utils/backgroundStoryJobs';
+import { cancelStoryGenerationByOwner } from '../../../utils/storyGenerationCancel';
 import { BACKGROUND_IMAGE_JOB_EVENT } from '../../../utils/backgroundImageJobs';
 import {
     buildStoryContinueInstruction,
@@ -423,6 +424,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
     const [messages, setMessages] = useState<Message[]>([]);
     const [input, setInput] = useState('');
     const [sending, setSending] = useState(false);
+    const [stopping, setStopping] = useState(false);
     const [streamingText, setStreamingText] = useState('');
     const [memoryStatus, setMemoryStatus] = useState('');
     const [contextTokens, setContextTokens] = useState(0);
@@ -451,6 +453,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
     // twice before `sending` re-renders the disabled button, creating two billable
     // completions. Keep the state for UI only and use this ref as the real mutex.
     const sendLock = useRef(false);
+    const stopRequestedRef = useRef(false);
     const streamingTextRef = useRef('');
     const archiveLock = useRef(false);
     const scrollContainerRef = useRef<HTMLElement>(null);
@@ -543,6 +546,8 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
         setMemoryCandidates([]);
         setShowMemoryCards(false);
         setMemoryCardBusy(false);
+        stopRequestedRef.current = false;
+        setStopping(false);
         streamingTextRef.current = '';
         setStreamingText('');
         autoFollowStreamRef.current = true;
@@ -1295,9 +1300,37 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
         }
     }, [addToast, apiConfig, callCompletion, entry, loadMessages, mask.name, memoryPalaceConfig, onEntryChange, threadId]);
 
+    const stopStoryGeneration = useCallback(async () => {
+        if (!sending || stopping) return;
+        const cloudPending = findPendingCloudStoryJobForStory(entry.id);
+        const nativePending = !cloudPending && isNativeStoryBackgroundRuntime()
+            ? findPendingNativeStoryJobForStory(entry.id)
+            : null;
+        const pending = cloudPending || nativePending;
+        if (!pending?.ownerKey) {
+            addToast('当前这轮还在提交后台任务，请再点一次停止', 'info');
+            return;
+        }
+
+        stopRequestedRef.current = true;
+        setStopping(true);
+        const result = await cancelStoryGenerationByOwner(pending.ownerKey);
+        if (!result.found || (!result.cancelled && result.terminalStatus !== 'succeeded')) {
+            stopRequestedRef.current = false;
+            setStopping(false);
+            addToast(`停止失败：${result.error || '没有找到可取消的剧情任务'}`, 'error');
+            return;
+        }
+        // 远端恰好在取消请求到达前完成也按“用户已停止”处理：send() 在提交楼层前会检查此 ref，
+        // 不让晚到正文重新塞回当前剧情。
+        addToast('已停止本轮生成，可以切换预设后重试', 'info');
+    }, [addToast, entry.id, sending, stopping]);
+
     const send = useCallback(async (rerollTarget?: Message, continueRequested = false, recoveryOwnerKey?: string) => {
         if (sendLock.current || actors.length === 0) return;
         sendLock.current = true;
+        stopRequestedRef.current = false;
+        setStopping(false);
         streamingTextRef.current = '';
         setStreamingText('');
         setSending(true);
@@ -1483,11 +1516,12 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 setContextTokens(reported);
                 setContextTokensExact(true);
             }, fullText => {
-        const visible = prefill && !fullText.startsWith(prefill) ? `${prefill}${fullText}` : fullText;
-        partialStreamText = visible;
-        streamingTextRef.current = visible;
-        setStreamingText(visible);
-    }, {
+                if (stopRequestedRef.current) return;
+                const visible = prefill && !fullText.startsWith(prefill) ? `${prefill}${fullText}` : fullText;
+                partialStreamText = visible;
+                streamingTextRef.current = visible;
+                setStreamingText(visible);
+            }, {
                 ownerKey: backgroundOwnerKey,
                 title: entry.title,
                 meta: {
@@ -1511,6 +1545,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                     }
                     : undefined,
             });
+            if (stopRequestedRef.current) return;
             nativeCompletionReceived = usedNativeBackground;
             const content = prefill && !generated.startsWith(prefill) ? `${prefill}${generated}` : generated;
             const rowsBeforeCommit = (await DB.getMessagesByCharId(threadId, true))
@@ -1611,6 +1646,21 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 else void archiveIfNeeded();
             }
         } catch (error: any) {
+            if (stopRequestedRef.current) {
+                streamingTextRef.current = '';
+                setStreamingText('');
+                if (!partialIsReroll && activeUserMessageId > 0) {
+                    await DB.updateMessageMetadata(activeUserMessageId, previous => ({
+                        ...previous,
+                        ...(activeRequestKey ? { theaterRequestKey: activeRequestKey } : {}),
+                        theaterRequestState: 'cancelled',
+                        theaterRequestCancelledAt: Date.now(),
+                    }));
+                    await loadMessages();
+                }
+                return;
+            }
+
             const storyDiagnostics = error?.storyTransportDiagnostics;
             if (storyDiagnostics) {
                 console.error(
@@ -1623,10 +1673,10 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             }
 
             const returnedPartial = String(
-        error?.partialContent
-        || error?.storyIncompleteCompletion?.content
-        || '',
-    ).trim();
+                error?.partialContent
+                || error?.storyIncompleteCompletion?.content
+                || '',
+            ).trim();
             const committedPartial = (partialStreamText || streamingTextRef.current || returnedPartial).trim();
             if (committedPartial) {
                 try {
@@ -1722,6 +1772,8 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             await releaseNativeStoryKeepAlive(automaticImageKeepAliveLease);
             automaticImageKeepAliveLease = null;
             sendLock.current = false;
+            stopRequestedRef.current = false;
+            setStopping(false);
             setSending(false);
             setRerollingId(null);
         }
@@ -1770,7 +1822,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 <div className='min-w-0 flex-1'>
                     <div className='flex items-center gap-2'>
                         <h1 className='min-w-0 flex-1 truncate font-serif text-[15px] font-semibold text-slate-800'>{entry.title}</h1>
-                        {sending && <span className='shrink-0 inline-flex items-center gap-1 text-[8px] font-bold text-emerald-700'><span className='h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse' />续写中</span>}
+                        {sending && <span className='shrink-0 inline-flex items-center gap-1 text-[8px] font-bold text-emerald-700'><span className='h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse' />{stopping ? '停止中' : '续写中'}</span>}
                     </div>
                     <div className='mt-0.5 flex min-w-0 items-center gap-1.5 text-[9px] text-slate-400'>
                         <span className='truncate'>{youLabel} · {actors.map(actor => actor.name).join('、') || '未选角色'}</span>
@@ -1937,7 +1989,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
         <footer className='story-safe-footer shrink-0 px-3 pt-1.5 bg-stone-100/95 backdrop-blur border-t border-slate-200'>
             <div className='max-w-2xl mx-auto'>
                 {memoryStatus && <div className='mb-1 flex items-center gap-2 px-1 text-[9px] text-violet-600'><SpinnerGap size={12} className='animate-spin' />{memoryStatus}</div>}
-                {sending && isNativeStoryBackgroundRuntime() && <div className='mb-1 flex items-center gap-2 px-1 text-[9px] text-emerald-700'><span className='w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse' />后台续写中，可直接切屏</div>}
+                {sending && isNativeStoryBackgroundRuntime() && <div className='mb-1 flex items-center gap-2 px-1 text-[9px] text-emerald-700'><span className='w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse' />{stopping ? '正在停止本轮生成…' : '后台续写中，可直接切屏 · 右侧方块可停止'}</div>}
                 {!sending && !memoryStatus && !input.trim() && pendingRetryInput && <div className='mb-1 px-1 text-[9px] text-violet-600'>上次续写已断开，可以直接点发送重试</div>}
                 <div className='rounded-[22px] bg-white border border-slate-200 shadow-sm px-3 py-2'>
                     <textarea
@@ -1991,12 +2043,17 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
 
                         <button
                             type='button'
-                            onClick={() => void send()}
-                            disabled={sending || (!input.trim() && !pendingRetryInput && !canWriteOpening)}
-                            title={!input.trim() && pendingRetryInput ? '继续上次中断' : canWriteOpening && !input.trim() ? '让故事先开场' : '推进'}
-                            className='story-send-button w-9 h-9 rounded-full bg-blue-500 text-white grid place-items-center shadow-sm active:scale-95 transition-transform disabled:bg-slate-300 disabled:text-white disabled:opacity-100'
+                            onClick={() => sending ? void stopStoryGeneration() : void send()}
+                            disabled={sending ? stopping : (!input.trim() && !pendingRetryInput && !canWriteOpening)}
+                            title={sending ? (stopping ? '正在停止本轮生成' : '停止本轮生成') : !input.trim() && pendingRetryInput ? '继续上次中断' : canWriteOpening && !input.trim() ? '让故事先开场' : '推进'}
+                            aria-label={sending ? '停止本轮生成' : '推进'}
+                            className={`story-send-button w-9 h-9 rounded-full text-white grid place-items-center shadow-sm active:scale-95 transition-transform disabled:bg-slate-300 disabled:text-white disabled:opacity-100 ${sending ? 'bg-rose-500' : 'bg-blue-500'}`}
                         >
-                            {sending ? <SpinnerGap size={16} className='animate-spin' /> : <ArrowUp size={18} weight='bold' />}
+                            {sending
+                                ? stopping
+                                    ? <SpinnerGap size={16} className='animate-spin' />
+                                    : <span className='h-3.5 w-3.5 rounded-[3px] bg-white' />
+                                : <ArrowUp size={18} weight='bold' />}
                         </button>
                     </div>
                 </div>
