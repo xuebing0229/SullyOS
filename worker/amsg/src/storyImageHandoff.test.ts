@@ -21,6 +21,28 @@ const spec = (overrides: Partial<StoryCloudImageHandoffSpec['tools'][number]> = 
   }],
 });
 
+const plannerSpec = (): StoryCloudImageHandoffSpec => ({
+  ...spec(),
+  planner: {
+    baseUrl: 'https://planner.example.test/v1',
+    apiKey: 'planner-secret',
+    model: 'gemini-compatible-planner',
+    systemPrompt: '你负责剧情配图规划。',
+    tools: [{
+      type: 'function',
+      function: {
+        name: 'image_novelai',
+        description: '剧情插图',
+        parameters: {
+          type: 'object',
+          properties: { prompt: { type: 'string' } },
+          required: ['prompt'],
+        },
+      },
+    }],
+  },
+});
+
 afterEach(() => {
   vi.restoreAllMocks();
 });
@@ -234,5 +256,107 @@ describe('story cloud image handoff', () => {
     const serialized = JSON.stringify(result);
     expect(serialized).not.toContain('secret-image-token');
     expect(serialized).not.toContain('super-secret-api-key');
+  });
+
+  it('reuses the shared text-faked tool parser for worker planner responses', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        choices: [{ message: { content: 'image_novelai({"prompt":"rainy platform"})' } }],
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        job: { id: 'remote_text_plan', status: 'running' },
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+
+    const result = await runStoryImageHandoff(
+      plannerSpec(),
+      'storyreq_text_plan',
+      '雨夜站台上，两个人隔着人群对望。',
+    );
+
+    expect(result).toMatchObject({
+      state: 'submitted',
+      remoteJobId: 'remote_text_plan',
+      exposedTool: 'image_novelai',
+      arguments: { prompt: 'rainy platform' },
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps native tools on the second attempt when the first native planner response omits a call', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        choices: [{ message: { content: '我来画这一幕。' } }],
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        choices: [{ message: {
+          tool_calls: [{
+            id: '',
+            type: 'function',
+            function: { name: 'image_novelai', arguments: '{"prompt":"native repair"}' },
+          }],
+        } }],
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        job: { id: 'remote_native_repair', status: 'running' },
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+
+    const result = await runStoryImageHandoff(
+      plannerSpec(),
+      'storyreq_native_repair',
+      '最新正文。',
+    );
+
+    expect(result).toMatchObject({
+      state: 'submitted',
+      remoteJobId: 'remote_native_repair',
+      arguments: { prompt: 'native repair' },
+    });
+    const retryBody = JSON.parse(String((fetchMock.mock.calls[1][1] as RequestInit).body));
+    expect(retryBody.tools).toHaveLength(1);
+    expect(retryBody.tool_choice).toEqual({ type: 'function', function: { name: 'image_novelai' } });
+  });
+
+  it('falls back to the shared text-call format only when the upstream rejects native tools', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        error: { message: 'tools is not supported' },
+      }), { status: 400, headers: { 'Content-Type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        choices: [{ message: { content: 'novelai_generate_image({"prompt":"text fallback"})' } }],
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        job: { id: 'remote_text_fallback', status: 'running' },
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+
+    const result = await runStoryImageHandoff(
+      plannerSpec(),
+      'storyreq_text_fallback',
+      '最新正文。',
+    );
+
+    expect(result).toMatchObject({
+      state: 'submitted',
+      remoteJobId: 'remote_text_fallback',
+      exposedTool: 'image_novelai',
+      arguments: { prompt: 'text fallback' },
+    });
+    const fallbackBody = JSON.parse(String((fetchMock.mock.calls[1][1] as RequestInit).body));
+    expect(fallbackBody.tools).toBeUndefined();
+  });
+
+  it('does not hide auth failures behind a second planner attempt', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response(JSON.stringify({
+      error: { message: 'Invalid token' },
+    }), { status: 401, headers: { 'Content-Type': 'application/json' } }));
+
+    const result = await runStoryImageHandoff(
+      plannerSpec(),
+      'storyreq_auth_fail',
+      '最新正文。',
+    );
+
+    expect(result.state).toBe('failed');
+    expect(result.error).toContain('配图规划器请求失败：Invalid token');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
