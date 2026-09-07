@@ -95,6 +95,25 @@ const storyStatusJob = (row: StoryJobRow) => ({
   title: row.title,
 });
 
+interface StoryRequestShape {
+  egress: 'direct' | 'relay' | 'partial';
+  relayHost?: string;
+  requestBytes: number;
+  bodyKeys: string[];
+  messageCount: number;
+  messageChars: number;
+  roleCounts: { system: number; user: number; assistant: number; other: number };
+  lastMessageRole?: string;
+  stream?: boolean;
+  hasStreamOptions: boolean;
+  maxTokens?: number;
+  maxCompletionTokens?: number;
+  temperature?: number;
+  topP?: number;
+  frequencyPenalty?: number;
+  presencePenalty?: number;
+}
+
 interface StoryAttempt {
   routeIndex: number;
   presetId?: string;
@@ -105,6 +124,7 @@ interface StoryAttempt {
   status?: number;
   error?: string;
   durationMs: number;
+  requestShape?: StoryRequestShape;
 }
 
 interface StoryRouteRequest {
@@ -125,6 +145,58 @@ const CANCEL_POLL_INTERVAL_MS = 750;
 const jsonSize = (value: unknown): number => new TextEncoder().encode(JSON.stringify(value)).byteLength;
 const now = (): number => Date.now();
 const normalizeBaseUrl = (value: string): string => value.trim().replace(/\/+$/, '');
+
+const numericBodyField = (value: unknown): number | undefined => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+};
+
+const summarizeStoryRequest = (env: StoryJobsEnv, body: Record<string, unknown>): StoryRequestShape => {
+  const relayUrl = String(env.STORY_EGRESS_RELAY_URL || '').trim();
+  const relayToken = String(env.STORY_EGRESS_RELAY_TOKEN || '').trim();
+  const messages = Array.isArray(body.messages) ? body.messages : [];
+  const roleCounts = { system: 0, user: 0, assistant: 0, other: 0 };
+  let messageChars = 0;
+  let lastMessageRole: string | undefined;
+  for (const item of messages) {
+    const message = item && typeof item === 'object' && !Array.isArray(item)
+      ? item as Record<string, unknown>
+      : {};
+    const role = String(message.role || '');
+    lastMessageRole = role || lastMessageRole;
+    if (role === 'system') roleCounts.system += 1;
+    else if (role === 'user') roleCounts.user += 1;
+    else if (role === 'assistant') roleCounts.assistant += 1;
+    else roleCounts.other += 1;
+    const content = message.content;
+    if (typeof content === 'string') messageChars += content.length;
+    else if (content != null) {
+      try { messageChars += JSON.stringify(content).length; } catch { /* diagnostics only */ }
+    }
+  }
+  let relayHost: string | undefined;
+  if (relayUrl) {
+    try { relayHost = new URL(relayUrl).host; } catch { relayHost = 'invalid-url'; }
+  }
+  return {
+    egress: relayUrl && relayToken ? 'relay' : relayUrl || relayToken ? 'partial' : 'direct',
+    ...(relayHost ? { relayHost } : {}),
+    requestBytes: jsonSize(body),
+    bodyKeys: Object.keys(body).sort(),
+    messageCount: messages.length,
+    messageChars,
+    roleCounts,
+    ...(lastMessageRole ? { lastMessageRole } : {}),
+    ...(typeof body.stream === 'boolean' ? { stream: body.stream } : {}),
+    hasStreamOptions: Boolean(body.stream_options && typeof body.stream_options === 'object'),
+    ...(numericBodyField(body.max_tokens) !== undefined ? { maxTokens: numericBodyField(body.max_tokens) } : {}),
+    ...(numericBodyField(body.max_completion_tokens) !== undefined ? { maxCompletionTokens: numericBodyField(body.max_completion_tokens) } : {}),
+    ...(numericBodyField(body.temperature) !== undefined ? { temperature: numericBodyField(body.temperature) } : {}),
+    ...(numericBodyField(body.top_p) !== undefined ? { topP: numericBodyField(body.top_p) } : {}),
+    ...(numericBodyField(body.frequency_penalty) !== undefined ? { frequencyPenalty: numericBodyField(body.frequency_penalty) } : {}),
+    ...(numericBodyField(body.presence_penalty) !== undefined ? { presencePenalty: numericBodyField(body.presence_penalty) } : {}),
+  };
+};
 
 const toBase64 = (bytes: Uint8Array): string => {
   let binary = '';
@@ -748,6 +820,7 @@ export const runStoryJob = async (
     let response: Response;
     let routeRequest: StoryRouteRequest | null = null;
     let explicitErrorText = '';
+    let lastRequestShape: StoryRequestShape | undefined;
 
     const requestRoute = async (includeUsage: boolean): Promise<StoryRouteRequest> => {
       const body: Record<string, unknown> = {
@@ -776,6 +849,7 @@ export const runStoryJob = async (
       } else {
         delete body.stream_options;
       }
+      lastRequestShape = summarizeStoryRequest(env, body);
 
       const controller = new AbortController();
       let cancelled = false;
@@ -851,6 +925,7 @@ export const runStoryJob = async (
       routeRequest?.stopCancelWatch();
       if (error instanceof StoryJobCancelledError || await isStoryJobCancelled(env, userId, jobId)) return;
       const attempt = routeAttempt(route, index, attemptStartedAt);
+      attempt.requestShape = lastRequestShape;
       attempt.error = (error as Error)?.message || String(error);
       attempt.durationMs = now() - attemptStartedAt;
       attempts.push(attempt);
@@ -865,6 +940,7 @@ export const runStoryJob = async (
       routeRequest?.stopCancelWatch();
       if (cancelled) return;
       const attempt = routeAttempt(route, index, attemptStartedAt);
+      attempt.requestShape = lastRequestShape;
       attempt.status = response.status;
       attempt.error = text || `HTTP ${response.status}`;
       attempt.durationMs = now() - attemptStartedAt;
@@ -882,6 +958,7 @@ export const runStoryJob = async (
         return;
       }
       const attempt = routeAttempt(route, index, attemptStartedAt);
+      attempt.requestShape = lastRequestShape;
       attempt.status = response.status;
       attempt.durationMs = now() - attemptStartedAt;
 
@@ -982,6 +1059,7 @@ export const runStoryJob = async (
       routeRequest?.stopCancelWatch();
       if (cancelled || error instanceof StoryJobCancelledError) return;
       const attempt = routeAttempt(route, index, attemptStartedAt);
+      attempt.requestShape = lastRequestShape;
       attempt.status = response.status;
       attempt.error = (error as Error)?.message || String(error);
       attempt.durationMs = now() - attemptStartedAt;
