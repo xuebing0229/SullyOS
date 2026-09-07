@@ -16,7 +16,7 @@ on:
 # Actions 使用 GITHUB_TOKEN 推回 master 时不会递归触发新的 workflow；
 # 因此性能补丁若由仓库内 workflow 落盘，需要一次正常提交/手动 dispatch 才会部署最新 master。
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: amsg-existing-production
@@ -50,10 +50,7 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Apply one-shot story egress source patch
-        run: node scripts/apply-story-egress-patch.mjs
-
-      - name: Verify story egress and image reference policy
+      - name: Verify story transport and image reference policy
         run: >-
           pnpm exec vitest run
           worker/amsg/src/storyEgress.test.ts
@@ -61,18 +58,6 @@ jobs:
           utils/storyImageReferenceUploads.test.ts
           worker/amsg/src/storyImageHandoff.test.ts
           worker/amsg/src/storyImageReferencePolicy.test.ts
-
-      - name: Persist story egress source patch
-        run: |
-          if git diff --quiet -- worker/amsg/src/storyJobs.ts; then
-            echo "storyJobs.ts already patched"
-            exit 0
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add worker/amsg/src/storyJobs.ts
-          git commit -m "feat: route cloud story model calls through unified egress"
-          git push origin HEAD:master
 
       - name: Build AMSG bundle
         run: pnpm run build:workers
