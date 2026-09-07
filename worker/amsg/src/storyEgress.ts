@@ -37,6 +37,109 @@ export const resolveStoryEgressRoute = (
   return { url: parsed.toString(), relayed: true };
 };
 
+const textLength = (value: unknown): number => {
+  if (typeof value === 'string') return value.length;
+  if (!Array.isArray(value)) return 0;
+  return value.reduce((total, item) => {
+    if (typeof item === 'string') return total + item.length;
+    if (!item || typeof item !== 'object') return total;
+    const record = item as Record<string, unknown>;
+    return total
+      + (typeof record.text === 'string' ? record.text.length : 0)
+      + (typeof record.content === 'string' ? record.content.length : 0);
+  }, 0);
+};
+
+const summarizeRequest = (
+  body: BodyInit | null | undefined,
+  targetUrl: string,
+  route: StoryEgressRoute,
+): Record<string, unknown> => {
+  const raw = typeof body === 'string' ? body : '';
+  let parsed: Record<string, unknown> = {};
+  try {
+    const value = raw ? JSON.parse(raw) : {};
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      parsed = value as Record<string, unknown>;
+    }
+  } catch {
+    // Only report shape; never include raw request content.
+  }
+
+  const messages = Array.isArray(parsed.messages) ? parsed.messages : [];
+  const roleCounts: Record<string, number> = {};
+  let messageTextChars = 0;
+  const contentKinds = new Set<string>();
+  for (const item of messages) {
+    if (!item || typeof item !== 'object') continue;
+    const message = item as Record<string, unknown>;
+    const role = String(message.role || 'unknown');
+    roleCounts[role] = (roleCounts[role] || 0) + 1;
+    messageTextChars += textLength(message.content);
+    if (typeof message.content === 'string') contentKinds.add('string');
+    else if (Array.isArray(message.content)) {
+      for (const block of message.content) {
+        if (block && typeof block === 'object') {
+          contentKinds.add(String((block as Record<string, unknown>).type || 'object'));
+        } else {
+          contentKinds.add(typeof block);
+        }
+      }
+    } else {
+      contentKinds.add(typeof message.content);
+    }
+  }
+
+  const safeHost = (value: string): string => {
+    try { return new URL(value).host; } catch { return 'invalid-url'; }
+  };
+
+  return {
+    egress: route.relayed ? 'relay' : 'direct',
+    targetHost: safeHost(targetUrl),
+    relayHost: route.relayed ? safeHost(route.url) : undefined,
+    bodyBytes: raw ? new TextEncoder().encode(raw).byteLength : undefined,
+    bodyKeys: Object.keys(parsed).sort(),
+    model: typeof parsed.model === 'string' ? parsed.model : undefined,
+    stream: typeof parsed.stream === 'boolean' ? parsed.stream : undefined,
+    streamOptions: parsed.stream_options && typeof parsed.stream_options === 'object'
+      ? Object.keys(parsed.stream_options as Record<string, unknown>).sort()
+      : [],
+    temperature: typeof parsed.temperature === 'number' ? parsed.temperature : undefined,
+    topP: typeof parsed.top_p === 'number' ? parsed.top_p : undefined,
+    maxTokens: typeof parsed.max_tokens === 'number' ? parsed.max_tokens : undefined,
+    maxCompletionTokens: typeof parsed.max_completion_tokens === 'number' ? parsed.max_completion_tokens : undefined,
+    reasoningEffort: typeof parsed.reasoning_effort === 'string' ? parsed.reasoning_effort : undefined,
+    messageCount: messages.length,
+    roleCounts,
+    messageTextChars,
+    contentKinds: [...contentKinds].sort(),
+  };
+};
+
+const annotateFailure = async (
+  response: Response,
+  requestBody: BodyInit | null | undefined,
+  targetUrl: string,
+  route: StoryEgressRoute,
+): Promise<Response> => {
+  if (response.ok) return response;
+  const original = await response.text().catch(() => '');
+  const diagnostic = summarizeRequest(requestBody, targetUrl, route);
+  const headers = new Headers(response.headers);
+  headers.delete('content-length');
+  headers.delete('content-encoding');
+  headers.set('cache-control', 'no-store');
+  return new Response(
+    `${original}${original ? '\n' : ''}[sully_story_diag] ${JSON.stringify(diagnostic)}`,
+    {
+      status: response.status,
+      statusText: response.statusText,
+      headers,
+    },
+  );
+};
+
 /**
  * 剧情云端任务的统一模型出口。
  *
@@ -51,15 +154,19 @@ export const fetchStoryUpstream = async (
   init: RequestInit,
 ): Promise<Response> => {
   const route = resolveStoryEgressRoute(env, targetUrl);
-  if (!route.relayed) return fetch(targetUrl, init);
+  if (!route.relayed) {
+    const response = await fetch(targetUrl, init);
+    return annotateFailure(response, init.body, targetUrl, route);
+  }
 
   const headers = new Headers(init.headers || {});
   headers.set('X-Sully-Egress-Version', '1');
   headers.set('X-Sully-Egress-Target', targetUrl);
   headers.set('X-Sully-Egress-Token', String(env.STORY_EGRESS_RELAY_TOKEN || '').trim());
 
-  return fetch(route.url, {
+  const response = await fetch(route.url, {
     ...init,
     headers,
   });
+  return annotateFailure(response, init.body, targetUrl, route);
 };
