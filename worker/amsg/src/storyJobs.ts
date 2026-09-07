@@ -46,6 +46,7 @@ export interface StoryJobRoute {
   baseUrl: string;
   apiKey: string;
   model: string;
+  stream?: boolean;
   temperature?: number;
   firstByteTimeoutMs?: number;
 }
@@ -332,6 +333,7 @@ const validateSpec = (value: unknown): StoryJobSpec => {
       baseUrl,
       apiKey,
       model,
+      stream: typeof route.stream === 'boolean' ? route.stream : undefined,
       temperature: Number.isFinite(Number(route.temperature))
         ? Number(route.temperature)
         : undefined,
@@ -751,15 +753,20 @@ export const runStoryJob = async (
       const body: Record<string, unknown> = {
         ...spec.baseBody,
         model: route.model,
-        stream: true,
       };
+      const useStream = typeof route.stream === 'boolean'
+        ? route.stream
+        : typeof spec.baseBody.stream === 'boolean'
+          ? Boolean(spec.baseBody.stream)
+          : true;
+      body.stream = useStream;
       if (
         Object.prototype.hasOwnProperty.call(body, 'temperature')
         && typeof route.temperature === 'number'
       ) {
         body.temperature = route.temperature;
       }
-      if (includeUsage) {
+      if (includeUsage && useStream) {
         body.stream_options = {
           ...(body.stream_options && typeof body.stream_options === 'object'
             ? body.stream_options as Record<string, unknown>

@@ -514,6 +514,9 @@ export const executeStoryCompletionInCloudBackground = async (
             baseUrl: route.api.baseUrl,
             apiKey: route.api.apiKey,
             model: route.api.model,
+            ...(typeof route.api.stream === 'boolean'
+                ? { stream: route.api.stream }
+                : {}),
             ...(typeof route.api.temperature === 'number'
                 ? { temperature: route.api.temperature }
                 : {}),
