@@ -5,6 +5,7 @@ import {
   type StoryCloudImageHandoffSpec,
 } from './storyImageHandoff';
 import { sendStoryBackgroundStatusPush } from './storyStatusPush';
+import { fetchStoryUpstream } from './storyEgress';
 
 type D1Prepared = {
   bind(...values: unknown[]): D1Prepared;
@@ -33,6 +34,8 @@ export interface StoryJobsEnv {
   FCM_PROJECT_ID?: string;
   FCM_SERVICE_ACCOUNT_EMAIL?: string;
   FCM_SERVICE_ACCOUNT_PRIVATE_KEY?: string;
+  STORY_EGRESS_RELAY_URL?: string;
+  STORY_EGRESS_RELAY_TOKEN?: string;
   DB: StoryJobsDb;
   INSTANT_TICK?: StoryTickNamespace;
 }
@@ -794,7 +797,8 @@ export const runStoryJob = async (
       void checkCancelled();
 
       try {
-        const upstream = await fetch(`${normalizeBaseUrl(route.baseUrl)}/chat/completions`, {
+        const targetUrl = `${normalizeBaseUrl(route.baseUrl)}/chat/completions`;
+        const upstream = await fetchStoryUpstream(env, targetUrl, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
