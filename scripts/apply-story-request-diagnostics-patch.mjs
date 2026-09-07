@@ -30,10 +30,18 @@ replaceOnce(
 `      } else {\n        delete body.stream_options;\n      }\n      lastRequestShape = summarizeStoryRequest(env, body);\n\n      const controller = new AbortController();`,
 );
 
+replaceOnce(
+`      } else {\n        delete body.stream_options;\n      }\n      lastRequestShape = summarizeStoryRequest(env, body);\n\n      const controller = new AbortController();`,
+`      } else {\n        delete body.stream_options;\n      }\n\n      // Large imported story presets can contain 100+ consecutive system messages.\n      // OpenAI accepts that shape, but several Gemini-compatible relays translate every\n      // system message separately and can reject the resulting request as resource-exhausted.\n      // Merge only adjacent system messages; keep every character and the original order.\n      if (Array.isArray(body.messages)) {\n        const compacted: Array<Record<string, unknown>> = [];\n        for (const rawMessage of body.messages) {\n          if (!rawMessage || typeof rawMessage !== 'object' || Array.isArray(rawMessage)) {\n            compacted.push({ role: 'system', content: String(rawMessage ?? '') });\n            continue;\n          }\n          const message = rawMessage as Record<string, unknown>;\n          const role = String(message.role || '');\n          const content = message.content;\n          const previous = compacted[compacted.length - 1];\n          if (\n            role === 'system'\n            && previous?.role === 'system'\n            && typeof previous.content === 'string'\n            && typeof content === 'string'\n          ) {\n            previous.content = `${previous.content}\\n\\n${content}`;\n          } else {\n            compacted.push({ ...message });\n          }\n        }\n        body.messages = compacted;\n      }\n\n      lastRequestShape = summarizeStoryRequest(env, body);\n\n      const controller = new AbortController();`,
+);
+
 const attemptLine = `      const attempt = routeAttempt(route, index, attemptStartedAt);\n`;
 const attemptCount = source.split(attemptLine).length - 1;
 if (attemptCount !== 4) throw new Error(`[story-request-diag] expected 4 route attempts, got ${attemptCount}`);
-source = source.split(attemptLine).join(`${attemptLine}      attempt.requestShape = lastRequestShape;\n`);
+const attemptWithShape = `${attemptLine}      attempt.requestShape = lastRequestShape;\n`;
+if (!source.includes(attemptWithShape)) {
+  source = source.split(attemptLine).join(attemptWithShape);
+}
 
 fs.writeFileSync(path, source);
 console.log('[story-request-diag] patched worker/amsg/src/storyJobs.ts');
