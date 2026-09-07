@@ -1,0 +1,45 @@
+name: Story egress relay check
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'server/story-egress-relay/**'
+      - '.github/workflows/story-egress-relay-check.yml'
+  pull_request:
+    branches: [master]
+    paths:
+      - 'server/story-egress-relay/**'
+      - '.github/workflows/story-egress-relay-check.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Check relay syntax
+        run: node --check server/story-egress-relay/relay.mjs
+      - name: Smoke-test relay health endpoint
+        env:
+          SULLY_EGRESS_TOKEN: ci-test-token
+          SULLY_EGRESS_PORT: '4873'
+        run: |
+          node server/story-egress-relay/relay.mjs > /tmp/story-egress.log 2>&1 &
+          PID=$!
+          trap 'kill $PID 2>/dev/null || true' EXIT
+          for i in $(seq 1 20); do
+            if curl --fail --silent http://127.0.0.1:4873/health | grep -q '"ok":true'; then
+              exit 0
+            fi
+            sleep 0.25
+          done
+          cat /tmp/story-egress.log
+          exit 1
