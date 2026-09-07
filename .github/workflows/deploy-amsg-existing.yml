@@ -12,12 +12,11 @@ on:
       - 'pnpm-lock.yaml'
       - '.github/workflows/deploy-amsg-existing.yml'
       - 'scripts/deploy-existing-amsg.mjs'
-      - 'scripts/apply-story-request-diagnostics-patch.mjs'
 
 # Actions 使用 GITHUB_TOKEN 推回 master 时不会递归触发新的 workflow；
 # 因此性能补丁若由仓库内 workflow 落盘，需要一次正常提交/手动 dispatch 才会部署最新 master。
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: amsg-existing-production
@@ -51,9 +50,6 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Apply story request diagnostics patch
-        run: node scripts/apply-story-request-diagnostics-patch.mjs
-
       - name: Verify story transport and image reference policy
         run: >-
           pnpm exec vitest run
@@ -62,22 +58,6 @@ jobs:
           utils/storyImageReferenceUploads.test.ts
           worker/amsg/src/storyImageHandoff.test.ts
           worker/amsg/src/storyImageReferencePolicy.test.ts
-
-      - name: Check TypeScript
-        run: pnpm exec tsc --noEmit
-
-      - name: Persist story request diagnostics patch
-        shell: bash
-        run: |
-          if git diff --quiet -- worker/amsg/src/storyJobs.ts; then
-            echo "Story request diagnostics already present"
-            exit 0
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add worker/amsg/src/storyJobs.ts
-          git commit -m "diag: expose sanitized cloud story request shape"
-          git push origin HEAD:master
 
       - name: Build AMSG bundle
         run: pnpm run build:workers
