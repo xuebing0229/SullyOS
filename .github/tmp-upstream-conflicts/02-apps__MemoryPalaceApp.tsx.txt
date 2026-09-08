@@ -1,0 +1,17 @@
+FILE: apps/MemoryPalaceApp.tsx
+
+--- CONFLICT 1 ---
+<<<<<<< HEAD
+import React, { useState, useEffect, useCallback, useDeferredValue, useMemo } from 'react';
+import SensitiveTextInput from '../components/SensitiveTextInput';
+=======
+import ChatHistoryCleanupModal from '../components/chat/ChatHistoryCleanupModal';
+import { markAmsgStateDirty } from '../utils/amsgStateSync';
+import { loadRangeMessagePage, formatRangeTimestamp } from '../utils/memoryPalace/rangeMessagePage';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
+>>>>>>> upstream/master
+import { useOS } from '../context/OSContext';
+import {
+    MemoryRoom, MemoryNode, ROOM_CONFIGS, ROOM_LABELS, getRoomLabel,
+    MemoryNodeDB, AnticipationDB, MemoryLinkDB, EventBoxDB,
+    migrateOldMemories, runCognitiveDigestion, getAvailableMonths, getAvailableChunks,
