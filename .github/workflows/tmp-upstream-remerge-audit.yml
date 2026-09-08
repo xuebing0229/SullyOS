@@ -1,4 +1,4 @@
-name: tmp-upstream-semantic-merge
+name: tmp-upstream-integration-verify
 
 on:
   push:
@@ -12,161 +12,60 @@ permissions:
   contents: write
 
 jobs:
-  merge:
+  verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
 
-      - name: Merge latest audited upstream with fork features preserved
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify preserved fork invariants
+        run: |
+          pnpm run verify:upstream-merge
+          grep -q 'const OUTBOUND_ANALYTICS_DISABLED = true' utils/analytics.ts
+          grep -q 'if (OUTBOUND_ANALYTICS_DISABLED) return;' utils/analytics.ts
+          grep -q 'replaceStoryTheaterReply' components/date/story/StoryTheaterSession.tsx
+          grep -q "theaterRequestKey: activeRequestKey" components/date/story/StoryTheaterSession.tsx
+          grep -q 'cancelStoryGenerationByOwner' components/date/story/StoryTheaterSession.tsx
+          grep -q 'executeStoryCompletionInCloudBackground' components/date/story/StoryTheaterSession.tsx
+          grep -q 'executeStoryCompletionInNativeBackground' components/date/story/StoryTheaterSession.tsx
+          grep -q 'group?: string' types.ts
+          grep -q 'section?:' types.ts
+
+      - name: Run full test suite
+        run: pnpm test:run
+
+      - name: Production build and regenerate workers
+        run: pnpm run build
+
+      - name: Commit regenerated worker bundles if changed
         shell: bash
         run: |
           set -euo pipefail
           git config user.name "SullyOS Upstream Merge Bot"
           git config user.email "merge-bot@users.noreply.github.com"
-          git remote add upstream https://github.com/qegj567-cloud/SullyOS.git 2>/dev/null || git remote set-url upstream https://github.com/qegj567-cloud/SullyOS.git
-          git fetch upstream master
-          upstream_sha="$(git rev-parse upstream/master)"
-          test "$upstream_sha" = "835e2e2ba07d131ba0ebc3972099006239b4194a"
-          set +e
-          git merge --no-commit --no-ff upstream/master
-          merge_status=$?
-          set -e
-          unresolved="$(git diff --name-only --diff-filter=U || true)"
-          expected=$'apps/Chat.tsx\napps/MemoryPalaceApp.tsx\ncomponents/chat/ChatModals.tsx\ncomponents/date/story/StoryPresetMaker.tsx\ncomponents/date/story/StoryTheaterSession.tsx\ntypes.ts\nutils/analytics.test.ts\nutils/chatRequestPayload.ts\nutils/storyTheater.ts'
-          if [ "$merge_status" -ne 0 ] && [ "$unresolved" != "$expected" ]; then
-            echo "Unexpected conflict set:"
-            echo "$unresolved"
+          changed="$(git status --short)"
+          echo "$changed"
+          unexpected="$(git status --porcelain | awk '{print $2}' | grep -vE '^(public/amsg-worker\.bundle\.js|worker/amsg/worker\.bundle\.js)$' || true)"
+          if [ -n "$unexpected" ]; then
+            echo "Unexpected tracked/generated changes after build:"
+            echo "$unexpected"
             exit 1
           fi
-          python - <<'PY'
-          from pathlib import Path
-
-          def parse(text):
-              out=[]; pos=0
-              while True:
-                  a=text.find('<<<<<<< HEAD',pos)
-                  if a<0: break
-                  sep=text.find('\n=======',a)
-                  end=text.find('\n>>>>>>> ',sep)
-                  if sep<0 or end<0: raise RuntimeError('malformed conflict')
-                  block_end=text.find('\n',end+1)
-                  if block_end<0: block_end=len(text)
-                  ours_start=text.find('\n',a)+1
-                  theirs_start=sep+len('\n=======')+1
-                  out.append((a,block_end+1 if block_end<len(text) else block_end,text[ours_start:sep],text[theirs_start:end]))
-                  pos=block_end
-              return out
-
-          def resolve(rel, chooser):
-              p=Path(rel); text=p.read_text(); conflicts=parse(text)
-              if not conflicts: raise RuntimeError(f'expected conflict missing: {rel}')
-              pieces=[]; pos=0
-              for i,(a,b,o,t) in enumerate(conflicts,1):
-                  pieces.append(text[pos:a]); pieces.append(chooser(i,o,t)); pos=b
-              pieces.append(text[pos:])
-              result=''.join(pieces)
-              if not result.endswith('\n'): result+='\n'
-              p.write_text(result)
-
-          resolve('apps/Chat.tsx', lambda i,o,t: t)
-
-          resolve('apps/MemoryPalaceApp.tsx', lambda i,o,t: """import React, { useState, useEffect, useCallback, useDeferredValue, useMemo } from 'react';
-          import SensitiveTextInput from '../components/SensitiveTextInput';
-          import ChatHistoryCleanupModal from '../components/chat/ChatHistoryCleanupModal';
-          import { markAmsgStateDirty } from '../utils/amsgStateSync';
-          import { loadRangeMessagePage, formatRangeTimestamp } from '../utils/memoryPalace/rangeMessagePage';
-          """)
-
-          def chat_modals(i,o,t):
-              if i==1:
-                  return "    contextSuiteAnyEnabled, contextSuiteAllEnabled, onToggleContextSuite,\n    preserveContext, setPreserveContext,\n"
-              if i==2:
-                  return """    pendingEmojiImports, onPrepareEmojiFiles,
-              onPendingEmojiNameChange, onRemovePendingEmoji,
-              onConfirmEmojiFiles, onCloseEmojiImport,
-              isPreparingEmojiFiles = false,
-              isSavingEmojiFiles = false,
-              onBgUpload, onRemoveBg, onOpenHistoryCleanup,
-          """
-              raise AssertionError(i)
-          resolve('components/chat/ChatModals.tsx', chat_modals)
-
-          resolve('components/date/story/StoryPresetMaker.tsx', lambda i,o,t: o)
-
-          def story_session(i,o,t):
-              if i==1:
-                  return """import { loadStoryActorContext, replaceStoryTheaterReply, STORY_REROLL_INSTRUCTION } from '../../../utils/storyTheaterReply';
-          import { Archive, ArrowBendDownRight, ArrowClockwise, ArrowLeft, ArrowUp, Broadcast, CaretDown, CaretLeft, CaretRight, ChatCircleDots, Clock, Database, DownloadSimple, Eye, EyeSlash, FilmSlate, GearSix, GitBranch, HeartStraight, Key, MapPin, PaperPlaneTilt, PencilSimple, SlidersHorizontal, Sparkle, SpinnerGap, Trash, X } from '@phosphor-icons/react';
-          """
-              if i==2:
-                  return """            const replyMetadata = {
-                          theaterPromptTokens: promptTokenCount,
-                          theaterPromptTokensExact: promptTokenCountExact,
-                          theaterRequestKey: activeRequestKey,
-                          ...(affinityInputs.length > 0 ? { theaterAffinityInputs: affinityInputs } : {}),
-                      };
-                      const rowsBeforeCommit = (await DB.getMessagesByCharId(threadId, true))
-                          .filter(message => message.metadata?.source === 'story_theater')
-                          .sort((a, b) => a.id - b.id);
-                      const duplicateAssistant = rowsBeforeCommit.find(message =>
-                          message.role === 'assistant'
-                          && message.metadata?.theaterRequestKey === activeRequestKey
-                          && message.id !== rerollTarget?.id
-                      );
-                      let didCommitAssistant = false;
-                      let assistantMessageId: number;
-                      if (duplicateAssistant) {
-                          assistantMessageId = duplicateAssistant.id;
-                          console.warn('[StoryTheater] duplicate completion discarded', { requestKey: activeRequestKey, messageId: duplicateAssistant.id });
-                      } else {
-                          if (isReroll && rerollTarget) {
-                              if (mirrorArchived(rerollTarget, promptEntry)) throw new Error('这条回复已进入记忆归档，请刷新后查看');
-                              await replaceStoryTheaterReply(rerollTarget, content, replyMetadata);
-                              assistantMessageId = rerollTarget.id;
-                          } else {
-                              assistantMessageId = await saveCentralAndMirrors('assistant', content, replyMetadata);
-                          }
-                          didCommitAssistant = true;
-                      }
-                      if (!isReroll && activeUserMessageId > 0) {
-                          await DB.updateMessageMetadata(activeUserMessageId, previous => ({
-                              ...previous,
-                              theaterRequestKey: activeRequestKey,
-                              theaterRequestState: 'done',
-                              theaterRequestFinishedAt: Date.now(),
-                          }));
-                      }
-                      // 云端/native completion 成功 != 楼层已落库。只有正文真正保存/替换成功后，
-                      // 才清“待接回”指针，避免 App 在“收到结果→写 IndexedDB”之间被杀时丢正文。
-                      if (getPendingCloudStoryJob(backgroundOwnerKey)) {
-                          await clearPendingCloudStoryJob(backgroundOwnerKey);
-                      }
-                      if (usedNativeBackground) await clearPendingNativeStoryJob(backgroundOwnerKey);
-          """
-              raise AssertionError(i)
-          resolve('components/date/story/StoryTheaterSession.tsx', story_session)
-
-          resolve('types.ts', lambda i,o,t: o+t)
-          resolve('utils/analytics.test.ts', lambda i,o,t: o)
-          resolve('utils/chatRequestPayload.ts', lambda i,o,t: o+t)
-
-          def story_util(i,o,t):
-              if i==1: return o+t
-              if i==2: return t
-              raise AssertionError(i)
-          resolve('utils/storyTheater.ts', story_util)
-          PY
-          git add apps/Chat.tsx apps/MemoryPalaceApp.tsx components/chat/ChatModals.tsx components/date/story/StoryPresetMaker.tsx components/date/story/StoryTheaterSession.tsx types.ts utils/analytics.test.ts utils/chatRequestPayload.ts utils/storyTheater.ts
-          test -z "$(git diff --name-only --diff-filter=U)"
-          grep -q 'const OUTBOUND_ANALYTICS_DISABLED = true' utils/analytics.ts
-          grep -q 'if (OUTBOUND_ANALYTICS_DISABLED) return;' utils/analytics.ts
-          grep -q "theaterRequestKey: activeRequestKey" components/date/story/StoryTheaterSession.tsx
-          grep -q 'replaceStoryTheaterReply' components/date/story/StoryTheaterSession.tsx
-          grep -q 'group?: string' types.ts
-          grep -q 'section?:' types.ts
-          git diff --cached --check
-          git commit -m "merge: sync upstream through 835e2e2 with fork features preserved"
-          git push origin HEAD:merge/upstream-20260908
+          if ! git diff --quiet -- public/amsg-worker.bundle.js worker/amsg/worker.bundle.js; then
+            git add public/amsg-worker.bundle.js worker/amsg/worker.bundle.js
+            git diff --cached --check
+            git commit -m "build: regenerate worker bundles after upstream integration"
+            git push origin HEAD:merge/upstream-20260908
+          fi
