@@ -1,4 +1,4 @@
-name: tmp-upstream-remerge-apply
+name: tmp-upstream-latest-audit
 
 on:
   push:
@@ -12,7 +12,7 @@ permissions:
   contents: write
 
 jobs:
-  apply:
+  audit:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -20,30 +20,36 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Carry forward previous resolved upstream integration
+      - name: Audit latest upstream merge
         shell: bash
         run: |
           set -euo pipefail
-          git config user.name "SullyOS Upstream Merge Bot"
-          git config user.email "merge-bot@users.noreply.github.com"
-          git fetch origin merge/upstream-20260904
+          git config user.name "SullyOS Upstream Merge Audit"
+          git config user.email "merge-audit@users.noreply.github.com"
+          git remote add upstream https://github.com/qegj567-cloud/SullyOS.git 2>/dev/null || git remote set-url upstream https://github.com/qegj567-cloud/SullyOS.git
+          git fetch upstream master
+          upstream_sha="$(git rev-parse upstream/master)"
           set +e
-          git merge --no-commit --no-ff c2d8fc7699025cebc6d3569026cf73b7254a9f2b
+          git merge --no-commit --no-ff upstream/master
           merge_status=$?
           set -e
-          unresolved="$(git diff --name-only --diff-filter=U || true)"
-          expected=$'public/amsg-worker.bundle.js\nworker/amsg/worker.bundle.js'
-          if [ "$merge_status" -ne 0 ] && [ "$unresolved" != "$expected" ]; then
-            echo "Unexpected conflicts:"
-            echo "$unresolved"
-            exit 1
-          fi
-          if [ -n "$unresolved" ]; then
-            git checkout --ours -- public/amsg-worker.bundle.js worker/amsg/worker.bundle.js
-            git add public/amsg-worker.bundle.js worker/amsg/worker.bundle.js
-          fi
-          test -z "$(git diff --name-only --diff-filter=U)"
-          git add -A
-          git diff --cached --check
-          git commit -m "merge: carry forward upstream integration through ae0bf42"
+          {
+            echo "upstream_sha=$upstream_sha"
+            echo "merge_exit=$merge_status"
+            echo "=== UNRESOLVED FILES ==="
+            git diff --name-only --diff-filter=U || true
+            echo "=== CONFLICT COUNTS ==="
+            git diff --name-only --diff-filter=U | while read -r f; do
+              [ -n "$f" ] || continue
+              printf '%s\t' "$f"
+              grep -c '^<<<<<<< ' "$f" || true
+            done
+            echo "=== STAGED FILE COUNT ==="
+            git diff --cached --name-only | wc -l
+          } > /tmp/upstream-latest-audit.txt
+          cat /tmp/upstream-latest-audit.txt
+          git merge --abort >/dev/null 2>&1 || true
+          cp /tmp/upstream-latest-audit.txt .github/tmp-upstream-latest-audit.txt
+          git add .github/tmp-upstream-latest-audit.txt
+          git commit -m "chore: record latest upstream merge audit" || true
           git push origin HEAD:merge/upstream-20260908
