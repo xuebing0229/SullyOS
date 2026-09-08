@@ -8,7 +8,9 @@ import { isTranslationLangPreset, normalizeTranslationLangLabel, TRANSLATION_LAN
 import type { ContextRangeMode, ContextRangeSnapshot } from '../../utils/chatContextRange';
 import type { PendingEmojiImportItem } from '../../utils/emojiImport';
 import TokenImg from '../os/TokenImg';
-
+import { trackEvent } from '../../utils/analytics';
+import { CANTONESE_VOICE_SUPPORT_NOTE, VOICE_LANGUAGE_OPTIONS } from '../../utils/voiceLanguage';
+import { chatMessageFuzzyMatchesKeyword } from '../../utils/chatMessageSearch';
 interface ChatModalsProps {
     modalType: string;
     setModalType: (v: any) => void;
@@ -317,22 +319,6 @@ const ChatModals: React.FC<ChatModalsProps> = ({
         }
         // 范围内直接设置；范围外由上层直接提示先调整拉杆。
         onSetHistoryStart(msgId);
-    };
-
-    // 模糊匹配：query 的所有字符按顺序在 content 里出现即算命中（大小写不敏感）。
-    // 中文按字符级 subsequence 匹配，英文同理。
-    const fuzzyMatch = (content: string, query: string): boolean => {
-        if (!query) return true;
-        const c = content.toLowerCase();
-        const q = query.toLowerCase();
-        if (c.includes(q)) return true;
-        let idx = 0;
-        for (const ch of q) {
-            const found = c.indexOf(ch, idx);
-            if (found < 0) return false;
-            idx = found + 1;
-        }
-        return true;
     };
 
     // 高亮命中的连续子串（优先），否则不高亮（subsequence 命中时高亮意义不大）。
@@ -714,13 +700,14 @@ const ChatModals: React.FC<ChatModalsProps> = ({
                              <div className="mt-3">
                                  <label className="text-[10px] font-bold text-slate-400 mb-1.5 block">语音语种</label>
                                  <div className="flex flex-wrap gap-1.5">
-                                     {[{v:'',l:'默认'},{v:'en',l:'English'},{v:'ja',l:'日本語'},{v:'ko',l:'한국어'},{v:'fr',l:'Français'},{v:'es',l:'Español'}].map(opt => (
-                                         <button key={opt.v} onClick={() => onSetChatVoiceLang?.(opt.v)}
-                                             className={`px-2.5 py-1 rounded-full text-[11px] font-bold transition-all ${chatVoiceLang === opt.v ? 'bg-emerald-500 text-white' : 'bg-slate-100 text-slate-500'}`}>
-                                             {opt.l}
+                                     {VOICE_LANGUAGE_OPTIONS.map(opt => (
+                                         <button key={opt.value} onClick={() => onSetChatVoiceLang?.(opt.value)}
+                                             className={`px-2.5 py-1 rounded-full text-[11px] font-bold transition-all ${chatVoiceLang === opt.value ? 'bg-emerald-500 text-white' : 'bg-slate-100 text-slate-500'}`}>
+                                             {opt.label}
                                          </button>
                                      ))}
                                  </div>
+                                 {chatVoiceLang === 'yue' && <p className="text-[10px] text-amber-600/80 mt-1.5">{CANTONESE_VOICE_SUPPORT_NOTE}</p>}
                                  {chatVoiceLang && <p className="text-[10px] text-emerald-600/70 mt-1.5">选择非默认语种时，AI 台词会先翻译再生成语音。</p>}
                              </div>
                          )}
@@ -900,7 +887,7 @@ const ChatModals: React.FC<ChatModalsProps> = ({
                     {(() => {
                         const reversed = allHistoryMessages.slice().reverse();
                         const query = historySearch.trim();
-                        const filtered = query ? reversed.filter(m => fuzzyMatch(m.content || '', query)) : reversed;
+                        const filtered = query ? reversed.filter(message => chatMessageFuzzyMatchesKeyword(message, query)) : reversed;
                         const limited = query ? filtered.slice(0, HISTORY_SEARCH_MAX) : filtered;
                         const totalPages = Math.max(1, Math.ceil(limited.length / HISTORY_PAGE_SIZE));
                         const pageMessages = limited.slice(historyPage * HISTORY_PAGE_SIZE, (historyPage + 1) * HISTORY_PAGE_SIZE);

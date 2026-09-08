@@ -58,7 +58,9 @@ describe('LLM 凭据行的重传接线', () => {
       .toContain('ActiveMsgClient.refreshApiCredentialsForPendingTasks(');
     // 两个入口都得走这个出口：绕过去就是「聊天换了 API、后台任务还拿旧 Key」
     expect(sliceBetween(src, 'const handleSaveApi', 'const handleTestVisionApi')).toContain('commitApiConfig(');
-    expect(sliceBetween(src, 'const applyPreset', 'const openEditPreset')).toContain('commitApiConfig(');
+    const applyPreset = sliceBetween(src, 'const applyPreset', 'const openEditPreset');
+    expect(applyPreset).toContain('syncAmsgLlmCredentials({ ...apiConfig, ...patch })');
+    expect(applyPreset).toContain('ActiveMsgClient.refreshApiCredentialsForPendingTasks({ ...apiConfig, ...patch })');
   });
 
   it('角色 2.0 面板保存（单独 API 可能刚改过）：也重传一次', () => {
