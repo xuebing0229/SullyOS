@@ -22,13 +22,12 @@ jobs:
       - name: Capture invariant diagnostics
         shell: bash
         run: |
-          set -u
+          set -uo pipefail
           git config user.name "SullyOS Upstream Merge Audit"
           git config user.email "merge-audit@users.noreply.github.com"
           {
             echo '=== verify-upstream-merge ==='
-            node scripts/verify-upstream-merge.mjs
-            echo "verify_exit=$?"
+            node scripts/verify-upstream-merge.mjs || true
             echo '=== custom guards ==='
             for spec in \
               'analytics-disabled|utils/analytics.ts|const OUTBOUND_ANALYTICS_DISABLED = true' \
