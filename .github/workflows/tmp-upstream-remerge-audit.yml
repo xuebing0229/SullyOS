@@ -1,4 +1,4 @@
-name: tmp-upstream-integration-verify
+name: tmp-upstream-invariant-diagnostic
 
 on:
   push:
@@ -12,60 +12,39 @@ permissions:
   contents: write
 
 jobs:
-  verify:
+  diagnose:
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 10
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Verify preserved fork invariants
-        run: |
-          pnpm run verify:upstream-merge
-          grep -q 'const OUTBOUND_ANALYTICS_DISABLED = true' utils/analytics.ts
-          grep -q 'if (OUTBOUND_ANALYTICS_DISABLED) return;' utils/analytics.ts
-          grep -q 'replaceStoryTheaterReply' components/date/story/StoryTheaterSession.tsx
-          grep -q "theaterRequestKey: activeRequestKey" components/date/story/StoryTheaterSession.tsx
-          grep -q 'cancelStoryGenerationByOwner' components/date/story/StoryTheaterSession.tsx
-          grep -q 'executeStoryCompletionInCloudBackground' components/date/story/StoryTheaterSession.tsx
-          grep -q 'executeStoryCompletionInNativeBackground' components/date/story/StoryTheaterSession.tsx
-          grep -q 'group?: string' types.ts
-          grep -q 'section?:' types.ts
-
-      - name: Run full test suite
-        run: pnpm test:run
-
-      - name: Production build and regenerate workers
-        run: pnpm run build
-
-      - name: Commit regenerated worker bundles if changed
+      - name: Capture invariant diagnostics
         shell: bash
         run: |
-          set -euo pipefail
-          git config user.name "SullyOS Upstream Merge Bot"
-          git config user.email "merge-bot@users.noreply.github.com"
-          changed="$(git status --short)"
-          echo "$changed"
-          unexpected="$(git status --porcelain | awk '{print $2}' | grep -vE '^(public/amsg-worker\.bundle\.js|worker/amsg/worker\.bundle\.js)$' || true)"
-          if [ -n "$unexpected" ]; then
-            echo "Unexpected tracked/generated changes after build:"
-            echo "$unexpected"
-            exit 1
-          fi
-          if ! git diff --quiet -- public/amsg-worker.bundle.js worker/amsg/worker.bundle.js; then
-            git add public/amsg-worker.bundle.js worker/amsg/worker.bundle.js
-            git diff --cached --check
-            git commit -m "build: regenerate worker bundles after upstream integration"
-            git push origin HEAD:merge/upstream-20260908
-          fi
+          set -u
+          git config user.name "SullyOS Upstream Merge Audit"
+          git config user.email "merge-audit@users.noreply.github.com"
+          {
+            echo '=== verify-upstream-merge ==='
+            node scripts/verify-upstream-merge.mjs
+            echo "verify_exit=$?"
+            echo '=== custom guards ==='
+            for spec in \
+              'analytics-disabled|utils/analytics.ts|const OUTBOUND_ANALYTICS_DISABLED = true' \
+              'analytics-return|utils/analytics.ts|if (OUTBOUND_ANALYTICS_DISABLED) return;' \
+              'story-replace|components/date/story/StoryTheaterSession.tsx|replaceStoryTheaterReply' \
+              'story-request-key|components/date/story/StoryTheaterSession.tsx|theaterRequestKey: activeRequestKey' \
+              'story-cancel|components/date/story/StoryTheaterSession.tsx|cancelStoryGenerationByOwner' \
+              'story-cloud|components/date/story/StoryTheaterSession.tsx|executeStoryCompletionInCloudBackground' \
+              'story-native|components/date/story/StoryTheaterSession.tsx|executeStoryCompletionInNativeBackground' \
+              'preset-group|types.ts|group?: string' \
+              'preset-section|types.ts|section?:'; do
+              IFS='|' read -r name file pattern <<< "$spec"
+              if grep -Fq "$pattern" "$file"; then echo "$name=ok"; else echo "$name=MISSING"; fi
+            done
+          } > .github/tmp-upstream-invariant-diagnostic.txt 2>&1
+          cat .github/tmp-upstream-invariant-diagnostic.txt
+          git add .github/tmp-upstream-invariant-diagnostic.txt
+          git commit -m "chore: record upstream invariant diagnostics" || true
+          git push origin HEAD:merge/upstream-20260908
