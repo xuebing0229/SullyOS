@@ -1,3 +1,5 @@
+import { loadRangeMessageContents } from './rangeMessagePage';
+import { loadCharacterContextMessages } from '../chatContextRange';
 /**
  * Memory Palace — 集成管线 (Pipeline)
  *
@@ -1188,11 +1190,12 @@ export async function injectMemoryPalace(
     }
 
     let explicitEntityAnalysis: ExplicitEntityAnalysis | undefined;
+    const interactiveRecall = trace.entryPoint === 'chat_app' || trace.entryPoint === 'collaboration';
     if (!trace.featureFlagsSnapshot.recallRouter) {
         trace.explicitEntityRecall = { status: 'disabled' };
         trace.eventBoxMetadataRecall = { status: 'disabled' };
         trace.recallResolver = { status: 'disabled' };
-    } else if (trace.entryPoint !== 'chat_app') {
+    } else if (!interactiveRecall) {
         trace.explicitEntityRecall = { status: 'out_of_scope' };
         trace.eventBoxMetadataRecall = { status: 'out_of_scope' };
         trace.recallResolver = { status: 'out_of_scope' };
@@ -1246,7 +1249,7 @@ export async function injectMemoryPalace(
 
     if (!trace.featureFlagsSnapshot.interactionAdaptation) {
         trace.interactionAdaptation = { status: 'disabled' };
-    } else if (trace.entryPoint !== 'chat_app') {
+    } else if (!interactiveRecall) {
         trace.interactionAdaptation = { status: 'out_of_scope' };
     } else {
         const interactionStartedAt = performance.now();
@@ -1275,7 +1278,7 @@ export async function injectMemoryPalace(
 
     if (!trace.featureFlagsSnapshot.deepEngagement) {
         trace.deepEngagement = { status: 'disabled' };
-    } else if (trace.entryPoint !== 'chat_app') {
+    } else if (!interactiveRecall) {
         trace.deepEngagement = { status: 'out_of_scope' };
     } else {
         const depthStartedAt = performance.now();
@@ -1336,7 +1339,7 @@ export async function injectMemoryPalace(
     }
     try {
         const loadStartedAt = performance.now();
-        const msgs = recentMessages ?? await DB.getMessagesByCharId(char.id);
+        const msgs = recentMessages ?? await loadCharacterContextMessages(char.id);
         trace.stages.push({
             name: 'load_messages',
             durationMs: Math.round(performance.now() - loadStartedAt),
@@ -2424,8 +2427,8 @@ export async function processMessageRange(
         const lo = Math.min(fromMsgId, toMsgId);
         const hi = Math.max(fromMsgId, toMsgId);
 
-        // 加载全部消息（含已处理的），取区间内的语义相关消息，按 id 升序
-        const allMessages = await DB.getMessagesByCharId(charId, true);
+        // 只加载用户选区内的正文，含已处理消息，不推进水位线。
+        const allMessages = await loadRangeMessageContents(charId, lo, hi);
         const toProcess = allMessages
             .filter(m => isMessageSemanticallyRelevant(m))
             .filter(m => m.id >= lo && m.id <= hi)

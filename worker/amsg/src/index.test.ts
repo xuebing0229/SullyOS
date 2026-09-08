@@ -1579,7 +1579,7 @@ describe('runMcpFireTool', () => {
       const body = JSON.parse(init.body);
       seen.push({ url: String(input), body, auth: new Headers(init.headers).get('Authorization') });
       if (body.method === 'initialize') {
-        return rpcOk(body.id, { protocolVersion: '2024-11-05', capabilities: {}, serverInfo: { name: 'p', version: '1' } });
+        return rpcOk(body.id, { protocolVersion: '2025-11-25', capabilities: {}, serverInfo: { name: 'p', version: '1' } });
       }
       if (String(body.method).startsWith('notifications/')) return new Response(null, { status: 202 });
       return rpcOk(body.id, { content: [{ type: 'text', text: '暗号 MARKER-123' }] });
@@ -1601,7 +1601,7 @@ describe('runMcpFireTool', () => {
       const body = JSON.parse(init.body);
       if (body.method === 'initialize') {
         handshakes++;
-        return rpcOk(body.id, { protocolVersion: '2024-11-05', capabilities: {}, serverInfo: { name: 'p', version: '1' } });
+        return rpcOk(body.id, { protocolVersion: '2025-11-25', capabilities: {}, serverInfo: { name: 'p', version: '1' } });
       }
       if (String(body.method).startsWith('notifications/')) return new Response(null, { status: 202 });
       return rpcOk(body.id, { content: [{ type: 'text', text: 'x' }] });
@@ -1647,7 +1647,7 @@ describe('runMcpFireTool', () => {
     vi.stubGlobal('fetch', vi.fn(async (_: any, init: any) => {
       const body = JSON.parse(init.body);
       if (body.method === 'initialize') {
-        return rpcOk(body.id, { protocolVersion: '2024-11-05', capabilities: {}, serverInfo: { name: 'p', version: '1' } });
+        return rpcOk(body.id, { protocolVersion: '2025-11-25', capabilities: {}, serverInfo: { name: 'p', version: '1' } });
       }
       if (String(body.method).startsWith('notifications/')) return new Response(null, { status: 202 });
       clock += 700;
@@ -3700,11 +3700,13 @@ describe('即时对话的云端情绪评估', () => {
     expect(seen).toHaveLength(1);
     expect(seen[0].url).toBe('https://eval.example.com/v1/chat/completions');
     expect(seen[0].auth).toBe('Bearer sk-secondary-KEYLEAK');
-    const evalContent = String(seen[0].body.messages[0].content);
+    const evalMessages = seen[0].body.messages as Array<{ role: string; content: unknown }>;
+    const evalContent = String(evalMessages[0].content);
     expect(evalContent).not.toContain('__EMOTION_EVAL_SYSTEM_PROMPT__');
     expect(evalContent).not.toContain('__EMOTION_EVAL_HISTORY__');
     expect(evalContent).toContain('你是 Nyah。');
-    expect(evalContent).toContain('[用户]: 在吗');
+    expect(evalContent).toContain('对话历史没有拍平成文本');
+    expect(evalMessages.some(message => message.role === 'user' && String(message.content).includes('在吗'))).toBe(true);
     // 主生成看得到的时效块，评估也得看到（不然它连现在几点都不知道）
     expect(evalContent).toContain('现在是');
 

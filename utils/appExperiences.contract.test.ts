@@ -49,7 +49,8 @@ describe('万象匣 / 素页同栖集成契约', () => {
   it('App 文本调用显式禁用自动重试并记录 App/用途 meta', () => {
     const context = source('utils/appContext.ts');
     expect(context).toContain('}, 0, 0, {');
-    expect(context).toContain("appName: deps.sourceApp === 'reading_together' ? '素页同栖' : '万象匣'");
+    expect(context).toContain("deps.sourceApp === 'reading_together' ? '素页同栖'");
+    expect(context).toContain("deps.sourceApp === 'story_theater' ? '剧情剧场'");
     expect(context).toContain("purpose: deps.purpose || 'App 内文本生成'");
   });
 });

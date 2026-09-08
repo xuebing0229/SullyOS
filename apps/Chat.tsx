@@ -65,6 +65,8 @@ import InstantChatRouteNotice from '../components/chat/InstantChatRouteNotice';
 import MemoryRepairPortal from '../components/chat/MemoryRepairPortal';
 import FavoritesPortal from '../components/chat/VoiceFavoritesPortal';
 import ChatModals from '../components/chat/ChatModals';
+import ChatHistoryCleanupModal from '../components/chat/ChatHistoryCleanupModal';
+import type { ChatCleanupPlan } from '../utils/chatHistoryCleanup';
 import Modal from '../components/os/Modal';
 import ProactiveSettingsModal from '../components/chat/ProactiveSettingsModal';
 import ActiveMsg2SettingsModal from '../components/chat/ActiveMsg2SettingsModal';
@@ -83,7 +85,9 @@ import {
     synthesizeSpeechDetailed,
 } from '../utils/ttsRouter';
 import { shouldAutoGenerateVoice, shouldAutoPlayGeneratedVoice } from '../utils/voicePlayback';
+import { voiceLanguageAnalyticsValue, voiceLanguagePromptLabel } from '../utils/voiceLanguage';
 import { fetchBlobForShare, shareOrDownloadBlob } from '../utils/shareExport';
+import { CollaborationStore } from '../features/collaboration/store';
 import { resolveTtsProvider } from '../utils/ttsProvider';
 import { isInstantConfigReady, loadInstantConfig } from '../utils/instantPushClient';
 import {
@@ -131,8 +135,18 @@ import {
     type ChatHistoryWindowRange,
 } from '../utils/chatHistoryWindow';
 import { getActiveVibeReference, VIBE_REFERENCE_CHANGED_EVENT } from '../utils/vibeReference';
+import type { CollaborationTransferMessage } from '../features/collaboration/types';
+import type { CollaborationInstallableArtifact } from '../features/collaboration/types';
+import {
+    installableToCharacterPatch,
+    installableToChatTheme,
+    installableToThemePatch,
+    installableToWorldbooks,
+    validateInstallableArtifact,
+} from '../features/collaboration/makers';
+import { upsertMountedWorldbooks } from '../utils/worldbook';
 
-const VOICE_LANG_LABELS: Record<string, string> = { en: 'English', ja: '日本語', ko: '한국어', fr: 'Français', es: 'Español' };
+const CollaborationWindow = React.lazy(() => import('../features/collaboration/CollaborationWindow'));
 const HISTORY_WINDOW_RADIUS = 25;
 const HISTORY_WINDOW_BATCH_SIZE = 30;
 
@@ -153,7 +167,7 @@ type InstantToolUiStatus = {
 };
 
 const Chat: React.FC = () => {
-    const { characters, activeCharacterId, setActiveCharacterId, updateCharacter, apiConfig, apiPresets, addApiPreset, closeApp, customThemes, removeCustomTheme, addToast, showError, userProfile, lastMsgTimestamp, groups, characterGroups, clearUnread, unreadMessages, realtimeConfig, memoryPalaceConfig, updateMemoryPalaceConfig, remoteVectorConfig, syncEmotionApiToAllCharacters, theme: osTheme, proactiveComposingChars, openDateWithChar } = useOS();
+    const { characters, activeCharacterId, setActiveCharacterId, addCharacter, updateCharacter, apiConfig, apiPresets, availableModels, addApiPreset, closeApp, customThemes, addCustomTheme, removeCustomTheme, addWorldbook, updateTheme, saveAppearancePreset, addToast, showError, userProfile, lastMsgTimestamp, groups, characterGroups, clearUnread, unreadMessages, realtimeConfig, memoryPalaceConfig, updateMemoryPalaceConfig, remoteVectorConfig, syncEmotionApiToAllCharacters, theme: osTheme, proactiveComposingChars, openDateWithChar } = useOS();
     const isProactiveComposing = !!(activeCharacterId && proactiveComposingChars[activeCharacterId]);
     const localDateKey = useLocalDateKey();
 
@@ -181,6 +195,8 @@ const Chat: React.FC = () => {
     const [showEntry, setShowEntry] = useState(false);
     const [input, setInput] = useState('');
     const [showPanel, setShowPanel] = useState<'none' | 'actions' | 'emojis' | 'chars'>('none');
+    const [collaborationOpen, setCollaborationOpen] = useState(false);
+    const [collaborationPreviewAssetId, setCollaborationPreviewAssetId] = useState<string | null>(null);
     const [memoryRepairOpen, setMemoryRepairOpen] = useState(false);
     const [favoritesOpen, setFavoritesOpen] = useState(false);
     const [showVibeReferenceLibrary, setShowVibeReferenceLibrary] = useState(false);
@@ -268,7 +284,6 @@ const Chat: React.FC = () => {
     const contextSuiteAllEnabled = memoryPalaceConfig.featureFlags?.recallRouter === true
         && memoryPalaceConfig.featureFlags?.interactionAdaptation === true
         && memoryPalaceConfig.featureFlags?.deepEngagement === true;
-    const [preserveContext, setPreserveContext] = useState(true);
     const [isVectorizing, setIsVectorizing] = useState(false);
     // 记忆宫殿「一键存入」：打开设置弹窗时算出待处理条数（排除热区的真实口径），处理中显示逐轮进度
     const [vectorizePendingCount, setVectorizePendingCount] = useState<number | null>(null);
@@ -298,6 +313,8 @@ const Chat: React.FC = () => {
 
     // --- Multi-Select State ---
     const [selectionMode, setSelectionMode] = useState(false);
+    const [showHistoryCleanup, setShowHistoryCleanup] = useState(false);
+    useEffect(() => setShowHistoryCleanup(false), [activeCharacterId]);
     const [selectedMsgIds, setSelectedMsgIds] = useState<Set<number>>(new Set());
     const [selectedImageJobIds, setSelectedImageJobIds] = useState<Set<string>>(new Set());
     // 思维链是 metadata.thinkingChain，没有独立 id，所以用宿主消息 id 作为键，
@@ -543,7 +560,7 @@ const Chat: React.FC = () => {
     };
 
     /** Drop in-memory + on-disk voice data for the given message ids. */
-    const discardVoiceForMessages = (ids: Iterable<number>) => {
+    const discardVoiceForMessages = (ids: Iterable<number>, deletePersisted = true) => {
         const idList = Array.from(ids);
         if (!idList.length) return;
         setVoiceDataMap(prev => {
@@ -561,6 +578,7 @@ const Chat: React.FC = () => {
             }
             return changed ? next : prev;
         });
+        if (!deletePersisted) return; // 区间清理已在同一事务中删掉磁盘语音。
         // Best-effort: remove persisted entries so they don't reappear on next load.
         for (const id of idList) {
             DB.deleteAsset(voiceAssetKey(id)).catch(() => { /* ignore */ });
@@ -701,7 +719,7 @@ const Chat: React.FC = () => {
                     if (!spokenText || spokenText.length < 2) return null;
                     originalText = stripTtsMarkupForDisplay(spokenText, apiConfig) || spokenText;
                     if (voiceLang) {
-                        const langLabel = VOICE_LANG_LABELS[voiceLang] || voiceLang;
+                        const langLabel = voiceLanguagePromptLabel(voiceLang);
                         const translated = await llmTranslate(`Translate the following text to ${langLabel}. Output ONLY the translation, nothing else.`, originalText);
                         if (translated) spokenText = translated;
                     }
@@ -1808,7 +1826,7 @@ const Chat: React.FC = () => {
         if ([
             'transfer', 'archive', 'settings', 'chrome-css', 'chrome-sound', 'fine-tune',
             'meetup', 'proactive', 'active-msg-2', 'schedule', 'mcd-request', 'luckin-request', 'vibe-reference',
-            'html-mode-toggle', 'html-mode-settings', 'thinking-settings', 'favorites',
+            'html-mode-toggle', 'html-mode-settings', 'thinking-settings', 'favorites', 'collaboration',
             // 独立小功能：点一下就是用了一次，跟「打开某个面板」同一性质。
             // send-emoji / select-category 这些是「挑哪一个」，不进名单。
             'poke', 'emoji-import', 'add-category', 'mcd-end', 'luckin-end',
@@ -1816,6 +1834,7 @@ const Chat: React.FC = () => {
             trackEvent('打开聊天功能面板项', { action: type });
         }
         switch (type) {
+            case 'collaboration': setShowPanel('none'); setCollaborationOpen(true); break;
             case 'memory-link': setShowPanel('none'); setMemoryRepairOpen(true); break;
             case 'favorites': setShowPanel('none'); setFavoritesOpen(true); break;
             case 'transfer': setModalType('transfer'); break;
@@ -2583,6 +2602,10 @@ const Chat: React.FC = () => {
 
     const handleToggleContextSuite = () => {
         const enabled = !contextSuiteAnyEnabled;
+        trackEvent('切换智能语境', {
+            状态: enabled ? '开' : '关',
+            此前: contextSuiteAllEnabled ? '全开' : contextSuiteAnyEnabled ? '部分开' : '全关',
+        });
         updateMemoryPalaceConfig({
             featureFlags: {
                 ...memoryPalaceConfig.featureFlags,
@@ -2596,6 +2619,9 @@ const Chat: React.FC = () => {
 
     const restoreAdaptiveContext = () => {
         if (!char.autoArchiveEnabled && !char.contextFollowsMemoryPalaceHwm) return;
+        trackEvent('恢复自适应上下文', {
+            来源: char.autoArchiveEnabled ? '全自动记忆' : '记忆水位线',
+        });
         setSettingsContextRangeMode('adaptive');
         setSettingsContextLimit(500);
         updateCharacter(char.id, {
@@ -2613,87 +2639,19 @@ const Chat: React.FC = () => {
         );
     };
 
-    const handleClearHistory = async () => {
-        if (!char) return;
-
-        // 记忆宫殿安全检查：如果角色启用了记忆宫殿，检查是否有未被向量化处理的消息
-        if (char.memoryPalaceEnabled) {
-            const hwm = await getMemoryPalaceHWM(char.id);
-            const allMessages = await DB.getMessagesByCharId(char.id, true);
-            const textMessages = allMessages.filter(m => m.type === 'text' && m.content?.trim());
-            const unprocessedCount = textMessages.filter(m => m.id > hwm).length;
-
-            if (unprocessedCount > 0) {
-                // 有未处理的消息，弹出选择对话框
-                const processedMsgs = allMessages.filter(m => m.id <= hwm);
-                const choice = confirm(
-                    `⚠️ 记忆宫殿提醒\n\n` +
-                    `当前有 ${unprocessedCount} 条聊天记录尚未被记忆宫殿处理（向量化）。\n` +
-                    `直接清空会导致这些记录永久丢失，无法被角色记住。\n\n` +
-                    `点击「确定」→ 仅删除已被记忆宫殿处理过的记录（安全）\n` +
-                    `点击「取消」→ 取消清空操作\n\n` +
-                    `（看不懂在问什么的话就点确定）`
-                );
-
-                if (!choice) {
-                    return; // 用户取消
-                }
-
-                // 安全删除：只删除高水位之前的消息
-                if (processedMsgs.length === 0) {
-                    addToast('没有已处理的记录可以删除', 'info');
-                    return;
-                }
-                const processedIds = processedMsgs.map(m => m.id);
-                await DB.deleteMessages(processedIds);
-                discardVoiceForMessages(processedIds);
-                // 清历史同样动了云端 fire_pack 的对话快照来源，落库后打脏（下同）。
-                markAmsgStateDirty({ char, userProfile, groups, realtimeConfig });
-                const remaining = allMessages.filter(m => m.id > hwm);
-                setMessages(remaining.slice(-200));
-                setTotalMsgCount(remaining.length);
-                setVisibleCount(LOAD_BATCH_SIZE);
-                visibleCountRef.current = LOAD_BATCH_SIZE;
-                markAmsgStateDirty({ char, userProfile, groups, realtimeConfig });
-                addToast(`已安全清理 ${processedMsgs.length} 条已处理记录，保留 ${remaining.length} 条未处理记录`, 'success');
-                trackEvent('清空聊天记录');
-                setModalType('none');
-                return;
-            }
-        }
-
-        // 原有逻辑（无记忆宫殿 or 所有消息已处理）
-        if (preserveContext) {
-            const allMessages = await DB.getMessagesByCharId(char.id, true);
-            const toKeep = allMessages.slice(-10);
-            const toKeepIds = new Set(toKeep.map(m => m.id));
-            const toDelete = allMessages.filter(m => !toKeepIds.has(m.id));
-            if (toDelete.length === 0) {
-                addToast('消息太少，无需清理', 'info');
-                return;
-            }
-            const toDeleteIds = toDelete.map(m => m.id);
-            await DB.deleteMessages(toDeleteIds);
-            discardVoiceForMessages(toDeleteIds);
-            setMessages(toKeep);
-            setTotalMsgCount(toKeep.length);
-            setVisibleCount(LOAD_BATCH_SIZE);
-            visibleCountRef.current = LOAD_BATCH_SIZE;
-            markAmsgStateDirty({ char, userProfile, groups, realtimeConfig });
-            addToast(`已清理 ${toDelete.length} 条历史，保留最近10条`, 'success');
-        } else {
-            const allIds = (await DB.getMessagesByCharId(char.id, true)).map(m => m.id);
-            await DB.clearMessages(char.id);
-            discardVoiceForMessages(allIds);
-            setMessages([]);
-            setTotalMsgCount(0);
-            setVisibleCount(LOAD_BATCH_SIZE);
-            visibleCountRef.current = LOAD_BATCH_SIZE;
-            markAmsgStateDirty({ char, userProfile, groups, realtimeConfig });
-            addToast('已清空', 'success');
-        }
-        trackEvent('清空聊天记录');
-        setModalType('none');
+    const handleHistoryCleanupDone = async (plan: ChatCleanupPlan) => {        trackEvent('清空聊天记录');
+        markAmsgStateDirty({ char, userProfile, groups, realtimeConfig });
+        if (activeCharIdRef.current !== plan.charId) return;
+        discardVoiceForMessages(plan.ids, false);
+        setAllHistoryMessages([]);
+        setSelectedMessage(null);
+        setSelectedMsgIds(new Set());
+        setSelectedThinkingMsgIds(new Set());
+        setHistoryWindowRange(null);
+        historyWindowRangeRef.current = null;
+        setVisibleCount(LOAD_BATCH_SIZE);
+        visibleCountRef.current = LOAD_BATCH_SIZE;
+        await reloadMessages(LOAD_BATCH_SIZE);
     };
 
     // 只在打开聊天设置时计算一键存入的待处理量；不开弹窗的用户没有额外 DB 扫描。
@@ -3429,6 +3387,215 @@ const Chat: React.FC = () => {
         setSelectedThinkingMsgIds(new Set());
     };
 
+    const handleOpenCollaborationFile = useCallback(async (msg: Message) => {
+        const assetId = String(msg.metadata?.collaborationAssetId || '');
+        const fileName = String(msg.metadata?.fileName || '协同文件');
+        if (!assetId) {
+            addToast('这条文件消息缺少原始文件引用', 'error');
+            return;
+        }
+        const isInstallable = msg.metadata?.collaborationAttachmentKind === 'installable'
+            || String(msg.metadata?.mimeType || '').includes('vnd.sullyos.installable');
+        if (isInstallable) {
+            setCollaborationPreviewAssetId(assetId);
+            setCollaborationOpen(true);
+            return;
+        }
+        try {
+            const blob = await CollaborationStore.getAsset(assetId);
+            if (!blob) {
+                addToast('原始文件已不存在，无法打开', 'error');
+                return;
+            }
+            const result = await shareOrDownloadBlob({
+                blob,
+                fileName,
+                shareTitle: `${char?.name || '角色'}发来的文件`,
+                preferDownloadOnWeb: true,
+            });
+            if (result === 'cancelled') return;
+            addToast(result === 'shared' ? '已打开系统保存/分享' : '文件已开始下载', 'success');
+        } catch (error: any) {
+            addToast(error?.message || '文件打开失败', 'error');
+        }
+    }, [addToast, char?.name]);
+
+    const handleCollaborationPreviewHandled = useCallback(() => {
+        setCollaborationPreviewAssetId(null);
+    }, []);
+
+    // 协同工作是独立 sidecar：只有用户点「发送给 ChatApp」时才通过这个窄桥写入主消息表。
+    // 其它协同会话、提示词、API 与文件都留在独立数据库，不进入主聊天 pipeline。
+    const handleCollaborationTransfer = useCallback(async (
+        sessionTitle: string,
+        transferredMessages: CollaborationTransferMessage[],
+    ) => {
+        if (!char || transferredMessages.length === 0) return;
+        const preview = transferredMessages.slice(0, 4).map(message => {
+            const sender = message.role === 'user' ? userProfile.name : char.name;
+            return `${sender}: ${message.content.replace(/\s+/g, ' ').slice(0, 36)}`;
+        });
+        if (transferredMessages.length > 4) preview.push(`… 共 ${transferredMessages.length} 条消息`);
+        const forwardData = {
+            fromUserName: userProfile.name,
+            fromCharName: `${char.name} · 协同工作`,
+            count: transferredMessages.length,
+            preview,
+            messages: transferredMessages,
+            collaborationTitle: sessionTitle,
+        };
+        await DB.saveMessage({
+            charId: char.id,
+            role: 'user',
+            type: 'chat_forward' as MessageType,
+            content: JSON.stringify(forwardData),
+            metadata: {
+                source: 'collaboration_transfer',
+                collaborationTitle: sessionTitle,
+            },
+        });
+        markAmsgStateDirty({ char, userProfile, groups, realtimeConfig });
+        await reloadMessages(visibleCountRef.current);
+    }, [char, userProfile, groups, realtimeConfig, reloadMessages]);
+
+    const handleCollaborationNotify = useCallback((message: string, type: 'success' | 'error' | 'info' = 'info') => {
+        addToast(message, type);
+    }, [addToast]);
+
+    const handleCollaborationArchiveToMemory = useCallback(async (
+        summary: string,
+        occurredAt: number,
+        sourceId: string,
+    ): Promise<string> => {
+        if (!char) throw new Error('当前角色不存在');
+        const occurred = new Date(occurredAt);
+        const date = `${occurred.getFullYear()}-${String(occurred.getMonth() + 1).padStart(2, '0')}-${String(occurred.getDate()).padStart(2, '0')}`;
+        const fragmentId = `collab_archive_${sourceId}`;
+
+        if (char.memoryPalaceEnabled) {
+            const embedding = memoryPalaceConfig.embedding;
+            const lightLLM = memoryPalaceConfig.lightLLM;
+            if (!embedding?.baseUrl || !embedding?.apiKey || !embedding?.model || !lightLLM?.baseUrl || !lightLLM?.model) {
+                throw new Error('角色已开启记忆宫殿，但宫殿的向量 API 或副 LLM 还没有配置完整');
+            }
+            const { importExternalMemoryText, mergePalaceFragmentsIntoMemories } = await import('../utils/memoryPalace/pipeline');
+            const imported = await importExternalMemoryText(
+                summary,
+                char.id,
+                char.name,
+                embedding,
+                lightLLM,
+                userProfile.name,
+            );
+            if (imported.error && imported.error !== 'no_memories') {
+                throw new Error(`记忆宫殿没有存好：${imported.error}`);
+            }
+            if (imported.stored === 0 && imported.skipped === 0) {
+                throw new Error('记忆宫殿没有提取出可保存的经历');
+            }
+            const palaceFragment: { id: string; date: string; summary: string; mood: string } = {
+                id: fragmentId,
+                date,
+                summary: `- ${summary}`,
+                mood: 'palace',
+            };
+            await updateCharacter(char.id, current => ({
+                memories: (current.memories || []).some(memory => memory.id === fragmentId)
+                    ? current.memories
+                    : mergePalaceFragmentsIntoMemories(current.memories || [], [palaceFragment]),
+            }));
+            return `已把这次协作的一条总结同时存入 ${char.name} 的记忆宫殿和神经链接`;
+        }
+
+        const archiveFragment: MemoryFragment = {
+            id: fragmentId,
+            date,
+            summary,
+            mood: 'collaboration',
+        };
+        await updateCharacter(char.id, current => ({
+            memories: (current.memories || []).some(memory => memory.id === fragmentId)
+                ? current.memories
+                : [...(current.memories || []), archiveFragment],
+        }));
+        return `已把这次协作的一条总结存入 ${char.name} 的神经链接`;
+    }, [char, memoryPalaceConfig.embedding, memoryPalaceConfig.lightLLM, updateCharacter, userProfile.name]);
+
+    const handleCollaborationInstall = useCallback(async (
+        artifact: CollaborationInstallableArtifact,
+        targetCharacterId?: string,
+    ): Promise<string> => {
+        const errors = validateInstallableArtifact(artifact);
+        if (errors.length > 0) throw new Error(errors[0]);
+
+        if (artifact.kind === 'bubble-theme') {
+            const nextTheme = installableToChatTheme(artifact);
+            await addCustomTheme(nextTheme);
+            if (targetCharacterId) await updateCharacter(targetCharacterId, { bubbleStyle: nextTheme.id });
+            const target = characters.find(item => item.id === targetCharacterId);
+            return target ? `气泡主题已保存，并给 ${target.name} 穿上` : '气泡主题已保存到气泡工坊';
+        }
+
+        if (artifact.kind === 'whitebox-css') {
+            const css = String(artifact.payload.css || '');
+            const stored = await DB.getAssetRaw('chrome_css_presets').catch(() => null);
+            const presets = Array.isArray(stored) ? stored.filter(item => item && typeof item === 'object') : [];
+            const nextPreset = { name: artifact.title.slice(0, 50), code: css, swatch: '#e2e8f0' };
+            await DB.saveAssetRaw('chrome_css_presets', [nextPreset, ...presets.filter((item: any) => item.name !== nextPreset.name)].slice(0, 60));
+            if (targetCharacterId) await updateCharacter(targetCharacterId, { chromeCustomCss: css });
+            const target = characters.find(item => item.id === targetCharacterId);
+            return target ? `白框已存入预设，并应用给 ${target.name}` : '白框已保存到预设';
+        }
+
+        if (artifact.kind === 'journal-css') {
+            await updateTheme({ journalAppearance: { preset: 'original', customCss: String(artifact.payload.css || '') } });
+            return '交换日记美化已保存并启用';
+        }
+
+        if (artifact.kind === 'schedule-css') {
+            await updateTheme({
+                scheduleCardAppearance: {
+                    ...(osTheme.scheduleCardAppearance || {}),
+                    customCss: String(artifact.payload.css || ''),
+                },
+            });
+            return '日程卡美化已保存并启用';
+        }
+
+        if (artifact.kind === 'psyche-css') {
+            if (!targetCharacterId) throw new Error('请选择使用心象卡美化的角色');
+            await updateCharacter(targetCharacterId, { thinkingChainCustomCss: String(artifact.payload.css || '') });
+            const target = characters.find(item => item.id === targetCharacterId);
+            return `心象卡美化已应用给 ${target?.name || '所选角色'}`;
+        }
+
+        if (artifact.kind === 'appearance-preset') {
+            const patch = installableToThemePatch(artifact);
+            const presetTheme = { ...osTheme, ...patch };
+            await saveAppearancePreset(artifact.title.slice(0, 50), presetTheme);
+            await updateTheme(patch);
+            return '整套界面已存入外观预设并启用';
+        }
+
+        if (artifact.kind === 'character-card') {
+            const created = await addCharacter();
+            await updateCharacter(created.id, installableToCharacterPatch(artifact));
+            return `角色「${String(artifact.payload.name || artifact.title)}」已创建`;
+        }
+
+        const books = installableToWorldbooks(artifact);
+        for (const book of books) await addWorldbook(book);
+        if (targetCharacterId) {
+            await updateCharacter(targetCharacterId, current => ({
+                mountedWorldbooks: upsertMountedWorldbooks(current.mountedWorldbooks || [], books),
+            }));
+        }
+        const target = characters.find(item => item.id === targetCharacterId);
+        return target
+            ? `世界书「${String(artifact.payload.category || artifact.title)}」的 ${books.length} 条内容已保存并挂载给 ${target.name}`
+            : `世界书已保存到世界书库，共 ${books.length} 条`;
+    }, [addCharacter, addCustomTheme, addWorldbook, characters, osTheme, saveAppearancePreset, updateCharacter, updateTheme]);
+
     // hideBeforeMessageId 不在视觉层过滤：用户依旧能往上翻到旧消息，只是 LLM 拉不到。
     // 真正想从聊天记录里抹掉，应该走"删除"。
     // 旧消息定位模式仍然维护一个有限 DOM 窗口，但窗口会随着上下滚动持续扩展。
@@ -3825,6 +3992,7 @@ const Chat: React.FC = () => {
                  </div>
              )}
 
+             {showHistoryCleanup && <ChatHistoryCleanupModal key={char.id} character={char} onClose={() => setShowHistoryCleanup(false)} onDeleted={handleHistoryCleanupDone} />}
              <ChatModals
                 modalType={modalType} setModalType={setModalType}
                 transferAmt={transferAmt} setTransferAmt={setTransferAmt}
@@ -3836,7 +4004,6 @@ const Chat: React.FC = () => {
                 contextSuiteAnyEnabled={contextSuiteAnyEnabled}
                 contextSuiteAllEnabled={contextSuiteAllEnabled}
                 onToggleContextSuite={handleToggleContextSuite}
-                preserveContext={preserveContext} setPreserveContext={setPreserveContext}
                 editContent={editContent} setEditContent={setEditContent}
                 archivePrompts={archivePrompts} selectedPromptId={selectedPromptId} setSelectedPromptId={(id: string) => {
                     setSelectedPromptId(id);
@@ -3863,7 +4030,7 @@ const Chat: React.FC = () => {
                 isPreparingEmojiFiles={isPreparingEmojiFiles}
                 isSavingEmojiFiles={isSavingEmojiFiles}
                 onSaveSettings={saveSettings} onBgUpload={handleBgUpload} onRemoveBg={() => updateCharacter(char.id, { chatBackground: undefined })}
-                onClearHistory={handleClearHistory} onArchive={handleFullArchive}
+                onOpenHistoryCleanup={() => { setModalType('none'); setShowHistoryCleanup(true); }} onArchive={handleFullArchive}
                 onCreatePrompt={createNewPrompt} onEditPrompt={editSelectedPrompt} onSavePrompt={handleSavePrompt} onDeletePrompt={handleDeletePrompt}
                 onSetHistoryStart={handleSetHistoryStart} onRestoreAdaptiveContext={restoreAdaptiveContext} onJumpToMessageInChat={handleJumpToMessageInChat} onEnterSelectionMode={handleEnterSelectionMode}
                 onReplyMessage={handleReplyMessage} onEditMessageStart={() => { if (selectedMessage) { setEditContent(selectedMessage.content); setModalType('edit-message'); } }}
@@ -3897,7 +4064,10 @@ const Chat: React.FC = () => {
                 chatVoiceAutoPlay={!!char.chatVoiceAutoPlay}
                 onToggleChatVoiceAutoPlay={() => updateCharacter(char.id, { chatVoiceAutoPlay: !char.chatVoiceAutoPlay })}
                 chatVoiceLang={char.chatVoiceLang || ''}
-                onSetChatVoiceLang={(lang: string) => updateCharacter(char.id, { chatVoiceLang: lang })}
+                onSetChatVoiceLang={(lang: string) => {
+                    updateCharacter(char.id, { chatVoiceLang: lang });
+                    trackEvent('设置聊天语音语种', { 语种: voiceLanguageAnalyticsValue(lang) });
+                }}
                 voiceAvailable={characterHasVoice(char, apiConfig)}
                 onGenerateVoice={selectedMessage ? () => handleManualTts(selectedMessage) : undefined}
                 voiceDownloadable={!!(selectedMessage?.id && voiceDataMap[selectedMessage.id])}
@@ -4218,6 +4388,7 @@ const Chat: React.FC = () => {
                             onMcdCandidate={handleMcdCandidate}
                             onResolveTransfer={handleResolveTransfer}
                             onResolveLifeRecord={handleResolveLifeRecord}
+                            onOpenCollaborationFile={handleOpenCollaborationFile}
                             thinkingChainOptions={thinkingChainOptions}
                         />
                         {showToolTrace && (
@@ -4780,6 +4951,36 @@ const Chat: React.FC = () => {
                     onClose={() => setFavoritesOpen(false)}
                     onJumpToMessage={handleOpenFavoriteMessage}
                 />
+            )}
+
+            {char && (
+                <React.Suspense fallback={collaborationOpen ? <div className="absolute inset-0 z-[120] grid place-items-center bg-slate-50 text-xs text-slate-400">正在打开协同工作…</div> : null}>
+                    <CollaborationWindow
+                        open={collaborationOpen}
+                        character={char}
+                        user={userProfile}
+                        theme={activeTheme}
+                        backgroundUrl={resolvedChatBackground}
+                        chatApi={apiConfig}
+                        apiPresets={apiPresets}
+                        availableModels={availableModels}
+                        characters={characters}
+                        groups={groups}
+                        emojis={emojis}
+                        emojiCategories={categories}
+                        recentChatMessages={messages}
+                        realtimeConfig={realtimeConfig}
+                        chatCollaborationEnabled={!!char.chatCollaborationEnabled}
+                        requestedPreviewAssetId={collaborationPreviewAssetId}
+                        onRequestedPreviewHandled={handleCollaborationPreviewHandled}
+                        onClose={() => { setCollaborationOpen(false); setCollaborationPreviewAssetId(null); }}
+                        onSendToChat={handleCollaborationTransfer}
+                        onInstallArtifact={handleCollaborationInstall}
+                        onArchiveToMemory={handleCollaborationArchiveToMemory}
+                        onToggleChatCollaboration={enabled => updateCharacter(char.id, { chatCollaborationEnabled: enabled })}
+                        notify={handleCollaborationNotify}
+                    />
+                </React.Suspense>
             )}
 
             <McdMiniApp

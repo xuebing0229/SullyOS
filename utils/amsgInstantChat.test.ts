@@ -910,6 +910,32 @@ describe('推送丢了的补收（服务端账本）', () => {
     expect(saved.sentAt).toBe(1_700_000_000_000);
   });
 
+  // Service Worker 直送和账本补收写的是同一批消息、同一个主键，补收落库就是整条覆盖。
+  // 要是连「到达时间」也覆盖成现在，这条在收件箱里躺了多久就永远查不出来了（一律显示
+  // 刚到），而「送达时用户在不在场」正是拿它判的——判错的后果是：明明用户离开时就到了、
+  // 系统通知早已完整念过一遍的消息，回来还要一条条重演打字。
+  it('SW 已经送到、还没被消费的那条，补收只换内容不改它到达的时刻', async () => {
+    const messageId = 'msg_task_7@1700000000000_hook_0';
+    const swReceivedAt = Date.now() - 30_000;   // SW 半分钟前就把它存进收件箱了
+    storeState.inbox = [{ messageId, receivedAt: swReceivedAt }] as any;
+    stubOutbox([entry(messageId, outboxPush(messageId))]);
+
+    await drainOutbox();
+
+    expect(storeState.saved[0].receivedAt, '第一次落到这台设备的时刻不该被抹掉').toBe(swReceivedAt);
+  });
+
+  it('本地压根没有过的那条，到达时刻才记成现在', async () => {
+    const messageId = 'msg_task_7@1700000000000_hook_1';
+    const before = Date.now();
+    storeState.inbox = [];
+    stubOutbox([entry(messageId, outboxPush(messageId))]);
+
+    await drainOutbox();
+
+    expect(storeState.saved[0].receivedAt).toBeGreaterThanOrEqual(before);
+  });
+
   // 账本是这一版才开始销账的，头一次拉会把历史积压一次性倒出来。不掐时效的话，那些
   // 早就落过库的老消息会因为超出近史去重的查询窗口而重新上屏。
   it('超过时效窗口的条目不进聊天流，当场销账', async () => {

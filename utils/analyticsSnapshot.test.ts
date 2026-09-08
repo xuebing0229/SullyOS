@@ -98,6 +98,7 @@ function poisonedSources(overrides: Partial<FeatureSources> = {}): FeatureSource
         // Worker 地址和共享密钥同样是用户填的，一起塞毒药。即时对话开关是布尔，
         // 放个 true 让「即时对话」那一格也走一遍扫毒。
         amsg2Global: { workerUrl: POISON.url, initializedAt: 1_700_000_000_000, instantChatEnabled: true },
+        collaborationUsage: { sessions: 2, messages: 9, assets: 1 },
         ...overrides,
     };
 }
@@ -227,6 +228,26 @@ describe('当前功能启用 · 三态不能塌成两态', () => {
 });
 
 describe('当前功能启用 · 开关值的判定', () => {
+    it('智能语境区分全开、部分开和全关', () => {
+        expect(collectFeatureFlags(poisonedSources({
+            memoryPalaceConfig: { featureFlags: { recallRouter: true, interactionAdaptation: true, deepEngagement: true } },
+        })).智能语境).toBe('全开');
+        expect(collectFeatureFlags(poisonedSources({
+            memoryPalaceConfig: { featureFlags: { recallRouter: true } },
+        })).智能语境).toBe('部分开');
+        expect(collectFeatureFlags(poisonedSources({ memoryPalaceConfig: {} })).智能语境).toBe('全关');
+    });
+
+    it('协同工作只报 count 分桶，不读取窗口、消息或文件内容', () => {
+        const flags = collectFeatureFlags(poisonedSources({
+            collaborationUsage: { sessions: 2, messages: 18, assets: 1 },
+        }));
+        expect(flags.协同工作).toBe('用过');
+        expect(flags.协同窗口数).toBe('2-3');
+        expect(flags.协同消息数).toBe('4+');
+        expect(flags.协同文件数).toBe('1');
+    });
+
     it("QQ 桥的 enabled 存 '0' 时算关着，不能当成「有值就是开」", () => {
         localStorage.setItem('qqBridge:wsUrl', POISON.url);
         localStorage.setItem('qqBridge:enabled', '0');
@@ -389,6 +410,16 @@ describe('当前角色设置 · 不泄漏角色内容', () => {
         );
         expect(flags.定时消息任务数).toBe('4+');
     });
+
+    it('日常聊天协同和粤语只报有没有角色使用，不报是哪个角色', () => {
+        const flags = collectCharSettings([
+            poisonedChar(),
+            poisonedChar({ chatCollaborationEnabled: true, chatVoiceLang: 'yue' }),
+        ], 'c1');
+        expect(flags.日常聊天协同).toBe('有人开');
+        expect(flags.粤语语音).toBe('有人选');
+        expectNoLeak(flags);
+    });
 });
 
 describe('当前角色设置 · 桌面陪伴与通话形象', () => {
@@ -468,5 +499,35 @@ describe('当前角色设置 · 桌面陪伴与通话形象', () => {
             'a',
         );
         expectNoLeak(flags);
+    });
+});
+
+
+/**
+ * event_data 的行数守卫。
+ *
+ * umami 把事件的每个属性单独存成 event_data 表的一行，所以「一条事件挂几个 key」
+ * 直接就是「一次上报写几行」。这三条快照事件是全仓库仅有的、属性数量上双的事件，
+ * 加起来占了那张表九成的体积——其余五百多个事件全是 0~1 个属性，合计不到一成。
+ *
+ * 所以这里钉的不是正确性，是成本。加 key 一直有种免费的错觉：写的时候只多一行代码，
+ * 账单上是每个用户每次冷启动多一行。撞上限了别直接改这里的数字，先在那条事件里找找
+ * 有没有已经不看了的 key——腾一格出来比加一格便宜。
+ *
+ * 上限是「当前值 + 2」：留一点顺手加的余量，又不至于让人一路加到六十都没人吭声。
+ */
+describe('快照事件的属性宽度', () => {
+    const plainChar = (id: string) => ({ id, name: '小明' } as unknown as CharacterProfile);
+
+    it('当前外观', () => {
+        expect(Object.keys(collectAppearance({} as OSTheme, undefined)).length).toBeLessThanOrEqual(38);
+    });
+
+    it('当前角色设置', () => {
+        expect(Object.keys(collectCharSettings([plainChar('a')], 'a')).length).toBeLessThanOrEqual(38);
+    });
+
+    it('当前功能启用', () => {
+        expect(Object.keys(collectFeatureFlags(poisonedSources())).length).toBeLessThanOrEqual(35);
     });
 });

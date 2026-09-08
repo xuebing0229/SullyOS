@@ -22,7 +22,7 @@ describe('API preset explicit add-model entry', () => {
 
   it('adds a chosen model without changing the preset default model or active API', () => {
     const start = settings.indexOf('const saveModelToPreset =');
-    const end = settings.indexOf('const openAddModelPicker =', start);
+    const end = settings.indexOf('const deleteModelFromPreset =', start);
     const handler = settings.slice(start, end);
     expect(handler).toContain('ensureApiPresetModel(preset, model)');
     expect(handler).toContain('updateApiPreset(preset.id, { models: updated.models })');

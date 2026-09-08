@@ -34,7 +34,7 @@ describe('打脏入口接线（保存后调 markAmsgStateDirty）', () => {
     for (const [start, end] of [
       ['const handleDeleteMessage', 'const confirmEditMessage'],
       ['const confirmEditMessage', 'const handleQuickReply'],
-      ['const handleClearHistory', "trackEvent('清空聊天记录');\n        setModalType"],
+      ['const handleHistoryCleanupDone', '// 只在打开聊天设置时计算一键存入'],
       ['const handleReroll', 'const handleImageSelect'],
     ] as const) {
       expect(sliceBetween(src, start, end), `${start} 里少了打脏调用`).toContain('markAmsgStateDirty(');
@@ -58,7 +58,9 @@ describe('LLM 凭据行的重传接线', () => {
       .toContain('ActiveMsgClient.refreshApiCredentialsForPendingTasks(');
     // 两个入口都得走这个出口：绕过去就是「聊天换了 API、后台任务还拿旧 Key」
     expect(sliceBetween(src, 'const handleSaveApi', 'const handleTestVisionApi')).toContain('commitApiConfig(');
-    expect(sliceBetween(src, 'const applyPreset', 'const openEditPreset')).toContain('commitApiConfig(');
+    const applyPreset = sliceBetween(src, 'const applyPreset', 'const openEditPreset');
+    expect(applyPreset).toContain('syncAmsgLlmCredentials({ ...apiConfig, ...patch })');
+    expect(applyPreset).toContain('ActiveMsgClient.refreshApiCredentialsForPendingTasks({ ...apiConfig, ...patch })');
   });
 
   it('角色 2.0 面板保存（单独 API 可能刚改过）：也重传一次', () => {

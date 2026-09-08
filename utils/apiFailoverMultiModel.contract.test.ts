@@ -46,6 +46,6 @@ describe('failover multi-model route contract', () => {
     expect(settings).toContain("['chat', 'story', 'emotion']");
     expect(settings).toContain('第一条为剧情专用主线路');
     expect(runtime).toContain("export type ApiFailoverScope = 'chat' | 'story' | 'emotion'");
-    expect(runtime).toContain("'direct-story-route-v1'");
+    expect(runtime).toContain("'direct-story-route-v2'");
   });
 });

@@ -121,7 +121,6 @@ await requireFile('utils/aiCompletionPipeline.ts');
 await requireFile('utils/aiCompletionPipeline.test.ts');
 
 await requireContains('utils/db.ts', [
-    'const DB_VERSION = 76',
     "STORE_AI_RESPONSE_CACHE = 'ai_response_cache'",
     "STORE_API_COST_DAILY = 'api_cost_daily'",
     'cleanupLegacyTurnContextSnapshots',
@@ -231,9 +230,9 @@ if (await exists('utils/db.ts')) {
     );
     if (!match) {
         fail('utils/db.ts 无法解析 DB_VERSION');
-    } else if (Number(match[1]) < 70) {
+    } else if (Number(match[1]) < 78) {
         fail(
-            `DB_VERSION=${match[1]}，不得低于整合线 v70`,
+            `DB_VERSION=${match[1]}，不得低于当前整合基线 v78`,
         );
     }
 }

@@ -6,6 +6,7 @@ const saveCharacter = vi.fn(async (_char: CharacterProfile) => {});
 vi.mock('./db', () => ({
     DB: {
         saveCharacter: (char: CharacterProfile) => saveCharacter(char),
+        getAllCharacters: async () => [],
     },
 }));
 

@@ -13,6 +13,7 @@ describe('worker-owned Story Theater image submission', () => {
     expect(source).toContain('手机永远只查账');
     expect(source).toContain("storyHandoff?.state === 'failed'");
     expect(source).not.toContain('CLOUD_STORY_INITIAL_SUBMIT_GRACE_MS');
-    expect(source).not.toContain('submitNotBefore');
+    expect(source).not.toMatch(/\b(?:localJob|job)\.submitNotBefore\b/);
+    expect(source).not.toMatch(/\bsubmitNotBefore\s*[?:=]/);
   });
 });

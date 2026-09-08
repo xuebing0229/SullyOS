@@ -26,7 +26,7 @@
 
 1. `ContextBuilder.buildCoreContext(char, user, true)`
 2. 记忆宫殿（若 `memoryPalaceEnabled`）：`injectMemoryPalace(char, recent, /*queryHint*/ X.name, user.name)` —— **query 用对方的人名**。
-3. 最近上下文：`char.contextLimit || 500`（即 chatapp 设置面板里的「上下文条数」），不再写死 50。
+3. 最近上下文：`loadCharacterContextMessages(char)`，与聊天共用「自适应 / 手动」和用户起点。自适应读取水位线后原文；手动可读取已归档的最近 N 条。
 
 ## 能力
 

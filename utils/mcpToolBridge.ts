@@ -444,7 +444,7 @@ export const buildMcpRejectedToolsFallbackBody = (baseReqBody: any): any => {
         : '';
     followBody.messages = [...followBody.messages, {
         role: 'system',
-        content: `[MCP 文字兼容模式已开启。注意：下列工具已经真实连接到客户端，你确实拥有这些工具；绝对不要回复“我没有工具”或“无法调用”。用户请求与某个工具匹配时，必须调用，不要改成口头描述。调用时只输出一行严格格式 tool_name({"参数":"值"})，不要加代码块、解释、道歉或其他文字；客户端会识别并执行。没有收到客户端返回前，不得声称成功。* 表示必填参数。\n${lines.join('\n')}${imageSelectionRules}${deterministicExample}]`,
+        content: `[MCP 文字兼容模式已开启。注意：下列工具已经真实连接到客户端，你确实拥有这些工具；绝对不要回复“我没有工具”或“无法调用”。用户请求与某个工具匹配时，必须调用，不要改成口头描述。每一步如果需要工具，只输出一行严格格式 tool_name({"参数":"值"})，不要加代码块、解释、道歉或其他文字；客户端会识别并执行后把结果返回给你。收到结果后，若任务还没完成就选择下一步真正能推进目标的工具，不要反复读取同一份说明或状态。没有收到客户端返回前，不得声称成功。* 表示必填参数。\n${lines.join('\n')}${imageSelectionRules}${deterministicExample}]`,
     }];
     return followBody;
 };

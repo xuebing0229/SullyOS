@@ -3,7 +3,7 @@
 // worker/amsg/src/index.ts
 import { DurableObject } from "cloudflare:workers";
 
-// node_modules/.pnpm/@rei-standard+amsg-server@2_c57770165a8a2256e4acaa4bae2ba803/node_modules/@rei-standard/amsg-server/dist/chunk-GN44PST5.mjs
+// node_modules/.pnpm/@rei-standard+amsg-server@2.6.0-next.27_@neondatabase+serverless@1.1.0_pg@8.22.0/node_modules/@rei-standard/amsg-server/dist/chunk-GN44PST5.mjs
 var UPDATABLE_COLUMNS = /* @__PURE__ */ new Set([
   "user_id",
   "uuid",
@@ -22,7 +22,7 @@ var UPDATABLE_COLUMNS = /* @__PURE__ */ new Set([
 var TASK_DELIVERY_COLUMNS = "id, user_id, uuid, encrypted_payload, message_type, next_send_at, retry_after, status, retry_count";
 var TASK_DETAIL_COLUMNS = "id, user_id, uuid, encrypted_payload, message_type, next_send_at, status, retry_count, last_error, created_at, updated_at";
 
-// node_modules/.pnpm/@rei-standard+amsg-shared@0.4.0-next.8/node_modules/@rei-standard/amsg-shared/dist/index.mjs
+// node_modules/.pnpm/@rei-standard+amsg-shared@0.4.0-next.9/node_modules/@rei-standard/amsg-shared/dist/index.mjs
 var TEXT_ENCODER = new TextEncoder();
 var TEXT_DECODER = new TextDecoder("utf-8", { fatal: false });
 function toUint8(buf) {
@@ -349,7 +349,10 @@ function looksLikeJson(raw) {
 function salvageJsonStringFields(raw) {
   const found = {};
   for (const match of raw.matchAll(JSON_STRING_FIELD)) {
-    if (found[match[1]] === void 0) found[match[1]] = unescapeJsonString(match[2]);
+    if (found[match[1]] !== void 0) continue;
+    const value = unescapeJsonString(match[2]);
+    if (match[1] === "type" && value === "error") continue;
+    found[match[1]] = value;
   }
   return {
     message: firstNonEmptyString(found.message, found.detail),
@@ -396,15 +399,27 @@ var UUID_SHAPE = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}
 function alternationCount(segment) {
   return (segment.match(/[a-z]+|[0-9]+/g) || []).length;
 }
+var MOE_SIZE_SEGMENT = /^\d+x\d+b$/;
+var HEX_SEGMENT = /^[0-9a-f]+$/;
+var HEX_RUN_MAX_CHARS = 15;
 function looksLikeModelId(token) {
   if (token.length > MODEL_ID_MAX_CHARS) return false;
   if (!MODEL_ID_LIKE.test(token)) return false;
   if (UUID_SHAPE.test(token)) return false;
   const segments = token.split(/[.-]/);
   if (CREDENTIAL_PREFIX_SEGMENTS.has(segments[0])) return false;
-  const randomLooking = segments.filter((segment) => alternationCount(segment) >= 3);
-  if (randomLooking.length === 0) return true;
-  return randomLooking.length === 1 && randomLooking[0].length <= 5;
+  let hexRunChars = 0;
+  for (const segment of segments) {
+    if (HEX_SEGMENT.test(segment)) {
+      hexRunChars += segment.length;
+      if (hexRunChars > HEX_RUN_MAX_CHARS) return false;
+    } else {
+      hexRunChars = 0;
+    }
+  }
+  return segments.every(
+    (segment) => alternationCount(segment) < 3 || MOE_SIZE_SEGMENT.test(segment)
+  );
 }
 function redactCredentials(text) {
   let s = text;
@@ -1121,7 +1136,7 @@ function stringifyDecisionForError(value) {
   }
 }
 
-// node_modules/.pnpm/@rei-standard+amsg-server@2_c57770165a8a2256e4acaa4bae2ba803/node_modules/@rei-standard/amsg-server/dist/chunk-3JEWYDM4.mjs
+// node_modules/.pnpm/@rei-standard+amsg-server@2.6.0-next.27_@neondatabase+serverless@1.1.0_pg@8.22.0/node_modules/@rei-standard/amsg-server/dist/chunk-FPVXATA4.mjs
 var DAY_MS = 24 * 60 * 60 * 1e3;
 var MAX_LISTED_SKIPPED_OCCURRENCES = 32;
 var MAX_ADJUST_STEPS = 32;
@@ -2111,26 +2126,29 @@ function planClientStateCleanup(ttl, now2) {
   }
   return targets;
 }
-async function writeClientStateEntries({ db, userId, userKey, entries }) {
+async function writeClientStateEntries({ db, userId, userKey, entries, now: now2 }) {
+  const nowFn = typeof now2 === "function" ? now2 : Date.now;
+  const at = nowFn();
   const physicalRows = [];
   const cleanups = [];
   const rootRowIndexes = [];
   const rootRowEntries = [];
-  let deleted = 0;
+  const deletions = [];
   for (const entry of entries) {
-    const guardAt = Number.isInteger(entry.version) && entry.version > 0 ? entry.version : entry.updatedAt;
+    const rawGuardAt = Number.isInteger(entry.version) && entry.version > 0 ? entry.version : entry.updatedAt;
+    const guardAt = Math.min(rawGuardAt, at);
     cleanups.push({
       namespace: chunkNamespaceFor(entry.namespace),
       keyPrefix: chunkKeyPrefixFor(entry.key),
       updatedAt: guardAt
     });
     if (entry.value === null) {
+      deletions.push({ cleanupIndex: cleanups.length, entry });
       cleanups.push({
         namespace: entry.namespace,
         key: entry.key,
         updatedAt: guardAt
       });
-      deleted++;
       continue;
     }
     rootRowIndexes.push(physicalRows.length);
@@ -2164,9 +2182,10 @@ async function writeClientStateEntries({ db, userId, userKey, entries }) {
   if (physicalRows.length === 0 && cleanups.length === 0) {
     return { upserted: 0, skipped: 0, deleted: 0, skippedEntries: [] };
   }
-  const result = await db.upsertClientState(userId, physicalRows, cleanups);
+  const result = await db.upsertClientState(userId, physicalRows, cleanups, at);
   let upserted = 0;
   let skipped = 0;
+  let deleted = 0;
   const skippedEntries = [];
   if (Array.isArray(result.outcomes) && result.outcomes.length === physicalRows.length) {
     for (let i = 0; i < rootRowIndexes.length; i++) {
@@ -2181,6 +2200,15 @@ async function writeClientStateEntries({ db, userId, userKey, entries }) {
   } else {
     upserted = result.upserted;
     skipped = result.skipped;
+  }
+  const cleanupOutcomes = Array.isArray(result.cleanupOutcomes) && result.cleanupOutcomes.length === cleanups.length ? result.cleanupOutcomes : null;
+  for (const { cleanupIndex, entry } of deletions) {
+    if (cleanupOutcomes && cleanupOutcomes[cleanupIndex] === false) {
+      skipped++;
+      skippedEntries.push({ namespace: entry.namespace, key: entry.key });
+    } else {
+      deleted++;
+    }
   }
   return { upserted, skipped, deleted, skippedEntries };
 }
@@ -2255,7 +2283,7 @@ function createStateAccessors({ db, userId, userKey, maxStateValueBytes, now: no
         ...entry.version !== void 0 ? { version: entry.version } : {}
       };
     });
-    return writeClientStateEntries({ db, userId, userKey, entries: normalized });
+    return writeClientStateEntries({ db, userId, userKey, entries: normalized, now: nowFn });
   };
   return { readState, writeState };
 }
@@ -2311,15 +2339,27 @@ async function discardUndeliveredPushes({ db, userId, pushes, sentIds }) {
 var OUTBOX_SCAN_PAGE_SIZE = 100;
 var OUTBOX_SCAN_MAX_ROWS = 5e3;
 async function discardUndeliveredPushesForTask({ db, userId, taskUuid }) {
-  if (!db || typeof db.listUnackedOutbox !== "function" || typeof db.discardOutboxMessages !== "function") return;
-  if (!taskUuid) return;
+  if (!db || !taskUuid) return;
+  if (typeof db.discardUndeliveredOutboxForTask === "function") {
+    try {
+      await db.discardUndeliveredOutboxForTask(userId, taskUuid);
+    } catch (error) {
+      console.warn("[amsg-server] outbox \u6309\u4EFB\u52A1\u64A4\u56DE\u672A\u6295\u9012\u7684\u884C\u5931\u8D25\uFF08\u5DF2\u5FFD\u7565\uFF09:", error && error.message);
+    }
+    return;
+  }
+  if (typeof db.listUnackedOutbox !== "function" || typeof db.discardOutboxMessages !== "function") return;
   const messageIds = [];
+  let exhausted = false;
   try {
     let cursor = 0;
     let scanned = 0;
     while (scanned < OUTBOX_SCAN_MAX_ROWS) {
       const rows = await db.listUnackedOutbox(userId, cursor, OUTBOX_SCAN_PAGE_SIZE);
-      if (!rows || rows.length === 0) break;
+      if (!rows || rows.length === 0) {
+        exhausted = true;
+        break;
+      }
       scanned += rows.length;
       let nextCursor = cursor;
       for (const row of rows) {
@@ -2330,11 +2370,19 @@ async function discardUndeliveredPushesForTask({ db, userId, taskUuid }) {
       }
       if (nextCursor <= cursor) break;
       cursor = nextCursor;
-      if (rows.length < OUTBOX_SCAN_PAGE_SIZE) break;
+      if (rows.length < OUTBOX_SCAN_PAGE_SIZE) {
+        exhausted = true;
+        break;
+      }
     }
   } catch (error) {
     console.warn("[amsg-server] outbox \u67E5\u672A\u6295\u9012\u7684\u884C\u5931\u8D25\uFF08\u5DF2\u5FFD\u7565\uFF09:", error && error.message);
     return;
+  }
+  if (!exhausted) {
+    console.warn(
+      `[amsg-server] outbox \u626B\u63CF\u5230 ${OUTBOX_SCAN_MAX_ROWS} \u884C\u4E0A\u9650\u4ECD\u672A\u626B\u5B8C\uFF0C\u4EFB\u52A1 ${taskUuid} \u53EF\u80FD\u8FD8\u6709\u672A\u6295\u9012\u7684\u884C\u6CA1\u64A4\u6389\uFF08\u88AB\u53D6\u6D88\u4EFB\u52A1\u7684\u884C\u901A\u5E38\u662F\u6700\u65B0\u7684\uFF0C\u6B63\u597D\u5728\u4E0A\u9650\u4E4B\u5916\uFF09\u3002\u7ED9\u9002\u914D\u5668\u5B9E\u73B0 discardUndeliveredOutboxForTask \u53EF\u7ED5\u5F00\u8FD9\u4E2A\u4E0A\u9650\u3002`
+    );
   }
   await discardPushesFromOutbox({ db, userId, messageIds });
 }
@@ -2391,10 +2439,17 @@ function createResultEmitter({
   sessionId,
   occurrenceMs,
   webpush,
-  now: now2
+  now: now2,
+  isCancelled
 }) {
   const nowFn = typeof now2 === "function" ? now2 : Date.now;
   let emitted = 0;
+  const assertNotCancelled = () => {
+    if (typeof isCancelled !== "function" || !isCancelled()) return;
+    const error = new Error("\u4EFB\u52A1\u5728\u6295\u9012\u671F\u95F4\u88AB\u53D6\u6D88\u6216\u9876\u66FF\uFF0C\u7ED3\u679C\u5DF2\u4E2D\u6B62");
+    error.code = TASK_CANCELLED_CODE;
+    throw error;
+  };
   const emitResult = async (payload) => {
     if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
       throw new TypeError("emitResult(payload) \u9700\u8981\u4E00\u4E2A\u666E\u901A\u5BF9\u8C61");
@@ -2406,9 +2461,10 @@ function createResultEmitter({
       );
     }
     const seq = emitted++;
+    const messageType = decryptedPayload.messageType || "auto";
     const push = buildResultPush({
-      messageType: decryptedPayload.messageType || "auto",
-      source: "scheduled",
+      messageType,
+      source: messageType === "instant" ? "instant" : "scheduled",
       messageId: `${messageIdBase}_result_${seq}`,
       sessionId,
       ...payload,
@@ -2422,9 +2478,11 @@ function createResultEmitter({
       recurrenceType: decryptedPayload.recurrenceType || "none",
       occurrenceMs
     });
+    assertNotCancelled();
     await db.appendOutboxMessages(task.user_id, await toOutboxRows([push], userKey, nowFn()));
     let pushed;
     try {
+      assertNotCancelled();
       pushed = shouldSendPush(push, { outboxed: true }) ? await sendResultPush({ db, task, userKey, decryptedPayload, webpush, push }) : false;
     } catch (error) {
       await discardUndeliveredPushes({ db, userId: task.user_id, pushes: [push], sentIds: [] });
@@ -2620,7 +2678,10 @@ async function runAgenticFire({ task, decryptedPayload, userKey, ctx }) {
     sessionId,
     occurrenceMs,
     webpush: ctx.webpush,
-    now: nowFn
+    now: nowFn,
+    // run-tick 在投递 ctx 上挂的取消信号（与 guardWebpushWithLease 读的是同一
+    // 个租约状态），emitResult 不发推送的那条路要靠它拦下已取消任务的落行。
+    isCancelled: typeof ctx.isTaskCancelled === "function" ? ctx.isTaskCancelled : null
   });
   const maxScheduledTasksPerFire = Number.isInteger(ctx.maxScheduledTasksPerFire) && ctx.maxScheduledTasksPerFire >= 0 ? ctx.maxScheduledTasksPerFire : DEFAULT_MAX_SCHEDULED_TASKS_PER_FIRE;
   let scheduledTaskCount = 0;
@@ -2806,6 +2867,9 @@ async function runAgenticFire({ task, decryptedPayload, userKey, ctx }) {
       );
     }
     const cancelled = await ctx.db.deleteTaskByUuid(uuid, task.user_id);
+    if (cancelled) {
+      await discardUndeliveredPushesForTask({ db: ctx.db, userId: task.user_id, taskUuid: uuid });
+    }
     return { cancelled: !!cancelled };
   };
   const renewTask = async (uuid, nextSendAt) => {
@@ -3262,12 +3326,36 @@ function sleepFor(ctx, ms) {
 }
 function resolveMultipartOptions(ctx) {
   const configured = ctx && ctx.multipart && typeof ctx.multipart === "object" ? ctx.multipart : {};
-  return {
+  const resolved = {
     maxChunkBytes: positiveIntegerOr(configured.maxChunkBytes, DEFAULT_MULTIPART_CHUNK_BYTES),
     maxChunks: positiveIntegerOr(configured.maxChunks, DEFAULT_MULTIPART_MAX_CHUNKS),
     maxTotalBytes: positiveIntegerOr(configured.maxTotalBytes, DEFAULT_MULTIPART_MAX_TOTAL_BYTES),
     ttlMs: positiveIntegerOr(configured.ttlMs, DEFAULT_MULTIPART_TTL_MS)
   };
+  assertChunkBytesFitPushLimit(resolved);
+  return resolved;
+}
+function assertChunkBytesFitPushLimit({ maxChunkBytes, maxChunks, ttlMs }) {
+  const PROBE_CHUNK_BYTES = 3;
+  const [probe] = buildMultipartPushPayloads(
+    { messageKind: "reasoning" },
+    { serializedPayload: "x".repeat(PROBE_CHUNK_BYTES), maxChunkBytes: PROBE_CHUNK_BYTES, ttlMs }
+  );
+  const digitHeadroom = 2 * (String(maxChunks).length - 1);
+  const envelopeOverhead = measurePushPayload(JSON.stringify(probe)).bytes - base64UrlLength(PROBE_CHUNK_BYTES) + digitHeadroom;
+  const worstEnvelopeBytes = envelopeOverhead + base64UrlLength(maxChunkBytes);
+  if (worstEnvelopeBytes <= MAX_PUSH_PAYLOAD_BYTES) return;
+  let maxAllowed = Math.floor((MAX_PUSH_PAYLOAD_BYTES - envelopeOverhead) * 3 / 4);
+  while (maxAllowed > 0 && envelopeOverhead + base64UrlLength(maxAllowed) > MAX_PUSH_PAYLOAD_BYTES) {
+    maxAllowed--;
+  }
+  throw new DeploymentConfigError(
+    `MULTIPART_CHUNK_BYTES_TOO_LARGE: multipart.maxChunkBytes = ${maxChunkBytes} \u5207\u51FA\u7684\u5206\u7247\u4FE1\u5C01\u6700\u574F ${worstEnvelopeBytes} \u5B57\u8282\uFF0C\u8D85\u8FC7\u5355\u6761 push \u660E\u6587\u4E0A\u9650 ${MAX_PUSH_PAYLOAD_BYTES} \u5B57\u8282\uFF0C\u6BCF\u4E00\u7247\u90FD\u4F1A\u88AB\u63A8\u9001\u670D\u52A1\u62D2\u6536\u3002\u8FD9\u4E2A\u65CB\u94AE\u53EA\u7528\u4E8E\u6536\u7A84\uFF0C\u5F53\u524D\u914D\u7F6E\u4E0B\u6700\u5927 ${maxAllowed}`,
+    { code: "MULTIPART_CHUNK_BYTES_TOO_LARGE" }
+  );
+}
+function base64UrlLength(n) {
+  return Math.ceil(n * 4 / 3);
 }
 function positiveIntegerOr(value, fallback) {
   return Number.isInteger(value) && /** @type {number} */
@@ -4021,13 +4109,14 @@ async function deliverTasks(ctx, tasks) {
     groupsTakenThisTick.add(scopedKey);
     return { taken: false, rawKey };
   }
-  function recordCancelled(task, status) {
+  async function recordCancelled(task, status) {
     results.cancelledTasks.push({
       taskId: task.id,
       reason: "\u4EFB\u52A1\u5728\u6295\u9012\u671F\u95F4\u88AB\u53D6\u6D88\u6216\u9876\u66FF",
       status
     });
     console.warn(`[amsg-server] \u4EFB\u52A1 ${task.id} \u5728\u6295\u9012\u671F\u95F4\u88AB\u53D6\u6D88\u6216\u9876\u66FF\uFF08${status}\uFF09`);
+    await discardUndeliveredPushesForTask({ db, userId: task.user_id, taskUuid: task.uuid });
   }
   async function payloadStillFresh(task) {
     if (typeof db.getTaskByUuid !== "function" || !task.uuid) return true;
@@ -4209,7 +4298,8 @@ async function deliverTasks(ctx, tasks) {
           messageIdBase: task.id != null ? `msg_task_${task.id}${occurrenceSuffix(task)}` : `msg_stale_${task.uuid || ""}`,
           sessionId: task.id != null ? `sess_task_${task.id}${occurrenceSuffix(task)}` : `sess_stale_${task.uuid || ""}`,
           occurrenceMs,
-          webpush: ctx.webpush
+          webpush: ctx.webpush,
+          isCancelled: () => lease.lost
         });
         const recurring = isRecurringType(recurrenceType);
         const plan = recurring ? planNextOccurrence(occurrenceMs, recurrenceType, Date.now(), tzId) : null;
@@ -4258,13 +4348,19 @@ async function deliverTasks(ctx, tasks) {
     try {
       sendResult = await processSingleMessage(
         task,
-        { ...ctx, db, masterKey, webpush: guardWebpushWithLease(ctx.webpush, lease) },
+        {
+          ...ctx,
+          db,
+          masterKey,
+          webpush: guardWebpushWithLease(ctx.webpush, lease),
+          isTaskCancelled: () => lease.lost
+        },
         masterKey,
         { userKey, payload: decryptedPayload }
       );
     } catch (error) {
       if (lease.lost) {
-        recordCancelled(task, "cancelled_mid_delivery");
+        await recordCancelled(task, "cancelled_mid_delivery");
         return;
       }
       await handleDeliveryFailure(
@@ -4279,7 +4375,7 @@ async function deliverTasks(ctx, tasks) {
     }
     if (!sendResult.success) {
       if (lease.lost) {
-        recordCancelled(task, "cancelled_mid_delivery");
+        await recordCancelled(task, "cancelled_mid_delivery");
         return;
       }
       await handleDeliveryFailure(
@@ -4302,7 +4398,7 @@ async function deliverTasks(ctx, tasks) {
       if (recurrenceType === "none") {
         markLeaseReleased(task.id);
         if (rowVanished(await db.deleteTaskById(task.id))) {
-          recordCancelled(task, "cancelled_after_delivery");
+          await recordCancelled(task, "cancelled_after_delivery");
           return;
         }
         results.deletedOnceOffTasks++;
@@ -4316,7 +4412,7 @@ async function deliverTasks(ctx, tasks) {
           ...clearedPayload ? { encrypted_payload: clearedPayload } : {}
         });
         if (rowVanished(updated)) {
-          recordCancelled(task, "cancelled_after_delivery");
+          await recordCancelled(task, "cancelled_after_delivery");
           return;
         }
         results.updatedRecurringTasks++;
@@ -4500,6 +4596,13 @@ function createUpdateMessageHandler(ctx) {
       return { status: 409, body: { success: false, error: { code: "TASK_ALREADY_COMPLETED", message: "\u4EFB\u52A1\u5DF2\u5B8C\u6210\u6216\u5DF2\u5931\u8D25\uFF0C\u65E0\u6CD5\u66F4\u65B0" } } };
     }
     const existingData = JSON.parse(await decryptFromStorage(existingTask.encrypted_payload, userKey));
+    if ((updates.apiUrl || updates.apiKey || updates.primaryModel) && hasChatCredRef(existingData)) {
+      return { status: 409, body: { success: false, error: {
+        code: "TASK_USES_CRED_REFS",
+        message: "\u4EFB\u52A1\u5DF2\u901A\u8FC7 credRefs.chat \u5F15\u7528\u51ED\u636E\uFF0C\u89E6\u53D1\u65F6\u4EE5\u51ED\u636E\u8868\u4E3A\u51C6\uFF0C\u5185\u8054 apiUrl / apiKey / primaryModel \u7684\u66F4\u65B0\u4E0D\u4F1A\u751F\u6548\u3002\u6362 Key \u8BF7\u7528 PUT /llm-credentials \u8986\u76D6\u5BF9\u5E94\u51ED\u636E\uFF0C\u6216\u5728\u672C\u6B21\u8BF7\u6C42\u91CC\u6539\u7528 credRefs \u6307\u5411\u65B0\u51ED\u636E",
+        details: { invalidFields: ["apiUrl", "apiKey", "primaryModel"].filter((name) => updates[name]) }
+      } } };
+    }
     const promptUpdates = {};
     if (updates.completePrompt) {
       promptUpdates.completePrompt = updates.completePrompt;
@@ -5054,6 +5157,19 @@ var CLIENT_STATE_TABLE_SQL = `
     PRIMARY KEY (user_id, namespace, key)
   )
 `;
+var CLIENT_STATE_INDEXES = [
+  {
+    name: "idx_client_state_cleanup",
+    // 服务 cleanupClientState 的
+    //   DELETE FROM client_state WHERE namespace = ? AND updated_at < ?
+    // 主键 (user_id, namespace, key) 最左列是 user_id，按 namespace 起头的条件
+    // 吃不到它。
+    sql: `CREATE INDEX IF NOT EXISTS idx_client_state_cleanup
+          ON client_state (namespace, updated_at)`,
+    description: "TTL cleanup index (cleanupClientState by namespace + updated_at)",
+    critical: false
+  }
+];
 var PUSH_SUBSCRIPTION_TABLE_SQL = `
   CREATE TABLE IF NOT EXISTS push_subscriptions (
     user_id TEXT PRIMARY KEY,
@@ -5087,11 +5203,57 @@ var MESSAGE_OUTBOX_TABLE_SQL = `
     UNIQUE (user_id, message_id)
   )
 `;
-var MESSAGE_OUTBOX_INDEX_SQL = `
-  CREATE INDEX IF NOT EXISTS idx_outbox_unacked
-    ON message_outbox (user_id, id)
-    WHERE acked_at IS NULL
-`;
+var MESSAGE_OUTBOX_INDEXES = [
+  {
+    name: "idx_outbox_unacked",
+    // 服务 listUnackedOutbox 的
+    //   SELECT … WHERE user_id = ? AND acked_at IS NULL AND id > ? ORDER BY id
+    sql: `CREATE INDEX IF NOT EXISTS idx_outbox_unacked
+          ON message_outbox (user_id, id)
+          WHERE acked_at IS NULL`,
+    description: "Unacked outbox paging index (GET /outbox)",
+    critical: false
+  },
+  {
+    name: "idx_outbox_created",
+    // 服务 cleanupOutbox 的
+    //   DELETE FROM message_outbox WHERE created_at < ?
+    sql: `CREATE INDEX IF NOT EXISTS idx_outbox_created
+          ON message_outbox (created_at)`,
+    description: "Outbox retention cleanup index (cleanupOutbox by created_at)",
+    critical: false
+  },
+  {
+    name: "idx_outbox_acked",
+    // 服务 cleanupOutbox 的
+    //   DELETE FROM message_outbox WHERE acked_at IS NOT NULL AND acked_at < ?
+    // 部分索引只收已 ack 的行：未 ack 的那部分本来就不是这条语句的目标，
+    // idx_outbox_unacked 的 WHERE 条件与它正好互补。
+    sql: `CREATE INDEX IF NOT EXISTS idx_outbox_acked
+          ON message_outbox (acked_at)
+          WHERE acked_at IS NOT NULL`,
+    description: "Acked outbox cleanup index (cleanupOutbox by acked_at)",
+    critical: false
+  },
+  {
+    name: "idx_outbox_task_undelivered",
+    // 服务 discardUndeliveredOutboxForTask 的
+    //   DELETE FROM message_outbox
+    //   WHERE user_id = ? AND task_uuid = ? AND delivered_at IS NULL AND acked_at IS NULL
+    // 没有它这条只能靶着 user_id 走 (user_id, message_id) 或 idx_outbox_unacked，
+    // 单用户部署下 user_id 对每一行都成立，等于把整个未 ack 积压扫一遍。
+    sql: `CREATE INDEX IF NOT EXISTS idx_outbox_task_undelivered
+          ON message_outbox (user_id, task_uuid)
+          WHERE delivered_at IS NULL AND acked_at IS NULL`,
+    description: "Undelivered-by-task discard index (cancel / supersede)",
+    critical: false
+  }
+];
+var SQLITE_ALL_INDEXES = [
+  ...SQLITE_INDEXES,
+  ...CLIENT_STATE_INDEXES,
+  ...MESSAGE_OUTBOX_INDEXES
+];
 function parseTableName(sql) {
   const match = /CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([A-Za-z_][A-Za-z0-9_]*)/i.exec(sql);
   return match ? match[1] : "";
@@ -5126,7 +5288,7 @@ var SQLITE_REQUIRED_SCHEMA = Object.freeze({
     describeTable(LLM_CREDENTIALS_TABLE_SQL),
     describeTable(MESSAGE_OUTBOX_TABLE_SQL)
   ])),
-  indexes: Object.freeze(SQLITE_INDEXES.filter((index) => index.critical).map((index) => index.name))
+  indexes: Object.freeze(SQLITE_ALL_INDEXES.filter((index) => index.critical).map((index) => index.name))
 });
 function prefixRangeEnd(prefix) {
   const points = Array.from(prefix);
@@ -5229,7 +5391,6 @@ var D1Adapter = class {
     await this._db.prepare(PUSH_SUBSCRIPTION_TABLE_SQL).run();
     await this._db.prepare(LLM_CREDENTIALS_TABLE_SQL).run();
     await this._db.prepare(MESSAGE_OUTBOX_TABLE_SQL).run();
-    await this._db.prepare(MESSAGE_OUTBOX_INDEX_SQL).run();
     for (const migration of SQLITE_MIGRATIONS) {
       try {
         await this._db.prepare(migration.sql).run();
@@ -5238,7 +5399,7 @@ var D1Adapter = class {
       }
     }
     const indexResults = [];
-    for (const index of SQLITE_INDEXES) {
+    for (const index of SQLITE_ALL_INDEXES) {
       try {
         await this._db.prepare(index.sql).run();
         indexResults.push({ name: index.name, status: "success", description: index.description, critical: !!index.critical });
@@ -5576,8 +5737,17 @@ var D1Adapter = class {
    * than the stored row (updatedAt strictly lower) is skipped; equal or
    * newer overwrites. Values arrive pre-encrypted (the handler encrypts).
    *
+   * 例外是「来自未来」的行：`updated_at` 晚于服务端当前时间的行一律放行覆盖。
+   * 比较值是客户端自己报的时间戳，设备时钟只要领先过真实时间（用户改过系统
+   * 时间、时区或日期误操作），那一刻同步上来的行就带着一个还没到的时刻；之后
+   * 这台设备发什么都比它「旧」，条件写全被无声跳过，云端那行要等真实时间追上
+   * 去才解得开——客户端删本地数据、重装都碰不到它。合法写入不可能来自未来，
+   * 所以这种行按脏数据处理：服务端的钟是可信的那一个，拿它当判据放行。一次
+   * 正常写入就把 `updated_at` 拉回现实，之后旧不盖新照常生效。
+   *
    * `cleanups` 是删除项：在同一 batch 里先于 upsert 执行，`updated_at <= ?`
-   * 条件保证陈旧批次删不动更新写入的行。两种形态——
+   * 条件保证陈旧批次删不动更新写入的行（同样对未来时间戳的行放行，否则删一条
+   * 状态时切片行留在库里成孤儿）。两种形态——
    *   - `{ namespace, keyPrefix, updatedAt }` 删 key 前缀下的所有行，用来清掉
    *     大值旧写入留下的切片行（见 lib/state-chunks.js）；
    *   - `{ namespace, key, updatedAt }` 删这一个 key，用来删整条状态（前缀会
@@ -5595,43 +5765,76 @@ var D1Adapter = class {
    * @param {string} userId
    * @param {Array<{ namespace: string, key: string, value: string, updatedAt: number }>} entries
    * @param {Array<{ namespace: string, key?: string, keyPrefix?: string, updatedAt: number }>} [cleanups]
-   * @returns {Promise<{ upserted: number, skipped: number, outcomes: boolean[] }>}
+   * @param {number} [now] - 服务端当前时刻（epoch 毫秒），判定「这行来自未来」用的
+   *   就是它。调用方（lib/client-state-store.js）传下来，测试可以钉住一个假时钟；
+   *   自定义调用方不传时退回本机时钟。
+   * @returns {Promise<{ upserted: number, skipped: number, outcomes: boolean[], cleanupOutcomes?: Array<boolean|null> }>}
    *   `outcomes[i]` 对应 entries[i] 是否真的写入（changes > 0）。
+   *   `cleanupOutcomes[i]` 对应 cleanups[i]（传了 cleanups 才有）：精确 key 形态
+   *   回 `true` = 这个 key 的行已经不在（删掉了，或本来就没有）、`false` = 行还在
+   *   （库里那行更新，删除被条件写拦下）；前缀形态不探测，回 `null`。
    */
-  async upsertClientState(userId, entries, cleanups = []) {
+  async upsertClientState(userId, entries, cleanups = [], now2 = Date.now()) {
     const UPSERT_SQL = `INSERT INTO client_state (user_id, namespace, key, value, updated_at)
        VALUES (?, ?, ?, ?, ?)
        ON CONFLICT (user_id, namespace, key) DO UPDATE SET
          value = excluded.value,
          updated_at = excluded.updated_at
-       WHERE excluded.updated_at >= client_state.updated_at`;
+       WHERE excluded.updated_at >= client_state.updated_at
+          OR client_state.updated_at > ?`;
     const CLEANUP_PREFIX_SQL = `DELETE FROM client_state
-       WHERE user_id = ? AND namespace = ? AND key >= ? AND key < ? AND updated_at <= ?`;
+       WHERE user_id = ? AND namespace = ? AND key >= ? AND key < ?
+         AND (updated_at <= ? OR updated_at > ?)`;
     const CLEANUP_KEY_SQL = `DELETE FROM client_state
-       WHERE user_id = ? AND namespace = ? AND key = ? AND updated_at <= ?`;
-    const buildStatements = () => [
-      ...cleanups.map((c) => typeof c.key === "string" ? this._db.prepare(CLEANUP_KEY_SQL).bind(userId, c.namespace, c.key, c.updatedAt) : this._db.prepare(CLEANUP_PREFIX_SQL).bind(userId, c.namespace, c.keyPrefix, prefixRangeEnd(c.keyPrefix), c.updatedAt)),
-      ...entries.map(
-        (entry) => this._db.prepare(UPSERT_SQL).bind(userId, entry.namespace, entry.key, entry.value, entry.updatedAt)
-      )
-    ];
+       WHERE user_id = ? AND namespace = ? AND key = ?
+         AND (updated_at <= ? OR updated_at > ?)`;
+    const PROBE_KEY_SQL = `SELECT COUNT(*) AS n FROM client_state
+       WHERE user_id = ? AND namespace = ? AND key = ?`;
+    const statements = [];
+    const probeIndexes = [];
+    for (const c of cleanups) {
+      if (typeof c.key === "string") {
+        statements.push(this._db.prepare(CLEANUP_KEY_SQL).bind(userId, c.namespace, c.key, c.updatedAt, now2));
+        probeIndexes.push(statements.length);
+        statements.push(this._db.prepare(PROBE_KEY_SQL).bind(userId, c.namespace, c.key));
+      } else {
+        statements.push(
+          this._db.prepare(CLEANUP_PREFIX_SQL).bind(userId, c.namespace, c.keyPrefix, prefixRangeEnd(c.keyPrefix), c.updatedAt, now2)
+        );
+        probeIndexes.push(null);
+      }
+    }
+    const upsertStart = statements.length;
+    for (const entry of entries) {
+      statements.push(
+        this._db.prepare(UPSERT_SQL).bind(userId, entry.namespace, entry.key, entry.value, entry.updatedAt, now2)
+      );
+    }
     let results;
     if (typeof this._db.batch === "function") {
-      results = await this._db.batch(buildStatements());
+      results = await this._db.batch(statements);
     } else {
       results = [];
-      for (const stmt of buildStatements()) {
+      for (const stmt of statements) {
         results.push(await stmt.run());
       }
     }
-    const outcomes = results.slice(cleanups.length).map((res) => res.meta.changes > 0);
+    const outcomes = results.slice(upsertStart).map((res) => res.meta.changes > 0);
     let upserted = 0;
     let skipped = 0;
     for (const wrote of outcomes) {
       if (wrote) upserted++;
       else skipped++;
     }
-    return { upserted, skipped, outcomes };
+    const result = { upserted, skipped, outcomes };
+    if (cleanups.length > 0) {
+      result.cleanupOutcomes = probeIndexes.map((probeAt) => {
+        if (probeAt === null) return null;
+        const row = results[probeAt] && Array.isArray(results[probeAt].results) ? results[probeAt].results[0] : null;
+        return Number(row?.n ?? 0) === 0;
+      });
+    }
+    return result;
   }
   /**
    * All entries of one namespace (values still encrypted).
@@ -5899,6 +6102,25 @@ var D1Adapter = class {
     );
   }
   /**
+   * 把某条任务名下还没发出去的行一次删掉（取消 / 顶替时的 outbox 清理）。
+   *
+   * 判据与 discardOutboxMessages 相同：只删 delivered_at 与 acked_at 均为
+   * NULL 的行——已经推给设备 / 已 ack 的照旧留着。按 task_uuid 直删是为了不
+   * 受未 ack 积压量的影响：靠翻页扫描挑行的话，积压一大这条任务的行就落在
+   * 扫描上限之外（见 lib/outbox-store.js 的 discardUndeliveredPushesForTask）。
+   *
+   * @param {string} userId
+   * @param {string} taskUuid
+   * @returns {Promise<number>} 删掉的行数
+   */
+  async discardUndeliveredOutboxForTask(userId, taskUuid) {
+    const res = await this._db.prepare(
+      `DELETE FROM message_outbox
+       WHERE user_id = ? AND task_uuid = ? AND delivered_at IS NULL AND acked_at IS NULL`
+    ).bind(userId, taskUuid).run();
+    return res.meta.changes || 0;
+  }
+  /**
    * 未 ack 的行（id 升序，游标翻页）。payload 仍是密文，解密在 handler。
    *
    * @param {string} userId
@@ -6091,12 +6313,14 @@ function validateEntry(entry, index, maxValueBytes) {
   if (INTERNAL_STATE_CHAR_RE.test(entry.key)) {
     return rejectEntry(entry, index, "INVALID_STATE_KEY", `entries[${index}].key \u4E0D\u80FD\u5305\u542B\u63A7\u5236\u5B57\u7B26\uFF08\\u0000-\\u001f \u4E3A\u5E93\u5185\u90E8\u4FDD\u7559\uFF09`);
   }
-  if (typeof entry.value !== "string") {
-    return rejectEntry(entry, index, "INVALID_STATE_VALUE", `entries[${index}].value \u5FC5\u987B\u662F\u5B57\u7B26\u4E32\uFF08\u5BBF\u4E3B\u81EA\u884C\u5E8F\u5217\u5316\uFF09`);
+  if (entry.value !== null && typeof entry.value !== "string") {
+    return rejectEntry(entry, index, "INVALID_STATE_VALUE", `entries[${index}].value \u5FC5\u987B\u662F\u5B57\u7B26\u4E32\uFF08\u5BBF\u4E3B\u81EA\u884C\u5E8F\u5217\u5316\uFF09\uFF0C\u6216 null \u8868\u793A\u5220\u9664`);
   }
-  const bytes = stateValueBytes(entry.value);
-  if (bytes > maxValueBytes) {
-    return rejectEntry(entry, index, "STATE_VALUE_TOO_LARGE", `entries[${index}].value \u8D85\u8FC7\u5355\u6761\u603B\u4E0A\u9650`, { bytes, maxBytes: maxValueBytes });
+  if (typeof entry.value === "string") {
+    const bytes = stateValueBytes(entry.value);
+    if (bytes > maxValueBytes) {
+      return rejectEntry(entry, index, "STATE_VALUE_TOO_LARGE", `entries[${index}].value \u8D85\u8FC7\u5355\u6761\u603B\u4E0A\u9650`, { bytes, maxBytes: maxValueBytes });
+    }
   }
   if (!Number.isInteger(entry.updatedAt) || entry.updatedAt <= 0) {
     return rejectEntry(entry, index, "INVALID_STATE_UPDATED_AT", `entries[${index}].updatedAt \u5FC5\u987B\u662F\u6B63\u6574\u6570\uFF08epoch \u6BEB\u79D2\uFF09`);
@@ -6157,8 +6381,9 @@ function createClientStateHandler(ctx) {
     if (typeof db.upsertClientState !== "function") {
       return err3(501, "CLIENT_STATE_NOT_SUPPORTED", "\u5F53\u524D\u6570\u636E\u5E93\u9002\u914D\u5668\u4E0D\u652F\u6301 client_state");
     }
-    const { upserted, skipped, skippedEntries } = await writeClientStateEntries({ db, userId, userKey, entries: accepted });
+    const { upserted, skipped, deleted, skippedEntries } = await writeClientStateEntries({ db, userId, userKey, entries: accepted });
     const data = { upserted, skipped };
+    if (deleted > 0) data.deleted = deleted;
     if (skippedEntries.length > 0) data.skippedEntries = skippedEntries;
     if (rejected.length > 0) data.rejected = rejected;
     return { status: 200, body: { success: true, data } };
@@ -6203,7 +6428,7 @@ function createClientStateHandler(ctx) {
   }
   return { PUT, GET, DELETE };
 }
-var SERVER_VERSION = true ? "2.6.0-next.23" : "0.0.0-dev";
+var SERVER_VERSION = true ? "2.6.0-next.27" : "0.0.0-dev";
 var SERVER_FEATURES = Object.freeze([
   "client-state",
   "client-state-chunking",
@@ -6287,7 +6512,10 @@ var SERVER_FEATURES = Object.freeze([
   // client_state 按命名空间过期清理（config 的 clientStateTtl，cron 每跳顺手做）。
   "client-state-ttl",
   // hook ctx 带 emitResult(payload)：往客户端补一条自定义结果（落收件箱 + 推送）。
-  "emit-result"
+  "emit-result",
+  // PUT /client-state 的 entry 认 value: null（删掉这个 key，连切片行一起；同一套
+  // last-write-wins，被拦下的进 skippedEntries；删掉的条数在 data.deleted）。
+  "client-state-delete"
 ]);
 function createCapabilitiesHandler(ctx) {
   async function GET(url, headers) {
@@ -6769,6 +6997,99 @@ function createSingleUserCloudflareWorker(buildConfig, options = {}) {
   return { fetch: fetch2, scheduled, runTask: runTask2, getSchemaVersion: getSchemaVersion2, ensureSchema: ensureSchema2 };
 }
 
+// node_modules/.pnpm/@rei-standard+amsg-shared@0.4.0-next.8/node_modules/@rei-standard/amsg-shared/dist/index.mjs
+var TEXT_ENCODER2 = new TextEncoder();
+var TEXT_DECODER2 = new TextDecoder("utf-8", { fatal: false });
+function utf83(str) {
+  return TEXT_ENCODER2.encode(String(str));
+}
+var LLM_MESSAGES_ERROR2 = Object.freeze({
+  MESSAGES_NOT_ARRAY: "MESSAGES_NOT_ARRAY",
+  MESSAGE_NOT_OBJECT: "MESSAGE_NOT_OBJECT",
+  INVALID_ROLE: "INVALID_ROLE",
+  TOOL_CALL_MALFORMED: "TOOL_CALL_MALFORMED",
+  TOOL_CONTENT_INVALID: "TOOL_CONTENT_INVALID",
+  TOOL_CALL_ID_MISSING: "TOOL_CALL_ID_MISSING",
+  CONTENT_EMPTY_STRING: "CONTENT_EMPTY_STRING",
+  CONTENT_EMPTY_ARRAY: "CONTENT_EMPTY_ARRAY",
+  CONTENT_INVALID_TYPE: "CONTENT_INVALID_TYPE"
+});
+var UPSTREAM_ERROR_BODY_MAX_BYTES2 = 16 * 1024;
+var KEY_INFO_PREFIX2 = utf83("WebPush: info\0");
+var CEK_INFO2 = utf83("Content-Encoding: aes128gcm\0");
+var NONCE_INFO2 = utf83("Content-Encoding: nonce\0");
+var VAPID_TOKEN_LIFETIME2 = 12 * 3600;
+var REI_SW_EVENT2 = Object.freeze({
+  CONTENT_RECEIVED: "rei-amsg-content-received",
+  REASONING_RECEIVED: "rei-amsg-reasoning-received",
+  TOOL_REQUEST_RECEIVED: "rei-amsg-tool-request-received",
+  ERROR_RECEIVED: "rei-amsg-error-received",
+  /** 宿主自定义的一条结果（`messageKind: 'result'`），不是聊天内容。 */
+  RESULT_RECEIVED: "rei-amsg-result-received",
+  MULTIPART_EXPIRED: "rei-amsg-multipart-expired",
+  UNKNOWN_RECEIVED: "rei-amsg-unknown-received"
+});
+var MULTIPART_FAILURE_REASON2 = Object.freeze({
+  /** TTL 到期仍未收齐，或收到的分片本身已经过期。 */
+  TTL_EXPIRED: "ttl-expired",
+  /** 分片信封不合规：version / encoding 对不上、index 越界、chunk 不是合法 base64url。 */
+  INVALID_CHUNK: "invalid-chunk",
+  /** 同一个 id 的分片报了不一样的 total / encoding，已收的部分拼不回去。 */
+  CHUNK_CONFLICT: "chunk-conflict",
+  /** 累计字节数超过 maxTotalBytes。 */
+  SIZE_LIMIT_EXCEEDED: "size-limit-exceeded",
+  /** 收齐了但拼不回原 payload（缺片、超限、JSON 解不开）。 */
+  RESTORE_FAILED: "restore-failed",
+  /** 分片仓库（IndexedDB）读写失败。 */
+  STORAGE_FAILED: "storage-failed",
+  /** 接收端把 multipart 关了（`multipart.enabled === false`），分片没法重组。 */
+  DISABLED: "disabled"
+});
+var REI_SW_MESSAGE_TYPE2 = Object.freeze({
+  ENQUEUE_REQUEST: "REI_ENQUEUE_REQUEST",
+  DELIVER: "REI_AMSG_DELIVER",
+  FLUSH_QUEUE: "REI_FLUSH_QUEUE",
+  /**
+   * 入队的点对点回执：谁发的 ENQUEUE_REQUEST 就回给谁一条，一次一条。
+   * 没转 MessagePort 过来时会落到全局的 `navigator.serviceWorker` message
+   * 监听器上。
+   */
+  QUEUE_RESULT: "REI_QUEUE_RESULT",
+  /**
+   * 队列请求被永久拒绝、即将从队列里删掉时广播给所有窗口的一条。
+   *
+   * 跟 QUEUE_RESULT 分开是因为两者的收信人不是一回事：这条是广播，可能来自后台
+   * `sync` 冲刷、说的也可能是另一条八竿子打不着的旧请求。共用一个 type 的话，
+   * 页面等自己那条入队回执时会先收到这一条、当成自己的结果处理。
+   */
+  QUEUE_DROPPED: "REI_QUEUE_DROPPED"
+});
+var REI_AMSG_DELIVER_MESSAGE_TYPE2 = REI_SW_MESSAGE_TYPE2.DELIVER;
+var MESSAGE_KIND2 = Object.freeze({
+  CONTENT: "content",
+  REASONING: "reasoning",
+  TOOL_REQUEST: "tool_request",
+  ERROR: "error",
+  RESULT: "result"
+});
+var MESSAGE_TYPE2 = Object.freeze({
+  INSTANT: "instant",
+  FIXED: "fixed",
+  PROMPTED: "prompted",
+  AUTO: "auto"
+});
+var PUSH_SOURCE2 = Object.freeze({
+  INSTANT: "instant",
+  SCHEDULED: "scheduled"
+});
+var REASONING_CHUNK_ENCODER2 = new TextEncoder();
+var REASONING_CHUNK_DECODER2 = new TextDecoder("utf-8", { fatal: true });
+var REASONING_TAG_RE_G2 = /<(think|thinking|thought)>[\s\S]*?<\/\1>/gi;
+function stripReasoningTags2(content) {
+  if (typeof content !== "string" || !content.includes("<")) return content;
+  return content.replace(REASONING_TAG_RE_G2, "").trim();
+}
+
 // utils/amsgBundleVersion.ts
 var AMSG_BUNDLE_VERSION = "2026-09-04";
 
@@ -7142,6 +7463,7 @@ var buildScheduleInjection = (schedule, evolvedNarrative, now2 = /* @__PURE__ */
 `;
   const footnote = `
 \uFF08\u4E0D\u662F\u53F0\u8BCD\uFF0C\u4E0D\u7528\u8BF4\u51FA\u53E3\u2014\u2014\u8BA9\u5B83\u5F71\u54CD\u4F60\u7684\u8BED\u6C14\u548C\u60C5\u7EEA\u5C31\u597D\u3002\uFF09`;
+  const scopeNote = "\uFF08\u8FD9\u5F20\u8868\u662F\u4F60\u81EA\u5DF1\u7684\u4E00\u5929\uFF0C\u4E0D\u662F\u7ED9\u5BF9\u65B9\u5217\u7684\u5F85\u529E\u3002\u91CC\u5934\u8981\u662F\u6709\u8DDF\u5BF9\u65B9\u76F8\u5173\u7684\u4E8B\uFF0C\u90A3\u4E5F\u662F\u4F60\u81EA\u5DF1\u7684\u60E6\u8BB0\u2014\u2014\u8BDD\u8D76\u5230\u4E86\u987A\u53E3\u5E26\u4E00\u53E5\u5C31\u591F\uFF0C\u4E0D\u7528\u8FFD\u7740\u95EE\u8FDB\u5C55\uFF0C\u4E5F\u4E0D\u7528\u50AC\u5BF9\u65B9\u53BB\u505A\u3002\uFF09";
   let out = "";
   if (options.includeFullDay) {
     const rows = schedule.slots.map((slot) => {
@@ -7164,6 +7486,8 @@ ${rows.join("\n")}
 \u65E5\u7A0B\u662F\u4F60\u65E9\u4E0A\u7ED9\u81EA\u5DF1\u6392\u7684\u8BA1\u5212\uFF0C\u4E0D\u662F\u5FC5\u987B\u5C65\u884C\u7684\u547D\u4EE4\u3002\u771F\u5B9E\u53D1\u751F\u7684\u4E8B\u8DDF\u5B83\u5BF9\u4E0D\u4E0A\u65F6\uFF08\u6BD4\u5982\u8FD9\u4F1A\u513F\u8868\u4E0A\u5199\u7740\u7761\u89C9\u3001\u4F60\u5374\u9192\u7740\u5728\u8DDF\u5BF9\u65B9\u8BF4\u8BDD\uFF09\uFF0C\u628A\u5B83\u6539\u6210\u4F60\u5B9E\u9645\u5728\u505A\u7684\u4E8B\u5C31\u597D\u3002
 \u9700\u8981\u65F6\u5728\u56DE\u590D\u672B\u5C3E\u5355\u72EC\u8F93\u51FA\uFF1A[[ACTION:CHANGE_SCHEDULE | ${changeTarget.startTime} | \u53BB\u8D85\u5E02]]\uFF08\u65F6\u6BB5\u8981\u539F\u6837\u6284\u4E0A\u9762\u51FA\u73B0\u8FC7\u7684\u90A3\u51E0\u4E2A\uFF1B\u6B63\u5728\u8FDB\u884C\u7684\u8FD9\u4E00\u6761\u548C\u5B83\u4E4B\u540E\u7684\u90FD\u80FD\u6539\uFF0C\u5DF2\u7ECF\u8FC7\u53BB\u7684\u4E0D\u80FD\uFF09\u3002`;
   }
+  out += `
+${scopeNote}`;
   out += "\n";
   return out;
 };
@@ -7623,6 +7947,7 @@ var MAX_ACTIVE_TASKS_PER_CHAR = 5;
 var shortTaskId = (taskUuid) => taskUuid.slice(0, 8);
 var describeRecurrence = (recurrence) => recurrence === "daily" ? "\u6BCF\u5929" : recurrence === "weekly" ? "\u6BCF\u5468" : "\u4E00\u6B21\u6027";
 var AMSG2_SCHEDULE_SECRECY_NOTE = "\u4E0D\u8981\u5411\u7528\u6237\u590D\u8FF0\u6216\u63D0\u53CA\u8FD9\u4EFD\u6392\u7A0B\u4FE1\u606F\u672C\u8EAB\u7684\u5B58\u5728\u3002";
+var AMSG2_SCHEDULE_NOT_YET_NOTE = "\u6392\u5728\u672A\u6765\u7684\u4E8B\u5230\u70B9\u81EA\u5DF1\u4F1A\u54CD\uFF0C\u4E0D\u7528\u4F60\u73B0\u5728\u63D0\u524D\u66FF\u5B83\u5F00\u53E3\u2014\u2014\u8FD8\u6CA1\u5230\u90A3\u4E2A\u65F6\u523B\u7684\u5C31\u8BA9\u5B83\u5B89\u9759\u5F85\u7740\uFF0C\u522B\u6BCF\u8F6E\u90FD\u62FF\u5B83\u8D77\u8BDD\u5934\u3001\u8FFD\u7740\u95EE\u8FDB\u5C55\u3002\u5BF9\u65B9\u81EA\u5DF1\u63D0\u8D77\uFF0C\u6216\u8005\u771F\u5230\u4E86\u90A3\u4E2A\u70B9\uFF0C\u624D\u662F\u8BF4\u5B83\u7684\u65F6\u5019\u3002";
 var describeExpirePolicy = (policy) => policy === "force" ? "\u5F3A\u5236\u53D1\u9001" : "\u9047\u5FD9\u4F5C\u5E9F";
 var describeTaskMode = (task) => {
   if (task.mode === "fixed") return "\u56FA\u5B9A\u6D88\u606F";
@@ -7662,6 +7987,7 @@ var buildFireTaskListBlock = (tasks, opts) => {
       return `- [${shortTaskId(t.taskUuid)}] ${when} ${describeRecurrence(t.recurrenceType)} \xB7 ${describeTaskMode(t)} \xB7 ${describeExpirePolicy(t.expirePolicy)}`;
     }),
     "\uFF08\u8FD9\u51E0\u6761\u5230\u70B9\u4F1A\u81EA\u52A8\u53D1\u51FA\u53BB\uFF0C\u522B\u5728\u8FD9\u6761\u6D88\u606F\u91CC\u628A\u540C\u4E00\u4EF6\u4E8B\u518D\u6392\u4E00\u904D\uFF0C\u4E5F\u522B\u5F53\u5B83\u4EEC\u4E0D\u5B58\u5728\u3002\uFF09",
+    AMSG2_SCHEDULE_NOT_YET_NOTE,
     AMSG2_SCHEDULE_SECRECY_NOTE
   ].join("\n");
 };
@@ -8611,17 +8937,17 @@ var isEncryptedEnvelope2 = (value) => {
 var handleInstantChat = async (args) => {
   const { request, env, upstream: upstream2, json } = args;
   const stateBackoffMs = args.stateBackoffMs ?? STATE_FORWARD_BACKOFF_MS;
-  const fail2 = (status, code, message, extra) => json(status, { success: false, error: { code, message, ...extra ?? {} } });
+  const fail3 = (status, code, message, extra) => json(status, { success: false, error: { code, message, ...extra ?? {} } });
   const token = (env.AMSG_SERVER_TOKEN ?? "").trim();
   const clientToken = request.headers.get("X-Client-Token") ?? "";
   if (token) {
     if (!clientToken || !await constantTimeEqual2(clientToken, token)) {
-      return fail2(401, "INVALID_CLIENT_TOKEN", "\u5171\u4EAB\u5BC6\u94A5\u65E0\u6548\u6216\u7F3A\u5931");
+      return fail3(401, "INVALID_CLIENT_TOKEN", "\u5171\u4EAB\u5BC6\u94A5\u65E0\u6548\u6216\u7F3A\u5931");
     }
   }
   const userId = request.headers.get("X-User-Id") ?? "";
-  if (!userId) return fail2(400, "USER_ID_REQUIRED", "\u7F3A\u5C11\u7528\u6237\u6807\u8BC6\u7B26");
-  if (!UUID_V4_RE.test(userId)) return fail2(400, "INVALID_USER_ID_FORMAT", "X-User-Id \u5FC5\u987B\u662F UUID v4 \u683C\u5F0F");
+  if (!userId) return fail3(400, "USER_ID_REQUIRED", "\u7F3A\u5C11\u7528\u6237\u6807\u8BC6\u7B26");
+  if (!UUID_V4_RE.test(userId)) return fail3(400, "INVALID_USER_ID_FORMAT", "X-User-Id \u5FC5\u987B\u662F UUID v4 \u683C\u5F0F");
   let body;
   try {
     const text = await readMaybeGzippedBody(request);
@@ -8629,13 +8955,13 @@ var handleInstantChat = async (args) => {
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("not an object");
     body = parsed;
   } catch {
-    return fail2(400, "INVALID_JSON", "\u8BF7\u6C42\u4F53\u4E0D\u662F\u5408\u6CD5\u7684 JSON \u5BF9\u8C61");
+    return fail3(400, "INVALID_JSON", "\u8BF7\u6C42\u4F53\u4E0D\u662F\u5408\u6CD5\u7684 JSON \u5BF9\u8C61");
   }
   if (!isEncryptedEnvelope2(body.statePayload)) {
-    return fail2(400, "INVALID_STATE_PAYLOAD", "statePayload \u5FC5\u987B\u662F\u52A0\u5BC6\u4FE1\u5C01\uFF08iv / authTag / encryptedData\uFF09");
+    return fail3(400, "INVALID_STATE_PAYLOAD", "statePayload \u5FC5\u987B\u662F\u52A0\u5BC6\u4FE1\u5C01\uFF08iv / authTag / encryptedData\uFF09");
   }
   if (!isEncryptedEnvelope2(body.taskPayload)) {
-    return fail2(400, "INVALID_TASK_PAYLOAD", "taskPayload \u5FC5\u987B\u662F\u52A0\u5BC6\u4FE1\u5C01\uFF08iv / authTag / encryptedData\uFF09");
+    return fail3(400, "INVALID_TASK_PAYLOAD", "taskPayload \u5FC5\u987B\u662F\u52A0\u5BC6\u4FE1\u5C01\uFF08iv / authTag / encryptedData\uFF09");
   }
   const requestUrl = new URL(request.url);
   const mountPath = requestUrl.pathname.replace(/\/+$/, "").replace(/\/instant-chat$/, "");
@@ -8726,7 +9052,7 @@ var handleInstantChat = async (args) => {
   }
   const uuid = taskBody?.data?.uuid;
   if (typeof uuid !== "string" || !uuid) {
-    return fail2(502, "INSTANT_CHAT_TASK_UUID_MISSING", "\u4E0A\u6E38\u6CA1\u6709\u56DE\u4EFB\u52A1 uuid\uFF0C\u65E0\u6CD5\u8DDF\u8E2A\u8FD9\u4E00\u8F6E", {
+    return fail3(502, "INSTANT_CHAT_TASK_UUID_MISSING", "\u4E0A\u6E38\u6CA1\u6709\u56DE\u4EFB\u52A1 uuid\uFF0C\u65E0\u6CD5\u8DDF\u8E2A\u8FD9\u4E00\u8F6E", {
       step: "schedule-message"
     });
   }
@@ -8764,7 +9090,7 @@ async function cf(token, path, init = {}) {
   try {
     res = await fetch(`${CF_API}${path}`, {
       method: init.method ?? "GET",
-      headers: { Authorization: `Bearer ${token}` },
+      headers: { Authorization: `Bearer ${token}`, ...init.headers },
       body: init.body
     });
   } catch (err5) {
@@ -8974,6 +9300,87 @@ async function handleSelfUpdate(request, env) {
   };
 }
 
+// worker/amsg/src/cronTrigger.ts
+var AMSG_CRON_EXPRESSION = "* * * * *";
+var isCronTriggerAuthFailure = (code) => code === "SERVER_TOKEN_REQUIRED" || code === "UNAUTHORIZED";
+var fail2 = (code, message) => ({ code, message });
+async function prepare(env, request) {
+  const serverToken = env.AMSG_SERVER_TOKEN?.trim();
+  if (!serverToken) {
+    return {
+      ok: false,
+      failure: fail2(
+        "SERVER_TOKEN_REQUIRED",
+        "\u8FD9\u4E2A Worker \u6CA1\u8BBE\u5171\u4EAB\u5BC6\u94A5\uFF08AMSG_SERVER_TOKEN\uFF09\uFF0C\u51FA\u4E8E\u5B89\u5168\u8003\u8651\u4E0D\u5F00\u653E\u6682\u505C\u540E\u53F0\u4EFB\u52A1\u3002\u5148\u8865\u4E0A\u518D\u8BD5\u3002"
+      )
+    };
+  }
+  const clientToken = request.headers.get("X-Client-Token");
+  if (!clientToken || !await constantTimeEqual2(clientToken, serverToken)) {
+    return { ok: false, failure: fail2("UNAUTHORIZED", "\u5171\u4EAB\u5BC6\u94A5\u5BF9\u4E0D\u4E0A\u3002") };
+  }
+  const token = env.CF_API_TOKEN?.trim();
+  if (!token) {
+    return {
+      ok: false,
+      failure: fail2(
+        "CF_TOKEN_MISSING",
+        "\u6CA1\u914D CF_API_TOKEN\uFF0C\u6CA1\u6CD5\u6539\u5B9A\u65F6\u89E6\u53D1\u3002\u53BB Cloudflare \u5EFA\u4E00\u679A\u53EA\u52FE Workers Scripts \u2192 Edit \u7684 API Token\uFF0C\u52A0\u8FDB\u8FD9\u4E2A Worker \u7684\u53D8\u91CF\u91CC\u3002"
+      )
+    };
+  }
+  const scriptName = resolveScriptName(env, request.url);
+  if (!scriptName) {
+    return {
+      ok: false,
+      failure: fail2(
+        "SCRIPT_NAME_UNKNOWN",
+        "\u8BA4\u4E0D\u51FA\u8FD9\u4E2A Worker \u53EB\u4EC0\u4E48\uFF08\u591A\u534A\u662F\u5957\u4E86\u4EE3\u7406\u57DF\u540D\uFF09\u3002\u7ED9\u5B83\u52A0\u4E00\u6761 CF_SCRIPT_NAME \u53D8\u91CF\uFF0C\u503C\u586B Worker \u7684\u540D\u5B57\u3002"
+      )
+    };
+  }
+  const located = await locateScript(env, token, scriptName);
+  if (!located.ok) return { ok: false, failure: fail2("SCRIPT_NOT_LOCATED", located.message) };
+  return {
+    ok: true,
+    token,
+    schedulesPath: `/accounts/${located.accountId}/workers/scripts/${encodeURIComponent(scriptName)}/schedules`
+  };
+}
+var readSchedules = (result) => {
+  const schedules = result?.schedules;
+  return Array.isArray(schedules) ? schedules : [];
+};
+async function handleCronTriggerRead(env, request) {
+  const prepared = await prepare(env, request);
+  if (!prepared.ok) return { supported: false, ...prepared.failure };
+  const current = await cf(prepared.token, prepared.schedulesPath);
+  if (!current.ok) {
+    return { supported: false, ...fail2("CF_ERROR", `\u8BFB\u4E0D\u5230\u5B9A\u65F6\u89E6\u53D1\u7684\u72B6\u6001\uFF08${current.detail}\uFF09\u3002`) };
+  }
+  return { supported: true, enabled: readSchedules(current.result).length > 0 };
+}
+async function handleCronTriggerWrite(env, request, enabled) {
+  const prepared = await prepare(env, request);
+  if (!prepared.ok) return { ok: false, ...prepared.failure };
+  const schedules = enabled ? [{ cron: AMSG_CRON_EXPRESSION }] : [];
+  const written = await cf(prepared.token, prepared.schedulesPath, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(schedules)
+  });
+  if (!written.ok) {
+    return {
+      ok: false,
+      ...fail2(
+        "CF_ERROR",
+        `${enabled ? "\u6062\u590D" : "\u6682\u505C"}\u6CA1\u6210\u529F\uFF08${written.detail}\uFF09\u3002\u5B9A\u65F6\u89E6\u53D1\u4FDD\u6301\u539F\u6837\u3002`
+      )
+    };
+  }
+  return { ok: true, enabled };
+}
+
 // utils/mcpFireCore.ts
 var DEFAULT_MAX_TOOL_NAME_LEN = 64;
 var MCP_FIRE_NAME_PREFIX = "mcp__";
@@ -9147,9 +9554,22 @@ var extractTextFakedMcpCalls = (content, resolve, opts = {}) => {
   }
   return found.sort((a, b) => a.index - b.index).map(({ index: _index, ...call }) => call);
 };
-var MCP_PROTOCOL_VERSION = "2024-11-05";
+var MCP_LATEST_HANDSHAKE_PROTOCOL_VERSION = "2025-11-25";
+var MCP_SUPPORTED_HANDSHAKE_PROTOCOL_VERSIONS = [
+  "2025-11-25",
+  "2025-06-18",
+  "2025-03-26"
+];
 var MCP_REQUEST_TIMEOUT_MS = 6e4;
-var createMcpSessionState = () => ({ sessionId: null, initialized: false, initPromise: null, nextId: 0 });
+var createMcpSessionState = () => ({
+  sessionId: null,
+  initialized: false,
+  initPromise: null,
+  protocolVersion: null,
+  serverInfo: null,
+  serverCapabilities: null,
+  nextId: 0
+});
 var buildRpcRequest = (session, method, params, isNotification = false) => {
   const req = { jsonrpc: "2.0", method, params };
   if (!isNotification) req.id = ++session.nextId;
@@ -9224,7 +9644,7 @@ var readSseResponse = async (resp, expectedId) => {
   }
 };
 var postCore = async (target, session, body, timeoutMs, expectResponse = true) => {
-  const headers = target.headers(session.sessionId);
+  const headers = target.headers(session.sessionId, session.protocolVersion);
   let resp;
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
@@ -9284,12 +9704,23 @@ var postCore = async (target, session, body, timeoutMs, expectResponse = true) =
 };
 var initializeCore = async (target, session, timeoutMs) => {
   const initReq = buildRpcRequest(session, "initialize", {
-    protocolVersion: MCP_PROTOCOL_VERSION,
+    protocolVersion: MCP_LATEST_HANDSHAKE_PROTOCOL_VERSION,
     capabilities: {},
-    clientInfo: { name: "SullyOS-MCP", version: "1.0.0" }
+    clientInfo: { name: "sullyos", title: "SullyOS", version: "1.0.0" }
   });
   const { response } = await postCore(target, session, initReq, timeoutMs);
   if (response?.error) throw new Error(`Initialize \u5931\u8D25: ${response.error.message}`);
+  const negotiated = String(
+    response?.result?.protocolVersion || MCP_LATEST_HANDSHAKE_PROTOCOL_VERSION
+  );
+  if (!MCP_SUPPORTED_HANDSHAKE_PROTOCOL_VERSIONS.includes(negotiated)) {
+    throw new Error(
+      `MCP \u534F\u8BAE\u7248\u672C\u4E0D\u517C\u5BB9\uFF1A\u670D\u52A1\u5668\u9009\u62E9\u4E86 ${negotiated}\u3002SullyOS \u7684 Streamable HTTP \u63A5\u7EBF\u652F\u6301 ${MCP_SUPPORTED_HANDSHAKE_PROTOCOL_VERSIONS.join(" / ")}\uFF1B2024-11-05 \u5C5E\u4E8E\u65E7 HTTP+SSE \u53CC\u7AEF\u70B9\uFF0C2026-07-28 \u5219\u9700\u8981\u65B0\u7684\u65E0\u63E1\u624B\u751F\u547D\u5468\u671F\u3002`
+    );
+  }
+  session.protocolVersion = negotiated;
+  session.serverInfo = response?.result?.serverInfo || null;
+  session.serverCapabilities = response?.result?.capabilities || null;
   const notif = buildRpcRequest(session, "notifications/initialized", {}, true);
   await postCore(target, session, notif, timeoutMs, false).catch(() => {
   });
@@ -9411,35 +9842,33 @@ var callMcpToolCore = async (target, session, toolName, args = {}, opts = {}) =>
       if (/HTTP (400|404)/.test(e?.message || "")) {
         Object.assign(session, createMcpSessionState());
         await ensureInitializedCore(target, session, timeoutMs);
-        ({ response } = await postCore(
-          target,
-          session,
-          buildRpcRequest(session, "tools/call", { name: toolName, arguments: normalizedArgs }),
-          timeoutMs
-        ));
-      } else {
-        throw e;
-      }
+        ({ response } = await postCore(target, session, buildRpcRequest(session, "tools/call", { name: toolName, arguments: normalizedArgs }), timeoutMs));
+      } else throw e;
     }
     if (!response) return finish({ success: false, error: "\u7A7A\u54CD\u5E94" });
     if (response.error) return finish({ success: false, error: `MCP \u9519\u8BEF [${response.error.code}]: ${response.error.message}` });
-    const result = response.result;
-    if (result?.content && Array.isArray(result.content)) {
-      const textParts = result.content.filter((c) => c?.type === "text").map((c) => c.text || "");
-      const fullText = textParts.join("\n").trim();
-      if (result.isError) return finish({ success: false, error: fullText || "MCP \u5DE5\u5177\u6267\u884C\u5931\u8D25", rawText: fullText });
+    const result = response.result ?? response;
+    if (result?.resultType === "input_required") return finish({ success: false, error: "\u8FD9\u4E2A\u5DE5\u5177\u9700\u8981\u5728\u6267\u884C\u9014\u4E2D\u8865\u5145\u786E\u8BA4\u6216\u8F93\u5165\uFF1BSullyOS \u5F53\u524D\u4E0D\u4F1A\u66FF\u4F60\u81EA\u52A8\u56DE\u7B54\uFF0C\u8BF7\u56DE\u5230\u804A\u5929\u4E2D\u660E\u786E\u8981\u6C42\u540E\u91CD\u8BD5\u3002", data: result, rawResult: result });
+    const content = Array.isArray(result?.content) ? result.content : [];
+    const rawText = content.filter((part) => part?.type === "text" && typeof part.text === "string").map((part) => part.text).join("\n").trim();
+    let parsedText = void 0;
+    if (rawText) {
       try {
-        return finish({ success: true, data: JSON.parse(fullText), rawText: fullText });
+        parsedText = JSON.parse(rawText);
       } catch {
-        return finish({ success: true, data: fullText, rawText: fullText });
+        parsedText = rawText;
       }
     }
-    return finish({ success: true, data: result });
+    const structuredContent = result?.structuredContent;
+    const images = content.filter((part) => part?.type === "image" && typeof part.data === "string" && part.data.length > 0).map((part) => ({ data: part.data, mimeType: typeof part.mimeType === "string" && part.mimeType.startsWith("image/") ? part.mimeType : "image/png" }));
+    const modelData = parsedText !== void 0 ? parsedText : structuredContent !== void 0 ? structuredContent : content.length > 0 ? {} : result;
+    const isError = result?.isError === true;
+    return finish({ success: !isError, data: modelData, rawText, error: isError ? rawText || result?.error?.message || result?.message || "MCP \u5DE5\u5177\u8FD4\u56DE\u9519\u8BEF" : void 0, content, structuredContent, images, rawResult: result });
   } catch (e) {
     return finish({ success: false, error: e?.message || String(e) });
   }
 };
-var buildMcpDirectHeaders = (server, sessionId) => {
+var buildMcpDirectHeaders = (server, sessionId, protocolVersion = null) => {
   const headers = {
     "Content-Type": "application/json",
     "Accept": "application/json, text/event-stream"
@@ -9451,6 +9880,7 @@ var buildMcpDirectHeaders = (server, sessionId) => {
   }
   if (server.token) headers["Authorization"] = `Bearer ${server.token}`;
   if (sessionId) headers["Mcp-Session-Id"] = sessionId;
+  if (protocolVersion) headers["MCP-Protocol-Version"] = protocolVersion;
   return headers;
 };
 var filterMcpServersForChar = (servers, charId) => (servers || []).filter(
@@ -11360,7 +11790,10 @@ var SSE_DONE_BYTES = SSE_ENCODER.encode("event: done\ndata: {}\n\n");
 
 // utils/sanitize.ts
 var stripLiteralBackslashN = (t) => t.replace(/\\n/g, "\n");
-var stripSourceTags = (t) => t.replace(/\s*\[(?:聊天|通话|约会)\]\s*/g, "\n");
+var stripLeakedSourceTags = (t) => t.replace(
+  /\s*\[\s*(?:聊\s*(?:天|chat)|chat|通\s*(?:话|call)|call|约\s*(?:会|date)|date)\s*\]\s*/giu,
+  "\n"
+);
 var stripTimestamps = (t) => t.replace(/\[\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}\]\s*/g, "").replace(/^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}\s*/gm, "").replace(/（[上下]午\d{1,2}[：:]\d{2}）/g, "").replace(/\(\d{1,2}:\d{2}\s*[AP]M\)/gi, "");
 var stripChineseDate = (t) => t.replace(/\[\d{4}[-/年]\d{1,2}[-/月]\d{1,2}.*?\]/g, "");
 var stripRoleNamePrefix = (t) => t.replace(/^[\w一-龥]+:\s*/, "");
@@ -11498,7 +11931,7 @@ function sanitizeForNotification(text) {
   result = stripChineseDate(result);
   result = stripRoleNamePrefix(result);
   result = stripSystemLogLeak(result);
-  result = stripSourceTags(result);
+  result = stripLeakedSourceTags(result);
   result = stripInnerState(result);
   result = stripGameHallAutoplayCommands(result);
   result = stripBusinessTagsForNotification(result);
@@ -11557,7 +11990,7 @@ ${ATOM_MARKER}B${idx}${ATOM_MARKER}
   cleaned = stripTimestamps(cleaned);
   cleaned = stripChineseDate(cleaned);
   cleaned = stripRoleNamePrefix(cleaned);
-  cleaned = stripSourceTags(cleaned);
+  cleaned = stripLeakedSourceTags(cleaned);
   cleaned = stripLegacyTrans(cleaned);
   cleaned = stripMarkdownDividers(cleaned);
   const rawChunks = chunkText(cleaned);
@@ -12506,13 +12939,13 @@ var handleNativePollRequest = async (request, db) => {
 
 // worker/amsg/src/nativeFcm.ts
 var accessTokenCache = null;
-var utf83 = new TextEncoder();
+var utf84 = new TextEncoder();
 var bytesToB64u = (bytes) => {
   let binary = "";
   for (const byte of bytes) binary += String.fromCharCode(byte);
   return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
 };
-var textToB64u = (value) => bytesToB64u(utf83.encode(value));
+var textToB64u = (value) => bytesToB64u(utf84.encode(value));
 var pemToPkcs8 = (raw) => {
   const base64 = raw.replace(/\\n/g, "\n").replace(/-----BEGIN PRIVATE KEY-----/g, "").replace(/-----END PRIVATE KEY-----/g, "").replace(/\s+/g, "");
   if (!base64) throw new Error("FCM_SERVICE_ACCOUNT_PRIVATE_KEY \u4E0D\u662F\u6709\u6548\u7684 PKCS#8 PEM");
@@ -12549,7 +12982,7 @@ var fetchFcmAccessToken = async (env) => {
     false,
     ["sign"]
   );
-  const signature = await crypto.subtle.sign("RSASSA-PKCS1-v1_5", key, utf83.encode(unsigned));
+  const signature = await crypto.subtle.sign("RSASSA-PKCS1-v1_5", key, utf84.encode(unsigned));
   const assertion = `${unsigned}.${bytesToB64u(new Uint8Array(signature))}`;
   const response = await fetch("https://oauth2.googleapis.com/token", {
     method: "POST",
@@ -12602,7 +13035,7 @@ var buildFcmMessage = (token, rawPayload) => {
       }
     }
   };
-  const bytes = utf83.encode(JSON.stringify(result)).byteLength;
+  const bytes = utf84.encode(JSON.stringify(result)).byteLength;
   if (bytes > 4e3) throw new Error(`FCM_PAYLOAD_TOO_LARGE: ${bytes} bytes\uFF08\u5B89\u5168\u4E0A\u9650 4000\uFF09`);
   return result;
 };
@@ -12650,6 +13083,13 @@ var parseImageToolClientOptions = (args) => {
     cleanedArgs
   };
 };
+
+// utils/apiConfigNormalize.ts
+var EDGE_INVISIBLE_CHARS = /^[\s\u200B-\u200D\u2060\uFEFF]+|[\s\u200B-\u200D\u2060\uFEFF]+$/g;
+var cleanEdgeCharacters = (value) => String(value ?? "").replace(EDGE_INVISIBLE_CHARS, "");
+var normalizeApiBaseUrl = (value) => cleanEdgeCharacters(value).replace(/\/+$/, "");
+var normalizeApiCredential = (value) => cleanEdgeCharacters(value);
+var normalizeApiModel = (value) => cleanEdgeCharacters(value);
 
 // utils/novelAiReferencePolicy.ts
 var MANAGED_REFERENCE_KEYS = /* @__PURE__ */ new Set([
@@ -12744,12 +13184,39 @@ var resolveNovelAiReferenceArguments = (input) => {
   return { arguments: finalArgs, requested, selected };
 };
 
+// utils/toolCallCompat.ts
+var safeFragment = (value) => value.replace(/[^A-Za-z0-9_-]/g, "_").replace(/_+/g, "_").slice(0, 48) || "tool";
+function normalizeToolCallsForCompat(toolCalls, scope = "tool") {
+  if (!Array.isArray(toolCalls)) return [];
+  const seenIds = /* @__PURE__ */ new Set();
+  const safeScope = safeFragment(scope);
+  return toolCalls.map((rawCall, index) => {
+    const rawName = typeof rawCall?.function?.name === "string" ? rawCall.function.name.trim() : "";
+    const name = rawName || "unknown_tool";
+    const rawId = typeof rawCall?.id === "string" ? rawCall.id.trim() : "";
+    let id = rawId;
+    if (!id || seenIds.has(id)) {
+      id = `call_${safeScope}_${safeFragment(name)}_${index}`;
+    }
+    seenIds.add(id);
+    return {
+      ...rawCall,
+      id,
+      type: rawCall?.type || "function",
+      function: {
+        ...rawCall?.function || {},
+        name
+      }
+    };
+  });
+}
+
 // worker/amsg/src/storyImageHandoff.ts
 var INLINE_PLAN_OPEN = "<story_image_plan>";
 var INLINE_PLAN_CLOSE = "</story_image_plan>";
 var MAX_TOOLS = 16;
 var HTTP_TIMEOUT_MS = 2e4;
-var cleanBaseUrl = (value) => String(value || "").trim().replace(/\/+$/, "");
+var cleanBaseUrl = (value) => normalizeApiBaseUrl(value);
 var isRecord3 = (value) => Boolean(value && typeof value === "object" && !Array.isArray(value));
 var cloneRecord = (value) => JSON.parse(JSON.stringify(value));
 var normalizeFragment = (value) => isRecord3(value) ? cloneRecord(value) : void 0;
@@ -12782,14 +13249,14 @@ var normalizeStoryImageHandoffSpec = (value) => {
     const presetRaw = isRecord3(rawTool.preset) ? rawTool.preset : void 0;
     const preset = presetRaw && isRecord3(presetRaw.remoteConfig) ? {
       remoteConfig: cloneRecord(presetRaw.remoteConfig),
-      apiKey: String(presetRaw.apiKey || "")
+      apiKey: normalizeApiCredential(presetRaw.apiKey)
     } : void 0;
     tools.push({
       exposedName,
       toolName,
       engineId,
       controlBaseUrl,
-      token: String(rawTool.token || ""),
+      token: normalizeApiCredential(rawTool.token),
       ...preset ? { preset } : {},
       ...referencePolicy ? { referencePolicy } : {},
       ...isRecord3(rawTool.referenceErrors) ? {
@@ -12822,11 +13289,11 @@ var normalizeStoryImageHandoffSpec = (value) => {
     }
   }
   const plannerBaseUrl = cleanBaseUrl(plannerRaw?.baseUrl);
-  const plannerModel = String(plannerRaw?.model || "").trim();
+  const plannerModel = normalizeApiModel(plannerRaw?.model);
   const plannerSystemPrompt = String(plannerRaw?.systemPrompt || "").trim();
   const planner = plannerRaw && /^https?:\/\//i.test(plannerBaseUrl) && plannerModel && plannerSystemPrompt && plannerTools.length ? {
     baseUrl: plannerBaseUrl,
-    apiKey: String(plannerRaw.apiKey || ""),
+    apiKey: normalizeApiCredential(plannerRaw.apiKey),
     model: plannerModel,
     systemPrompt: plannerSystemPrompt.slice(0, 8e4),
     tools: plannerTools
@@ -12855,7 +13322,8 @@ var fetchJson = async (url, token, init = {}, timeoutMs = HTTP_TIMEOUT_MS) => {
   try {
     const headers = new Headers(init.headers || {});
     headers.set("Accept", "application/json");
-    if (token) headers.set("Authorization", `Bearer ${token}`);
+    const normalizedToken = normalizeApiCredential(token);
+    if (normalizedToken) headers.set("Authorization", `Bearer ${normalizedToken}`);
     if (init.body !== void 0) headers.set("Content-Type", "application/json");
     const response = await fetch(url, { ...init, headers, cache: "no-store", signal: controller.signal });
     const text = await response.text();
@@ -12975,18 +13443,47 @@ var parsePlannerText = (text, allowedNames) => {
       }
     }
   }
-  for (const name of allowedNames) {
-    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const match = clean.match(new RegExp(`${escaped}\\s*\\((\\{[\\s\\S]*\\})\\)`, "m"));
-    if (!match) continue;
-    const args = parsePlannerArgs(match[1]);
-    if (args) return { tool: name, arguments: args };
-  }
   return null;
 };
-var extractPlannerSelection = (body, allowedNames) => {
+var buildPlannerTextResolve = (plannerTools, allowedTools) => {
+  const resolve = /* @__PURE__ */ new Map();
+  const server = {
+    id: "story-image-planner",
+    name: "\u5267\u60C5\u914D\u56FE\u89C4\u5212\u5668",
+    url: "https://story-image-planner.invalid",
+    tools: []
+  };
+  for (const plannerTool of plannerTools) {
+    const exposedName = String(plannerTool.function.name || "").trim();
+    if (!exposedName) continue;
+    const handoff = allowedTools.find((tool) => tool.exposedName === exposedName);
+    const toolName = handoff?.toolName || exposedName;
+    resolve.set(exposedName, {
+      server,
+      toolName,
+      tool: {
+        name: toolName,
+        description: plannerTool.function.description,
+        inputSchema: plannerTool.function.parameters || { type: "object", properties: {} }
+      }
+    });
+  }
+  return resolve;
+};
+var plannerResponseShape = (body) => {
+  const choices = Array.isArray(body?.choices) ? body.choices : [];
+  const message = choices[0]?.message || {};
+  return {
+    choiceCount: choices.length,
+    toolCallCount: Array.isArray(message.tool_calls) ? message.tool_calls.length : 0,
+    hasFunctionCall: Boolean(message.function_call),
+    contentType: Array.isArray(message.content) ? "array" : typeof message.content,
+    contentLength: typeof message.content === "string" ? message.content.length : 0
+  };
+};
+var extractPlannerSelection = (body, allowedNames, textResolve) => {
   const message = body?.choices?.[0]?.message || {};
-  const calls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
+  const calls = normalizeToolCallsForCompat(message.tool_calls, "story-theater-image");
   for (const call of calls) {
     const tool = String(call?.function?.name || call?.name || "").trim();
     if (!tool || !allowedNames.has(tool)) continue;
@@ -12999,12 +13496,28 @@ var extractPlannerSelection = (body, allowedNames) => {
     const args = parsePlannerArgs(functionCall.arguments);
     if (tool && allowedNames.has(tool) && args) return { tool, arguments: args };
   }
-  return parsePlannerText(String(message.content || ""), allowedNames);
+  const content = String(message.content || "");
+  const faked = extractTextFakedMcpCalls(content, textResolve)[0];
+  if (faked) return { tool: faked.exposedName, arguments: cloneRecord(faked.args) };
+  return parsePlannerText(content, allowedNames);
 };
+var buildNativeRepairBody = (nativeBody) => ({
+  ...nativeBody,
+  temperature: 0,
+  parallel_tool_calls: false,
+  messages: [
+    ...nativeBody.messages || [],
+    {
+      role: "system",
+      content: "\u7EA0\u9519\u91CD\u8BD5\uFF1A\u4E0A\u4E00\u8F6E\u6CA1\u6709\u8FD4\u56DE\u53EF\u6267\u884C\u7684 tool_calls\u3002\u4F60\u73B0\u5728\u5FC5\u987B\u8C03\u7528\u4E14\u53EA\u80FD\u8C03\u7528\u4E00\u4E2A\u672C\u8F6E\u63D0\u4F9B\u7684\u751F\u56FE\u5DE5\u5177\uFF1B\u7981\u6B62\u53EA\u8F93\u51FA\u6587\u5B57\uFF0C\u7981\u6B62\u8FD4\u56DE\u7A7A\u767D\uFF0C\u7981\u6B62\u540C\u65F6\u8C03\u7528\u591A\u4E2A\u5DE5\u5177\u3002"
+    }
+  ]
+});
 var runSeparatePlanner = async (planner, allowedTools, storyContent) => {
   const allowedNames = new Set(allowedTools.map((tool) => tool.exposedName));
   const plannerTools = planner.tools.filter((tool) => allowedNames.has(tool.function.name));
   if (!plannerTools.length) throw new Error("\u914D\u56FE\u89C4\u5212\u5668\u6CA1\u6709\u53EF\u7528\u751F\u56FE\u5DE5\u5177");
+  const textResolve = buildPlannerTextResolve(plannerTools, allowedTools);
   const latestStory = String(storyContent || "").slice(-24e3);
   const systemPrompt = `${planner.systemPrompt}
 
@@ -13024,24 +13537,47 @@ ${latestStory}`;
     max_tokens: 3e3,
     stream: false
   };
-  let nativeError = "";
+  let native;
   try {
-    const native = await fetchJson(url, planner.apiKey, {
+    native = await fetchJson(url, planner.apiKey, {
       method: "POST",
       body: JSON.stringify(nativeBody)
     }, 9e4);
-    if (native.response.ok) {
-      const selection2 = extractPlannerSelection(native.body, allowedNames);
-      if (selection2) return selection2;
-      nativeError = "\u89C4\u5212\u5668\u6CA1\u6709\u8FD4\u56DE\u53EF\u6267\u884C\u7684 tool_calls";
-    } else {
-      nativeError = remoteError(native.body, native.response.status);
-      if (![400, 404, 405, 415, 422].includes(native.response.status)) {
-        throw new Error(`\u914D\u56FE\u89C4\u5212\u5668\u8BF7\u6C42\u5931\u8D25\uFF1A${nativeError}`);
-      }
-    }
   } catch (error) {
-    nativeError = String(error?.message || error);
+    throw new Error(`\u914D\u56FE\u89C4\u5212\u5668\u8BF7\u6C42\u5931\u8D25\uFF1A${String(error?.message || error).slice(0, 500)}`);
+  }
+  if (native.response.ok) {
+    const selection2 = extractPlannerSelection(native.body, allowedNames, textResolve);
+    if (selection2) return selection2;
+    console.warn("[StoryImageHandoff] image planner omitted executable tool call; retrying native planner once", {
+      plannerModel: planner.model,
+      toolCount: plannerTools.length,
+      response: plannerResponseShape(native.body)
+    });
+    let repair;
+    try {
+      repair = await fetchJson(url, planner.apiKey, {
+        method: "POST",
+        body: JSON.stringify(buildNativeRepairBody(nativeBody))
+      }, 9e4);
+    } catch (error) {
+      throw new Error(`\u914D\u56FE\u89C4\u5212\u5668\u7EA0\u9519\u91CD\u8BD5\u5931\u8D25\uFF1A${String(error?.message || error).slice(0, 500)}`);
+    }
+    if (!repair.response.ok) {
+      throw new Error(`\u914D\u56FE\u89C4\u5212\u5668\u7EA0\u9519\u91CD\u8BD5\u5931\u8D25\uFF1A${remoteError(repair.body, repair.response.status)}`);
+    }
+    const repaired = extractPlannerSelection(repair.body, allowedNames, textResolve);
+    if (repaired) return repaired;
+    console.warn("[StoryImageHandoff] image planner repair still omitted executable tool call", {
+      plannerModel: planner.model,
+      toolCount: plannerTools.length,
+      response: plannerResponseShape(repair.body)
+    });
+    throw new Error("\u914D\u56FE\u89C4\u5212\u5668\u8FDE\u7EED\u4E24\u6B21\u6CA1\u6709\u8FD4\u56DE\u53EF\u6267\u884C\u7684\u751F\u56FE\u8C03\u7528");
+  }
+  const nativeError = remoteError(native.body, native.response.status);
+  if (![400, 404, 405, 415, 422].includes(native.response.status)) {
+    throw new Error(`\u914D\u56FE\u89C4\u5212\u5668\u8BF7\u6C42\u5931\u8D25\uFF1A${nativeError}`);
   }
   const schemaText = plannerTools.map((tool) => JSON.stringify(tool)).join("\n");
   const fallback = await fetchJson(url, planner.apiKey, {
@@ -13053,10 +13589,10 @@ ${latestStory}`;
           role: "system",
           content: `${systemPrompt}
 
-\u5DE5\u5177\u517C\u5BB9\u6A21\u5F0F\uFF1A\u4E0A\u4E00\u6B21\u539F\u751F\u5DE5\u5177\u8C03\u7528\u4E0D\u53EF\u7528\uFF08${nativeError.slice(0, 300)}\uFF09\u3002\u4E0B\u9762\u662F\u5141\u8BB8\u9009\u62E9\u7684\u751F\u56FE\u5DE5\u5177 schema\uFF1A
+\u5DE5\u5177\u517C\u5BB9\u6A21\u5F0F\uFF1A\u539F\u751F tools/tool_choice \u88AB\u4E0A\u6E38\u62D2\u7EDD\uFF08${nativeError.slice(0, 300)}\uFF09\u3002\u4E0B\u9762\u662F\u5141\u8BB8\u9009\u62E9\u7684\u751F\u56FE\u5DE5\u5177 schema\uFF1A
 ${schemaText}
 
-\u4F60\u5FC5\u987B\u53EA\u8F93\u51FA\u4E00\u884C JSON\uFF1A{"tool":"\u5DE5\u5177\u540D","arguments":{...}}\u3002\u7981\u6B62\u89E3\u91CA\u3001\u4EE3\u7801\u5757\u548C\u989D\u5916\u6587\u672C\u3002`
+\u4F60\u5FC5\u987B\u53EA\u8F93\u51FA\u4E00\u884C\u751F\u56FE\u5DE5\u5177\u8C03\u7528\uFF0C\u4E25\u683C\u4F7F\u7528 tool_name({JSON})\uFF1B\u7981\u6B62\u89E3\u91CA\u3001\u5206\u6790\u3001\u9053\u6B49\u3001\u4EE3\u7801\u5757\u3001\u81EA\u7136\u8BED\u8A00\u524D\u540E\u7F00\uFF0C\u4E5F\u7981\u6B62\u8FD4\u56DE\u7A7A\u767D\u3002`
         },
         { role: "user", content: "\u9009\u62E9\u4E00\u4E2A\u6700\u9002\u5408\u6700\u65B0\u5267\u60C5\u753B\u9762\u7684\u5DE5\u5177\uFF0C\u5E76\u7ED9\u51FA\u5B8C\u6574\u53C2\u6570\u3002" }
       ],
@@ -13068,8 +13604,15 @@ ${schemaText}
   if (!fallback.response.ok) {
     throw new Error(`\u914D\u56FE\u89C4\u5212\u5668\u517C\u5BB9\u91CD\u8BD5\u5931\u8D25\uFF1A${remoteError(fallback.body, fallback.response.status)}`);
   }
-  const selection = extractPlannerSelection(fallback.body, allowedNames);
-  if (!selection) throw new Error("\u914D\u56FE\u89C4\u5212\u5668\u8FDE\u7EED\u4E24\u6B21\u6CA1\u6709\u8FD4\u56DE\u53EF\u6267\u884C\u7684\u751F\u56FE\u8C03\u7528");
+  const selection = extractPlannerSelection(fallback.body, allowedNames, textResolve);
+  if (!selection) {
+    console.warn("[StoryImageHandoff] text fallback omitted executable tool call", {
+      plannerModel: planner.model,
+      toolCount: plannerTools.length,
+      response: plannerResponseShape(fallback.body)
+    });
+    throw new Error("\u914D\u56FE\u89C4\u5212\u5668\u8FDE\u7EED\u4E24\u6B21\u6CA1\u6709\u8FD4\u56DE\u53EF\u6267\u884C\u7684\u751F\u56FE\u8C03\u7528");
+  }
   return selection;
 };
 var runStoryImageHandoff = async (spec, storyClientRequestId, storyContent) => {
@@ -13231,6 +13774,132 @@ var sendStoryBackgroundStatusPush = async (env, job, status, error) => {
   }
 };
 
+// worker/amsg/src/storyEgress.ts
+var normalizeRelayUrl = (value) => value.trim();
+var resolveStoryEgressRoute = (env, targetUrl) => {
+  const relayUrl = normalizeRelayUrl(String(env.STORY_EGRESS_RELAY_URL || ""));
+  const relayToken = String(env.STORY_EGRESS_RELAY_TOKEN || "").trim();
+  if (!relayUrl && !relayToken) {
+    return { url: targetUrl, relayed: false };
+  }
+  if (!relayUrl || !relayToken) {
+    throw new Error("\u5267\u60C5\u7EDF\u4E00\u51FA\u53E3\u914D\u7F6E\u4E0D\u5B8C\u6574\uFF1ASTORY_EGRESS_RELAY_URL \u4E0E STORY_EGRESS_RELAY_TOKEN \u5FC5\u987B\u540C\u65F6\u914D\u7F6E");
+  }
+  let parsed;
+  try {
+    parsed = new URL(relayUrl);
+  } catch {
+    throw new Error("\u5267\u60C5\u7EDF\u4E00\u51FA\u53E3\u5730\u5740\u65E0\u6548\uFF1ASTORY_EGRESS_RELAY_URL \u4E0D\u662F\u5408\u6CD5 URL");
+  }
+  if (parsed.protocol !== "https:") {
+    throw new Error("\u5267\u60C5\u7EDF\u4E00\u51FA\u53E3\u5FC5\u987B\u4F7F\u7528 HTTPS");
+  }
+  return { url: parsed.toString(), relayed: true };
+};
+var textLength = (value) => {
+  if (typeof value === "string") return value.length;
+  if (!Array.isArray(value)) return 0;
+  return value.reduce((total, item) => {
+    if (typeof item === "string") return total + item.length;
+    if (!item || typeof item !== "object") return total;
+    const record = item;
+    return total + (typeof record.text === "string" ? record.text.length : 0) + (typeof record.content === "string" ? record.content.length : 0);
+  }, 0);
+};
+var summarizeRequest = (body, targetUrl, route) => {
+  const raw = typeof body === "string" ? body : "";
+  let parsed = {};
+  try {
+    const value = raw ? JSON.parse(raw) : {};
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      parsed = value;
+    }
+  } catch {
+  }
+  const messages = Array.isArray(parsed.messages) ? parsed.messages : [];
+  const roleCounts = {};
+  let messageTextChars = 0;
+  const contentKinds = /* @__PURE__ */ new Set();
+  for (const item of messages) {
+    if (!item || typeof item !== "object") continue;
+    const message = item;
+    const role = String(message.role || "unknown");
+    roleCounts[role] = (roleCounts[role] || 0) + 1;
+    messageTextChars += textLength(message.content);
+    if (typeof message.content === "string") contentKinds.add("string");
+    else if (Array.isArray(message.content)) {
+      for (const block of message.content) {
+        if (block && typeof block === "object") {
+          contentKinds.add(String(block.type || "object"));
+        } else {
+          contentKinds.add(typeof block);
+        }
+      }
+    } else {
+      contentKinds.add(typeof message.content);
+    }
+  }
+  const safeHost = (value) => {
+    try {
+      return new URL(value).host;
+    } catch {
+      return "invalid-url";
+    }
+  };
+  return {
+    egress: route.relayed ? "relay" : "direct",
+    targetHost: safeHost(targetUrl),
+    relayHost: route.relayed ? safeHost(route.url) : void 0,
+    bodyBytes: raw ? new TextEncoder().encode(raw).byteLength : void 0,
+    bodyKeys: Object.keys(parsed).sort(),
+    model: typeof parsed.model === "string" ? parsed.model : void 0,
+    stream: typeof parsed.stream === "boolean" ? parsed.stream : void 0,
+    streamOptions: parsed.stream_options && typeof parsed.stream_options === "object" ? Object.keys(parsed.stream_options).sort() : [],
+    temperature: typeof parsed.temperature === "number" ? parsed.temperature : void 0,
+    topP: typeof parsed.top_p === "number" ? parsed.top_p : void 0,
+    maxTokens: typeof parsed.max_tokens === "number" ? parsed.max_tokens : void 0,
+    maxCompletionTokens: typeof parsed.max_completion_tokens === "number" ? parsed.max_completion_tokens : void 0,
+    reasoningEffort: typeof parsed.reasoning_effort === "string" ? parsed.reasoning_effort : void 0,
+    messageCount: messages.length,
+    roleCounts,
+    messageTextChars,
+    contentKinds: [...contentKinds].sort()
+  };
+};
+var annotateFailure = async (response, requestBody, targetUrl, route) => {
+  if (response.ok) return response;
+  const original = await response.text().catch(() => "");
+  const diagnostic = summarizeRequest(requestBody, targetUrl, route);
+  const headers = new Headers(response.headers);
+  headers.delete("content-length");
+  headers.delete("content-encoding");
+  headers.set("cache-control", "no-store");
+  return new Response(
+    `${original}${original ? "\n" : ""}[sully_story_diag] ${JSON.stringify(diagnostic)}`,
+    {
+      status: response.status,
+      statusText: response.statusText,
+      headers
+    }
+  );
+};
+var fetchStoryUpstream = async (env, targetUrl, init) => {
+  const route = resolveStoryEgressRoute(env, targetUrl);
+  if (!route.relayed) {
+    const response2 = await fetch(targetUrl, init);
+    return annotateFailure(response2, init.body, targetUrl, route);
+  }
+  const headers = new Headers(init.headers || {});
+  headers.set("X-Sully-Egress-Version", "1");
+  headers.set("X-Sully-Egress-Target", targetUrl);
+  headers.set("X-Sully-Egress-Token", String(env.STORY_EGRESS_RELAY_TOKEN || "").trim());
+  const response = await fetch(route.url, {
+    ...init,
+    headers
+  });
+  return annotateFailure(response, init.body, targetUrl, route);
+};
+
 // worker/amsg/src/storyJobs.ts
 var storyStatusJob = (row) => ({
   jobId: row.job_id,
@@ -13246,9 +13915,65 @@ var MAX_ROUTES = 8;
 var MAX_REQUEST_BYTES = 2e6;
 var PARTIAL_PERSIST_INTERVAL_MS = 900;
 var PARTIAL_PERSIST_CHAR_STEP = 512;
+var CANCEL_POLL_INTERVAL_MS = 750;
 var jsonSize = (value) => new TextEncoder().encode(JSON.stringify(value)).byteLength;
 var now = () => Date.now();
 var normalizeBaseUrl = (value) => value.trim().replace(/\/+$/, "");
+var numericBodyField = (value) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : void 0;
+};
+var summarizeStoryRequest = (env, body) => {
+  const relayUrl = String(env.STORY_EGRESS_RELAY_URL || "").trim();
+  const relayToken = String(env.STORY_EGRESS_RELAY_TOKEN || "").trim();
+  const messages = Array.isArray(body.messages) ? body.messages : [];
+  const roleCounts = { system: 0, user: 0, assistant: 0, other: 0 };
+  let messageChars = 0;
+  let lastMessageRole;
+  for (const item of messages) {
+    const message = item && typeof item === "object" && !Array.isArray(item) ? item : {};
+    const role = String(message.role || "");
+    lastMessageRole = role || lastMessageRole;
+    if (role === "system") roleCounts.system += 1;
+    else if (role === "user") roleCounts.user += 1;
+    else if (role === "assistant") roleCounts.assistant += 1;
+    else roleCounts.other += 1;
+    const content = message.content;
+    if (typeof content === "string") messageChars += content.length;
+    else if (content != null) {
+      try {
+        messageChars += JSON.stringify(content).length;
+      } catch {
+      }
+    }
+  }
+  let relayHost;
+  if (relayUrl) {
+    try {
+      relayHost = new URL(relayUrl).host;
+    } catch {
+      relayHost = "invalid-url";
+    }
+  }
+  return {
+    egress: relayUrl && relayToken ? "relay" : relayUrl || relayToken ? "partial" : "direct",
+    ...relayHost ? { relayHost } : {},
+    requestBytes: jsonSize(body),
+    bodyKeys: Object.keys(body).sort(),
+    messageCount: messages.length,
+    messageChars,
+    roleCounts,
+    ...lastMessageRole ? { lastMessageRole } : {},
+    ...typeof body.stream === "boolean" ? { stream: body.stream } : {},
+    hasStreamOptions: Boolean(body.stream_options && typeof body.stream_options === "object"),
+    ...numericBodyField(body.max_tokens) !== void 0 ? { maxTokens: numericBodyField(body.max_tokens) } : {},
+    ...numericBodyField(body.max_completion_tokens) !== void 0 ? { maxCompletionTokens: numericBodyField(body.max_completion_tokens) } : {},
+    ...numericBodyField(body.temperature) !== void 0 ? { temperature: numericBodyField(body.temperature) } : {},
+    ...numericBodyField(body.top_p) !== void 0 ? { topP: numericBodyField(body.top_p) } : {},
+    ...numericBodyField(body.frequency_penalty) !== void 0 ? { frequencyPenalty: numericBodyField(body.frequency_penalty) } : {},
+    ...numericBodyField(body.presence_penalty) !== void 0 ? { presencePenalty: numericBodyField(body.presence_penalty) } : {}
+  };
+};
 var toBase64 = (bytes) => {
   let binary = "";
   const step = 32768;
@@ -13328,6 +14053,19 @@ var cleanupOldJobs = async (db) => {
 };
 var loadRowById = async (db, userId, jobId) => db.prepare("SELECT * FROM story_jobs WHERE user_id = ? AND job_id = ? LIMIT 1").bind(userId, jobId).first();
 var loadRowByClient = async (db, userId, clientRequestId) => db.prepare("SELECT * FROM story_jobs WHERE user_id = ? AND client_request_id = ? LIMIT 1").bind(userId, clientRequestId).first();
+var isStoryJobCancelled = async (env, userId, jobId) => {
+  try {
+    return (await loadRowById(env.DB, userId, jobId))?.status === "cancelled";
+  } catch {
+    return false;
+  }
+};
+var StoryJobCancelledError = class extends Error {
+  constructor() {
+    super("\u5267\u60C5\u4E91\u7AEF\u4EFB\u52A1\u5DF2\u53D6\u6D88");
+    this.name = "StoryJobCancelledError";
+  }
+};
 var parseAttempts = (raw) => {
   if (!raw) return [];
   try {
@@ -13403,6 +14141,7 @@ var validateSpec = (value) => {
       baseUrl,
       apiKey,
       model,
+      stream: typeof route.stream === "boolean" ? route.stream : void 0,
       temperature: Number.isFinite(Number(route.temperature)) ? Number(route.temperature) : void 0,
       firstByteTimeoutMs: Number.isFinite(Number(route.firstByteTimeoutMs)) ? Math.max(0, Number(route.firstByteTimeoutMs)) : void 0
     };
@@ -13680,13 +14419,14 @@ var readStreamingResponse = async (env, row, response, model) => {
 };
 var finalizeFailed = async (env, row, attempts, error, content = "", reasoningChars = 0) => {
   const latest = await loadRowById(env.DB, row.user_id, row.job_id);
+  if (latest?.status === "cancelled") return;
   const partialCipher = content ? await sealJson(env, row.user_id, row.job_id, "partial", content) : latest?.partial_cipher ?? row.partial_cipher;
   const visibleChars = content ? content.length : latest?.visible_chars ?? row.visible_chars ?? 0;
   const keptReasoningChars = reasoningChars > 0 ? reasoningChars : latest?.reasoning_chars ?? row.reasoning_chars ?? 0;
-  await env.DB.prepare(
+  const failed = await env.DB.prepare(
     `UPDATE story_jobs
      SET status = 'failed', partial_cipher = ?, error = ?, attempts_json = ?, reasoning_chars = ?, visible_chars = ?, updated_at = ?, completed_at = ?
-     WHERE user_id = ? AND job_id = ?`
+     WHERE user_id = ? AND job_id = ? AND status = 'running'`
   ).bind(
     partialCipher,
     error.slice(0, 2e3),
@@ -13698,6 +14438,7 @@ var finalizeFailed = async (env, row, attempts, error, content = "", reasoningCh
     row.user_id,
     row.job_id
   ).run();
+  if ((failed.meta?.changes ?? 0) <= 0) return;
   await sendStoryBackgroundStatusPush(
     env,
     storyStatusJob(row),
@@ -13726,20 +14467,24 @@ var runStoryJob = async (env, userId, jobId) => {
   const attempts = [];
   let lastError = "\u5267\u60C5\u540E\u53F0\u751F\u6210\u5931\u8D25";
   for (let index = 0; index < spec.routes.length; index += 1) {
+    if (await isStoryJobCancelled(env, userId, jobId)) return;
     const route = spec.routes[index];
     const attemptStartedAt = now();
     let response;
+    let routeRequest = null;
     let explicitErrorText = "";
+    let lastRequestShape;
     const requestRoute = async (includeUsage) => {
       const body = {
         ...spec.baseBody,
-        model: route.model,
-        stream: true
+        model: route.model
       };
+      const useStream = typeof route.stream === "boolean" ? route.stream : typeof spec.baseBody.stream === "boolean" ? Boolean(spec.baseBody.stream) : true;
+      body.stream = useStream;
       if (Object.prototype.hasOwnProperty.call(body, "temperature") && typeof route.temperature === "number") {
         body.temperature = route.temperature;
       }
-      if (includeUsage) {
+      if (includeUsage && useStream) {
         body.stream_options = {
           ...body.stream_options && typeof body.stream_options === "object" ? body.stream_options : {},
           include_usage: true
@@ -13747,29 +14492,79 @@ var runStoryJob = async (env, userId, jobId) => {
       } else {
         delete body.stream_options;
       }
-      return fetch(`${normalizeBaseUrl(route.baseUrl)}/chat/completions`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Accept": "text/event-stream",
-          "Authorization": `Bearer ${route.apiKey || "sk-none"}`,
-          "User-Agent": "SullyOS-StoryWorker/1.0"
-        },
-        body: JSON.stringify(body)
-      });
+      lastRequestShape = summarizeStoryRequest(env, body);
+      const controller = new AbortController();
+      let cancelled = false;
+      let checking = false;
+      let cancelTimer = null;
+      const stopCancelWatch = () => {
+        if (cancelTimer !== null) {
+          clearInterval(cancelTimer);
+          cancelTimer = null;
+        }
+      };
+      const checkCancelled = async () => {
+        if (cancelled || checking) return;
+        checking = true;
+        try {
+          if (await isStoryJobCancelled(env, userId, jobId)) {
+            cancelled = true;
+            controller.abort();
+          }
+        } finally {
+          checking = false;
+        }
+      };
+      cancelTimer = setInterval(() => {
+        void checkCancelled();
+      }, CANCEL_POLL_INTERVAL_MS);
+      void checkCancelled();
+      try {
+        const targetUrl = `${normalizeBaseUrl(route.baseUrl)}/chat/completions`;
+        const upstream2 = await fetchStoryUpstream(env, targetUrl, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${route.apiKey || "sk-none"}`
+          },
+          body: JSON.stringify(body),
+          signal: controller.signal
+        });
+        return {
+          response: upstream2,
+          wasCancelled: () => cancelled,
+          stopCancelWatch
+        };
+      } catch (error) {
+        stopCancelWatch();
+        if (cancelled || await isStoryJobCancelled(env, userId, jobId)) {
+          throw new StoryJobCancelledError();
+        }
+        throw error;
+      }
     };
     try {
-      response = await requestRoute(true);
+      routeRequest = await requestRoute(true);
+      response = routeRequest.response;
       if (response.status === 400) {
         explicitErrorText = (await response.text().catch(() => "")).slice(0, 1e3);
+        if (routeRequest.wasCancelled() || await isStoryJobCancelled(env, userId, jobId)) {
+          routeRequest.stopCancelWatch();
+          return;
+        }
         const lower = explicitErrorText.toLowerCase();
         if (lower.includes("stream_options") || lower.includes("include_usage")) {
-          response = await requestRoute(false);
+          routeRequest.stopCancelWatch();
+          routeRequest = await requestRoute(false);
+          response = routeRequest.response;
           explicitErrorText = "";
         }
       }
     } catch (error) {
+      routeRequest?.stopCancelWatch();
+      if (error instanceof StoryJobCancelledError || await isStoryJobCancelled(env, userId, jobId)) return;
       const attempt = routeAttempt(route, index, attemptStartedAt);
+      attempt.requestShape = lastRequestShape;
       attempt.error = error?.message || String(error);
       attempt.durationMs = now() - attemptStartedAt;
       attempts.push(attempt);
@@ -13778,7 +14573,11 @@ var runStoryJob = async (env, userId, jobId) => {
     }
     if (!response.ok) {
       const text = explicitErrorText || (await response.text().catch(() => "")).slice(0, 1e3);
+      const cancelled = routeRequest?.wasCancelled() || await isStoryJobCancelled(env, userId, jobId);
+      routeRequest?.stopCancelWatch();
+      if (cancelled) return;
       const attempt = routeAttempt(route, index, attemptStartedAt);
+      attempt.requestShape = lastRequestShape;
       attempt.status = response.status;
       attempt.error = text || `HTTP ${response.status}`;
       attempt.durationMs = now() - attemptStartedAt;
@@ -13790,16 +14589,23 @@ var runStoryJob = async (env, userId, jobId) => {
     }
     try {
       const streamed = await readStreamingResponse(env, liveRow, response, route.model);
+      if (routeRequest?.wasCancelled() || await isStoryJobCancelled(env, userId, jobId)) {
+        routeRequest?.stopCancelWatch();
+        return;
+      }
       const attempt = routeAttempt(route, index, attemptStartedAt);
+      attempt.requestShape = lastRequestShape;
       attempt.status = response.status;
       attempt.durationMs = now() - attemptStartedAt;
       if (!streamed.content.trim()) {
+        routeRequest?.stopCancelWatch();
         attempt.error = streamed.reasoning ? "\u4E0A\u6E38\u53EA\u8FD4\u56DE\u4E86\u601D\u8003\u5185\u5BB9\uFF0C\u6CA1\u6709\u6B63\u6587" : "\u4E0A\u6E38\u6CA1\u6709\u8FD4\u56DE\u6B63\u6587";
         attempts.push(attempt);
         await finalizeFailed(env, liveRow, attempts, attempt.error, streamed.content, streamed.reasoning.length);
         return;
       }
       if (!streamed.terminal) {
+        routeRequest?.stopCancelWatch();
         attempt.error = "\u6D41\u5F0F\u8FDE\u63A5\u7ED3\u675F\u65F6\u6CA1\u6709\u6536\u5230\u6A21\u578B\u5B8C\u6210\u6807\u8BB0";
         attempts.push(attempt);
         await finalizeFailed(
@@ -13829,6 +14635,10 @@ var runStoryJob = async (env, userId, jobId) => {
           };
         }
       }
+      if (routeRequest?.wasCancelled() || await isStoryJobCancelled(env, userId, jobId)) {
+        routeRequest?.stopCancelWatch();
+        return;
+      }
       const storedResponse = finalImageHandoff ? { ...streamed.response, _sullyStoryImageHandoff: finalImageHandoff } : streamed.response;
       const responseCipher = await sealJson(env, userId, jobId, "response", storedResponse);
       const partialCipher = await sealJson(env, userId, jobId, "partial", streamed.content);
@@ -13836,12 +14646,12 @@ var runStoryJob = async (env, userId, jobId) => {
       const promptTokens = Number(usage?.prompt_tokens);
       const completionTokens = Number(usage?.completion_tokens);
       const finishedAt = now();
-      await env.DB.prepare(
+      const succeeded = await env.DB.prepare(
         `UPDATE story_jobs
          SET status = 'succeeded', response_cipher = ?, partial_cipher = ?, error = NULL,
              attempts_json = ?, prompt_tokens = ?, completion_tokens = ?, reasoning_chars = ?,
              visible_chars = ?, updated_at = ?, completed_at = ?
-         WHERE user_id = ? AND job_id = ?`
+         WHERE user_id = ? AND job_id = ? AND status = 'running'`
       ).bind(
         responseCipher,
         partialCipher,
@@ -13855,6 +14665,8 @@ var runStoryJob = async (env, userId, jobId) => {
         userId,
         jobId
       ).run();
+      routeRequest?.stopCancelWatch();
+      if ((succeeded.meta?.changes ?? 0) <= 0) return;
       await sendStoryBackgroundStatusPush(
         env,
         storyStatusJob({ ...liveRow, status: "succeeded", completed_at: finishedAt, updated_at: finishedAt }),
@@ -13862,7 +14674,11 @@ var runStoryJob = async (env, userId, jobId) => {
       );
       return;
     } catch (error) {
+      const cancelled = routeRequest?.wasCancelled() || await isStoryJobCancelled(env, userId, jobId);
+      routeRequest?.stopCancelWatch();
+      if (cancelled || error instanceof StoryJobCancelledError) return;
       const attempt = routeAttempt(route, index, attemptStartedAt);
+      attempt.requestShape = lastRequestShape;
       attempt.status = response.status;
       attempt.error = error?.message || String(error);
       attempt.durationMs = now() - attemptStartedAt;
@@ -14008,7 +14824,7 @@ var handleStoryJobsRequest = async (request, env) => {
     const jobId = decodeURIComponent(tail[0]);
     const t = now();
     await env.DB.prepare(
-      "UPDATE story_jobs SET status = 'cancelled', updated_at = ?, completed_at = ? WHERE user_id = ? AND job_id = ? AND status IN ('queued','running')"
+      "UPDATE story_jobs SET status = 'cancelled', error = '\u5DF2\u7531\u7528\u6237\u505C\u6B62', updated_at = ?, completed_at = ? WHERE user_id = ? AND job_id = ? AND status IN ('queued','running')"
     ).bind(t, t, userId, jobId).run();
     const row = await loadRowById(env.DB, userId, jobId);
     return { status: 200, body: { success: true, job: row ? await publicJob(env, row) : null } };
@@ -14578,7 +15394,10 @@ var runMcpFireTool = async (stash, name, args) => {
   const started = Date.now();
   const result = await callMcpToolCore(
     // worker 侧 fetch 没有 CORS，直连用户配的地址，不经代理。
-    { url: hit.server.url, headers: (sid) => buildMcpDirectHeaders(hit.server, sid) },
+    {
+      url: hit.server.url,
+      headers: (sid, protocolVersion) => buildMcpDirectHeaders(hit.server, sid, protocolVersion)
+    },
     session,
     hit.toolName,
     args,
@@ -14599,7 +15418,7 @@ var amsgHooks = {
       throw fireStateError("task metadata \u7F3A charId", { taskId: ctx.task.id });
     }
     const instant = isInstantChatTask(ctx.task.metadata ?? {});
-    const fail2 = (reason, extra) => {
+    const fail3 = (reason, extra) => {
       if (instant && typeof ctx.task.uuid === "string" && ctx.task.uuid) {
         if (typeof ctx.writeState === "function") {
           void writeChatFail(ctx.writeState, charId, {
@@ -14621,7 +15440,7 @@ var amsgHooks = {
       try {
         return await unpackStateValue(value);
       } catch (error) {
-        throw fail2(`${label} \u89E3\u538B\u5931\u8D25\uFF08\u6570\u636E\u635F\u574F\uFF09`, { error: String(error) });
+        throw fail3(`${label} \u89E3\u538B\u5931\u8D25\uFF08\u6570\u636E\u635F\u574F\uFF09`, { error: String(error) });
       }
     };
     const taskMeta = ctx.task.metadata ?? {};
@@ -14631,13 +15450,13 @@ var amsgHooks = {
     if (taskKind) {
       const handler = FIRE_KIND_HANDLERS[taskKind];
       if (!handler) {
-        throw fail2(`\u4E0D\u8BA4\u8BC6\u7684\u4EFB\u52A1\u79CD\u7C7B amsgKind=${taskKind}\uFF08worker \u4EE3\u7801\u6BD4\u524D\u7AEF\u65E7\uFF0C\u53BB\u8BBE\u7F6E\u9875\u91CD\u65B0\u90E8\u7F72\u4E00\u6B21\uFF09`);
+        throw fail3(`\u4E0D\u8BA4\u8BC6\u7684\u4EFB\u52A1\u79CD\u7C7B amsgKind=${taskKind}\uFF08worker \u4EE3\u7801\u6BD4\u524D\u7AEF\u65E7\uFF0C\u53BB\u8BBE\u7F6E\u9875\u91CD\u65B0\u90E8\u7F72\u4E00\u6B21\uFF09`);
       }
       let plan;
       try {
         plan = await handler.beforeFire({ ctx, charId, taskMeta });
       } catch (error) {
-        throw fail2(error instanceof Error ? error.message : String(error), { kind: taskKind });
+        throw fail3(error instanceof Error ? error.message : String(error), { kind: taskKind });
       }
       if ("skip" in plan) {
         console.log("[amsg:kind-skip]", { taskId: ctx.task.id, kind: taskKind, reason: plan.reason });
@@ -14668,12 +15487,12 @@ var amsgHooks = {
       return { skip: true };
     }
     const packRow = charRows.find((r) => r.key === AMSG_FIRE_PACK_KEY);
-    if (!packRow) throw fail2("\u4E91\u7AEF\u6CA1\u6709\u8FD9\u4E2A\u89D2\u8272\u7684 fire_pack");
+    if (!packRow) throw fail3("\u4E91\u7AEF\u6CA1\u6709\u8FD9\u4E2A\u89D2\u8272\u7684 fire_pack");
     const packJson = await unpackOrFail("fire_pack", packRow.value);
     const pack = parseFirePack(packJson);
-    if (!pack) throw fail2(`fire_pack \u89E3\u6790\u5931\u8D25\uFF1A${describeFirePackVersion(packJson)}`);
+    if (!pack) throw fail3(`fire_pack \u89E3\u6790\u5931\u8D25\uFF1A${describeFirePackVersion(packJson)}`);
     if (instant && !pack.chat) {
-      throw fail2("\u5373\u65F6\u5BF9\u8BDD\u4EFB\u52A1\u7684 fire_pack \u91CC\u6CA1\u6709 chat \u6BB5\uFF08\u4E91\u7AEF\u72B6\u6001\u6CA1\u8DDF\u4E0A\uFF09");
+      throw fail3("\u5373\u65F6\u5BF9\u8BDD\u4EFB\u52A1\u7684 fire_pack \u91CC\u6CA1\u6709 chat \u6BB5\uFF08\u4E91\u7AEF\u72B6\u6001\u6CA1\u8DDF\u4E0A\uFF09");
     }
     if (!instant && pack.template === AMSG2_INSTANT_STUB_TEMPLATE) {
       console.warn("[amsg:fire-pack-stub] fire_pack \u8FD8\u662F\u5373\u65F6\u5BF9\u8BDD\u7684\u5360\u4F4D\u6A21\u677F\uFF0C\u7B49\u5BA2\u6237\u7AEF\u8865\u4F20\u540E\u91CD\u8BD5", {
@@ -14684,7 +15503,7 @@ var amsgHooks = {
     }
     const occurrenceMs = Date.parse(String(ctx.task.nextSendAt));
     if (!Number.isFinite(occurrenceMs)) {
-      throw fail2("\u4EFB\u52A1\u884C next_send_at \u89E3\u6790\u4E0D\u51FA\u89E6\u53D1\u65F6\u523B", { nextSendAt: ctx.task.nextSendAt });
+      throw fail3("\u4EFB\u52A1\u884C next_send_at \u89E3\u6790\u4E0D\u51FA\u89E6\u53D1\u65F6\u523B", { nextSendAt: ctx.task.nextSendAt });
     }
     const presenceLastUserMessageAt = presence?.charId === charId ? presence.lastUserMessageAt : null;
     const expireInput = {
@@ -14708,17 +15527,17 @@ var amsgHooks = {
     }
     if (!instant) console.log("[amsg:expire-pass]", expireTrace);
     if (!instant && typeof taskMeta.amsgTaskInstruction !== "string") {
-      throw fail2("\u4EFB\u52A1 metadata \u7F3A amsgTaskInstruction\uFF08\u65E7\u683C\u5F0F\u4EFB\u52A1\uFF09");
+      throw fail3("\u4EFB\u52A1 metadata \u7F3A amsgTaskInstruction\uFF08\u65E7\u683C\u5F0F\u4EFB\u52A1\uFF09");
     }
     const globalRows = await ctx.readState(AMSG_GLOBAL_NAMESPACE);
     const toolPackRow = charRows.find((r) => r.key === AMSG_TOOL_PACK_KEY);
     const toolConfigRow = globalRows.find((r) => r.key === AMSG_TOOL_CONFIG_KEY);
-    if (!toolPackRow) throw fail2("\u4E91\u7AEF\u6CA1\u6709\u8FD9\u4E2A\u89D2\u8272\u7684 tool_pack");
-    if (!toolConfigRow) throw fail2("\u4E91\u7AEF\u6CA1\u6709 tool_config");
+    if (!toolPackRow) throw fail3("\u4E91\u7AEF\u6CA1\u6709\u8FD9\u4E2A\u89D2\u8272\u7684 tool_pack");
+    if (!toolConfigRow) throw fail3("\u4E91\u7AEF\u6CA1\u6709 tool_config");
     const toolPack = parseToolPack(await unpackOrFail("tool_pack", toolPackRow.value));
-    if (!toolPack) throw fail2("tool_pack \u89E3\u6790\u5931\u8D25\uFF08\u683C\u5F0F\u4E0D\u5BF9\u6216\u6570\u636E\u635F\u574F\uFF09");
+    if (!toolPack) throw fail3("tool_pack \u89E3\u6790\u5931\u8D25\uFF08\u683C\u5F0F\u4E0D\u5BF9\u6216\u6570\u636E\u635F\u574F\uFF09");
     const toolConfig = parseToolConfig(await unpackOrFail("tool_config", toolConfigRow.value));
-    if (!toolConfig) throw fail2("tool_config \u89E3\u6790\u5931\u8D25\uFF08\u683C\u5F0F\u4E0D\u5BF9\u6216\u6570\u636E\u635F\u574F\uFF09");
+    if (!toolConfig) throw fail3("tool_config \u89E3\u6790\u5931\u8D25\uFF08\u683C\u5F0F\u4E0D\u5BF9\u6216\u6570\u636E\u635F\u574F\uFF09");
     const mcpServers = filterMcpServersForChar(toolConfig.mcpServers, charId);
     const mcpResolve = mcpServers.length ? buildMcpNameMap(mcpServers, { maxNameLen: MCP_FIRE_NAME_BUDGET }) : null;
     const mcpNative = toolConfig.mcpUseNativeTools !== false;
@@ -14886,7 +15705,7 @@ var amsgHooks = {
       }
       return handler.llmOutput({ ctx, state: kindFire.state });
     }
-    const content = stripReasoningTags(ctx.llmOutputText || "").trim();
+    const content = stripReasoningTags2(ctx.llmOutputText || "").trim();
     const taskId = ctx.taskId != null ? String(ctx.taskId) : null;
     if (taskId == null) {
       console.warn("[amsg:agentic] ctx \u4E0A\u6CA1\u6709 taskId\uFF0C\u9001\u8FBE\u5F52\u5C5E\u4F1A\u5931\u6548", ctx.sessionId);
@@ -15506,6 +16325,43 @@ var src_default = {
         success: result.ok,
         data: result.ok ? result : void 0,
         error: result.ok ? void 0 : { code: result.code, message: result.message }
+      });
+    }
+    if (pathname.endsWith("/cron-trigger")) {
+      if (method === "OPTIONS") return new Response(null, { status: 204, headers: CORS_HEADERS });
+      if (method === "GET") {
+        const state = await handleCronTriggerRead(env, request);
+        if (!state.supported && isCronTriggerAuthFailure(state.code)) {
+          return jsonWithCors(401, {
+            success: false,
+            error: { code: state.code, message: state.message }
+          });
+        }
+        return jsonWithCors(200, { success: true, data: state });
+      }
+      if (method !== "POST") {
+        return jsonWithCors(405, {
+          success: false,
+          error: { code: "METHOD_NOT_ALLOWED", message: "/cron-trigger \u53EA\u63A5\u53D7 GET \u548C POST" }
+        });
+      }
+      let enabled;
+      try {
+        enabled = (await request.json())?.enabled;
+      } catch {
+        enabled = void 0;
+      }
+      if (typeof enabled !== "boolean") {
+        return jsonWithCors(400, {
+          success: false,
+          error: { code: "BAD_REQUEST", message: '\u8BF7\u6C42\u4F53\u8981\u662F { "enabled": true | false }' }
+        });
+      }
+      const result = await handleCronTriggerWrite(env, request, enabled);
+      if (result.ok) return jsonWithCors(200, { success: true, data: result });
+      return jsonWithCors(isCronTriggerAuthFailure(result.code) ? 401 : 400, {
+        success: false,
+        error: { code: result.code, message: result.message }
       });
     }
     const report = inspectWorkerEnv(env);

@@ -1,5 +1,4 @@
-import { buildGameHallAutoplayControlPrompt } from './gameHallAutoplayIntent';
-/**
+import { buildGameHallAutoplayControlPrompt } from './gameHallAutoplayIntent';import { selectCharacterContextMessages } from './chatContextRange';/**
  * 聊天请求载荷统一构造器
  *
  * 设计目标：让"正常聊天"、"主动消息"、"emotion 副 API 评估"三条路径吃到的
@@ -38,6 +37,7 @@ import { normalizeTranslationLangLabel } from './translationLang';
 import { cleanApiMessages, flattenImageContentParts } from './promptMessageCleanup';
 import { materializeVisionDescriptions } from './visionApi';
 import type { RecallEntryPoint, RecallTrace } from './memoryPalace/trace';
+import { loadCollaborationFileCabinetBlock } from '../features/collaboration/chatLibrary';
 
 export { cleanApiMessages, flattenImageContentParts } from './promptMessageCleanup';
 
@@ -132,6 +132,8 @@ export interface BuildChatPayloadResult {
     cleanedApiMessages: ChatPayloadMessage[];
     /** [system, ...cleanedApiMessages, 末尾 bilingual reminder?] —— 主 API 直接发这个 */
     fullMessages: ChatPayloadMessage[];
+    /** fullMessages 里易变尾段 system 的下标；动态块用它插到钢印之前。-1 表示没有。 */
+    volatileTailIndex: number;
     /** 本轮记忆召回的脱敏 Trace；Prompt Build 被整体跳过时不存在。 */
     recallTrace?: RecallTrace;
     /** 调试用：bilingual / mcd 是否实际注入 */
@@ -236,9 +238,14 @@ export async function buildChatRequestPayload(input: BuildChatPayloadInput): Pro
         input.categories,
         char.id,
     );
-    const rawRecentMsgsHint = input.recentMsgsHint ?? historyMsgs;
+    // 正文、召回、世界书扫描和识图共用可见范围；UI 近窗可能仍缓存着范围外旧消息。
+    const selectedHistory = selectCharacterContextMessages(historyMsgs, char);
+    const visibleIds = new Set(selectedHistory.map(message => message.id));
+    const rawRecentMsgsHint = input.recentMsgsHint
+        ? input.recentMsgsHint.filter(message => visibleIds.has(message.id))
+        : selectedHistory;
     const useVisionDescriptions = input.visionApiConfig?.enabled === true;
-    let historyMsgsForPrompt = historyMsgs;
+    let historyMsgsForPrompt = selectedHistory;
     let recentMsgsHint = rawRecentMsgsHint;
 
     if (useVisionDescriptions) {
@@ -246,13 +253,13 @@ export async function buildChatRequestPayload(input: BuildChatPayloadInput): Pro
         // 再把写回 metadata 的新快照映射回两套窗口，避免同一轮的 system/history 各跑一次识图。
         const uniqueMessages = new Map<number, Message>();
         for (const message of rawRecentMsgsHint) uniqueMessages.set(message.id, message);
-        for (const message of historyMsgs) uniqueMessages.set(message.id, message);
+        for (const message of selectedHistory) uniqueMessages.set(message.id, message);
         const prepared = await materializeVisionDescriptions(
             [...uniqueMessages.values()],
             input.visionApiConfig,
         );
         const preparedById = new Map(prepared.map(message => [message.id, message]));
-        historyMsgsForPrompt = historyMsgs.map(message => preparedById.get(message.id) || message);
+        historyMsgsForPrompt = selectedHistory.map(message => preparedById.get(message.id) || message);
         recentMsgsHint = rawRecentMsgsHint.map(message => preparedById.get(message.id) || message);
     }
 
@@ -276,6 +283,7 @@ export async function buildChatRequestPayload(input: BuildChatPayloadInput): Pro
             systemPrompt: '',
             cleanedApiMessages: requestMessages,
             fullMessages: requestMessages,
+            volatileTailIndex: -1,
             flags: {
                 bilingualActive: false,
                 mcdActive: false,
@@ -484,6 +492,13 @@ export async function buildChatRequestPayload(input: BuildChatPayloadInput): Pro
                 engagementTrace.analysis as ConversationEngagementAnalysis | undefined,
             );
         }
+        if (char.chatCollaborationEnabled) {
+            volatileTail += await loadCollaborationFileCabinetBlock(
+                char.id,
+                historyMsgsForPrompt,
+                userProfile?.name || '用户',
+            );
+        }
     }
 
     // 「关于对方的表达」+「回到你自己」必须是易变尾段的最后内容：修复旧版把双语/HTML/
@@ -526,6 +541,8 @@ export async function buildChatRequestPayload(input: BuildChatPayloadInput): Pro
         systemPrompt: systemPrompt + volatileTail,
         cleanedApiMessages: messagesWithWorldbookDepth,
         fullMessages: finalMessages,
+        // 合并开关开着时多条 system 被并进开头一条，下标失去意义 → 交出 -1，调用方退回贴尾。
+        volatileTailIndex: finalMessages === fullMessages ? 1 + messagesWithWorldbookDepth.length : -1,
         recallTrace,
         flags: { bilingualActive, mcdActive, luckinActive, luckinChatActive, mcpChatActive, htmlActive, thinkingActive, promptBuildSkipped: false },
     };

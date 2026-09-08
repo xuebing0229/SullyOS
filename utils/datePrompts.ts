@@ -24,6 +24,7 @@ import { ChatPrompts } from './chatPrompts';
 import { injectMemoryPalace } from './memoryPalace/pipeline';
 import { resolveCharTimeZone, nowInTimeZone } from './timezone';
 import { getVoicePromptOverride } from './ttsProvider';
+import { selectCharacterContextMessages } from './chatContextRange';
 
 export type ApiMessage = { role: string; content: any };
 
@@ -605,8 +606,7 @@ ${observeBlock}`;
 
 /**
  * 历史构建（send / reroll 共用）：
- * 1. 开了记忆宫殿 → 按高水位线过滤掉已被向量记忆替代的旧消息。调用方传入
- *    includeProcessed=true 的最近窗口，避免 DateApp 为一次见面把全角色历史读进内存。
+ * 1. 与其他 AI 入口共用自适应 / 手动范围及用户起点。调用方先读取有效窗口。
  * 2. 复用 ChatPrompts.buildMessageHistory 压缩各类卡片。
  * 3. 排除最后一条（待重发的 user msg），由调用方单独追加带 System Note 的版本。
  */
@@ -617,13 +617,12 @@ const buildDateHistory = (
     emojis: Emoji[],
     useVisionDescriptions: boolean = false,
 ): ApiMessage[] => {
-    const limit = char.contextLimit || 500;
-    const hwm = parseInt(localStorage.getItem(`mp_lastMsgId_${char.id}`) || '0', 10);
-    const palaceFiltered = hwm > 0 ? allMsgs.filter(m => m.id > hwm) : allMsgs;
-    const historyForBuild = palaceFiltered.slice(0, -1);
+    const selected = selectCharacterContextMessages(allMsgs, char);
+    const pendingId = allMsgs[allMsgs.length - 1]?.id;
+    const historyForBuild = selected.filter(message => message.id !== pendingId);
     const { apiMessages } = ChatPrompts.buildMessageHistory(
         historyForBuild,
-        limit,
+        Math.max(1, historyForBuild.length),
         char,
         userProfile || ({} as UserProfile),
         emojis,
@@ -652,14 +651,13 @@ export const DatePrompts = {
         const charTz = resolveCharTimeZone(char);
         const dateTimeOn = isDateTimeAwarenessOn(char);
         const timeStr = getRealTimeStr(charTz);
-        const limit = char.contextLimit || 500;
-        const peekLimit = Math.min(limit, 50);
+        const selected = selectCharacterContextMessages(allMsgs, char);
         const lastMsg = allMsgs[allMsgs.length - 1];
         const gapHint = getTimeGapHint(lastMsg?.timestamp, charTz);
 
         const { apiMessages } = ChatPrompts.buildMessageHistory(
-            allMsgs,
-            peekLimit,
+            selected,
+            Math.max(1, selected.length),
             char,
             userProfile || ({} as UserProfile),
             emojis,
@@ -708,7 +706,7 @@ ${extraBlock ? `\n${extraBlock}` : ''}${isObserveOn(char) ? `\n${buildObserveBlo
 
     /**
      * Session（send / reroll 共用）。
-     * allMsgs 须为 includeProcessed=true 的最近消息窗口，且最后一条是本轮要重新追加的
+     * allMsgs 须为角色有效上下文窗口，且最后一条是本轮要重新追加的
      * user 消息（send：刚落库的输入；reroll：触发上一条 AI 回复的那条）。
      */
     buildSessionPayload: async (input: {
