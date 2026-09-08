@@ -28,7 +28,7 @@ describe('用户反馈回归保护', () => {
     it('剧情重试会在再次生成前先尝试归档，避免超长上下文把后置归档永久卡死', () => {
         const source = read('../components/date/story/StoryTheaterSession.tsx');
         const send = source.slice(source.indexOf('const send = useCallback'), source.indexOf('const archivedCount ='));
-        const preflight = send.indexOf('const promptEntry = await archiveIfNeeded() || entry;');
+        const preflight = send.indexOf('await archiveIfNeeded()');
         const completion = send.indexOf('const generated = await callCompletion');
 
         expect(preflight).toBeGreaterThanOrEqual(0);
