@@ -1,4 +1,4 @@
-name: tmp-upstream-conflict-details
+name: tmp-upstream-conflict-split
 
 on:
   push:
@@ -20,7 +20,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Capture semantic conflict blocks
+      - name: Split semantic conflict blocks by file
         shell: bash
         run: |
           set -euo pipefail
@@ -31,37 +31,29 @@ jobs:
           set +e
           git merge --no-commit --no-ff upstream/master
           set -e
+          rm -rf /tmp/conflicts .github/tmp-upstream-conflicts
+          mkdir -p /tmp/conflicts .github/tmp-upstream-conflicts
           python - <<'PY'
           from pathlib import Path
-          import subprocess
-
+          import subprocess, re
           files = subprocess.check_output(['git','diff','--name-only','--diff-filter=U'], text=True).splitlines()
-          out = []
-          for rel in files:
-              text = Path(rel).read_text(errors='replace').splitlines()
-              out.append(f'\n######## {rel} ########')
-              i = 0
-              block = 0
-              while i < len(text):
-                  if text[i].startswith('<<<<<<< '):
-                      block += 1
-                      start = i
-                      j = i + 1
-                      while j < len(text) and not text[j].startswith('>>>>>>> '):
-                          j += 1
-                      end = min(j, len(text)-1)
-                      lo = max(0, start - 8)
-                      hi = min(len(text), end + 9)
-                      out.append(f'\n--- conflict {block}, lines {start+1}-{end+1} ---')
-                      out.extend(f'{n+1:05d}: {text[n]}' for n in range(lo, hi))
-                      i = end + 1
-                  else:
-                      i += 1
-          Path('/tmp/upstream-conflict-details.txt').write_text('\n'.join(out) + '\n')
+          for idx, rel in enumerate(files, 1):
+              lines = Path(rel).read_text(errors='replace').splitlines()
+              out = [f'FILE: {rel}']
+              i = 0; block = 0
+              while i < len(lines):
+                  if lines[i].startswith('<<<<<<< '):
+                      block += 1; start=i; j=i+1
+                      while j < len(lines) and not lines[j].startswith('>>>>>>> '): j += 1
+                      end=min(j,len(lines)-1); lo=max(0,start-5); hi=min(len(lines),end+6)
+                      out += ['', f'--- CONFLICT {block} ---']
+                      out += lines[lo:hi]
+                      i=end+1
+                  else: i+=1
+              safe = re.sub(r'[^A-Za-z0-9_.-]+','__',rel)
+              Path(f'.github/tmp-upstream-conflicts/{idx:02d}-{safe}.txt').write_text('\n'.join(out)+'\n')
           PY
-          cat /tmp/upstream-conflict-details.txt
           git merge --abort >/dev/null 2>&1 || true
-          cp /tmp/upstream-conflict-details.txt .github/tmp-upstream-conflict-details.txt
-          git add .github/tmp-upstream-conflict-details.txt
-          git commit -m "chore: record upstream conflict details" || true
+          git add .github/tmp-upstream-conflicts
+          git commit -m "chore: split upstream conflict reports" || true
           git push origin HEAD:merge/upstream-20260908
