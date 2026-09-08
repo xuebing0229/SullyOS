@@ -1,7 +1,0 @@
-merge_exit=1
-=== UNRESOLVED FILES ===
-public/amsg-worker.bundle.js
-worker/amsg/worker.bundle.js
-=== CONFLICT COUNTS ===
-public/amsg-worker.bundle.js	7
-worker/amsg/worker.bundle.js	7
