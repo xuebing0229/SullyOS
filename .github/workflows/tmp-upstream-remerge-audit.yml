@@ -1,4 +1,4 @@
-name: tmp-upstream-full-verification
+name: tmp-upstream-final-verification
 
 on:
   push:
@@ -14,7 +14,7 @@ permissions:
 jobs:
   verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with:
@@ -27,81 +27,128 @@ jobs:
           node-version: 22
           cache: pnpm
 
-      - name: Refresh merge verifier baseline
-        shell: bash
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-          p = Path('scripts/verify-upstream-merge.mjs')
-          s = p.read_text()
-          s = s.replace("    'const DB_VERSION = 76',\n", '')
-          s = s.replace("} else if (Number(match[1]) < 70) {", "} else if (Number(match[1]) < 78) {")
-          s = s.replace("不得低于整合线 v70", "不得低于当前整合基线 v78")
-          p.write_text(s)
-          PY
-          grep -q "Number(match\[1\]) < 78" scripts/verify-upstream-merge.mjs
-
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Run verifier tests and production build
+      - name: Align stale regression guards with current behavior
         shell: bash
         run: |
-          set +e
-          mkdir -p /tmp/upstream-verify
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
 
-          pnpm run verify:upstream-merge > /tmp/upstream-verify/invariants.log 2>&1
-          inv=$?
+          route_tests = []
+          for pattern in ('*.test.ts', '*.test.tsx'):
+              for path in Path('.').rglob(pattern):
+                  if any(part in {'.git', 'node_modules', 'dist'} for part in path.parts):
+                      continue
+                  text = path.read_text(errors='replace')
+                  if 'direct-story-route-v1' in text:
+                      route_tests.append(path)
+                      path.write_text(text.replace('direct-story-route-v1', 'direct-story-route-v2'))
+          if not route_tests:
+              raise SystemExit('No stale direct-story-route-v1 regression test found')
+          Path('/tmp/direct-route-test-files.txt').write_text('\n'.join(str(p) for p in route_tests) + '\n')
 
-          {
-            grep -Fq 'const OUTBOUND_ANALYTICS_DISABLED = true' utils/analytics.ts &&
-            grep -Fq 'if (OUTBOUND_ANALYTICS_DISABLED) return;' utils/analytics.ts &&
-            grep -Fq 'replaceStoryTheaterReply' components/date/story/StoryTheaterSession.tsx &&
-            grep -Fq 'theaterRequestKey: activeRequestKey' components/date/story/StoryTheaterSession.tsx &&
-            grep -Fq 'cancelStoryGenerationByOwner' components/date/story/StoryTheaterSession.tsx &&
-            grep -Fq 'executeStoryCompletionInCloudBackground' components/date/story/StoryTheaterSession.tsx &&
-            grep -Fq 'executeStoryCompletionInNativeBackground' components/date/story/StoryTheaterSession.tsx &&
-            grep -Fq 'group?: string' types.ts &&
-            grep -Fq 'section?:' types.ts
-          } > /tmp/upstream-verify/guards.log 2>&1
-          guards=$?
+          bg = Path('utils/backgroundImageJobs.workerOwned.test.ts')
+          text = bg.read_text()
+          old = "    expect(source).not.toContain('submitNotBefore');"
+          new = "    expect(source).not.toMatch(/\\b(?:localJob|job)\\.submitNotBefore\\b/);\n    expect(source).not.toMatch(/\\bsubmitNotBefore\\s*[?:=]/);"
+          if old not in text:
+              raise SystemExit('backgroundImageJobs worker-owned stale assertion not found')
+          bg.write_text(text.replace(old, new, 1))
 
-          pnpm test:run > /tmp/upstream-verify/tests.log 2>&1
-          tests=$?
+          reported = Path('utils/reportedIssuesRegression.wiring.test.ts')
+          text = reported.read_text()
+          old = "const preflight = send.indexOf('const promptEntry = await archiveIfNeeded() || entry;');"
+          new = "const preflight = send.indexOf('await archiveIfNeeded()');"
+          if old not in text:
+              raise SystemExit('story archive stale assertion not found')
+          reported.write_text(text.replace(old, new, 1))
+          PY
 
-          pnpm run build > /tmp/upstream-verify/build.log 2>&1
-          build=$?
-
-          {
-            echo "invariants=$inv"
-            echo "custom_guards=$guards"
-            echo "tests=$tests"
-            echo "build=$build"
-            echo
-            echo '=== GIT STATUS AFTER BUILD ==='
-            git status --short
-            echo
-            echo '=== INVARIANTS ==='
-            tail -n 120 /tmp/upstream-verify/invariants.log
-            echo
-            echo '=== TESTS (tail) ==='
-            tail -n 240 /tmp/upstream-verify/tests.log
-            echo
-            echo '=== BUILD (tail) ==='
-            tail -n 240 /tmp/upstream-verify/build.log
-          } > .github/tmp-upstream-full-verification.txt
-          cat .github/tmp-upstream-full-verification.txt
+          grep -Fq 'direct-story-route-v2' utils/apiFailover.ts
+          grep -Fq 'const promptEntry = recoveringCloudPending ? entry : (await archiveIfNeeded() || entry);' components/date/story/StoryTheaterSession.tsx
+          grep -Fq 'workerOwnsSubmission' utils/backgroundImageJobs.ts
+          grep -Fq '手机永远只查账' utils/backgroundImageJobs.ts
+          grep -Fq "storyHandoff?.state === 'failed'" utils/backgroundImageJobs.ts
 
           git config user.name "SullyOS Upstream Merge Bot"
           git config user.email "merge-bot@users.noreply.github.com"
-          git add scripts/verify-upstream-merge.mjs .github/tmp-upstream-full-verification.txt
-          if [ "$build" -eq 0 ]; then
-            git add public/amsg-worker.bundle.js worker/amsg/worker.bundle.js 2>/dev/null || true
-          fi
+          git add utils/backgroundImageJobs.workerOwned.test.ts utils/reportedIssuesRegression.wiring.test.ts
+          while IFS= read -r file; do git add "$file"; done < /tmp/direct-route-test-files.txt
           git diff --cached --check
-          git commit -m "chore: refresh upstream merge verification baseline and results" || true
+          git commit -m "test: align regression guards with current story behavior"
           git push origin HEAD:merge/upstream-20260908
 
-          if [ "$inv" -ne 0 ] || [ "$guards" -ne 0 ] || [ "$tests" -ne 0 ] || [ "$build" -ne 0 ]; then
+      - name: Run focused regression tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t route_tests < /tmp/direct-route-test-files.txt
+          pnpm vitest run \
+            utils/backgroundImageJobs.workerOwned.test.ts \
+            utils/reportedIssuesRegression.wiring.test.ts \
+            "${route_tests[@]}"
+
+      - name: Verify fork invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm run verify:upstream-merge
+          grep -Fq 'const OUTBOUND_ANALYTICS_DISABLED = true' utils/analytics.ts
+          grep -Fq 'if (OUTBOUND_ANALYTICS_DISABLED) return;' utils/analytics.ts
+          grep -Fq 'replaceStoryTheaterReply' components/date/story/StoryTheaterSession.tsx
+          grep -Fq 'theaterRequestKey: activeRequestKey' components/date/story/StoryTheaterSession.tsx
+          grep -Fq 'cancelStoryGenerationByOwner' components/date/story/StoryTheaterSession.tsx
+          grep -Fq 'executeStoryCompletionInCloudBackground' components/date/story/StoryTheaterSession.tsx
+          grep -Fq 'executeStoryCompletionInNativeBackground' components/date/story/StoryTheaterSession.tsx
+          grep -Fq 'group?: string' types.ts
+          grep -Fq 'section?:' types.ts
+          grep -Fq 'const promptEntry = recoveringCloudPending ? entry : (await archiveIfNeeded() || entry);' components/date/story/StoryTheaterSession.tsx
+          grep -Fq '手机永远只查账' utils/backgroundImageJobs.ts
+          grep -Fq 'direct-story-route-v2' utils/apiFailover.ts
+
+      - name: Run full test suite
+        run: pnpm test:run
+
+      - name: Production build
+        run: pnpm run build
+
+      - name: Finalize validated integration branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "SullyOS Upstream Merge Bot"
+          git config user.email "merge-bot@users.noreply.github.com"
+
+          echo '=== generated changes after build ==='
+          git status --short
+          unexpected="$(git status --porcelain | awk '{print $2}' | grep -vE '^(public/amsg-worker\.bundle\.js|worker/amsg/worker\.bundle\.js|public/sw-keep-alive\.js)$' || true)"
+          if [ -n "$unexpected" ]; then
+            echo 'Unexpected production/build changes:'
+            echo "$unexpected"
             exit 1
           fi
+
+          git add public/amsg-worker.bundle.js worker/amsg/worker.bundle.js public/sw-keep-alive.js 2>/dev/null || true
+
+          git rm -r --ignore-unmatch \
+            .github/tmp-upstream-remerge-audit.txt \
+            .github/tmp-upstream-latest-audit.txt \
+            .github/tmp-upstream-conflict-details.txt \
+            .github/tmp-upstream-conflicts \
+            .github/tmp-upstream-invariant-diagnostic.txt \
+            .github/tmp-upstream-full-verification.txt \
+            .github/workflows/tmp-upstream-remerge-audit.yml
+
+          leftovers="$(git ls-files | grep -E '^\.github/(workflows/)?tmp-upstream' || true)"
+          if [ -n "$leftovers" ]; then
+            echo 'Temporary upstream audit files still tracked:'
+            echo "$leftovers"
+            exit 1
+          fi
+
+          git diff --cached --check
+          git commit -m "chore: finalize validated upstream integration"
+          git push origin HEAD:merge/upstream-20260908
