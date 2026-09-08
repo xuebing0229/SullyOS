@@ -26,8 +26,7 @@ describe('二改版统计隐私护栏', () => {
       expect(createElement).not.toHaveBeenCalled();
     } finally {
       if (oldDocument) Object.defineProperty(globalThis, 'document', oldDocument);
-      else Reflect.deleteProperty(globalThis, 'document');
-    }
+      else Reflect.deleteProperty(globalThis, 'document');    }
   });
 
   it('trackEvent 永远不会向 window.umami 发送事件', () => {
@@ -42,7 +41,6 @@ describe('二改版统计隐私护栏', () => {
       expect(track).not.toHaveBeenCalled();
     } finally {
       if (oldWindow) Object.defineProperty(globalThis, 'window', oldWindow);
-      else Reflect.deleteProperty(globalThis, 'window');
-    }
+      else Reflect.deleteProperty(globalThis, 'window');    }
   });
 });

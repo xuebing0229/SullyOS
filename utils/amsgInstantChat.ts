@@ -759,6 +759,24 @@ const backfillOutboxEntries = async (
   let staleDropped = 0;
   // 超龄行核对本地聊天记录时用的近史缓存，一趟补收内每个角色只查一次。
   const persistedIdsByChar = new Map<string, Set<string>>();
+  // 收件箱里已经躺着的那些，各自是什么时候到这台设备的。
+  //
+  // 补收拉回来的这批，跟 Service Worker 直送进收件箱的那批是同一批消息、同一个主键，
+  // 写进去就是整条覆盖。如果连「到达时间」也一起覆盖成现在，这条消息在收件箱里躺了多久
+  // 就再也查不出来了（永远显示「刚到」），而「送达时用户在不在场」正是靠它判的——判错
+  // 的后果是：明明是用户离开时到的、通知早就完整念过一遍的消息，回来还要一条条重演打字。
+  // 所以已经有到达时间的，保留原值；这一趟只覆盖内容，不改它第一次落地的时刻。
+  const knownReceivedAt = new Map<string, number>();
+  try {
+    for (const existing of await ActiveMsgStore.listInboxMessages()) {
+      if (typeof existing.receivedAt === 'number' && existing.receivedAt > 0) {
+        knownReceivedAt.set(existing.messageId, existing.receivedAt);
+      }
+    }
+  } catch (error) {
+    // 读不到就按「全是新的」处理：顶多是时间戳记成现在，不该拦住补收本身。
+    console.warn(`${HEADER} 读收件箱已有到达时间失败（这批按新到处理）`, { error });
+  }
 
   for (const entry of entries) {
     const push = entry.push || {};
@@ -799,6 +817,9 @@ const backfillOutboxEntries = async (
     // 情绪结果在 SW 那侧是单独一条写法，这里显式对齐：冲刷管线靠这个字段分流，
     // 认不出来就会被当成一条正文气泡渲染出去。
     if (kind === 'emotion_update') message.messageType = 'emotion_update';
+    // 这条 SW 早就送到过（只是还没被冲刷消费）：保住它真正落地的那个时刻。
+    const firstSeenAt = knownReceivedAt.get(message.messageId);
+    if (firstSeenAt != null) message.receivedAt = firstSeenAt;
     try {
       await ActiveMsgStore.saveInboxMessage(message);
       written += 1;

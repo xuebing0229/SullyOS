@@ -1,3 +1,4 @@
+import { loadCharacterContextMessages } from './chatContextRange';
 import type {
   APIConfig,
   AvatarTouchRegion,
@@ -430,7 +431,6 @@ export const requestAvatarTouchReply = async (options: {
   apiConfig: APIConfig;
   hit: AvatarTouchHit;
   modelActions?: AvatarTouchModelAction[];
-  recentMessageLimit?: number;
 }): Promise<AvatarTouchReply> => {
   const {
     character,
@@ -438,18 +438,16 @@ export const requestAvatarTouchReply = async (options: {
     apiConfig,
     hit,
     modelActions = [],
-    recentMessageLimit = 28,
   } = options;
   const baseUrl = apiConfig.baseUrl?.replace(/\/+$/, '');
   if (!baseUrl) throw new Error('请先在设置中配置主聊天 API');
 
   const [allMessages, emojis] = await Promise.all([
-    DB.getMessagesByCharId(character.id, true),
+    loadCharacterContextMessages(character),
     DB.getEmojis().catch(() => []),
   ]);
   const recentMessages = allMessages
-    .filter(message => message.role === 'user' || message.role === 'assistant')
-    .slice(-Math.max(8, Math.min(60, recentMessageLimit)));
+    .filter(message => message.role === 'user' || message.role === 'assistant');
   const eventText = `[面对面触碰互动] ${user.name || '用户'}轻轻触碰了你的${avatarTouchTargetLabel(hit)}。`;
 
   await injectMemoryPalace(
@@ -832,7 +830,6 @@ export const requestAvatarTouchReactionPack = async (options: {
   apiConfig: APIConfig;
   zones: AvatarTouchZone[];
   modelActions?: AvatarTouchModelAction[];
-  recentMessageLimit?: number;
   reactionsPerZone?: number;
   voiceLanguage?: string;
   outputMode?: AvatarTouchPackOutputMode;
@@ -843,7 +840,6 @@ export const requestAvatarTouchReactionPack = async (options: {
     apiConfig,
     zones,
     modelActions = [],
-    recentMessageLimit = 28,
     reactionsPerZone = 4,
     voiceLanguage = '',
     outputMode = 'full',
@@ -854,12 +850,11 @@ export const requestAvatarTouchReactionPack = async (options: {
   if (!baseUrl) throw new Error('请先在设置中配置主聊天 API');
 
   const [allMessages, emojis] = await Promise.all([
-    DB.getMessagesByCharId(character.id, true),
+    loadCharacterContextMessages(character),
     DB.getEmojis().catch(() => []),
   ]);
   const recentMessages = allMessages
-    .filter(message => message.role === 'user' || message.role === 'assistant')
-    .slice(-Math.max(8, Math.min(60, recentMessageLimit)));
+    .filter(message => message.role === 'user' || message.role === 'assistant');
   const eventText = `[桌面触摸设置] ${user.name || '用户'}选择了一次性生成${selectedZones.map(avatarTouchZoneLabel).join('、')}的反馈包。`;
   const lastInteractionTs = recentMessages[recentMessages.length - 1]?.timestamp;
   const coreContext = ContextBuilder.buildCoreContext(

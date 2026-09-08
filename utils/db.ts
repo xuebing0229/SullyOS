@@ -782,6 +782,15 @@ export const DB = {
       });
   },
 
+  getCharacter: async (id: string): Promise<CharacterProfile | undefined> => {
+    const db = await openDB();
+    return new Promise((resolve, reject) => {
+      const request = db.transaction(STORE_CHARACTERS, 'readonly').objectStore(STORE_CHARACTERS).get(id);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+  },
+
   getAllCharacters: async (): Promise<CharacterProfile[]> => {
     const db = await openDB();
     return new Promise((resolve, reject) => {
@@ -1023,17 +1032,17 @@ export const DB = {
       const store = transaction.objectStore(STORE_MESSAGES);
       const index = store.index('charId');
       const collected: Message[] = [];
-      const cursorReq = index.openCursor(IDBKeyRange.only(charId));
+      const cursorReq = index.openCursor(IDBKeyRange.only(charId), 'prev');
       cursorReq.onsuccess = () => {
           const cursor = cursorReq.result;
-          if (cursor) {
+          if (cursor && Number(cursor.primaryKey) >= fromId) {
               const m = cursor.value as Message;
               if (!m.groupId && m.id >= fromId) {
                   collected.push(m);
               }
               cursor.continue();
           } else {
-              resolve({ messages: collected, totalCount: collected.length });
+              resolve({ messages: collected.reverse(), totalCount: collected.length });
           }
       };
       cursorReq.onerror = () => reject(cursorReq.error);

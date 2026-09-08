@@ -1,3 +1,4 @@
+import { loadCharacterContextMessages } from './chatContextRange';
 import { ReiClient } from '@rei-standard/amsg-client';
 import {
   ActiveMsg2CharacterConfig,
@@ -679,8 +680,9 @@ export const buildFirePack = async (
   },
 ): Promise<AmsgFirePack> => {
   const templateStub = opts?.templateStub === true;
-  const [{ recentMessages, lastUserMessageAt }, library, schedule] = await Promise.all([
+  const [{ lastUserMessageAt }, recentMessages, library, schedule] = await Promise.all([
     buildTimeGapHint(char.id),
+    templateStub ? Promise.resolve([]) : loadCharacterContextMessages(char),
     // 表情库只喂系统提示词/近史渲染：占位模板路径整库都不用读（表情记录带图片数据，
     // 全表 getAll 不便宜）。
     templateStub
@@ -758,12 +760,11 @@ export const buildFirePack = async (
   );
   const recentTranscript = templateStub ? '' : ChatPrompts.buildMessageHistory(
     recentMessages,
-    Math.min(char.contextLimit || 120, 120),
+    Math.max(1, recentMessages.length),
     char,
     userProfile,
     emojis,
   ).apiMessages
-    .slice(-30)
     .map((message) => formatHistoryLine(message.role, message.content, char, userProfile))
     .join('\n\n');
 

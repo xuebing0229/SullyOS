@@ -1,3 +1,4 @@
+import { loadCharacterContextMessages } from '../utils/chatContextRange';
 /**
  * Like520Event.tsx
  * 520 特别活动 (2026.5.20) — "如果 char 变得小小的"
@@ -3177,7 +3178,7 @@ export const Like520Session: React.FC<SessionProps> = ({ charId, onClose }) => {
         if (callAStartedRef.current || !char || !apiConfig) return;
         callAStartedRef.current = true;
         try {
-            const recent = await DB.getMessagesByCharId(char.id);
+            const recent = await loadCharacterContextMessages(char);
             const result = await runLike520CallA(char, userProfile, apiConfig, recent || []);
             setCallA(result);
         } catch (err: any) {
@@ -3191,7 +3192,7 @@ export const Like520Session: React.FC<SessionProps> = ({ charId, onClose }) => {
         if (callBStartedRef.current || !char || !apiConfig) return;
         callBStartedRef.current = true;
         try {
-            const recent = await DB.getMessagesByCharId(char.id);
+            const recent = await loadCharacterContextMessages(char);
             const r = await runLike520CallB(char, userProfile, apiConfig, aResult, tucao, recent || []);
             setCallB(r);
         } catch (err) {

@@ -1,3 +1,4 @@
+import { loadCharacterContextMessages } from '../chatContextRange';
 /**
  * 「彼方」会话运行器 —— 一次自主登入的完整闭环。
  *
@@ -257,8 +258,8 @@ export async function runVRSession(deps: VRSessionDeps): Promise<VRSessionResult
         // 公共材料
         const emojis = await DB.getEmojis();
         const categories = await DB.getEmojiCategories();
-        const contextLimit = char.contextLimit || 500;
-        const historyMsgs = await DB.getRecentMessagesByCharId(char.id, contextLimit);
+        const historyMsgs = await loadCharacterContextMessages(char);
+        const contextLimit = Math.max(1, historyMsgs.length);
 
         // 在某房间的在场玩家名（含自己；用户本人接入彼方且挂在该房间时也算在场）
         const occupantsOf = (rid: VRRoomId) => {

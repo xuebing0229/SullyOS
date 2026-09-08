@@ -1,5 +1,8 @@
 import React, { useState, useEffect, useCallback, useDeferredValue, useMemo } from 'react';
 import SensitiveTextInput from '../components/SensitiveTextInput';
+import ChatHistoryCleanupModal from '../components/chat/ChatHistoryCleanupModal';
+import { markAmsgStateDirty } from '../utils/amsgStateSync';
+import { loadRangeMessagePage, formatRangeTimestamp } from '../utils/memoryPalace/rangeMessagePage';
 import { useOS } from '../context/OSContext';
 import {
     MemoryRoom, MemoryNode, ROOM_CONFIGS, ROOM_LABELS, getRoomLabel,
@@ -14,6 +17,7 @@ import {
     bootstrapPlatesFromHistory, markPlateBootstrapDone,
     getBootstrapResume, setBootstrapResume, clearBootstrapResume,
     updateStoredMemoryNode,
+    regenerateEventBoxSummary,
     DEFAULT_CHARACTER_ACCOMMODATION,
 } from '../utils/memoryPalace';
 import type { Anticipation, MigrationProgress, DigestResult, MemoryLink, EventBox, DigestReport } from '../utils/memoryPalace';
@@ -26,8 +30,6 @@ import {
     DEFAULT_MANUAL_CONTEXT_LIMIT,
 } from '../utils/chatContextRange';
 import {
-    buildRangeSearchEntries,
-    filterRangeSearchEntries,
     getRangeEndpointLabel,
     getRangeSelectionHint,
 } from '../utils/memoryPalace/rangeSelection';
@@ -52,15 +54,7 @@ import {
 const RANGE_PAGE_SIZE = 50;
 
 /** 手动总结面板：把毫秒时间戳格式化成「2026-03-20 14:30」 */
-const fmtRangeTs = (ts: number): string => {
-    if (!ts) return '';
-    try {
-        return new Date(ts).toLocaleString('zh-CN', {
-            year: 'numeric', month: '2-digit', day: '2-digit',
-            hour: '2-digit', minute: '2-digit',
-        });
-    } catch { return ''; }
-};
+const fmtRangeTs = formatRangeTimestamp;
 
 /** UI 内部类型：统一描述"关联"来源（EventBox 兄弟 or 旧 MemoryLink） */
 type LinkedMemoryUI = {
@@ -662,7 +656,7 @@ const MemoryWaterlineEditor: React.FC<{
 // ─── 主组件 ───────────────────────────────────────────
 
 export default function MemoryPalaceApp() {
-    const { activeCharacterId, characters, updateCharacter, setActiveCharacterId, closeApp, apiPresets, userProfile, memoryPalaceConfig, updateMemoryPalaceConfig, remoteVectorConfig, updateRemoteVectorConfig, addToast, apiConfig, characterGroups } = useOS();
+    const { activeCharacterId, characters, updateCharacter, setActiveCharacterId, closeApp, apiPresets, userProfile, memoryPalaceConfig, updateMemoryPalaceConfig, remoteVectorConfig, updateRemoteVectorConfig, addToast, apiConfig, characterGroups, groups, realtimeConfig } = useOS();
     const char = characters.find(c => c.id === activeCharacterId);
     const [selectGroupId, setSelectGroupId] = useState(GROUP_FILTER_ALL); // 选角色页的分组筛选
 
@@ -695,6 +689,7 @@ export default function MemoryPalaceApp() {
     const [boxNameDraft, setBoxNameDraft] = useState('');
     const [boxTagsDraft, setBoxTagsDraft] = useState('');
     const [savingBox, setSavingBox] = useState(false);
+    const [regeneratingBoxId, setRegeneratingBoxId] = useState<string | null>(null);
 
     // 迁移状态
     const [migrating, setMigrating] = useState(false);
@@ -707,6 +702,8 @@ export default function MemoryPalaceApp() {
     const [selectedMonths, setSelectedMonths] = useState<Set<string>>(new Set());
 
     // 手动总结与向量化（保底机制）：圈选聊天区间 → 走一次总结，不碰水位线
+    const [showHistoryCleanup, setShowHistoryCleanup] = useState(false);
+    useEffect(() => setShowHistoryCleanup(false), [char?.id]);
     const [rangeModalOpen, setRangeModalOpen] = useState(false);
     const [rangeMessages, setRangeMessages] = useState<Message[]>([]);
     const [rangeLoading, setRangeLoading] = useState(false);
@@ -719,16 +716,31 @@ export default function MemoryPalaceApp() {
     const [rangeRunning, setRangeRunning] = useState(false);
     const [rangeProgress, setRangeProgress] = useState('');
     const [rangeResult, setRangeResult] = useState<string | null>(null);
-    // 输入优先响应；消息内容和格式化日期只在记录集变化时预计算一次。
-    const deferredRangeQuery = useDeferredValue(rangeQuery);
-    const rangeSearchEntries = useMemo(
-        () => buildRangeSearchEntries(rangeMessages, fmtRangeTs),
-        [rangeMessages],
-    );
-    const filteredRangeMessages = useMemo(
-        () => filterRangeSearchEntries(rangeSearchEntries, deferredRangeQuery),
-        [rangeSearchEntries, deferredRangeQuery],
-    );
+    const [rangeCursor, setRangeCursor] = useState<{ beforeId?: number; afterId?: number }>({});
+    const [rangeHasOlder, setRangeHasOlder] = useState(false);
+    const [rangeHasNewer, setRangeHasNewer] = useState(false);
+    useEffect(() => {
+        if (!rangeModalOpen || !char) { setRangeMessages([]); return; }
+        const controller = new AbortController();
+        setRangeLoading(true);
+        setRangePendingId(null);
+        const timer = setTimeout(() => {
+            void loadRangeMessagePage(char.id, { ...rangeCursor, query: rangeQuery, limit: RANGE_PAGE_SIZE, signal: controller.signal })
+                .then(result => {
+                    if (controller.signal.aborted) return;
+                    setRangeMessages(result.messages);
+                    setRangeHasOlder(rangeCursor.afterId !== undefined || result.hasMore);
+                    setRangeHasNewer(rangeCursor.beforeId !== undefined || (rangeCursor.afterId !== undefined && result.hasMore));
+                }).catch(error => {
+                    if (controller.signal.aborted) return;
+                    setRangeMessages([]);
+                    setRangeHasOlder(false);
+                    setRangeHasNewer(false);
+                    addToast('加载聊天记录失败：' + (error?.message || error), 'error');
+                }).finally(() => { if (!controller.signal.aborted) setRangeLoading(false); });
+        }, rangeQuery ? 250 : 0);
+        return () => { clearTimeout(timer); controller.abort(); };
+    }, [rangeModalOpen, char?.id, rangeCursor, rangeQuery]);
     // 完成后的结果弹窗（逐条列出新增记忆，和水位线总结一致）
     const [rangeResultData, setRangeResultData] = useState<import('../utils/memoryPalace/pipeline').RangeProcessResult | null>(null);
 
@@ -1194,6 +1206,73 @@ export default function MemoryPalaceApp() {
             alert(`保存失败：${e?.message || e}`);
         } finally {
             setSavingBox(false);
+        }
+    };
+
+    /**
+     * 用盒内全部 archived + live 原始节点重新生成 summary。
+     * 数据层保证 Embedding 成功后才覆盖旧正文；这里负责确认、忙碌态和刷新 UI。
+     */
+    const handleRegenerateBoxSummary = async (box: EventBox) => {
+        if (!char || regeneratingBoxId) return;
+        const lightApi = memoryPalaceConfig.lightLLM;
+        const embedding = memoryPalaceConfig.embedding;
+        if (!lightApi?.baseUrl || !lightApi.apiKey || !lightApi.model) {
+            addToast('请先在记忆宫殿设置中完整配置副 API', 'error');
+            return;
+        }
+        if (!embedding?.baseUrl || !embedding.apiKey || !embedding.model) {
+            addToast('请先在记忆宫殿设置中完整配置 Embedding API', 'error');
+            return;
+        }
+
+        const sourceCount = new Set([
+            ...box.archivedMemoryIds,
+            ...box.liveMemoryIds,
+        ]).size;
+        if (sourceCount === 0) {
+            addToast('盒内没有可用于重新整合的原始记忆', 'error');
+            return;
+        }
+        if (!window.confirm(
+            `重新整合「${box.name || '未命名事件'}」？\n\n`
+            + `副 API 会重新读取盒内全部 ${sourceCount} 条原始记忆，不使用当前整合回忆；`
+            + `随后重新生成语义向量。新总结和向量都成功后才会覆盖当前内容。`,
+        )) return;
+
+        setRegeneratingBoxId(box.id);
+        try {
+            const result = await regenerateEventBoxSummary(
+                box.id,
+                lightApi,
+                embedding,
+                char.name,
+                userProfile?.name,
+                remoteVectorConfig,
+            );
+
+            const fresh = result.box;
+            const live = (await Promise.all(
+                fresh.liveMemoryIds.map(id => MemoryNodeDB.getById(id)),
+            )).filter((node): node is MemoryNode => Boolean(node));
+            const archived = (await Promise.all(
+                fresh.archivedMemoryIds.map(id => MemoryNodeDB.getById(id)),
+            )).filter((node): node is MemoryNode => Boolean(node));
+            setBoxMembers(prev => ({
+                ...prev,
+                [fresh.id]: { summary: result.summary, live, archived },
+            }));
+
+            const boxes = await EventBoxDB.getByCharId(char.id);
+            boxes.sort((a, b) => b.updatedAt - a.updatedAt);
+            setAllBoxes(boxes);
+            setSelectedNode(prev => prev?.id === result.summary.id ? result.summary : prev);
+            await loadStats();
+            addToast(`已重新整合 ${result.sourceCount} 条原始记忆，语义向量已更新`, 'success');
+        } catch (e: any) {
+            addToast(`重新整合失败：${e?.message || e}`, 'error');
+        } finally {
+            setRegeneratingBoxId(null);
         }
     };
 
@@ -1724,22 +1803,9 @@ export default function MemoryPalaceApp() {
         setRangeEndId(null);
         setRangePendingId(null);
         setRangeQuery('');
-        try {
-            const { DB } = await import('../utils/db');
-            // includeProcessed=true：手动保底要能重总结早已过水位线的旧消息
-            const msgs = await DB.getMessagesByCharId(char.id, true);
-            const list = (msgs || [])
-                .filter((m: Message) => m && typeof m.content === 'string' && m.content.trim().length > 0)
-                .sort((a: Message, b: Message) => a.id - b.id);
-            setRangeMessages(list);
-            // 默认翻到最后一页（最新消息），和聊天记录翻到底部一致
-            setRangePage(Math.max(0, Math.ceil(list.length / RANGE_PAGE_SIZE) - 1));
-        } catch (e: any) {
-            addToast(`加载聊天记录失败：${e?.message || e}`, 'error');
-            setRangeMessages([]);
-        } finally {
-            setRangeLoading(false);
-        }
+        setRangeCursor({});
+        setRangePage(0);
+        setRangeMessages([]);
     };
 
     // 点选一条消息：先进入"待确认"，由用户再点[设为起点]/[设为终点]，避免误触
@@ -3922,21 +3988,25 @@ create table if not exists memory_vectors (
                     </button>
                 </div>
 
+                {!isGlobal && char && <div style={{ marginTop: 16 }}>
+                    <button type="button" onClick={() => setShowHistoryCleanup(true)} className="w-full rounded-2xl border border-red-100 bg-red-50 py-3 text-sm font-bold text-red-700">清理指定范围 / 保留最近 N 条</button>
+                    <p className="mt-2 text-center text-xs text-slate-500">不需要副 API。永久删除前会有两次确认。</p>
+                    {showHistoryCleanup && <ChatHistoryCleanupModal key={char.id} character={char} onClose={() => setShowHistoryCleanup(false)} onDeleted={() => {
+                        trackEvent('清空聊天记录');
+                        markAmsgStateDirty({ char, userProfile, groups, realtimeConfig });
+                        setRangeModalOpen(false); setRangeMessages([]); setRangeStartId(null); setRangeEndId(null);
+                        addToast('选中的聊天原文已清理，已有记忆保留', 'success');
+                    }} />}
+                </div>}
+
                 {/* 手动总结：区间选择弹窗（浏览聊天记录 → 点选起点/终点 → 总结） */}
                 {rangeModalOpen && char && (() => {
                     const bothSet = rangeStartId != null && rangeEndId != null;
                     const hasEndpoint = rangeStartId != null || rangeEndId != null;
                     const lo = bothSet ? Math.min(rangeStartId!, rangeEndId!) : null;
                     const hi = bothSet ? Math.max(rangeStartId!, rangeEndId!) : null;
-                    const selectedCount = (lo != null && hi != null)
-                        ? rangeMessages.filter(m => m.id >= lo && m.id <= hi).length
-                        : (hasEndpoint ? 1 : 0);
-
-                    // 翻页：每页 RANGE_PAGE_SIZE 条，避免一次渲染几百条 DOM
-                    const totalPages = Math.max(1, Math.ceil(filteredRangeMessages.length / RANGE_PAGE_SIZE));
-                    const page = Math.min(Math.max(0, rangePage), totalPages - 1);
-                    const pageStart = page * RANGE_PAGE_SIZE;
-                    const shown = filteredRangeMessages.slice(pageStart, pageStart + RANGE_PAGE_SIZE);
+                    const shown = rangeMessages;
+                    const page = rangePage;
 
                     return (
                         <div
@@ -3981,7 +4051,7 @@ create table if not exists memory_vectors (
                                         </span>
                                         <input
                                             value={rangeQuery}
-                                            onChange={e => { setRangeQuery(e.target.value); setRangePage(0); }}
+                                            onChange={e => { setRangeQuery(e.target.value); setRangePage(0); setRangeCursor({}); }}
                                             placeholder="模糊搜索内容或日期（如 生日 / 2026-03）"
                                             style={{
                                                 width: '100%', padding: '8px 10px 8px 30px', borderRadius: 10,
@@ -4001,29 +4071,29 @@ create table if not exists memory_vectors (
                                     )}
                                     {!rangeLoading && shown.length === 0 && (
                                         <div style={{ textAlign: 'center', color: '#94a3b8', fontSize: 12, padding: 24 }}>
-                                            {rangeMessages.length === 0 ? '这个角色还没有聊天记录' : '没有匹配的消息'}
+                                            {rangeQuery ? '没有匹配的消息' : '没有聊天记录'}
                                         </div>
                                     )}
-                                    {!rangeLoading && filteredRangeMessages.length > RANGE_PAGE_SIZE && (
+                                    {!rangeLoading && (rangeHasOlder || rangeHasNewer) && (
                                         <div style={{
                                             display: 'flex', alignItems: 'center', justifyContent: 'space-between',
                                             gap: 8, padding: '6px 8px', marginBottom: 6,
                                             background: '#faf5ff', borderRadius: 8,
                                         }}>
                                             <button
-                                                onClick={() => setRangePage(p => Math.max(0, p - 1))}
-                                                disabled={page <= 0}
-                                                style={{ fontSize: 11, fontWeight: 700, padding: '4px 10px', borderRadius: 7, border: '1px solid #ddd6fe', background: page <= 0 ? '#f1f5f9' : '#fff', color: page <= 0 ? '#cbd5e1' : '#7c3aed', cursor: page <= 0 ? 'not-allowed' : 'pointer' }}
+                                                onClick={() => { setRangeCursor({ beforeId: shown[0]?.id }); setRangePage(p => p + 1); }}
+                                                disabled={!rangeHasOlder}
+                                                style={{ fontSize: 11, fontWeight: 700, padding: '4px 10px', borderRadius: 7, border: '1px solid #ddd6fe', background: !rangeHasOlder ? '#f1f5f9' : '#fff', color: !rangeHasOlder ? '#cbd5e1' : '#7c3aed', cursor: !rangeHasOlder ? 'not-allowed' : 'pointer' }}
                                             >
                                                 ‹ 更早
                                             </button>
                                             <span style={{ fontSize: 10, color: '#7c3aed', fontWeight: 600 }}>
-                                                第 {page + 1} / {totalPages} 页 · 共 {filteredRangeMessages.length} 条
+                                                从最新起第 {page + 1} 页 · 本页 {shown.length} 条
                                             </span>
                                             <button
-                                                onClick={() => setRangePage(p => Math.min(totalPages - 1, p + 1))}
-                                                disabled={page >= totalPages - 1}
-                                                style={{ fontSize: 11, fontWeight: 700, padding: '4px 10px', borderRadius: 7, border: '1px solid #ddd6fe', background: page >= totalPages - 1 ? '#f1f5f9' : '#fff', color: page >= totalPages - 1 ? '#cbd5e1' : '#7c3aed', cursor: page >= totalPages - 1 ? 'not-allowed' : 'pointer' }}
+                                                onClick={() => { setRangeCursor({ afterId: shown[shown.length - 1]?.id }); setRangePage(p => Math.max(0, p - 1)); }}
+                                                disabled={!rangeHasNewer}
+                                                style={{ fontSize: 11, fontWeight: 700, padding: '4px 10px', borderRadius: 7, border: '1px solid #ddd6fe', background: !rangeHasNewer ? '#f1f5f9' : '#fff', color: !rangeHasNewer ? '#cbd5e1' : '#7c3aed', cursor: !rangeHasNewer ? 'not-allowed' : 'pointer' }}
                                             >
                                                 更新 ›
                                             </button>
@@ -4106,7 +4176,7 @@ create table if not exists memory_vectors (
                                     )}
                                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
                                         <span style={{ fontSize: 11, color: '#64748b' }}>
-                                            {getRangeSelectionHint(rangeStartId, rangeEndId, selectedCount)}
+                                            {bothSet ? '已选区间（包含起点与终点）' : getRangeSelectionHint(rangeStartId, rangeEndId, 0)}
                                         </span>
                                         <button
                                             onClick={() => { setRangeStartId(null); setRangeEndId(null); }}
@@ -5473,6 +5543,33 @@ create table if not exists memory_vectors (
 
                                 {expanded && members && (
                                     <div style={{ padding: '0 12px 12px', borderTop: '1px solid #e0e7ff' }}>
+                                        {(members.live.length > 0 || members.archived.length > 0) && (
+                                            <div style={{
+                                                marginTop: 10, padding: '9px 10px', borderRadius: 8,
+                                                border: '1px solid #c7d2fe', background: '#eef2ff',
+                                                display: 'flex', alignItems: 'center', gap: 10,
+                                            }}>
+                                                <div style={{ flex: 1, minWidth: 0, fontSize: 10, lineHeight: 1.45, color: '#6366f1' }}>
+                                                    从全部 {members.live.length + members.archived.length} 条原始记忆重做总结，并重新生成语义向量
+                                                </div>
+                                                <button
+                                                    onClick={(e) => { e.stopPropagation(); handleRegenerateBoxSummary(box); }}
+                                                    disabled={regeneratingBoxId !== null}
+                                                    title="不使用旧整合回忆，重新读取全部归档和活节点"
+                                                    style={{
+                                                        display: 'inline-flex', alignItems: 'center', gap: 4,
+                                                        flexShrink: 0, padding: '5px 9px', borderRadius: 7,
+                                                        border: '1px solid #a5b4fc', background: '#fff',
+                                                        color: '#4f46e5', fontSize: 10, fontWeight: 700,
+                                                        cursor: regeneratingBoxId !== null ? 'wait' : 'pointer',
+                                                        opacity: regeneratingBoxId !== null && regeneratingBoxId !== box.id ? 0.5 : 1,
+                                                    }}
+                                                >
+                                                    <Icon name="refresh" size={11} />
+                                                    <span>{regeneratingBoxId === box.id ? '重新整合中…' : '重新整合'}</span>
+                                                </button>
+                                            </div>
+                                        )}
                                         {members.summary && (
                                             <div
                                                 onClick={() => openMemory(members.summary!, 'boxes')}
