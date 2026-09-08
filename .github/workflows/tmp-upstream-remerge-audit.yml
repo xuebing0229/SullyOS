@@ -1,0 +1,45 @@
+name: tmp-upstream-remerge-audit
+
+on:
+  push:
+    branches:
+      - merge/upstream-20260908
+    paths:
+      - .github/workflows/tmp-upstream-remerge-audit.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Audit merge of previous resolved upstream integration
+        shell: bash
+        run: |
+          set -u
+          git config user.name "SullyOS Upstream Merge Audit"
+          git config user.email "merge-audit@users.noreply.github.com"
+          git fetch origin merge/upstream-20260904
+          set +e
+          git merge --no-commit --no-ff c2d8fc7699025cebc6d3569026cf73b7254a9f2b
+          status=$?
+          set -e
+          echo "merge_exit=$status"
+          echo "=== UNRESOLVED FILES ==="
+          git diff --name-only --diff-filter=U || true
+          echo "=== CONFLICT COUNTS ==="
+          git diff --name-only --diff-filter=U | while read -r f; do
+            [ -n "$f" ] || continue
+            printf '%s\t' "$f"
+            grep -c '^<<<<<<< ' "$f" || true
+          done
+          echo "=== STATUS ==="
+          git status --short
+          test "$status" -eq 0
