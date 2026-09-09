@@ -8,9 +8,16 @@ export interface StoryEgressRoute {
   relayed: boolean;
 }
 
+interface Story749ProbeResult {
+  name: 'minimal-current' | 'minimal-rikkahub-headers' | 'shape-current';
+  status?: number;
+  durationMs: number;
+  error?: string;
+}
+
 const normalizeRelayUrl = (value: string): string => value.trim();
 
-const shouldBypassStoryRelay = (targetUrl: string): boolean => {
+const is749Target = (targetUrl: string): boolean => {
   try {
     const host = new URL(targetUrl).hostname.toLowerCase();
     return host === '749code.com' || host.endsWith('.749code.com');
@@ -18,6 +25,8 @@ const shouldBypassStoryRelay = (targetUrl: string): boolean => {
     return false;
   }
 };
+
+const shouldBypassStoryRelay = (targetUrl: string): boolean => is749Target(targetUrl);
 
 export const resolveStoryEgressRoute = (
   env: StoryEgressEnv,
@@ -208,15 +217,132 @@ const summarizeRequest = (
   };
 };
 
+const parseBodyRecord = (body: BodyInit | null | undefined): Record<string, unknown> | null => {
+  if (typeof body !== 'string') return null;
+  try {
+    const parsed = JSON.parse(body);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : null;
+  } catch {
+    return null;
+  }
+};
+
+const buildProbeBase = (parsed: Record<string, unknown>): Record<string, unknown> => {
+  const result: Record<string, unknown> = {};
+  for (const key of ['model', 'stream', 'stream_options', 'temperature', 'top_p']) {
+    if (Object.prototype.hasOwnProperty.call(parsed, key)) result[key] = parsed[key];
+  }
+  return result;
+};
+
+const run749Probe = async (
+  name: Story749ProbeResult['name'],
+  targetUrl: string,
+  requestInit: RequestInit,
+  body: Record<string, unknown>,
+  extraHeaders?: Record<string, string>,
+): Promise<Story749ProbeResult> => {
+  const startedAt = Date.now();
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15000);
+  try {
+    const headers = new Headers(requestInit.headers || {});
+    for (const [key, value] of Object.entries(extraHeaders || {})) headers.set(key, value);
+    const response = await fetch(targetUrl, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+    const result: Story749ProbeResult = {
+      name,
+      status: response.status,
+      durationMs: Date.now() - startedAt,
+    };
+    if (response.ok) {
+      try { await response.body?.cancel(); } catch { /* diagnostics only */ }
+      return result;
+    }
+    const text = (await response.text().catch(() => '')).replace(/\s+/g, ' ').trim();
+    if (text) result.error = text.slice(0, 240);
+    return result;
+  } catch (error) {
+    return {
+      name,
+      durationMs: Date.now() - startedAt,
+      error: String((error as Error)?.message || error).slice(0, 240),
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+};
+
+const run749429Probes = async (
+  targetUrl: string,
+  requestInit: RequestInit,
+): Promise<Story749ProbeResult[]> => {
+  const parsed = parseBodyRecord(requestInit.body);
+  if (!parsed || typeof parsed.model !== 'string') return [];
+
+  const base = buildProbeBase(parsed);
+  const minimalBody = {
+    ...base,
+    messages: [{ role: 'user', content: 'Reply with exactly OK.' }],
+  };
+  const minimal = await run749Probe('minimal-current', targetUrl, requestInit, minimalBody);
+
+  if (minimal.status === 200) {
+    const sourceMessages = Array.isArray(parsed.messages) ? parsed.messages : [];
+    const shapeMessages = sourceMessages.map((item, index) => {
+      const message = item && typeof item === 'object' && !Array.isArray(item)
+        ? item as Record<string, unknown>
+        : {};
+      const role = ['system', 'assistant', 'user'].includes(String(message.role))
+        ? String(message.role)
+        : 'user';
+      return {
+        role,
+        content: index === sourceMessages.length - 1 && role === 'user'
+          ? 'Reply with exactly OK.'
+          : 'x',
+      };
+    });
+    const shapeBody = {
+      ...base,
+      messages: shapeMessages.length > 0 ? shapeMessages : minimalBody.messages,
+    };
+    const shape = await run749Probe('shape-current', targetUrl, requestInit, shapeBody);
+    return [minimal, shape];
+  }
+
+  const headerVariant = await run749Probe(
+    'minimal-rikkahub-headers',
+    targetUrl,
+    requestInit,
+    minimalBody,
+    {
+      Accept: 'text/event-stream',
+      'X-Session-ID': 'sully-story-749-probe',
+    },
+  );
+  return [minimal, headerVariant];
+};
+
 const annotateFailure = async (
   response: Response,
   requestBody: BodyInit | null | undefined,
   targetUrl: string,
   route: StoryEgressRoute,
+  probes: Story749ProbeResult[] = [],
 ): Promise<Response> => {
   if (response.ok) return response;
   const original = await response.text().catch(() => '');
-  const diagnostic = summarizeRequest(requestBody, targetUrl, route);
+  const diagnostic = {
+    ...summarizeRequest(requestBody, targetUrl, route),
+    ...(probes.length > 0 ? { probe749: probes } : {}),
+  };
   const headers = new Headers(response.headers);
   headers.delete('content-length');
   headers.delete('content-encoding');
@@ -239,6 +365,7 @@ const annotateFailure = async (
  * - 其他上游 relay URL + token 同时配置：经 relay 出网。
  * - 只配置一半：明确失败，不偷偷回退 Cloudflare 直连。
  * - 所有文游上游请求：最终发出前移除最大输出 token 字段、纯 0 penalty，并合并相邻 system 消息。
+ * - 749 若仍返回 429：自动追加最多两个极小诊断探针，区分出口/headers、message shape 与真实 payload。
  */
 export const fetchStoryUpstream = async (
   env: StoryEgressEnv,
@@ -253,7 +380,10 @@ export const fetchStoryUpstream = async (
 
   if (!route.relayed) {
     const response = await fetch(targetUrl, requestInit);
-    return annotateFailure(response, requestInit.body, targetUrl, route);
+    const probes = response.status === 429 && is749Target(targetUrl)
+      ? await run749429Probes(targetUrl, requestInit)
+      : [];
+    return annotateFailure(response, requestInit.body, targetUrl, route, probes);
   }
 
   const headers = new Headers(requestInit.headers || {});
