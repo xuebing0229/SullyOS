@@ -101,6 +101,18 @@ const sanitizeStoryRequestBody = (
       }
     }
 
+    // RikkaHub 的 Chat Completions 默认不会发送这两个字段；0 本身就是服务端默认值。
+    // 清掉纯 0 值只缩小兼容请求形状，不改变采样行为。用户若显式设置非 0 值则保留。
+    for (const key of ['frequency_penalty', 'presence_penalty']) {
+      if (
+        Object.prototype.hasOwnProperty.call(parsed, key)
+        && Number(parsed[key]) === 0
+      ) {
+        delete parsed[key];
+        changed = true;
+      }
+    }
+
     if (Array.isArray(parsed.messages)) {
       const beforeCount = parsed.messages.length;
       const compacted = compactAdjacentSystemMessages(parsed.messages);
@@ -226,7 +238,7 @@ const annotateFailure = async (
  * - 其他上游未配置 relay：保持 Cloudflare Worker 直接请求模型上游。
  * - 其他上游 relay URL + token 同时配置：经 relay 出网。
  * - 只配置一半：明确失败，不偷偷回退 Cloudflare 直连。
- * - 所有文游上游请求：最终发出前移除最大输出 token 字段，并合并相邻 system 消息。
+ * - 所有文游上游请求：最终发出前移除最大输出 token 字段、纯 0 penalty，并合并相邻 system 消息。
  */
 export const fetchStoryUpstream = async (
   env: StoryEgressEnv,
