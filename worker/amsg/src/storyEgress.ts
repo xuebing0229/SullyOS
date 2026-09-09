@@ -10,10 +10,25 @@ export interface StoryEgressRoute {
 
 const normalizeRelayUrl = (value: string): string => value.trim();
 
+const shouldBypassStoryRelay = (targetUrl: string): boolean => {
+  try {
+    const host = new URL(targetUrl).hostname.toLowerCase();
+    return host === '749code.com' || host.endsWith('.749code.com');
+  } catch {
+    return false;
+  }
+};
+
 export const resolveStoryEgressRoute = (
   env: StoryEgressEnv,
   targetUrl: string,
 ): StoryEgressRoute => {
+  // 749 对出口来源较敏感；主聊天 / RikkaHub 直连正常而 relay 路径出现上游 OAuth 401。
+  // 文游后台对该站恢复旧的 Worker 直连行为，避免日本 relay 改变 749 的上游路由选择。
+  if (shouldBypassStoryRelay(targetUrl)) {
+    return { url: targetUrl, relayed: false };
+  }
+
   const relayUrl = normalizeRelayUrl(String(env.STORY_EGRESS_RELAY_URL || ''));
   const relayToken = String(env.STORY_EGRESS_RELAY_TOKEN || '').trim();
 
@@ -35,6 +50,27 @@ export const resolveStoryEgressRoute = (
   }
 
   return { url: parsed.toString(), relayed: true };
+};
+
+const stripStoryOutputLimits = (
+  body: BodyInit | null | undefined,
+): BodyInit | null | undefined => {
+  if (typeof body !== 'string') return body;
+  try {
+    const parsed = JSON.parse(body);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return body;
+
+    let changed = false;
+    for (const key of ['max_tokens', 'max_completion_tokens', 'max_output_tokens']) {
+      if (Object.prototype.hasOwnProperty.call(parsed, key)) {
+        delete parsed[key];
+        changed = true;
+      }
+    }
+    return changed ? JSON.stringify(parsed) : body;
+  } catch {
+    return body;
+  }
 };
 
 const textLength = (value: unknown): number => {
@@ -143,10 +179,11 @@ const annotateFailure = async (
 /**
  * 剧情云端任务的统一模型出口。
  *
- * - 未配置 relay：保持旧行为，Cloudflare Worker 直接请求模型上游。
- * - relay URL + token 同时配置：所有剧情模型线路统一经 relay 出网。
- * - 只配置一半：明确失败，不偷偷回退 Cloudflare 直连，避免同一个上游一会儿走日本机、
- *   一会儿又走 Cloudflare 出口，排障时无法判断真实路径。
+ * - 749：恢复 Worker 直连，避免 relay 出口触发与其他前端不同的上游鉴权路径。
+ * - 其他上游未配置 relay：保持 Cloudflare Worker 直接请求模型上游。
+ * - 其他上游 relay URL + token 同时配置：经 relay 出网。
+ * - 只配置一半：明确失败，不偷偷回退 Cloudflare 直连。
+ * - 所有文游上游请求：最终发出前移除最大输出 token 字段，与 RikkaHub 默认请求形状一致。
  */
 export const fetchStoryUpstream = async (
   env: StoryEgressEnv,
@@ -154,19 +191,24 @@ export const fetchStoryUpstream = async (
   init: RequestInit,
 ): Promise<Response> => {
   const route = resolveStoryEgressRoute(env, targetUrl);
+  const strippedBody = stripStoryOutputLimits(init.body);
+  const requestInit: RequestInit = strippedBody === init.body
+    ? init
+    : { ...init, body: strippedBody };
+
   if (!route.relayed) {
-    const response = await fetch(targetUrl, init);
-    return annotateFailure(response, init.body, targetUrl, route);
+    const response = await fetch(targetUrl, requestInit);
+    return annotateFailure(response, requestInit.body, targetUrl, route);
   }
 
-  const headers = new Headers(init.headers || {});
+  const headers = new Headers(requestInit.headers || {});
   headers.set('X-Sully-Egress-Version', '1');
   headers.set('X-Sully-Egress-Target', targetUrl);
   headers.set('X-Sully-Egress-Token', String(env.STORY_EGRESS_RELAY_TOKEN || '').trim());
 
   const response = await fetch(route.url, {
-    ...init,
+    ...requestInit,
     headers,
   });
-  return annotateFailure(response, init.body, targetUrl, route);
+  return annotateFailure(response, requestInit.body, targetUrl, route);
 };
