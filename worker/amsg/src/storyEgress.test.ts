@@ -156,6 +156,86 @@ describe('story egress routing', () => {
     });
   });
 
+  it('probes 749 message shape when a minimal current-header request succeeds after the original 429', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response('{"error":{"message":"resource exhausted"}}', { status: 429 }))
+      .mockResolvedValueOnce(new Response('data: ok\n\n', { status: 200 }))
+      .mockResolvedValueOnce(new Response('data: ok\n\n', { status: 200 }));
+
+    const response = await fetchStoryUpstream(
+      {},
+      'https://749code.com/v1/chat/completions',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: 'Bearer 749-key',
+        },
+        body: JSON.stringify({
+          model: 'gemini',
+          stream: true,
+          stream_options: { include_usage: true },
+          temperature: 1,
+          top_p: 0.98,
+          messages: [
+            { role: 'system', content: 'very long rules' },
+            { role: 'user', content: 'hello' },
+            { role: 'assistant', content: 'world' },
+            { role: 'user', content: 'continue' },
+          ],
+        }),
+      },
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    const minimalBody = JSON.parse(String(fetchMock.mock.calls[1][1]?.body));
+    expect(minimalBody.messages).toEqual([{ role: 'user', content: 'Reply with exactly OK.' }]);
+    const shapeBody = JSON.parse(String(fetchMock.mock.calls[2][1]?.body));
+    expect(shapeBody.messages).toEqual([
+      { role: 'system', content: 'x' },
+      { role: 'user', content: 'x' },
+      { role: 'assistant', content: 'x' },
+      { role: 'user', content: 'Reply with exactly OK.' },
+    ]);
+    const text = await response.text();
+    expect(text).toContain('"probe749"');
+    expect(text).toContain('"name":"minimal-current","status":200');
+    expect(text).toContain('"name":"shape-current","status":200');
+  });
+
+  it('probes RikkaHub-like headers when the minimal current-header request still fails', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response('{"error":{"message":"resource exhausted"}}', { status: 429 }))
+      .mockResolvedValueOnce(new Response('{"error":{"message":"resource exhausted"}}', { status: 429 }))
+      .mockResolvedValueOnce(new Response('data: ok\n\n', { status: 200 }));
+
+    const response = await fetchStoryUpstream(
+      {},
+      'https://749code.com/v1/chat/completions',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: 'Bearer 749-key',
+        },
+        body: JSON.stringify({
+          model: 'gemini',
+          stream: true,
+          stream_options: { include_usage: true },
+          messages: [{ role: 'user', content: 'big request' }],
+        }),
+      },
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    const variantHeaders = new Headers(fetchMock.mock.calls[2][1]?.headers);
+    expect(variantHeaders.get('Accept')).toBe('text/event-stream');
+    expect(variantHeaders.get('X-Session-ID')).toBe('sully-story-749-probe');
+    const text = await response.text();
+    expect(text).toContain('"name":"minimal-current","status":429');
+    expect(text).toContain('"name":"minimal-rikkahub-headers","status":200');
+  });
+
   it('fails closed when only half of the relay config exists for ordinary upstreams', () => {
     expect(() => resolveStoryEgressRoute(
       { STORY_EGRESS_RELAY_URL: 'https://ag.apixb.top/sullyos-story-egress' },
