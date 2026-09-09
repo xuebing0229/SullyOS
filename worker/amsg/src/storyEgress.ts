@@ -14,7 +14,9 @@ interface Story749ProbeResult {
     | 'minimal-rikkahub-headers'
     | 'shape-current'
     | 'system-real'
-    | 'dialogue-real';
+    | 'dialogue-real'
+    | 'system-first-half'
+    | 'system-second-half';
   status?: number;
   durationMs: number;
   error?: string;
@@ -252,10 +254,11 @@ const run749Probe = async (
   requestInit: RequestInit,
   body: Record<string, unknown>,
   extraHeaders?: Record<string, string>,
+  timeoutMs = 15000,
 ): Promise<Story749ProbeResult> => {
   const startedAt = Date.now();
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 15000);
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const headers = new Headers(requestInit.headers || {});
     for (const [key, value] of Object.entries(extraHeaders || {})) headers.set(key, value);
@@ -344,15 +347,51 @@ const run749429Probes = async (
       content: message.role === 'system' ? 'x' : message.content,
     }));
 
-    const systemReal = await run749Probe('system-real', targetUrl, requestInit, {
-      ...base,
-      messages: systemRealMessages,
-    });
-    const dialogueReal = await run749Probe('dialogue-real', targetUrl, requestInit, {
-      ...base,
-      messages: dialogueRealMessages,
-    });
-    return [minimal, shape, systemReal, dialogueReal];
+    const [systemReal, dialogueReal] = await Promise.all([
+      run749Probe('system-real', targetUrl, requestInit, {
+        ...base,
+        messages: systemRealMessages,
+      }, undefined, 30000),
+      run749Probe('dialogue-real', targetUrl, requestInit, {
+        ...base,
+        messages: dialogueRealMessages,
+      }),
+    ]);
+
+    if (systemReal.status === 200) {
+      return [minimal, shape, systemReal, dialogueReal];
+    }
+
+    const systemIndices = sourceMessages
+      .map((message, index) => message.role === 'system' ? index : -1)
+      .filter(index => index >= 0);
+    if (systemIndices.length < 2) {
+      return [minimal, shape, systemReal, dialogueReal];
+    }
+
+    const firstHalf = new Set(systemIndices.slice(0, Math.ceil(systemIndices.length / 2)));
+    const secondHalf = new Set(systemIndices.slice(Math.ceil(systemIndices.length / 2)));
+    const makeSystemHalfMessages = (realIndices: Set<number>) => sourceMessages.map((message, index) => ({
+      role: message.role,
+      content: message.role === 'system'
+        ? realIndices.has(index) ? message.content : 'x'
+        : index === sourceMessages.length - 1 && message.role === 'user'
+          ? 'Reply with exactly OK.'
+          : 'x',
+    }));
+
+    const [systemFirstHalf, systemSecondHalf] = await Promise.all([
+      run749Probe('system-first-half', targetUrl, requestInit, {
+        ...base,
+        messages: makeSystemHalfMessages(firstHalf),
+      }, undefined, 20000),
+      run749Probe('system-second-half', targetUrl, requestInit, {
+        ...base,
+        messages: makeSystemHalfMessages(secondHalf),
+      }, undefined, 20000),
+    ]);
+
+    return [minimal, shape, systemReal, dialogueReal, systemFirstHalf, systemSecondHalf];
   }
 
   const headerVariant = await run749Probe(
@@ -409,7 +448,7 @@ const annotateFailure = async (
  * - 其他上游 relay URL + token 同时配置：经 relay 出网。
  * - 只配置一半：明确失败，不偷偷回退 Cloudflare 直连。
  * - 最终发出前移除最大输出 token 字段、纯 0 penalty，并合并相邻 system 消息。
- * - 749 返回 429 时自动追加诊断探针，区分 headers、message shape、真实 system 与真实对话内容。
+ * - 749 返回 429 时自动追加诊断探针，区分 headers、message shape、真实 system 与真实对话内容，并继续二分可疑 system 内容。
  */
 export const fetchStoryUpstream = async (
   env: StoryEgressEnv,
