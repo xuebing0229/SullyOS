@@ -95,6 +95,47 @@ describe('story egress routing', () => {
     expect(JSON.parse(String(init?.body))).toEqual({ model: 'gemini', stream: true });
   });
 
+  it('compacts adjacent story system messages in the actual final request', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('ok', { status: 200 }));
+
+    await fetchStoryUpstream(
+      {},
+      'https://749code.com/v1/chat/completions',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: 'Bearer 749-key',
+        },
+        body: JSON.stringify({
+          model: 'gemini',
+          messages: [
+            { role: 'system', content: 'rule-a' },
+            { role: 'system', content: 'rule-b' },
+            { role: 'system', content: 'rule-c' },
+            { role: 'user', content: 'hello' },
+            { role: 'system', content: 'rule-d' },
+            { role: 'system', content: 'rule-e' },
+            { role: 'assistant', content: 'world' },
+          ],
+          max_tokens: 32000,
+        }),
+      },
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [, init] = fetchMock.mock.calls[0];
+    expect(JSON.parse(String(init?.body))).toEqual({
+      model: 'gemini',
+      messages: [
+        { role: 'system', content: 'rule-a\n\nrule-b\n\nrule-c' },
+        { role: 'user', content: 'hello' },
+        { role: 'system', content: 'rule-d\n\nrule-e' },
+        { role: 'assistant', content: 'world' },
+      ],
+    });
+  });
+
   it('fails closed when only half of the relay config exists for ordinary upstreams', () => {
     expect(() => resolveStoryEgressRoute(
       { STORY_EGRESS_RELAY_URL: 'https://ag.apixb.top/sullyos-story-egress' },
