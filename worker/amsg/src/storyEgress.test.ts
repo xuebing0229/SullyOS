@@ -156,9 +156,11 @@ describe('story egress routing', () => {
     });
   });
 
-  it('probes 749 message shape when a minimal current-header request succeeds after the original 429', async () => {
+  it('splits real system content from real dialogue content after minimal and shape probes succeed', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(new Response('{"error":{"message":"resource exhausted"}}', { status: 429 }))
+      .mockResolvedValueOnce(new Response('data: ok\n\n', { status: 200 }))
+      .mockResolvedValueOnce(new Response('data: ok\n\n', { status: 200 }))
       .mockResolvedValueOnce(new Response('data: ok\n\n', { status: 200 }))
       .mockResolvedValueOnce(new Response('data: ok\n\n', { status: 200 }));
 
@@ -187,9 +189,10 @@ describe('story egress routing', () => {
       },
     );
 
-    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock).toHaveBeenCalledTimes(5);
     const minimalBody = JSON.parse(String(fetchMock.mock.calls[1][1]?.body));
     expect(minimalBody.messages).toEqual([{ role: 'user', content: 'Reply with exactly OK.' }]);
+
     const shapeBody = JSON.parse(String(fetchMock.mock.calls[2][1]?.body));
     expect(shapeBody.messages).toEqual([
       { role: 'system', content: 'x' },
@@ -197,10 +200,30 @@ describe('story egress routing', () => {
       { role: 'assistant', content: 'x' },
       { role: 'user', content: 'Reply with exactly OK.' },
     ]);
+
+    const systemRealBody = JSON.parse(String(fetchMock.mock.calls[3][1]?.body));
+    expect(systemRealBody.messages).toEqual([
+      { role: 'system', content: 'very long rules' },
+      { role: 'user', content: 'x' },
+      { role: 'assistant', content: 'x' },
+      { role: 'user', content: 'Reply with exactly OK.' },
+    ]);
+
+    const dialogueRealBody = JSON.parse(String(fetchMock.mock.calls[4][1]?.body));
+    expect(dialogueRealBody.messages).toEqual([
+      { role: 'system', content: 'x' },
+      { role: 'user', content: 'hello' },
+      { role: 'assistant', content: 'world' },
+      { role: 'user', content: 'continue' },
+    ]);
+
     const text = await response.text();
     expect(text).toContain('"probe749"');
     expect(text).toContain('"name":"minimal-current","status":200');
     expect(text).toContain('"name":"shape-current","status":200');
+    expect(text).toContain('"name":"system-real","status":200');
+    expect(text).toContain('"name":"dialogue-real","status":200');
+    expect(text).toContain('"messageShapes"');
   });
 
   it('probes RikkaHub-like headers when the minimal current-header request still fails', async () => {
