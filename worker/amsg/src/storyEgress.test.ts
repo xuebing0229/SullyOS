@@ -81,7 +81,7 @@ describe('story egress routing', () => {
           'Content-Type': 'application/json',
           Authorization: 'Bearer 749-key',
         },
-        body: '{"model":"gemini","stream":true,"max_tokens":32000}',
+        body: '{"model":"gemini","stream":true,"max_tokens":32000,"frequency_penalty":0,"presence_penalty":0}',
       },
     );
 
@@ -93,6 +93,26 @@ describe('story egress routing', () => {
     expect(headers.get('X-Sully-Egress-Target')).toBeNull();
     expect(headers.get('X-Sully-Egress-Token')).toBeNull();
     expect(JSON.parse(String(init?.body))).toEqual({ model: 'gemini', stream: true });
+  });
+
+  it('preserves explicitly non-zero penalties', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('ok', { status: 200 }));
+
+    await fetchStoryUpstream(
+      {},
+      'https://example.com/v1/chat/completions',
+      {
+        method: 'POST',
+        body: '{"model":"x","frequency_penalty":0.5,"presence_penalty":-0.25}',
+      },
+    );
+
+    const [, init] = fetchMock.mock.calls[0];
+    expect(JSON.parse(String(init?.body))).toEqual({
+      model: 'x',
+      frequency_penalty: 0.5,
+      presence_penalty: -0.25,
+    });
   });
 
   it('compacts adjacent story system messages in the actual final request', async () => {
