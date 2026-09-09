@@ -9,7 +9,12 @@ export interface StoryEgressRoute {
 }
 
 interface Story749ProbeResult {
-  name: 'minimal-current' | 'minimal-rikkahub-headers' | 'shape-current';
+  name:
+    | 'minimal-current'
+    | 'minimal-rikkahub-headers'
+    | 'shape-current'
+    | 'system-real'
+    | 'dialogue-real';
   status?: number;
   durationMs: number;
   error?: string;
@@ -170,12 +175,18 @@ const summarizeRequest = (
   const roleCounts: Record<string, number> = {};
   let messageTextChars = 0;
   const contentKinds = new Set<string>();
-  for (const item of messages) {
-    if (!item || typeof item !== 'object') continue;
+  const messageShapes: Array<{ index: number; role: string; chars: number }> = [];
+  messages.forEach((item, index) => {
+    if (!item || typeof item !== 'object') {
+      messageShapes.push({ index, role: 'invalid', chars: 0 });
+      return;
+    }
     const message = item as Record<string, unknown>;
     const role = String(message.role || 'unknown');
+    const chars = textLength(message.content);
     roleCounts[role] = (roleCounts[role] || 0) + 1;
-    messageTextChars += textLength(message.content);
+    messageTextChars += chars;
+    messageShapes.push({ index, role, chars });
     if (typeof message.content === 'string') contentKinds.add('string');
     else if (Array.isArray(message.content)) {
       for (const block of message.content) {
@@ -188,7 +199,7 @@ const summarizeRequest = (
     } else {
       contentKinds.add(typeof message.content);
     }
-  }
+  });
 
   const safeHost = (value: string): string => {
     try { return new URL(value).host; } catch { return 'invalid-url'; }
@@ -213,6 +224,7 @@ const summarizeRequest = (
     messageCount: messages.length,
     roleCounts,
     messageTextChars,
+    messageShapes,
     contentKinds: [...contentKinds].sort(),
   };
 };
@@ -279,6 +291,21 @@ const run749Probe = async (
   }
 };
 
+const normalizeProbeMessages = (messages: unknown[]): Array<{ role: string; content: string }> => (
+  messages.map(item => {
+    const message = item && typeof item === 'object' && !Array.isArray(item)
+      ? item as Record<string, unknown>
+      : {};
+    const role = ['system', 'assistant', 'user'].includes(String(message.role))
+      ? String(message.role)
+      : 'user';
+    return {
+      role,
+      content: typeof message.content === 'string' ? message.content : 'x',
+    };
+  })
+);
+
 const run749429Probes = async (
   targetUrl: string,
   requestInit: RequestInit,
@@ -294,27 +321,46 @@ const run749429Probes = async (
   const minimal = await run749Probe('minimal-current', targetUrl, requestInit, minimalBody);
 
   if (minimal.status === 200) {
-    const sourceMessages = Array.isArray(parsed.messages) ? parsed.messages : [];
-    const shapeMessages = sourceMessages.map((item, index) => {
-      const message = item && typeof item === 'object' && !Array.isArray(item)
-        ? item as Record<string, unknown>
-        : {};
-      const role = ['system', 'assistant', 'user'].includes(String(message.role))
-        ? String(message.role)
-        : 'user';
-      return {
-        role,
-        content: index === sourceMessages.length - 1 && role === 'user'
-          ? 'Reply with exactly OK.'
-          : 'x',
-      };
-    });
+    const sourceMessages = normalizeProbeMessages(Array.isArray(parsed.messages) ? parsed.messages : []);
+    const shapeMessages = sourceMessages.map((message, index) => ({
+      role: message.role,
+      content: index === sourceMessages.length - 1 && message.role === 'user'
+        ? 'Reply with exactly OK.'
+        : 'x',
+    }));
     const shapeBody = {
       ...base,
       messages: shapeMessages.length > 0 ? shapeMessages : minimalBody.messages,
     };
     const shape = await run749Probe('shape-current', targetUrl, requestInit, shapeBody);
-    return [minimal, shape];
+    if (shape.status !== 200 || sourceMessages.length === 0) return [minimal, shape];
+
+    // 真实内容已经被证明是唯一剩余变量。继续把它拆成两类：
+    // 1) 保留所有真实 system，只把 user/assistant 缩成占位；
+    // 2) system 全部缩成占位，只保留真实 user/assistant。
+    // 两组仍保持原 role 顺序，避免再把“结构差异”混进来。
+    const systemRealMessages = sourceMessages.map((message, index) => ({
+      role: message.role,
+      content: message.role === 'system'
+        ? message.content
+        : index === sourceMessages.length - 1 && message.role === 'user'
+          ? 'Reply with exactly OK.'
+          : 'x',
+    }));
+    const dialogueRealMessages = sourceMessages.map(message => ({
+      role: message.role,
+      content: message.role === 'system' ? 'x' : message.content,
+    }));
+
+    const systemReal = await run749Probe('system-real', targetUrl, requestInit, {
+      ...base,
+      messages: systemRealMessages,
+    });
+    const dialogueReal = await run749Probe('dialogue-real', targetUrl, requestInit, {
+      ...base,
+      messages: dialogueRealMessages,
+    });
+    return [minimal, shape, systemReal, dialogueReal];
   }
 
   const headerVariant = await run749Probe(
@@ -365,7 +411,7 @@ const annotateFailure = async (
  * - 其他上游 relay URL + token 同时配置：经 relay 出网。
  * - 只配置一半：明确失败，不偷偷回退 Cloudflare 直连。
  * - 所有文游上游请求：最终发出前移除最大输出 token 字段、纯 0 penalty，并合并相邻 system 消息。
- * - 749 若仍返回 429：自动追加最多两个极小诊断探针，区分出口/headers、message shape 与真实 payload。
+ * - 749 若仍返回 429：自动追加诊断探针，逐级区分出口/headers、message shape、真实 system 与真实对话内容。
  */
 export const fetchStoryUpstream = async (
   env: StoryEgressEnv,
