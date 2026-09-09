@@ -52,7 +52,40 @@ export const resolveStoryEgressRoute = (
   return { url: parsed.toString(), relayed: true };
 };
 
-const stripStoryOutputLimits = (
+const compactAdjacentSystemMessages = (messages: unknown[]): unknown[] => {
+  const compacted: unknown[] = [];
+
+  for (const rawMessage of messages) {
+    if (!rawMessage || typeof rawMessage !== 'object' || Array.isArray(rawMessage)) {
+      compacted.push(rawMessage);
+      continue;
+    }
+
+    const message = rawMessage as Record<string, unknown>;
+    const role = String(message.role || '');
+    const previous = compacted[compacted.length - 1];
+
+    if (
+      role === 'system'
+      && typeof message.content === 'string'
+      && previous
+      && typeof previous === 'object'
+      && !Array.isArray(previous)
+    ) {
+      const previousMessage = previous as Record<string, unknown>;
+      if (previousMessage.role === 'system' && typeof previousMessage.content === 'string') {
+        previousMessage.content = `${previousMessage.content}\n\n${message.content}`;
+        continue;
+      }
+    }
+
+    compacted.push({ ...message });
+  }
+
+  return compacted;
+};
+
+const sanitizeStoryRequestBody = (
   body: BodyInit | null | undefined,
 ): BodyInit | null | undefined => {
   if (typeof body !== 'string') return body;
@@ -67,6 +100,16 @@ const stripStoryOutputLimits = (
         changed = true;
       }
     }
+
+    if (Array.isArray(parsed.messages)) {
+      const beforeCount = parsed.messages.length;
+      const compacted = compactAdjacentSystemMessages(parsed.messages);
+      if (compacted.length !== beforeCount) {
+        parsed.messages = compacted;
+        changed = true;
+      }
+    }
+
     return changed ? JSON.stringify(parsed) : body;
   } catch {
     return body;
@@ -183,7 +226,7 @@ const annotateFailure = async (
  * - 其他上游未配置 relay：保持 Cloudflare Worker 直接请求模型上游。
  * - 其他上游 relay URL + token 同时配置：经 relay 出网。
  * - 只配置一半：明确失败，不偷偷回退 Cloudflare 直连。
- * - 所有文游上游请求：最终发出前移除最大输出 token 字段，与 RikkaHub 默认请求形状一致。
+ * - 所有文游上游请求：最终发出前移除最大输出 token 字段，并合并相邻 system 消息。
  */
 export const fetchStoryUpstream = async (
   env: StoryEgressEnv,
@@ -191,10 +234,10 @@ export const fetchStoryUpstream = async (
   init: RequestInit,
 ): Promise<Response> => {
   const route = resolveStoryEgressRoute(env, targetUrl);
-  const strippedBody = stripStoryOutputLimits(init.body);
-  const requestInit: RequestInit = strippedBody === init.body
+  const sanitizedBody = sanitizeStoryRequestBody(init.body);
+  const requestInit: RequestInit = sanitizedBody === init.body
     ? init
-    : { ...init, body: strippedBody };
+    : { ...init, body: sanitizedBody };
 
   if (!route.relayed) {
     const response = await fetch(targetUrl, requestInit);
