@@ -223,7 +223,7 @@ describe('story egress routing', () => {
     expect(text).toContain('"name":"shape-current","status":200');
     expect(text).toContain('"name":"system-real","status":200');
     expect(text).toContain('"name":"dialogue-real","status":200');
-    expect(text).toContain('"messageShapes"');
+    expect(text).toContain('"largestMessages"');
   });
 
   it('probes RikkaHub-like headers when the minimal current-header request still fails', async () => {
