@@ -38,7 +38,7 @@ export const resolveStoryEgressRoute = (
   targetUrl: string,
 ): StoryEgressRoute => {
   // 749 对出口来源较敏感；主聊天 / RikkaHub 直连正常而 relay 路径出现上游 OAuth 401。
-  // 文游后台对该站恢复旧的 Worker 直连行为，避免日本 relay 改变 749 的上游路由选择。
+  // 文游后台对该站恢复 Worker 直连行为，避免日本 relay 改变 749 的上游路由选择。
   if (shouldBypassStoryRelay(targetUrl)) {
     return { url: targetUrl, relayed: false };
   }
@@ -115,8 +115,7 @@ const sanitizeStoryRequestBody = (
       }
     }
 
-    // RikkaHub 的 Chat Completions 默认不会发送这两个字段；0 本身就是服务端默认值。
-    // 清掉纯 0 值只缩小兼容请求形状，不改变采样行为。用户若显式设置非 0 值则保留。
+    // RikkaHub 的 Chat Completions 默认不会发送纯 0 penalty；删除它们不改变采样效果。
     for (const key of ['frequency_penalty', 'presence_penalty']) {
       if (
         Object.prototype.hasOwnProperty.call(parsed, key)
@@ -155,27 +154,35 @@ const textLength = (value: unknown): number => {
   }, 0);
 };
 
+const parseBodyRecord = (body: BodyInit | null | undefined): Record<string, unknown> | null => {
+  if (typeof body !== 'string') return null;
+  try {
+    const parsed = JSON.parse(body);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : null;
+  } catch {
+    return null;
+  }
+};
+
+const safeHost = (value: string): string => {
+  try { return new URL(value).host; } catch { return 'invalid-url'; }
+};
+
 const summarizeRequest = (
   body: BodyInit | null | undefined,
   targetUrl: string,
   route: StoryEgressRoute,
 ): Record<string, unknown> => {
   const raw = typeof body === 'string' ? body : '';
-  let parsed: Record<string, unknown> = {};
-  try {
-    const value = raw ? JSON.parse(raw) : {};
-    if (value && typeof value === 'object' && !Array.isArray(value)) {
-      parsed = value as Record<string, unknown>;
-    }
-  } catch {
-    // Only report shape; never include raw request content.
-  }
-
+  const parsed = parseBodyRecord(body) || {};
   const messages = Array.isArray(parsed.messages) ? parsed.messages : [];
   const roleCounts: Record<string, number> = {};
   let messageTextChars = 0;
   const contentKinds = new Set<string>();
   const messageShapes: Array<{ index: number; role: string; chars: number }> = [];
+
   messages.forEach((item, index) => {
     if (!item || typeof item !== 'object') {
       messageShapes.push({ index, role: 'invalid', chars: 0 });
@@ -187,6 +194,7 @@ const summarizeRequest = (
     roleCounts[role] = (roleCounts[role] || 0) + 1;
     messageTextChars += chars;
     messageShapes.push({ index, role, chars });
+
     if (typeof message.content === 'string') contentKinds.add('string');
     else if (Array.isArray(message.content)) {
       for (const block of message.content) {
@@ -201,9 +209,10 @@ const summarizeRequest = (
     }
   });
 
-  const safeHost = (value: string): string => {
-    try { return new URL(value).host; } catch { return 'invalid-url'; }
-  };
+  // 诊断日志会被 App/云任务截断；只保留最大的 5 条，完整正文永不进入日志。
+  const largestMessages = [...messageShapes]
+    .sort((a, b) => b.chars - a.chars)
+    .slice(0, 5);
 
   return {
     egress: route.relayed ? 'relay' : 'direct',
@@ -224,21 +233,9 @@ const summarizeRequest = (
     messageCount: messages.length,
     roleCounts,
     messageTextChars,
-    messageShapes,
+    largestMessages,
     contentKinds: [...contentKinds].sort(),
   };
-};
-
-const parseBodyRecord = (body: BodyInit | null | undefined): Record<string, unknown> | null => {
-  if (typeof body !== 'string') return null;
-  try {
-    const parsed = JSON.parse(body);
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-      ? parsed as Record<string, unknown>
-      : null;
-  } catch {
-    return null;
-  }
 };
 
 const buildProbeBase = (parsed: Record<string, unknown>): Record<string, unknown> => {
@@ -278,13 +275,13 @@ const run749Probe = async (
       return result;
     }
     const text = (await response.text().catch(() => '')).replace(/\s+/g, ' ').trim();
-    if (text) result.error = text.slice(0, 240);
+    if (text) result.error = text.slice(0, 160);
     return result;
   } catch (error) {
     return {
       name,
       durationMs: Date.now() - startedAt,
-      error: String((error as Error)?.message || error).slice(0, 240),
+      error: String((error as Error)?.message || error).slice(0, 160),
     };
   } finally {
     clearTimeout(timeout);
@@ -328,17 +325,12 @@ const run749429Probes = async (
         ? 'Reply with exactly OK.'
         : 'x',
     }));
-    const shapeBody = {
+    const shape = await run749Probe('shape-current', targetUrl, requestInit, {
       ...base,
       messages: shapeMessages.length > 0 ? shapeMessages : minimalBody.messages,
-    };
-    const shape = await run749Probe('shape-current', targetUrl, requestInit, shapeBody);
+    });
     if (shape.status !== 200 || sourceMessages.length === 0) return [minimal, shape];
 
-    // 真实内容已经被证明是唯一剩余变量。继续把它拆成两类：
-    // 1) 保留所有真实 system，只把 user/assistant 缩成占位；
-    // 2) system 全部缩成占位，只保留真实 user/assistant。
-    // 两组仍保持原 role 顺序，避免再把“结构差异”混进来。
     const systemRealMessages = sourceMessages.map((message, index) => ({
       role: message.role,
       content: message.role === 'system'
@@ -385,16 +377,22 @@ const annotateFailure = async (
 ): Promise<Response> => {
   if (response.ok) return response;
   const original = await response.text().catch(() => '');
+  const summary = summarizeRequest(requestBody, targetUrl, route);
   const diagnostic = {
-    ...summarizeRequest(requestBody, targetUrl, route),
     ...(probes.length > 0 ? { probe749: probes } : {}),
+    ...summary,
   };
   const headers = new Headers(response.headers);
   headers.delete('content-length');
   headers.delete('content-encoding');
   headers.set('cache-control', 'no-store');
+
+  // probe 独立放在完整诊断前，防止 App/云任务错误字段长度限制把最关键结果截掉。
+  const probeLine = probes.length > 0
+    ? `[sully_story_probe749] ${JSON.stringify(probes)}\n`
+    : '';
   return new Response(
-    `${original}${original ? '\n' : ''}[sully_story_diag] ${JSON.stringify(diagnostic)}`,
+    `${original}${original ? '\n' : ''}${probeLine}[sully_story_diag] ${JSON.stringify(diagnostic)}`,
     {
       status: response.status,
       statusText: response.statusText,
@@ -406,12 +404,12 @@ const annotateFailure = async (
 /**
  * 剧情云端任务的统一模型出口。
  *
- * - 749：恢复 Worker 直连，避免 relay 出口触发与其他前端不同的上游鉴权路径。
+ * - 749：Worker 直连，避免 relay 出口改变 749 的上游路由。
  * - 其他上游未配置 relay：保持 Cloudflare Worker 直接请求模型上游。
  * - 其他上游 relay URL + token 同时配置：经 relay 出网。
  * - 只配置一半：明确失败，不偷偷回退 Cloudflare 直连。
- * - 所有文游上游请求：最终发出前移除最大输出 token 字段、纯 0 penalty，并合并相邻 system 消息。
- * - 749 若仍返回 429：自动追加诊断探针，逐级区分出口/headers、message shape、真实 system 与真实对话内容。
+ * - 最终发出前移除最大输出 token 字段、纯 0 penalty，并合并相邻 system 消息。
+ * - 749 返回 429 时自动追加诊断探针，区分 headers、message shape、真实 system 与真实对话内容。
  */
 export const fetchStoryUpstream = async (
   env: StoryEgressEnv,
