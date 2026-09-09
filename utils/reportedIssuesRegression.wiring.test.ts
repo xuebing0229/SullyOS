@@ -89,4 +89,19 @@ describe('用户反馈回归保护', () => {
         expect(item).toContain('showExpandedTranslation');
         expect(item).toContain('{renderContent(langBContent)}');
     });
+
+    it('文游保持连续下滑并默认锚在底部，不回退到每页十条分页', () => {
+        const source = read('../components/date/story/StoryTheaterSession.tsx');
+
+        expect(source).not.toContain('STORY_PAGE_SIZE');
+        expect(source).not.toContain('StoryPagination');
+        expect(source).not.toContain('pageMessages');
+        expect(source).not.toContain('messagePage');
+        expect(source).toContain('{messages.map(message => {');
+        expect(source).toContain('scrollContainerRef');
+        expect(source).toContain('initialBottomFollowRef');
+        expect(source).toContain('ResizeObserver');
+        expect(source).toContain('autoFollowStreamRef.current = distanceFromBottom <= 96');
+        expect(source).toContain('整段上下滑动浏览');
+    });
 });
