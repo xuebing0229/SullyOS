@@ -9,18 +9,13 @@ export interface StoryEgressRoute {
 }
 
 interface Story749ProbeResult {
-  name:
-    | 'minimal-current'
-    | 'minimal-rikkahub-headers'
-    | 'shape-current'
-    | 'system-real'
-    | 'dialogue-real'
-    | 'system-first-half'
-    | 'system-second-half';
+  name: string;
   status?: number;
   durationMs: number;
   error?: string;
 }
+
+type ProbeMessage = { role: string; content: string };
 
 const normalizeRelayUrl = (value: string): string => value.trim();
 
@@ -39,8 +34,7 @@ export const resolveStoryEgressRoute = (
   env: StoryEgressEnv,
   targetUrl: string,
 ): StoryEgressRoute => {
-  // 749 对出口来源较敏感；主聊天 / RikkaHub 直连正常而 relay 路径出现上游 OAuth 401。
-  // 文游后台对该站恢复 Worker 直连行为，避免日本 relay 改变 749 的上游路由选择。
+  // 749 目前由 Worker 直连；日本 relay 路径曾被该站上游拒绝为 OAuth 401。
   if (shouldBypassStoryRelay(targetUrl)) {
     return { url: targetUrl, relayed: false };
   }
@@ -78,11 +72,9 @@ const compactAdjacentSystemMessages = (messages: unknown[]): unknown[] => {
     }
 
     const message = rawMessage as Record<string, unknown>;
-    const role = String(message.role || '');
     const previous = compacted[compacted.length - 1];
-
     if (
-      role === 'system'
+      message.role === 'system'
       && typeof message.content === 'string'
       && previous
       && typeof previous === 'object'
@@ -119,10 +111,7 @@ const sanitizeStoryRequestBody = (
 
     // RikkaHub 的 Chat Completions 默认不会发送纯 0 penalty；删除它们不改变采样效果。
     for (const key of ['frequency_penalty', 'presence_penalty']) {
-      if (
-        Object.prototype.hasOwnProperty.call(parsed, key)
-        && Number(parsed[key]) === 0
-      ) {
+      if (Object.prototype.hasOwnProperty.call(parsed, key) && Number(parsed[key]) === 0) {
         delete parsed[key];
         changed = true;
       }
@@ -211,7 +200,6 @@ const summarizeRequest = (
     }
   });
 
-  // 诊断日志会被 App/云任务截断；只保留最大的 5 条，完整正文永不进入日志。
   const largestMessages = [...messageShapes]
     .sort((a, b) => b.chars - a.chars)
     .slice(0, 5);
@@ -249,7 +237,7 @@ const buildProbeBase = (parsed: Record<string, unknown>): Record<string, unknown
 };
 
 const run749Probe = async (
-  name: Story749ProbeResult['name'],
+  name: string,
   targetUrl: string,
   requestInit: RequestInit,
   body: Record<string, unknown>,
@@ -291,7 +279,7 @@ const run749Probe = async (
   }
 };
 
-const normalizeProbeMessages = (messages: unknown[]): Array<{ role: string; content: string }> => (
+const normalizeProbeMessages = (messages: unknown[]): ProbeMessage[] => (
   messages.map(item => {
     const message = item && typeof item === 'object' && !Array.isArray(item)
       ? item as Record<string, unknown>
@@ -305,6 +293,77 @@ const normalizeProbeMessages = (messages: unknown[]): Array<{ role: string; cont
     };
   })
 );
+
+const makeSystemSelectionMessages = (
+  sourceMessages: ProbeMessage[],
+  realIndices: Set<number>,
+): ProbeMessage[] => sourceMessages.map((message, index) => ({
+  role: message.role,
+  content: message.role === 'system'
+    ? realIndices.has(index) ? message.content : 'x'
+    : index === sourceMessages.length - 1 && message.role === 'user'
+      ? 'Reply with exactly OK.'
+      : 'x',
+}));
+
+const groupName = (indices: number[]): string => `system-group-${indices.join('-')}`;
+
+const locateSystemTrigger = async (
+  indices: number[],
+  sourceMessages: ProbeMessage[],
+  base: Record<string, unknown>,
+  targetUrl: string,
+  requestInit: RequestInit,
+  output: Story749ProbeResult[],
+): Promise<void> => {
+  if (indices.length === 0) return;
+
+  if (indices.length === 1) {
+    const index = indices[0];
+    output.push(await run749Probe(
+      `system-index-${index}`,
+      targetUrl,
+      requestInit,
+      { ...base, messages: makeSystemSelectionMessages(sourceMessages, new Set([index])) },
+      undefined,
+      30000,
+    ));
+    return;
+  }
+
+  const split = Math.ceil(indices.length / 2);
+  const first = indices.slice(0, split);
+  const second = indices.slice(split);
+
+  const firstResult = await run749Probe(
+    groupName(first),
+    targetUrl,
+    requestInit,
+    { ...base, messages: makeSystemSelectionMessages(sourceMessages, new Set(first)) },
+    undefined,
+    30000,
+  );
+  output.push(firstResult);
+
+  if (firstResult.status === 429) {
+    await locateSystemTrigger(first, sourceMessages, base, targetUrl, requestInit, output);
+    return;
+  }
+
+  const secondResult = await run749Probe(
+    groupName(second),
+    targetUrl,
+    requestInit,
+    { ...base, messages: makeSystemSelectionMessages(sourceMessages, new Set(second)) },
+    undefined,
+    30000,
+  );
+  output.push(secondResult);
+
+  if (secondResult.status === 429) {
+    await locateSystemTrigger(second, sourceMessages, base, targetUrl, requestInit, output);
+  }
+};
 
 const run749429Probes = async (
   targetUrl: string,
@@ -320,91 +379,105 @@ const run749429Probes = async (
   };
   const minimal = await run749Probe('minimal-current', targetUrl, requestInit, minimalBody);
 
-  if (minimal.status === 200) {
-    const sourceMessages = normalizeProbeMessages(Array.isArray(parsed.messages) ? parsed.messages : []);
-    const shapeMessages = sourceMessages.map((message, index) => ({
-      role: message.role,
-      content: index === sourceMessages.length - 1 && message.role === 'user'
-        ? 'Reply with exactly OK.'
-        : 'x',
-    }));
-    const shape = await run749Probe('shape-current', targetUrl, requestInit, {
-      ...base,
-      messages: shapeMessages.length > 0 ? shapeMessages : minimalBody.messages,
-    });
-    if (shape.status !== 200 || sourceMessages.length === 0) return [minimal, shape];
-
-    const systemRealMessages = sourceMessages.map((message, index) => ({
-      role: message.role,
-      content: message.role === 'system'
-        ? message.content
-        : index === sourceMessages.length - 1 && message.role === 'user'
-          ? 'Reply with exactly OK.'
-          : 'x',
-    }));
-    const dialogueRealMessages = sourceMessages.map(message => ({
-      role: message.role,
-      content: message.role === 'system' ? 'x' : message.content,
-    }));
-
-    const [systemReal, dialogueReal] = await Promise.all([
-      run749Probe('system-real', targetUrl, requestInit, {
-        ...base,
-        messages: systemRealMessages,
-      }, undefined, 30000),
-      run749Probe('dialogue-real', targetUrl, requestInit, {
-        ...base,
-        messages: dialogueRealMessages,
-      }),
-    ]);
-
-    if (systemReal.status === 200) {
-      return [minimal, shape, systemReal, dialogueReal];
-    }
-
-    const systemIndices = sourceMessages
-      .map((message, index) => message.role === 'system' ? index : -1)
-      .filter(index => index >= 0);
-    if (systemIndices.length < 2) {
-      return [minimal, shape, systemReal, dialogueReal];
-    }
-
-    const firstHalf = new Set(systemIndices.slice(0, Math.ceil(systemIndices.length / 2)));
-    const secondHalf = new Set(systemIndices.slice(Math.ceil(systemIndices.length / 2)));
-    const makeSystemHalfMessages = (realIndices: Set<number>) => sourceMessages.map((message, index) => ({
-      role: message.role,
-      content: message.role === 'system'
-        ? realIndices.has(index) ? message.content : 'x'
-        : index === sourceMessages.length - 1 && message.role === 'user'
-          ? 'Reply with exactly OK.'
-          : 'x',
-    }));
-
-    const [systemFirstHalf, systemSecondHalf] = await Promise.all([
-      run749Probe('system-first-half', targetUrl, requestInit, {
-        ...base,
-        messages: makeSystemHalfMessages(firstHalf),
-      }, undefined, 20000),
-      run749Probe('system-second-half', targetUrl, requestInit, {
-        ...base,
-        messages: makeSystemHalfMessages(secondHalf),
-      }, undefined, 20000),
-    ]);
-
-    return [minimal, shape, systemReal, dialogueReal, systemFirstHalf, systemSecondHalf];
+  if (minimal.status !== 200) {
+    const headerVariant = await run749Probe(
+      'minimal-rikkahub-headers',
+      targetUrl,
+      requestInit,
+      minimalBody,
+      {
+        Accept: 'text/event-stream',
+        'X-Session-ID': 'sully-story-749-probe',
+      },
+    );
+    return [minimal, headerVariant];
   }
 
-  const headerVariant = await run749Probe(
-    'minimal-rikkahub-headers',
+  const sourceMessages = normalizeProbeMessages(Array.isArray(parsed.messages) ? parsed.messages : []);
+  const shapeMessages = sourceMessages.map((message, index) => ({
+    role: message.role,
+    content: index === sourceMessages.length - 1 && message.role === 'user'
+      ? 'Reply with exactly OK.'
+      : 'x',
+  }));
+  const shape = await run749Probe('shape-current', targetUrl, requestInit, {
+    ...base,
+    messages: shapeMessages.length > 0 ? shapeMessages : minimalBody.messages,
+  });
+  if (shape.status !== 200 || sourceMessages.length === 0) return [minimal, shape];
+
+  const systemRealMessages = sourceMessages.map((message, index) => ({
+    role: message.role,
+    content: message.role === 'system'
+      ? message.content
+      : index === sourceMessages.length - 1 && message.role === 'user'
+        ? 'Reply with exactly OK.'
+        : 'x',
+  }));
+  const dialogueRealMessages = sourceMessages.map(message => ({
+    role: message.role,
+    content: message.role === 'system' ? 'x' : message.content,
+  }));
+
+  const [systemReal, dialogueReal] = await Promise.all([
+    run749Probe('system-real', targetUrl, requestInit, {
+      ...base,
+      messages: systemRealMessages,
+    }, undefined, 30000),
+    run749Probe('dialogue-real', targetUrl, requestInit, {
+      ...base,
+      messages: dialogueRealMessages,
+    }, undefined, 30000),
+  ]);
+  const results: Story749ProbeResult[] = [minimal, shape, systemReal, dialogueReal];
+
+  // 只有明确复现 429 才继续拆 system，避免把网络超时误判为内容问题。
+  if (systemReal.status !== 429) return results;
+
+  const systemIndices = sourceMessages
+    .map((message, index) => message.role === 'system' ? index : -1)
+    .filter(index => index >= 0);
+  const systemText = systemIndices.map(index => sourceMessages[index].content).join('\n\n');
+  if (!systemText) return results;
+
+  // 1) 原文不变，只把所有 system 合成一个系统消息。
+  // 若这里 200，说明 749/Gemini 适配层的问题是“多段/穿插 system”，不是文本本身。
+  const mergedSystem = await run749Probe(
+    'system-merged-one',
     targetUrl,
     requestInit,
-    minimalBody,
     {
-      Accept: 'text/event-stream',
-      'X-Session-ID': 'sully-story-749-probe',
+      ...base,
+      messages: [
+        { role: 'system', content: systemText },
+        { role: 'user', content: 'Reply with exactly OK.' },
+      ],
     },
+    undefined,
+    30000,
   );
-  return [minimal, headerVariant];
+  results.push(mergedSystem);
+  if (mergedSystem.status === 200) return results;
+
+  // 2) 同一坨原文改走普通 user 通道。
+  // 若 system 仍 429 而这里 200，说明是 Gemini system_instruction 通道特有的问题。
+  const systemAsUser = await run749Probe(
+    'system-as-user',
+    targetUrl,
+    requestInit,
+    {
+      ...base,
+      messages: [{ role: 'user', content: `${systemText}\n\nReply with exactly OK.` }],
+    },
+    undefined,
+    30000,
+  );
+  results.push(systemAsUser);
+  if (systemAsUser.status === 200 || systemIndices.length === 0) return results;
+
+  // 3) 合并与改 role 都仍失败，才顺序二分具体 system。顺序执行避免并发探针制造假 429。
+  await locateSystemTrigger(systemIndices, sourceMessages, base, targetUrl, requestInit, results);
+  return results;
 };
 
 const annotateFailure = async (
@@ -426,7 +499,6 @@ const annotateFailure = async (
   headers.delete('content-encoding');
   headers.set('cache-control', 'no-store');
 
-  // probe 独立放在完整诊断前，防止 App/云任务错误字段长度限制把最关键结果截掉。
   const probeLine = probes.length > 0
     ? `[sully_story_probe749] ${JSON.stringify(probes)}\n`
     : '';
@@ -448,7 +520,7 @@ const annotateFailure = async (
  * - 其他上游 relay URL + token 同时配置：经 relay 出网。
  * - 只配置一半：明确失败，不偷偷回退 Cloudflare 直连。
  * - 最终发出前移除最大输出 token 字段、纯 0 penalty，并合并相邻 system 消息。
- * - 749 返回 429 时自动追加诊断探针，区分 headers、message shape、真实 system 与真实对话内容，并继续二分可疑 system 内容。
+ * - 749 返回 429 时追加一次性诊断，优先区分多段 system、system_instruction 通道与具体内容触发。
  */
 export const fetchStoryUpstream = async (
   env: StoryEgressEnv,
