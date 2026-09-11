@@ -8,12 +8,9 @@ export interface StoryEgressRoute {
   relayed: boolean;
 }
 
-const STORY_749_GEMINI_SYSTEM_ANCHOR =
-  'The final user message contains a <SULLY_SYSTEM_INSTRUCTIONS> block with the full system instructions for this request. Treat that block as the system instructions and follow it throughout the conversation.';
-
 const normalizeRelayUrl = (value: string): string => value.trim();
 
-const is749Target = (targetUrl: string): boolean => {
+const shouldBypassStoryRelay = (targetUrl: string): boolean => {
   try {
     const host = new URL(targetUrl).hostname.toLowerCase();
     return host === '749code.com' || host.endsWith('.749code.com');
@@ -22,13 +19,12 @@ const is749Target = (targetUrl: string): boolean => {
   }
 };
 
-const shouldBypassStoryRelay = (targetUrl: string): boolean => is749Target(targetUrl);
-
 export const resolveStoryEgressRoute = (
   env: StoryEgressEnv,
   targetUrl: string,
 ): StoryEgressRoute => {
-  // 749 目前由 Worker 直连；日本 relay 路径曾被该站上游拒绝为 OAuth 401。
+  // 749 对出口来源较敏感；主聊天 / RikkaHub 直连正常而 relay 路径出现上游 OAuth 401。
+  // 文游后台对该站恢复旧的 Worker 直连行为，避免日本 relay 改变 749 的上游路由选择。
   if (shouldBypassStoryRelay(targetUrl)) {
     return { url: targetUrl, relayed: false };
   }
@@ -66,9 +62,11 @@ const compactAdjacentSystemMessages = (messages: unknown[]): unknown[] => {
     }
 
     const message = rawMessage as Record<string, unknown>;
+    const role = String(message.role || '');
     const previous = compacted[compacted.length - 1];
+
     if (
-      message.role === 'system'
+      role === 'system'
       && typeof message.content === 'string'
       && previous
       && typeof previous === 'object'
@@ -103,9 +101,13 @@ const sanitizeStoryRequestBody = (
       }
     }
 
-    // RikkaHub 的 Chat Completions 默认不会发送纯 0 penalty；删除它们不改变采样效果。
+    // RikkaHub 的 Chat Completions 默认不会发送这两个字段；0 本身就是服务端默认值。
+    // 清掉纯 0 值只缩小兼容请求形状，不改变采样行为。用户若显式设置非 0 值则保留。
     for (const key of ['frequency_penalty', 'presence_penalty']) {
-      if (Object.prototype.hasOwnProperty.call(parsed, key) && Number(parsed[key]) === 0) {
+      if (
+        Object.prototype.hasOwnProperty.call(parsed, key)
+        && Number(parsed[key]) === 0
+      ) {
         delete parsed[key];
         changed = true;
       }
@@ -126,87 +128,6 @@ const sanitizeStoryRequestBody = (
   }
 };
 
-const parseBodyRecord = (body: BodyInit | null | undefined): Record<string, unknown> | null => {
-  if (typeof body !== 'string') return null;
-  try {
-    const parsed = JSON.parse(body);
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-      ? parsed as Record<string, unknown>
-      : null;
-  } catch {
-    return null;
-  }
-};
-
-const isGeminiModel = (model: unknown): boolean => (
-  typeof model === 'string' && model.toLowerCase().includes('gemini')
-);
-
-/**
- * 749 的 Gemini 兼容层会把 OpenAI `system` 映射到 Gemini system_instruction。
- * 实测同一份约 8 万字符的文游规则：system_instruction 稳定 429 RESOURCE_EXHAUSTED，
- * 原文改走 user 通道则 200；短 system 消息也能正常 200。
- *
- * 因此仅对 749 + Gemini：
- * - 保留一个很短的 system 锚点，维持“规则属于系统指令”的语义；
- * - 原 system 原文一字不删，按原顺序汇总进最终 user 消息的明确指令块；
- * - 非 system 对话顺序完全保持；
- * - 其他站子、749 的非 Gemini 模型完全不改。
- */
-const apply749GeminiSystemCompatibility = (
-  body: BodyInit | null | undefined,
-  targetUrl: string,
-): BodyInit | null | undefined => {
-  if (!is749Target(targetUrl) || typeof body !== 'string') return body;
-
-  const parsed = parseBodyRecord(body);
-  if (!parsed || !isGeminiModel(parsed.model) || !Array.isArray(parsed.messages)) return body;
-
-  const systemTextParts: string[] = [];
-  const nonSystemMessages: Record<string, unknown>[] = [];
-  let finalUserIndex = -1;
-
-  for (const rawMessage of parsed.messages) {
-    if (!rawMessage || typeof rawMessage !== 'object' || Array.isArray(rawMessage)) return body;
-    const message = rawMessage as Record<string, unknown>;
-
-    if (message.role === 'system') {
-      // 当前文游 system 均为纯文本；遇到复合内容时宁可保持原请求，也绝不静默丢内容。
-      if (typeof message.content !== 'string') return body;
-      systemTextParts.push(message.content);
-      continue;
-    }
-
-    const cloned = { ...message };
-    nonSystemMessages.push(cloned);
-    if (cloned.role === 'user' && typeof cloned.content === 'string') {
-      finalUserIndex = nonSystemMessages.length - 1;
-    }
-  }
-
-  if (systemTextParts.length === 0 || finalUserIndex < 0) return body;
-
-  const finalUser = nonSystemMessages[finalUserIndex];
-  const originalUserContent = String(finalUser.content || '');
-  const systemText = systemTextParts.join('\n\n');
-  finalUser.content = [
-    '<SULLY_SYSTEM_INSTRUCTIONS>',
-    systemText,
-    '</SULLY_SYSTEM_INSTRUCTIONS>',
-    '',
-    '<SULLY_CURRENT_USER_TURN>',
-    originalUserContent,
-    '</SULLY_CURRENT_USER_TURN>',
-  ].join('\n');
-
-  parsed.messages = [
-    { role: 'system', content: STORY_749_GEMINI_SYSTEM_ANCHOR },
-    ...nonSystemMessages,
-  ];
-
-  return JSON.stringify(parsed);
-};
-
 const textLength = (value: unknown): number => {
   if (typeof value === 'string') return value.length;
   if (!Array.isArray(value)) return 0;
@@ -220,40 +141,32 @@ const textLength = (value: unknown): number => {
   }, 0);
 };
 
-const safeHost = (value: string): string => {
-  try { return new URL(value).host; } catch { return 'invalid-url'; }
-};
-
 const summarizeRequest = (
   body: BodyInit | null | undefined,
   targetUrl: string,
   route: StoryEgressRoute,
 ): Record<string, unknown> => {
   const raw = typeof body === 'string' ? body : '';
-  const parsed = parseBodyRecord(body) || {};
+  let parsed: Record<string, unknown> = {};
+  try {
+    const value = raw ? JSON.parse(raw) : {};
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      parsed = value as Record<string, unknown>;
+    }
+  } catch {
+    // Only report shape; never include raw request content.
+  }
+
   const messages = Array.isArray(parsed.messages) ? parsed.messages : [];
   const roleCounts: Record<string, number> = {};
   let messageTextChars = 0;
   const contentKinds = new Set<string>();
-  const messageShapes: Array<{ index: number; role: string; chars: number }> = [];
-  let systemCompat749Gemini = false;
-
-  messages.forEach((item, index) => {
-    if (!item || typeof item !== 'object') {
-      messageShapes.push({ index, role: 'invalid', chars: 0 });
-      return;
-    }
+  for (const item of messages) {
+    if (!item || typeof item !== 'object') continue;
     const message = item as Record<string, unknown>;
     const role = String(message.role || 'unknown');
-    const chars = textLength(message.content);
     roleCounts[role] = (roleCounts[role] || 0) + 1;
-    messageTextChars += chars;
-    messageShapes.push({ index, role, chars });
-
-    if (message.role === 'system' && message.content === STORY_749_GEMINI_SYSTEM_ANCHOR) {
-      systemCompat749Gemini = true;
-    }
-
+    messageTextChars += textLength(message.content);
     if (typeof message.content === 'string') contentKinds.add('string');
     else if (Array.isArray(message.content)) {
       for (const block of message.content) {
@@ -266,17 +179,16 @@ const summarizeRequest = (
     } else {
       contentKinds.add(typeof message.content);
     }
-  });
+  }
 
-  const largestMessages = [...messageShapes]
-    .sort((a, b) => b.chars - a.chars)
-    .slice(0, 5);
+  const safeHost = (value: string): string => {
+    try { return new URL(value).host; } catch { return 'invalid-url'; }
+  };
 
   return {
     egress: route.relayed ? 'relay' : 'direct',
     targetHost: safeHost(targetUrl),
     relayHost: route.relayed ? safeHost(route.url) : undefined,
-    systemCompat749Gemini,
     bodyBytes: raw ? new TextEncoder().encode(raw).byteLength : undefined,
     bodyKeys: Object.keys(parsed).sort(),
     model: typeof parsed.model === 'string' ? parsed.model : undefined,
@@ -292,7 +204,6 @@ const summarizeRequest = (
     messageCount: messages.length,
     roleCounts,
     messageTextChars,
-    largestMessages,
     contentKinds: [...contentKinds].sort(),
   };
 };
@@ -310,7 +221,6 @@ const annotateFailure = async (
   headers.delete('content-length');
   headers.delete('content-encoding');
   headers.set('cache-control', 'no-store');
-
   return new Response(
     `${original}${original ? '\n' : ''}[sully_story_diag] ${JSON.stringify(diagnostic)}`,
     {
@@ -324,12 +234,11 @@ const annotateFailure = async (
 /**
  * 剧情云端任务的统一模型出口。
  *
- * - 749：Worker 直连，避免 relay 出口改变 749 的上游路由。
- * - 749 + Gemini：将大段 system 原文移到最终 user 指令块，只保留短 system 锚点，规避 749 的 system_instruction 429。
+ * - 749：恢复 Worker 直连，避免 relay 出口触发与其他前端不同的上游鉴权路径。
  * - 其他上游未配置 relay：保持 Cloudflare Worker 直接请求模型上游。
  * - 其他上游 relay URL + token 同时配置：经 relay 出网。
  * - 只配置一半：明确失败，不偷偷回退 Cloudflare 直连。
- * - 最终发出前移除最大输出 token 字段、纯 0 penalty，并合并相邻 system 消息。
+ * - 所有文游上游请求：最终发出前移除最大输出 token 字段、纯 0 penalty，并合并相邻 system 消息。
  */
 export const fetchStoryUpstream = async (
   env: StoryEgressEnv,
@@ -338,10 +247,9 @@ export const fetchStoryUpstream = async (
 ): Promise<Response> => {
   const route = resolveStoryEgressRoute(env, targetUrl);
   const sanitizedBody = sanitizeStoryRequestBody(init.body);
-  const compatibleBody = apply749GeminiSystemCompatibility(sanitizedBody, targetUrl);
-  const requestInit: RequestInit = compatibleBody === init.body
+  const requestInit: RequestInit = sanitizedBody === init.body
     ? init
-    : { ...init, body: compatibleBody };
+    : { ...init, body: sanitizedBody };
 
   if (!route.relayed) {
     const response = await fetch(targetUrl, requestInit);
