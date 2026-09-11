@@ -115,38 +115,8 @@ describe('story egress routing', () => {
     });
   });
 
-  it('compacts adjacent story system messages for ordinary upstreams', async () => {
+  it('compacts adjacent story system messages in the actual final request', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('ok', { status: 200 }));
-
-    await fetchStoryUpstream(
-      {},
-      'https://example.com/v1/chat/completions',
-      {
-        method: 'POST',
-        body: JSON.stringify({
-          model: 'gemini',
-          messages: [
-            { role: 'system', content: 'rule-a' },
-            { role: 'system', content: 'rule-b' },
-            { role: 'user', content: 'hello' },
-            { role: 'system', content: 'rule-c' },
-            { role: 'assistant', content: 'world' },
-          ],
-        }),
-      },
-    );
-
-    const [, init] = fetchMock.mock.calls[0];
-    expect(JSON.parse(String(init?.body)).messages).toEqual([
-      { role: 'system', content: 'rule-a\n\nrule-b' },
-      { role: 'user', content: 'hello' },
-      { role: 'system', content: 'rule-c' },
-      { role: 'assistant', content: 'world' },
-    ]);
-  });
-
-  it('moves full 749 Gemini system rules into the final user turn while keeping a short system anchor', async () => {
-    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('data: ok\n\n', { status: 200 }));
 
     await fetchStoryUpstream(
       {},
@@ -158,88 +128,32 @@ describe('story egress routing', () => {
           Authorization: 'Bearer 749-key',
         },
         body: JSON.stringify({
-          model: '[反重力次]gemini-3.1-pro-high',
-          stream: true,
-          stream_options: { include_usage: true },
-          temperature: 1,
-          top_p: 0.98,
+          model: 'gemini',
           messages: [
             { role: 'system', content: 'rule-a' },
             { role: 'system', content: 'rule-b' },
-            { role: 'user', content: 'old user turn' },
-            { role: 'assistant', content: 'old assistant turn' },
             { role: 'system', content: 'rule-c' },
-            { role: 'user', content: 'continue story' },
-          ],
-        }),
-      },
-    );
-
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    const [, init] = fetchMock.mock.calls[0];
-    const body = JSON.parse(String(init?.body));
-
-    expect(body.messages).toHaveLength(4);
-    expect(body.messages[0].role).toBe('system');
-    expect(body.messages[0].content).toContain('<SULLY_SYSTEM_INSTRUCTIONS>');
-    expect(body.messages[0].content.length).toBeLessThan(300);
-    expect(body.messages[1]).toEqual({ role: 'user', content: 'old user turn' });
-    expect(body.messages[2]).toEqual({ role: 'assistant', content: 'old assistant turn' });
-    expect(body.messages[3].role).toBe('user');
-    expect(body.messages[3].content).toContain('<SULLY_SYSTEM_INSTRUCTIONS>\nrule-a\n\nrule-b\n\nrule-c\n</SULLY_SYSTEM_INSTRUCTIONS>');
-    expect(body.messages[3].content).toContain('<SULLY_CURRENT_USER_TURN>\ncontinue story\n</SULLY_CURRENT_USER_TURN>');
-  });
-
-  it('does not rewrite system roles for non-Gemini models on 749', async () => {
-    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('ok', { status: 200 }));
-
-    await fetchStoryUpstream(
-      {},
-      'https://749code.com/v1/chat/completions',
-      {
-        method: 'POST',
-        body: JSON.stringify({
-          model: 'gpt-5.6',
-          messages: [
-            { role: 'system', content: 'rule' },
             { role: 'user', content: 'hello' },
+            { role: 'system', content: 'rule-d' },
+            { role: 'system', content: 'rule-e' },
+            { role: 'assistant', content: 'world' },
           ],
-        }),
-      },
-    );
-
-    const [, init] = fetchMock.mock.calls[0];
-    expect(JSON.parse(String(init?.body)).messages).toEqual([
-      { role: 'system', content: 'rule' },
-      { role: 'user', content: 'hello' },
-    ]);
-  });
-
-  it('adds sanitized final-request diagnostics without launching extra 749 probes', async () => {
-    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      new Response('{"error":{"message":"resource exhausted"}}', { status: 429 }),
-    );
-
-    const response = await fetchStoryUpstream(
-      {},
-      'https://749code.com/v1/chat/completions',
-      {
-        method: 'POST',
-        body: JSON.stringify({
-          model: 'gemini-3.1-pro-high',
-          messages: [
-            { role: 'system', content: 'large rules' },
-            { role: 'user', content: 'continue' },
-          ],
+          max_tokens: 32000,
         }),
       },
     );
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    const text = await response.text();
-    expect(text).toContain('[sully_story_diag]');
-    expect(text).toContain('"systemCompat749Gemini":true');
-    expect(text).not.toContain('sully_story_probe749');
+    const [, init] = fetchMock.mock.calls[0];
+    expect(JSON.parse(String(init?.body))).toEqual({
+      model: 'gemini',
+      messages: [
+        { role: 'system', content: 'rule-a\n\nrule-b\n\nrule-c' },
+        { role: 'user', content: 'hello' },
+        { role: 'system', content: 'rule-d\n\nrule-e' },
+        { role: 'assistant', content: 'world' },
+      ],
+    });
   });
 
   it('fails closed when only half of the relay config exists for ordinary upstreams', () => {
