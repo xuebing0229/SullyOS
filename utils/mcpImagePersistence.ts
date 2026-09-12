@@ -138,12 +138,10 @@ const resolvePresetReplayMetadata = (
     if (!presetId) return {};
     const preset = getImageGenerationPresets().find(item => item.id === presetId);
     if (!preset) return { imagePresetId: presetId };
-    const remoteConfig = cloneJsonValue(preset.remoteConfig);
     return {
         imagePresetId: preset.id,
         imagePresetEngineId: preset.engineId,
         imagePresetUpdatedAt: preset.updatedAt,
-        ...(remoteConfig ? { imagePresetRemoteConfig: remoteConfig } : {}),
     };
 };
 
