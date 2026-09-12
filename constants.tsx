@@ -42,6 +42,7 @@ import {
   Broadcast,
   CirclesFour,
   FilmSlate,
+  BowlFood,
 } from '@phosphor-icons/react';
 
 // SVG 图标库 - Phosphor Icons
@@ -89,6 +90,7 @@ export const Icons: Record<string, React.FC<{ className?: string }>> = {
   Live: ({ className }) => <Broadcast className={className} weight="fill" />,
   Moments: ({ className }) => <CirclesFour className={className} weight="fill" />,
   StoryTheater: ({ className }) => <FilmSlate className={className} weight="regular" />,
+  Eat: ({ className }) => <BowlFood className={className} weight="regular" />,
 };
 
 export const INSTALLED_APPS: AppConfig[] = [
@@ -104,6 +106,7 @@ export const INSTALLED_APPS: AppConfig[] = [
   // { id: AppID.Browser, name: '浏览器', icon: 'Browser', color: 'blue' }, // Hidden
   { id: AppID.Date, name: '见面', icon: 'Date', color: 'pink' },
   { id: AppID.StoryTheater, name: '文游', icon: 'StoryTheater', color: 'violet' },
+  { id: 'eat' as AppID, name: '吃了吗', icon: 'Eat', color: 'emerald' },
   { id: AppID.User, name: '档案', icon: 'User', color: 'blue' },
   { id: AppID.Bank, name: '存钱罐', icon: 'Bank', color: 'lime' }, // Hidden
   { id: AppID.Journal, name: '交换日记', icon: 'Journal', color: 'amber' },

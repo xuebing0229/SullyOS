@@ -2,6 +2,7 @@
 import './utils/configCheckFetchGuard';
 import GameHallAutoplayHost from './components/GameHallAutoplayHost';
 import ChatImageViewerHost from './components/media/ChatImageViewerHost';
+import EatAppHost from './components/EatAppHost';
 import React from 'react';
 import { OSProvider } from './context/OSContext';
 import { MusicProvider } from './context/MusicContext';
@@ -42,6 +43,7 @@ const App: React.FC = () => {
               <PhoneShell />
               <GameHallAutoplayHost />
             </MusicProvider>
+            <EatAppHost />
             <ChatImageViewerHost />
           </OSProvider>
         </div>
