@@ -19,8 +19,12 @@ import {
   getEnabledMcpServers,
   type McpServerConfig,
 } from '../../utils/mcpClient';
-import { getCharacterAutoImageMcpServers } from '../../utils/imageGenerationPresets';
+import {
+  applyImageGenerationPresetById,
+  getCharacterAutoImageMcpServers,
+} from '../../utils/imageGenerationPresets';
 import { persistMcpGeneratedImages } from '../../utils/mcpImagePersistence';
+import { prepareBuiltinImageToolArguments } from '../../utils/novelAiReference';
 import BlobImage from './BlobImage';
 
 const promptArgumentFor = (
@@ -40,8 +44,7 @@ const promptArgumentFor = (
     'tags',
     'input',
   ];
-  const key = candidates.find(candidate => candidate in properties)
-    || (toolName === 'novelai_generate_image' ? 'prompt' : 'prompt');
+  const key = candidates.find(candidate => candidate in properties) || 'prompt';
   return { [key]: prompt };
 };
 
@@ -50,6 +53,7 @@ const ChatImageViewerHost: React.FC = () => {
     registerBackHandler,
     activeCharacterId,
     characters,
+    userProfile,
     addToast,
   } = useOS();
   const [image, setImage] =
@@ -156,12 +160,25 @@ const ChatImageViewerHost: React.FC = () => {
           || tool.name === 'generate_image')?.name;
       if (!toolName) throw new Error('当前生图预设没有可调用的生图工具');
 
-      const toolArgs = promptArgumentFor(server, toolName, prompt);
+      // 与正常聊天生图走同一套“预设 → 角色/用户 Precise Reference → Vibe”参数准备。
+      // 这里不复用旧图当参考图，而是按用户此刻选中的参考图规则重新组装本次请求。
+      if (server.imagePresetId) {
+        await applyImageGenerationPresetById(server.imagePresetId);
+      }
+      const toolArgs = await prepareBuiltinImageToolArguments({
+        server,
+        toolName,
+        args: promptArgumentFor(server, toolName, prompt),
+        character,
+        userProfile,
+      });
       const result = await callMcpTool(server, toolName, toolArgs);
       if (!result.success) {
         throw new Error(result.error || '生图工具调用失败');
       }
 
+      // meeting-cg 模式只保存二进制与相册项，不额外追加一条聊天图片消息；
+      // 成功后再把原楼层的 content 精确替换为新 blobRef。
       const persisted = await persistMcpGeneratedImages({
         result,
         char: character,
@@ -222,6 +239,7 @@ const ChatImageViewerHost: React.FC = () => {
     image,
     regenerating,
     sourceMessage,
+    userProfile,
   ]);
 
   useEffect(() => {
