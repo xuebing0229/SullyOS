@@ -17,33 +17,11 @@ import {
 import type { McpServerConfig } from '../../utils/mcpClient';
 import BlobImage from './BlobImage';
 
-const promptArgumentFor = (
-  server: McpServerConfig,
-  toolName: string,
-  prompt: string,
-): Record<string, any> => {
-  const tool = (server.tools || []).find(item => item.name === toolName);
-  const properties = tool?.inputSchema?.properties && typeof tool.inputSchema.properties === 'object'
-    ? tool.inputSchema.properties as Record<string, unknown>
-    : {};
-  const candidates = [
-    'prompt',
-    'positive_prompt',
-    'positivePrompt',
-    'description',
-    'tags',
-    'input',
-  ];
-  const key = candidates.find(candidate => candidate in properties) || 'prompt';
-  return { [key]: prompt };
-};
-
 const ChatImageViewerHost: React.FC = () => {
   const {
     registerBackHandler,
     activeCharacterId,
     characters,
-    userProfile,
     addToast,
   } = useOS();
   const [image, setImage] =
@@ -87,8 +65,6 @@ const ChatImageViewerHost: React.FC = () => {
           if (
             message?.role === 'assistant'
             && message.metadata?.mcpGeneratedImage === true
-            && typeof message.metadata?.imagePrompt === 'string'
-            && message.metadata.imagePrompt.trim()
           ) {
             setSourceMessage(message);
           }
@@ -127,80 +103,123 @@ const ChatImageViewerHost: React.FC = () => {
       addToast('找不到这张图所属的角色，暂时不能重生', 'error');
       return;
     }
-    const prompt = String(sourceMessage.metadata?.imagePrompt || '').trim();
-    if (!prompt) {
-      addToast('这张旧图没有保存生图提示词', 'info');
+
+    const metadata = (sourceMessage.metadata || {}) as Record<string, any>;
+    const replayArgs = metadata.imageRequestArgs;
+    if (
+      metadata.imageRequestVersion !== 1
+      || !replayArgs
+      || typeof replayArgs !== 'object'
+      || Array.isArray(replayArgs)
+    ) {
+      addToast('这张图生成于旧版本，没有保存完整抽卡参数；请让角色重新生成一张，新图以后可以直接原样重抽', 'info');
+      return;
+    }
+
+    const originalServerId = String(metadata.mcpServerId || '');
+    const originalToolName = String(metadata.mcpToolName || '');
+    if (!originalServerId || !originalToolName) {
+      addToast('这张图缺少原始生图服务信息，无法原样重抽', 'info');
       return;
     }
 
     setRegenerating(true);
     try {
-      // 重生是低频操作；相关 MCP / 生图模块只在用户真正点击按钮时加载，
-      // 不再随着全局大图查看器常驻进主运行路径，降低 Android WebView 基线压力。
+      // 真正的 reroll：不调用主聊天 API，也不重新计算当前预设/Vibe/参考图。
+      // 只在用户点击时加载生图模块，并直接复用第一次实际发送给生图服务的最终参数快照。
       const [
         { callMcpTool, getEnabledMcpServers },
+        { getImageGenerationPresets },
         {
-          applyImageGenerationPresetById,
-          getCharacterAutoImageMcpServers,
+          BUILTIN_IMAGE_MCP_REQUEST_TIMEOUT_MS,
+          fetchBuiltinImageRemoteConfig,
+          updateBuiltinImageRemoteConfig,
         },
         { persistMcpGeneratedImages },
-        { prepareBuiltinImageToolArguments },
       ] = await Promise.all([
         import('../../utils/mcpClient'),
         import('../../utils/imageGenerationPresets'),
+        import('../../utils/builtinImageMcp'),
         import('../../utils/mcpImagePersistence'),
-        import('../../utils/novelAiReference'),
       ]);
 
-      const configuredServers = [
-        ...getCharacterAutoImageMcpServers(),
-        ...getEnabledMcpServers(charId),
-      ];
-      const originalServerId = String(sourceMessage.metadata?.mcpServerId || '');
-      const originalToolName = String(sourceMessage.metadata?.mcpToolName || '');
-      const originalServer = configuredServers.find(server => server.id === originalServerId);
-      const server = originalServer || configuredServers.find(server =>
-        server.builtin === true
-        && (server.tools || []).some(tool =>
-          tool.name === originalToolName
-          || tool.name === 'generate_image'
-          || tool.name === 'novelai_generate_image',
-        ),
-      );
-      if (!server) {
-        throw new Error('当前没有可用的内置生图预设，请先去设置检查生图连接');
-      }
-      const toolName = (server.tools || []).some(tool => tool.name === originalToolName)
-        ? originalToolName
-        : (server.tools || []).find(tool =>
-          tool.name === 'novelai_generate_image'
-          || tool.name === 'generate_image')?.name;
-      if (!toolName) throw new Error('当前生图预设没有可调用的生图工具');
+      let server: McpServerConfig | null = null;
+      const presetId = typeof metadata.imagePresetId === 'string'
+        ? metadata.imagePresetId
+        : '';
 
-      // 与正常聊天生图走同一套“预设 → 角色/用户 Precise Reference → Vibe”参数准备。
-      // 这里不复用旧图当参考图，而是按用户此刻选中的参考图规则重新组装本次请求。
-      if (server.imagePresetId) {
-        await applyImageGenerationPresetById(server.imagePresetId);
+      if (presetId) {
+        const preset = getImageGenerationPresets().find(item => item.id === presetId);
+        if (!preset) {
+          throw new Error('原图使用的生图预设已经被删除，无法保证原样重抽');
+        }
+        const remoteSnapshot = metadata.imagePresetRemoteConfig;
+        if (!remoteSnapshot || typeof remoteSnapshot !== 'object' || Array.isArray(remoteSnapshot)) {
+          throw new Error('原图没有保存完整的预设快照，无法保证原样重抽');
+        }
+
+        // 用当前预设里保存的连接凭据，临时把“当时那份非敏感远端配置”写回同一生图服务。
+        // 不改本机 active preset，不改 UI 选择，也不把 API Key / Token 写进聊天消息。
+        const binding = {
+          id: preset.engineId,
+          enabled: preset.binding.enabled,
+          mcpUrl: preset.binding.mcpUrl,
+          controlBaseUrl: preset.binding.controlBaseUrl,
+          token: preset.binding.token,
+          tools: preset.binding.tools,
+          updatedAt: preset.updatedAt,
+        } as const;
+        const currentRemote = await fetchBuiltinImageRemoteConfig(binding);
+        await updateBuiltinImageRemoteConfig(binding, {
+          expectedRevision: currentRemote.revision,
+          patch: JSON.parse(JSON.stringify(remoteSnapshot)),
+          apiKey: preset.apiKey,
+        });
+
+        server = {
+          id: `builtin_image_preset_${preset.id}`,
+          name: `生图预设「${preset.name}」`,
+          url: preset.binding.mcpUrl,
+          controlBaseUrl: preset.binding.controlBaseUrl,
+          token: preset.binding.token,
+          enabled: true,
+          tools: JSON.parse(JSON.stringify(preset.binding.tools)),
+          updatedAt: preset.updatedAt,
+          builtin: true,
+          requestTimeoutMs: BUILTIN_IMAGE_MCP_REQUEST_TIMEOUT_MS,
+          imagePresetId: preset.id,
+          imagePresetPurpose: preset.purpose,
+          imagePresetEngineId: preset.engineId,
+          imagePresetAllowCharacterReference: preset.allowCharacterReference,
+        };
+      } else {
+        // 没走生图预设的普通 MCP / 旧式内置生图，只锁回原 serverId；
+        // 如果用户已经禁用或删除了那条连接，就明确失败，不偷换另一条线路。
+        server = getEnabledMcpServers(charId)
+          .find(item => item.id === originalServerId) || null;
       }
-      const toolArgs = await prepareBuiltinImageToolArguments({
-        server,
-        toolName,
-        args: promptArgumentFor(server, toolName, prompt),
-        character,
-        userProfile,
-      });
-      const result = await callMcpTool(server, toolName, toolArgs);
+
+      if (!server) {
+        throw new Error('原图使用的生图连接当前不可用，无法原样重抽');
+      }
+      if (!(server.tools || []).some(tool => tool.name === originalToolName)) {
+        throw new Error('原图使用的生图工具当前已不存在，无法原样重抽');
+      }
+
+      const toolArgs = JSON.parse(JSON.stringify(replayArgs)) as Record<string, any>;
+      delete toolArgs.after_generate_action;
+      const result = await callMcpTool(server, originalToolName, toolArgs);
       if (!result.success) {
         throw new Error(result.error || '生图工具调用失败');
       }
 
-      // meeting-cg 模式只保存二进制与相册项，不额外追加一条聊天图片消息；
-      // 成功后再把原楼层的 content 精确替换为新 blobRef。
+      // meeting-cg 模式只保存二进制与相册项，不额外追加聊天楼层；
+      // reroll 成功后把原楼层精确替换为新 blobRef，原始请求快照继续保留供下次再抽。
       const persisted = await persistMcpGeneratedImages({
         result,
         char: character,
         server,
-        toolName,
+        toolName: originalToolName,
         toolArgs,
         ownerType: 'meeting-cg',
         allowTemporaryUrlFallback: false,
@@ -217,11 +236,8 @@ const ChatImageViewerHost: React.FC = () => {
         persistedLocally: true,
         temporaryRemoteUrl: false,
         galleryImageId: asset.galleryImageId,
-        mcpServerId: server.id,
-        mcpServerName: server.name,
-        mcpToolName: toolName,
         imageEngine: asset.engine || previous?.imageEngine,
-        imagePrompt: asset.prompt || prompt,
+        imagePrompt: asset.prompt || previous?.imagePrompt,
         regeneratedAt: Date.now(),
       }));
 
@@ -233,18 +249,15 @@ const ChatImageViewerHost: React.FC = () => {
         metadata: {
           ...(current.metadata || {}),
           galleryImageId: asset.galleryImageId,
-          mcpServerId: server.id,
-          mcpServerName: server.name,
-          mcpToolName: toolName,
           imageEngine: asset.engine || current.metadata?.imageEngine,
-          imagePrompt: asset.prompt || prompt,
+          imagePrompt: asset.prompt || current.metadata?.imagePrompt,
           regeneratedAt: Date.now(),
         },
       } : current);
       window.dispatchEvent(new CustomEvent('active-msg-progress', {
         detail: { charId },
       }));
-      addToast('这张图已经重新生成并替换原图', 'success');
+      addToast('已按原始生图参数重新抽一张并替换原图', 'success');
     } catch (error: any) {
       addToast(error?.message || '重新生成这张图失败', 'error');
     } finally {
@@ -257,7 +270,6 @@ const ChatImageViewerHost: React.FC = () => {
     image,
     regenerating,
     sourceMessage,
-    userProfile,
   ]);
 
   useEffect(() => {
@@ -329,7 +341,7 @@ const ChatImageViewerHost: React.FC = () => {
           {regenerating
             ? <SpinnerGap size={16} className="animate-spin" />
             : <ArrowClockwise size={16} weight="bold" />}
-          {regenerating ? '正在重生这张图…' : '重新生成这张图'}
+          {regenerating ? '正在重新抽图…' : '重新生成这张图'}
         </button>
       )}
 
