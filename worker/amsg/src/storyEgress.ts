@@ -20,8 +20,6 @@ const STORY_SYSTEM_COMPAT_ROUTES_KEY = '_sullyStorySystemCompatibilityRoutes';
 const STORY_SYSTEM_COMPAT_ANCHOR =
   'The final user message contains a <SULLY_SYSTEM_INSTRUCTIONS> block with the full system instructions for this request. Treat that block as the system instructions and follow it throughout the conversation.';
 
-const normalizeRelayUrl = (value: string): string => value.trim();
-
 const is749Target = (targetUrl: string): boolean => {
   try {
     const host = new URL(targetUrl).hostname.toLowerCase();
@@ -31,40 +29,14 @@ const is749Target = (targetUrl: string): boolean => {
   }
 };
 
-const shouldBypassStoryRelay = (targetUrl: string): boolean => is749Target(targetUrl);
-
+/**
+ * 剧情统一出口实验已结束。保留 env 参数只为了兼容现有部署配置，
+ * 但所有文游正文都直接由 Worker 请求模型上游，不再经过日本 relay。
+ */
 export const resolveStoryEgressRoute = (
-  env: StoryEgressEnv,
+  _env: StoryEgressEnv,
   targetUrl: string,
-): StoryEgressRoute => {
-  // 749 对出口来源较敏感；主聊天 / RikkaHub 直连正常而 relay 路径出现上游 OAuth 401。
-  // 这条仅是网络出口兼容，与下面可配置的 system 兼容开关互相独立。
-  if (shouldBypassStoryRelay(targetUrl)) {
-    return { url: targetUrl, relayed: false };
-  }
-
-  const relayUrl = normalizeRelayUrl(String(env.STORY_EGRESS_RELAY_URL || ''));
-  const relayToken = String(env.STORY_EGRESS_RELAY_TOKEN || '').trim();
-
-  if (!relayUrl && !relayToken) {
-    return { url: targetUrl, relayed: false };
-  }
-  if (!relayUrl || !relayToken) {
-    throw new Error('剧情统一出口配置不完整：STORY_EGRESS_RELAY_URL 与 STORY_EGRESS_RELAY_TOKEN 必须同时配置');
-  }
-
-  let parsed: URL;
-  try {
-    parsed = new URL(relayUrl);
-  } catch {
-    throw new Error('剧情统一出口地址无效：STORY_EGRESS_RELAY_URL 不是合法 URL');
-  }
-  if (parsed.protocol !== 'https:') {
-    throw new Error('剧情统一出口必须使用 HTTPS');
-  }
-
-  return { url: parsed.toString(), relayed: true };
-};
+): StoryEgressRoute => ({ url: targetUrl, relayed: false });
 
 const parseBodyRecord = (body: BodyInit | null | undefined): Record<string, unknown> | null => {
   if (typeof body !== 'string') return null;
@@ -389,12 +361,10 @@ const annotateFailure = async (
 /**
  * 剧情云端任务的统一模型出口。
  *
- * - 749：继续 Worker 直连，避免 relay 出口触发不同的上游鉴权路径。
+ * - 所有文游正文：Worker 直接请求模型上游，不再经日本 relay。
  * - systemCompatibility：由文游预设中的“具体模型 + 具体站点”显式决定；主聊天不读。
  * - 新客户端携带线路开关表时它是权威值；显式关闭会覆盖 749 迁移兜底。
  * - 旧客户端没有该字段时，749 + Gemini 暂时沿用迁移兜底，避免 APK 更新前回归 429。
- * - 其他上游未配置 relay：保持 Cloudflare Worker 直接请求模型上游。
- * - 其他上游 relay URL + token 同时配置：经 relay 出网。
  * - 最终发出前移除 Sully 私有字段、最大输出 token 字段、纯 0 penalty，并合并相邻 system 消息。
  */
 export const fetchStoryUpstream = async (
@@ -416,19 +386,6 @@ export const fetchStoryUpstream = async (
     ? init
     : { ...init, body: compatibleBody };
 
-  if (!route.relayed) {
-    const response = await fetch(targetUrl, requestInit);
-    return annotateFailure(response, requestInit.body, targetUrl, route, systemCompatibility);
-  }
-
-  const headers = new Headers(requestInit.headers || {});
-  headers.set('X-Sully-Egress-Version', '1');
-  headers.set('X-Sully-Egress-Target', targetUrl);
-  headers.set('X-Sully-Egress-Token', String(env.STORY_EGRESS_RELAY_TOKEN || '').trim());
-
-  const response = await fetch(route.url, {
-    ...requestInit,
-    headers,
-  });
+  const response = await fetch(targetUrl, requestInit);
   return annotateFailure(response, requestInit.body, targetUrl, route, systemCompatibility);
 };

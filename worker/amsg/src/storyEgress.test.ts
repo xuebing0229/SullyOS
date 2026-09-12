@@ -32,7 +32,7 @@ describe('story egress routing', () => {
     expect(new Headers(init?.headers).get('X-Sully-Egress-Target')).toBeNull();
   });
 
-  it('routes ordinary upstreams through the configured relay and omits output token ceilings', async () => {
+  it('ignores legacy relay config and still sends ordinary upstreams directly', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('ok', { status: 200 }));
     const controller = new AbortController();
 
@@ -55,18 +55,18 @@ describe('story egress routing', () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0];
-    expect(url).toBe('https://ag.apixb.top/sullyos-story-egress');
+    expect(url).toBe('https://example.com/v1/chat/completions');
     const headers = new Headers(init?.headers);
     expect(headers.get('Authorization')).toBe('Bearer upstream-key');
     expect(headers.get('Content-Type')).toBe('application/json');
-    expect(headers.get('X-Sully-Egress-Target')).toBe('https://example.com/v1/chat/completions');
-    expect(headers.get('X-Sully-Egress-Token')).toBe('relay-secret');
-    expect(headers.get('X-Sully-Egress-Version')).toBe('1');
+    expect(headers.get('X-Sully-Egress-Target')).toBeNull();
+    expect(headers.get('X-Sully-Egress-Token')).toBeNull();
+    expect(headers.get('X-Sully-Egress-Version')).toBeNull();
     expect(JSON.parse(String(init?.body))).toEqual({ model: 'x', stream: true });
     expect(init?.signal).toBe(controller.signal);
   });
 
-  it('bypasses the relay for 749 while preserving its Authorization header', async () => {
+  it('keeps 749 direct while preserving its Authorization header', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('ok', { status: 200 }));
 
     await fetchStoryUpstream(
@@ -245,25 +245,23 @@ describe('story egress routing', () => {
     });
   });
 
-  it('fails closed when only half of the relay config exists for ordinary upstreams', () => {
-    expect(() => resolveStoryEgressRoute(
+  it('treats stale or partial relay settings as inert legacy config', () => {
+    expect(resolveStoryEgressRoute(
       { STORY_EGRESS_RELAY_URL: 'https://ag.apixb.top/sullyos-story-egress' },
       'https://example.com/v1/chat/completions',
-    )).toThrow(/必须同时配置/);
+    )).toEqual({ url: 'https://example.com/v1/chat/completions', relayed: false });
 
-    expect(() => resolveStoryEgressRoute(
+    expect(resolveStoryEgressRoute(
       { STORY_EGRESS_RELAY_TOKEN: 'secret' },
       'https://example.com/v1/chat/completions',
-    )).toThrow(/必须同时配置/);
-  });
+    )).toEqual({ url: 'https://example.com/v1/chat/completions', relayed: false });
 
-  it('refuses to send the relay token over plain HTTP', () => {
-    expect(() => resolveStoryEgressRoute(
+    expect(resolveStoryEgressRoute(
       {
         STORY_EGRESS_RELAY_URL: 'http://relay.example/relay',
         STORY_EGRESS_RELAY_TOKEN: 'secret',
       },
       'https://example.com/v1/chat/completions',
-    )).toThrow(/必须使用 HTTPS/);
+    )).toEqual({ url: 'https://example.com/v1/chat/completions', relayed: false });
   });
 });
