@@ -95,6 +95,99 @@ describe('story egress routing', () => {
     expect(JSON.parse(String(init?.body))).toEqual({ model: 'gemini', stream: true });
   });
 
+  it('uses the frozen baseUrl + model switch and strips Sully private fields before egress', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('ok', { status: 200 }));
+
+    await fetchStoryUpstream(
+      {},
+      'https://fragile.example/v1/chat/completions',
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          model: 'gemini-3.1-pro',
+          _sullyStorySystemCompatibilityRoutes: [
+            { baseUrl: 'https://other.example/v1', model: 'gemini-3.1-pro', enabled: false },
+            { baseUrl: 'https://fragile.example/v1/', model: 'gemini-3.1-pro', enabled: true },
+          ],
+          messages: [
+            { role: 'system', content: 'rule-a' },
+            { role: 'system', content: 'rule-b' },
+            { role: 'assistant', content: 'old answer' },
+            { role: 'user', content: 'continue' },
+          ],
+          stream: true,
+        }),
+      },
+    );
+
+    const [, init] = fetchMock.mock.calls[0];
+    const body = JSON.parse(String(init?.body));
+    expect(body._sullyStorySystemCompatibilityRoutes).toBeUndefined();
+    expect(body.messages).toHaveLength(3);
+    expect(body.messages[0].role).toBe('system');
+    expect(body.messages[0].content).toContain('<SULLY_SYSTEM_INSTRUCTIONS>');
+    expect(body.messages[1]).toEqual({ role: 'assistant', content: 'old answer' });
+    expect(body.messages[2].role).toBe('user');
+    expect(body.messages[2].content).toContain('<SULLY_SYSTEM_INSTRUCTIONS>\nrule-a\n\nrule-b\n</SULLY_SYSTEM_INSTRUCTIONS>');
+    expect(body.messages[2].content).toContain('<SULLY_CURRENT_USER_TURN>\ncontinue\n</SULLY_CURRENT_USER_TURN>');
+  });
+
+  it('lets a frozen explicit off override the legacy 749 Gemini migration fallback', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('ok', { status: 200 }));
+
+    await fetchStoryUpstream(
+      {},
+      'https://749code.com/v1/chat/completions',
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          model: 'gemini-3.1-pro',
+          _sullyStorySystemCompatibilityRoutes: [
+            { baseUrl: 'https://749code.com/v1', model: 'gemini-3.1-pro', enabled: false },
+          ],
+          messages: [
+            { role: 'system', content: 'keep-me-system' },
+            { role: 'user', content: 'hello' },
+          ],
+        }),
+      },
+    );
+
+    const [, init] = fetchMock.mock.calls[0];
+    const body = JSON.parse(String(init?.body));
+    expect(body._sullyStorySystemCompatibilityRoutes).toBeUndefined();
+    expect(body.messages).toEqual([
+      { role: 'system', content: 'keep-me-system' },
+      { role: 'user', content: 'hello' },
+    ]);
+  });
+
+  it('keeps the verified 749 Gemini compatibility for old clients that do not send the new switch map', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('ok', { status: 200 }));
+
+    await fetchStoryUpstream(
+      {},
+      'https://749code.com/v1/chat/completions',
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          model: '[反重力次]gemini-3.1-pro-high',
+          messages: [
+            { role: 'system', content: 'legacy-rule' },
+            { role: 'user', content: 'continue' },
+          ],
+        }),
+      },
+    );
+
+    const [, init] = fetchMock.mock.calls[0];
+    const body = JSON.parse(String(init?.body));
+    expect(body.messages[0].role).toBe('system');
+    expect(body.messages[0].content).toContain('<SULLY_SYSTEM_INSTRUCTIONS>');
+    expect(body.messages[1].role).toBe('user');
+    expect(body.messages[1].content).toContain('legacy-rule');
+  });
+
   it('preserves explicitly non-zero penalties', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('ok', { status: 200 }));
 
@@ -115,18 +208,14 @@ describe('story egress routing', () => {
     });
   });
 
-  it('compacts adjacent story system messages in the actual final request', async () => {
+  it('compacts adjacent story system messages for ordinary upstreams', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('ok', { status: 200 }));
 
     await fetchStoryUpstream(
       {},
-      'https://749code.com/v1/chat/completions',
+      'https://example.com/v1/chat/completions',
       {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: 'Bearer 749-key',
-        },
         body: JSON.stringify({
           model: 'gemini',
           messages: [
