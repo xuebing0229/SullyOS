@@ -1,4 +1,4 @@
-name: Apply story system compatibility config
+name: Apply story direct egress cleanup
 
 on:
   push:
@@ -20,19 +20,22 @@ jobs:
           ref: master
           fetch-depth: 0
 
-      - name: Apply exact source patches
+      - name: Remove temporary Japanese story relay routing
         run: node scripts/apply-story-system-compat-config.mjs
 
-      - name: Verify patch
+      - name: Verify exact patch
         run: |
           git diff --check
-          git diff --exit-code -- scripts/apply-story-system-compat-config.mjs .github/workflows/apply-story-system-compat-config.yml || true
-          test -n "$(git status --porcelain -- utils/backgroundStoryJobs.ts utils/storyTheaterImage.ts components/date/story/StoryTheaterSession.tsx worker/amsg/src/storyImageHandoff.ts apps/Settings.tsx)"
+          grep -q "all story text.*direct" /dev/null 2>/dev/null || true
+          grep -q "return { url: targetUrl, relayed: false }" worker/amsg/src/storyEgress.ts
+          grep -q "ignores legacy relay config" worker/amsg/src/storyEgress.test.ts
+          ! grep -q "X-Sully-Egress-Target'" worker/amsg/src/storyEgress.ts
+          test -n "$(git status --porcelain -- worker/amsg/src/storyEgress.ts worker/amsg/src/storyEgress.test.ts)"
 
       - name: Commit source changes
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add utils/backgroundStoryJobs.ts utils/storyTheaterImage.ts components/date/story/StoryTheaterSession.tsx worker/amsg/src/storyImageHandoff.ts apps/Settings.tsx
-          git commit -m "feat(story): configure system compatibility per preset model"
+          git add worker/amsg/src/storyEgress.ts worker/amsg/src/storyEgress.test.ts
+          git commit -m "fix(story): remove temporary Japanese relay"
           git push origin HEAD:master

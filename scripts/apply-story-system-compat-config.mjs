@@ -9,140 +9,41 @@ const replaceExact = (path, before, after, expected = 1) => {
   fs.writeFileSync(path, source.replaceAll(before, after));
 };
 
-// 1) Cloud Story: freeze per-route preset/model compatibility into a private request marker.
+// Cloud-side routing experiment is over: keep legacy env fields harmlessly, but never relay Story traffic.
 replaceExact(
-  'utils/backgroundStoryJobs.ts',
-  "import type { ApiExecutionPlan } from './apiFailover';\n",
-  "import { loadApiPresetsForFailover, type ApiExecutionPlan } from './apiFailover';\nimport { findApiPresetForConfig } from './apiPresetRouteIdentity';\nimport { getApiPresetStorySystemCompatibility } from './apiPresetModels';\n",
-);
-replaceExact(
-  'utils/backgroundStoryJobs.ts',
-  `    const firstRoute = options.plan.routes[0];\n    const logId = cloudApiCallLogId(pending.clientRequestId);\n    let job: CloudStoryJob | null = null;\n    const spec = {\n`,
-  `    const firstRoute = options.plan.routes[0];\n    const logId = cloudApiCallLogId(pending.clientRequestId);\n    let job: CloudStoryJob | null = null;\n    const apiPresets = loadApiPresetsForFailover();\n    const storySystemCompatibilityRoutes = options.plan.routes.map(route => {\n        const preset = apiPresets.find(item => item.id === route.presetId)\n            || findApiPresetForConfig(apiPresets, route.api);\n        return {\n            baseUrl: String(route.api.baseUrl || '').trim().replace(/\\/+$/, ''),\n            model: String(route.api.model || '').trim(),\n            enabled: getApiPresetStorySystemCompatibility(preset, route.api.model),\n        };\n    });\n    const spec = {\n`,
-);
-replaceExact(
-  'utils/backgroundStoryJobs.ts',
-  `        baseBody: {\n            ...options.body,\n            stream: true,\n        },\n`,
-  `        baseBody: {\n            ...options.body,\n            // Worker 会在真正发往模型前消费并删除这个私有字段。它按 baseUrl + model\n            // 区分故障转移线路，因此同一个 Gemini 在不同站子可以一条开、一条关。\n            _sullyStorySystemCompatibilityRoutes: storySystemCompatibilityRoutes,\n            stream: true,\n        },\n`,
+  'worker/amsg/src/storyEgress.ts',
+  `const normalizeRelayUrl = (value: string): string => value.trim();\n\nconst is749Target = (targetUrl: string): boolean => {\n  try {\n    const host = new URL(targetUrl).hostname.toLowerCase();\n    return host === '749code.com' || host.endsWith('.749code.com');\n  } catch {\n    return false;\n  }\n};\n\nconst shouldBypassStoryRelay = (targetUrl: string): boolean => is749Target(targetUrl);\n\nexport const resolveStoryEgressRoute = (\n  env: StoryEgressEnv,\n  targetUrl: string,\n): StoryEgressRoute => {\n  // 749 对出口来源较敏感；主聊天 / RikkaHub 直连正常而 relay 路径出现上游 OAuth 401。\n  // 这条仅是网络出口兼容，与下面可配置的 system 兼容开关互相独立。\n  if (shouldBypassStoryRelay(targetUrl)) {\n    return { url: targetUrl, relayed: false };\n  }\n\n  const relayUrl = normalizeRelayUrl(String(env.STORY_EGRESS_RELAY_URL || ''));\n  const relayToken = String(env.STORY_EGRESS_RELAY_TOKEN || '').trim();\n\n  if (!relayUrl && !relayToken) {\n    return { url: targetUrl, relayed: false };\n  }\n  if (!relayUrl || !relayToken) {\n    throw new Error('剧情统一出口配置不完整：STORY_EGRESS_RELAY_URL 与 STORY_EGRESS_RELAY_TOKEN 必须同时配置');\n  }\n\n  let parsed: URL;\n  try {\n    parsed = new URL(relayUrl);\n  } catch {\n    throw new Error('剧情统一出口地址无效：STORY_EGRESS_RELAY_URL 不是合法 URL');\n  }\n  if (parsed.protocol !== 'https:') {\n    throw new Error('剧情统一出口必须使用 HTTPS');\n  }\n\n  return { url: parsed.toString(), relayed: true };\n};\n`,
+  `const is749Target = (targetUrl: string): boolean => {\n  try {\n    const host = new URL(targetUrl).hostname.toLowerCase();\n    return host === '749code.com' || host.endsWith('.749code.com');\n  } catch {\n    return false;\n  }\n};\n\n/**\n * 剧情统一出口实验已结束。保留 env 参数只为了兼容现有部署配置，\n * 但所有文游正文都直接由 Worker 请求模型上游，不再经过日本 relay。\n */\nexport const resolveStoryEgressRoute = (\n  _env: StoryEgressEnv,\n  targetUrl: string,\n): StoryEgressRoute => ({ url: targetUrl, relayed: false });\n`,
 );
 
-// 2) Story image planner: resolve the same preset/model flag; main chat never reads it.
 replaceExact(
-  'utils/storyTheaterImage.ts',
-  "import { snapshotStoryReference, type StoryReferenceUpload } from './storyImageReferenceUploads';\n",
-  "import { snapshotStoryReference, type StoryReferenceUpload } from './storyImageReferenceUploads';\nimport { findApiPresetForConfig } from './apiPresetRouteIdentity';\nimport { getApiPresetStorySystemCompatibility } from './apiPresetModels';\nimport { applyStorySystemCompatibilityToBody } from './storySystemCompatibility';\n",
-);
-replaceExact(
-  'utils/storyTheaterImage.ts',
-  `    /** 已按本剧情“快速规划模型”解析好的独立规划 API。 */\n    plannerApiConfig?: APIConfig;\n`,
-  `    /** 已按本剧情“快速规划模型”解析好的独立规划 API。 */\n    plannerApiConfig?: APIConfig;\n    /** 只影响剧情生图规划器，不影响主聊天或最终 NovelAI/GPT Image 出图请求。 */\n    plannerSystemCompatibility?: boolean;\n`,
-);
-replaceExact(
-  'utils/storyTheaterImage.ts',
-  `export const resolveStoryImagePlannerApiConfig = (\n    entry: StoryTheaterEntry,\n    fallbackApi: APIConfig,\n    presets: ApiPreset[],\n): APIConfig => {\n    const presetId = String(entry.imageGeneration?.plannerApiPresetId || '').trim();\n    if (!presetId) return fallbackApi;\n\n    const preset = presets.find(item => item.id === presetId);\n    if (!preset) return fallbackApi;\n\n    const configuredModel = String(entry.imageGeneration?.plannerModel || '').trim();\n    return {\n        ...fallbackApi,\n        ...preset.config,\n        model: configuredModel || preset.config.model,\n        // 规划器只返回一次工具调用，不需要占用流式连接。\n        stream: false,\n    };\n};\n`,
-  `export const resolveStoryImagePlannerApiConfig = (\n    entry: StoryTheaterEntry,\n    fallbackApi: APIConfig,\n    presets: ApiPreset[],\n): APIConfig => {\n    const presetId = String(entry.imageGeneration?.plannerApiPresetId || '').trim();\n    if (!presetId) return fallbackApi;\n\n    const preset = presets.find(item => item.id === presetId);\n    if (!preset) return fallbackApi;\n\n    const configuredModel = String(entry.imageGeneration?.plannerModel || '').trim();\n    return {\n        ...fallbackApi,\n        ...preset.config,\n        model: configuredModel || preset.config.model,\n        // 规划器只返回一次工具调用，不需要占用流式连接。\n        stream: false,\n    };\n};\n\nexport const resolveStoryImagePlannerSystemCompatibility = (\n    entry: StoryTheaterEntry,\n    fallbackApi: APIConfig,\n    presets: ApiPreset[],\n): boolean => {\n    const presetId = String(entry.imageGeneration?.plannerApiPresetId || '').trim();\n    const configuredModel = String(entry.imageGeneration?.plannerModel || '').trim();\n    const preset = presetId\n        ? presets.find(item => item.id === presetId)\n        : findApiPresetForConfig(presets, fallbackApi);\n    if (!preset) return false;\n    const model = configuredModel || (presetId ? preset.config.model : fallbackApi.model);\n    return getApiPresetStorySystemCompatibility(preset, model);\n};\n`,
-);
-replaceExact(
-  'utils/storyTheaterImage.ts',
-  `export interface StoryCloudImagePlannerSpec {\n    baseUrl: string;\n    apiKey: string;\n    model: string;\n    systemPrompt: string;\n    tools: OpenAIMcpTool[];\n}\n`,
-  `export interface StoryCloudImagePlannerSpec {\n    baseUrl: string;\n    apiKey: string;\n    model: string;\n    systemPrompt: string;\n    systemCompatibility?: boolean;\n    tools: OpenAIMcpTool[];\n}\n`,
-);
-replaceExact(
-  'utils/storyTheaterImage.ts',
-  `    plannerApiConfig?: APIConfig;\n    messages?: Message[];\n}): Promise<StoryCloudImageHandoffSpec | undefined> => {\n`,
-  `    plannerApiConfig?: APIConfig;\n    plannerSystemCompatibility?: boolean;\n    messages?: Message[];\n}): Promise<StoryCloudImageHandoffSpec | undefined> => {\n`,
-);
-replaceExact(
-  'utils/storyTheaterImage.ts',
-  `            model: plannerModel,\n            systemPrompt: buildPlannerInstruction({\n`,
-  `            model: plannerModel,\n            ...(input.plannerSystemCompatibility === true ? { systemCompatibility: true } : {}),\n            systemPrompt: buildPlannerInstruction({\n`,
-);
-replaceExact(
-  'utils/storyTheaterImage.ts',
-  `        const runPlanner = async (body: Record<string, any>) => executeOpenAiChatPlan({\n            // 旧兼容兜底：只有主剧情模型没产出合法 inline plan 时才会走到这里。\n            plan: resolveApiExecutionPlan('chat', plannerApiConfig, false),\n            body,\n`,
-  `        const runPlanner = async (body: Record<string, any>) => executeOpenAiChatPlan({\n            // 旧兼容兜底：只有主剧情模型没产出合法 inline plan 时才会走到这里。\n            // 兼容转换只发生在这个剧情规划请求里；同一预设用于主聊天时完全不读该开关。\n            plan: resolveApiExecutionPlan('chat', plannerApiConfig, false),\n            body: applyStorySystemCompatibilityToBody(body, input.plannerSystemCompatibility === true),\n`,
+  'worker/amsg/src/storyEgress.ts',
+  ` * - 749：继续 Worker 直连，避免 relay 出口触发不同的上游鉴权路径。\n * - systemCompatibility：由文游预设中的“具体模型 + 具体站点”显式决定；主聊天不读。\n * - 新客户端携带线路开关表时它是权威值；显式关闭会覆盖 749 迁移兜底。\n * - 旧客户端没有该字段时，749 + Gemini 暂时沿用迁移兜底，避免 APK 更新前回归 429。\n * - 其他上游未配置 relay：保持 Cloudflare Worker 直接请求模型上游。\n * - 其他上游 relay URL + token 同时配置：经 relay 出网。\n * - 最终发出前移除 Sully 私有字段、最大输出 token 字段、纯 0 penalty，并合并相邻 system 消息。\n`,
+  ` * - 所有文游正文：Worker 直接请求模型上游，不再经日本 relay。\n * - systemCompatibility：由文游预设中的“具体模型 + 具体站点”显式决定；主聊天不读。\n * - 新客户端携带线路开关表时它是权威值；显式关闭会覆盖 749 迁移兜底。\n * - 旧客户端没有该字段时，749 + Gemini 暂时沿用迁移兜底，避免 APK 更新前回归 429。\n * - 最终发出前移除 Sully 私有字段、最大输出 token 字段、纯 0 penalty，并合并相邻 system 消息。\n`,
 );
 
-// 3) Story session passes planner compatibility into cloud + local planner calls.
 replaceExact(
-  'components/date/story/StoryTheaterSession.tsx',
-  `    resolveStoryImagePlannerApiConfig,\n`,
-  `    resolveStoryImagePlannerApiConfig,\n    resolveStoryImagePlannerSystemCompatibility,\n`,
-);
-replaceExact(
-  'components/date/story/StoryTheaterSession.tsx',
-  `                plannerApiConfig: resolveStoryImagePlannerApiConfig(entry, apiConfig, apiPresets),\n`,
-  `                plannerApiConfig: resolveStoryImagePlannerApiConfig(entry, apiConfig, apiPresets),\n                plannerSystemCompatibility: resolveStoryImagePlannerSystemCompatibility(entry, apiConfig, apiPresets),\n`,
-  3,
+  'worker/amsg/src/storyEgress.ts',
+  `  if (!route.relayed) {\n    const response = await fetch(targetUrl, requestInit);\n    return annotateFailure(response, requestInit.body, targetUrl, route, systemCompatibility);\n  }\n\n  const headers = new Headers(requestInit.headers || {});\n  headers.set('X-Sully-Egress-Version', '1');\n  headers.set('X-Sully-Egress-Target', targetUrl);\n  headers.set('X-Sully-Egress-Token', String(env.STORY_EGRESS_RELAY_TOKEN || '').trim());\n\n  const response = await fetch(route.url, {\n    ...requestInit,\n    headers,\n  });\n  return annotateFailure(response, requestInit.body, targetUrl, route, systemCompatibility);\n`,
+  `  const response = await fetch(targetUrl, requestInit);\n  return annotateFailure(response, requestInit.body, targetUrl, route, systemCompatibility);\n`,
 );
 
-// 4) Worker-side separate image planner consumes the frozen flag.
 replaceExact(
-  'worker/amsg/src/storyImageHandoff.ts',
-  "import { normalizeToolCallsForCompat } from '../../../utils/toolCallCompat';\n",
-  "import { normalizeToolCallsForCompat } from '../../../utils/toolCallCompat';\nimport { applyStorySystemCompatibility } from './storyEgress';\n",
-);
-replaceExact(
-  'worker/amsg/src/storyImageHandoff.ts',
-  `  model: string;\n  systemPrompt: string;\n  tools: Array<{\n`,
-  `  model: string;\n  systemPrompt: string;\n  systemCompatibility?: boolean;\n  tools: Array<{\n`,
-);
-replaceExact(
-  'worker/amsg/src/storyImageHandoff.ts',
-  `        model: plannerModel,\n        systemPrompt: plannerSystemPrompt.slice(0, 80_000),\n        tools: plannerTools,\n`,
-  `        model: plannerModel,\n        systemPrompt: plannerSystemPrompt.slice(0, 80_000),\n        ...(plannerRaw.systemCompatibility === true ? { systemCompatibility: true } : {}),\n        tools: plannerTools,\n`,
-);
-replaceExact(
-  'worker/amsg/src/storyImageHandoff.ts',
-  `  let native: { response: Response; body: any };\n`,
-  `  const encodePlannerBody = (body: Record<string, unknown>): string => {\n    const raw = JSON.stringify(body);\n    const compatible = applyStorySystemCompatibility(raw, planner.systemCompatibility === true);\n    return typeof compatible === 'string' ? compatible : raw;\n  };\n\n  let native: { response: Response; body: any };\n`,
-);
-replaceExact(
-  'worker/amsg/src/storyImageHandoff.ts',
-  `      body: JSON.stringify(nativeBody),\n`,
-  `      body: encodePlannerBody(nativeBody),\n`,
-);
-replaceExact(
-  'worker/amsg/src/storyImageHandoff.ts',
-  `        body: JSON.stringify(buildNativeRepairBody(nativeBody)),\n`,
-  `        body: encodePlannerBody(buildNativeRepairBody(nativeBody)),\n`,
-);
-replaceExact(
-  'worker/amsg/src/storyImageHandoff.ts',
-  `    body: JSON.stringify({\n      model: planner.model,\n      messages: [\n`,
-  `    body: encodePlannerBody({\n      model: planner.model,\n      messages: [\n`,
-);
-replaceExact(
-  'worker/amsg/src/storyImageHandoff.ts',
-  `      stream: false,\n    }),\n  }, 90_000);\n`,
-  `      stream: false,\n    }),\n  }, 90_000);\n`,
+  'worker/amsg/src/storyEgress.test.ts',
+  `  it('routes ordinary upstreams through the configured relay and omits output token ceilings', async () => {\n    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('ok', { status: 200 }));\n    const controller = new AbortController();\n\n    await fetchStoryUpstream(\n      {\n        STORY_EGRESS_RELAY_URL: 'https://ag.apixb.top/sullyos-story-egress',\n        STORY_EGRESS_RELAY_TOKEN: 'relay-secret',\n      },\n      'https://example.com/v1/chat/completions',\n      {\n        method: 'POST',\n        headers: {\n          'Content-Type': 'application/json',\n          Authorization: 'Bearer upstream-key',\n        },\n        body: '{\"model\":\"x\",\"stream\":true,\"max_tokens\":32000,\"max_completion_tokens\":16000}',\n        signal: controller.signal,\n      },\n    );\n\n    expect(fetchMock).toHaveBeenCalledTimes(1);\n    const [url, init] = fetchMock.mock.calls[0];\n    expect(url).toBe('https://ag.apixb.top/sullyos-story-egress');\n    const headers = new Headers(init?.headers);\n    expect(headers.get('Authorization')).toBe('Bearer upstream-key');\n    expect(headers.get('Content-Type')).toBe('application/json');\n    expect(headers.get('X-Sully-Egress-Target')).toBe('https://example.com/v1/chat/completions');\n    expect(headers.get('X-Sully-Egress-Token')).toBe('relay-secret');\n    expect(headers.get('X-Sully-Egress-Version')).toBe('1');\n    expect(JSON.parse(String(init?.body))).toEqual({ model: 'x', stream: true });\n    expect(init?.signal).toBe(controller.signal);\n  });\n`,
+  `  it('ignores legacy relay config and still sends ordinary upstreams directly', async () => {\n    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('ok', { status: 200 }));\n    const controller = new AbortController();\n\n    await fetchStoryUpstream(\n      {\n        STORY_EGRESS_RELAY_URL: 'https://ag.apixb.top/sullyos-story-egress',\n        STORY_EGRESS_RELAY_TOKEN: 'relay-secret',\n      },\n      'https://example.com/v1/chat/completions',\n      {\n        method: 'POST',\n        headers: {\n          'Content-Type': 'application/json',\n          Authorization: 'Bearer upstream-key',\n        },\n        body: '{\"model\":\"x\",\"stream\":true,\"max_tokens\":32000,\"max_completion_tokens\":16000}',\n        signal: controller.signal,\n      },\n    );\n\n    expect(fetchMock).toHaveBeenCalledTimes(1);\n    const [url, init] = fetchMock.mock.calls[0];\n    expect(url).toBe('https://example.com/v1/chat/completions');\n    const headers = new Headers(init?.headers);\n    expect(headers.get('Authorization')).toBe('Bearer upstream-key');\n    expect(headers.get('Content-Type')).toBe('application/json');\n    expect(headers.get('X-Sully-Egress-Target')).toBeNull();\n    expect(headers.get('X-Sully-Egress-Token')).toBeNull();\n    expect(headers.get('X-Sully-Egress-Version')).toBeNull();\n    expect(JSON.parse(String(init?.body))).toEqual({ model: 'x', stream: true });\n    expect(init?.signal).toBe(controller.signal);\n  });\n`,
 );
 
-// 5) Preset model UI: a single switch shared by Story text + Story image planner only.
 replaceExact(
-  'apps/Settings.tsx',
-  `    getApiPresetPricing,\n    removeApiPresetModel,\n    setApiPresetDefaultModel,\n    setApiPresetModelPricing,\n`,
-  `    getApiPresetPricing,\n    getApiPresetStorySystemCompatibility,\n    removeApiPresetModel,\n    setApiPresetDefaultModel,\n    setApiPresetModelPricing,\n    setApiPresetModelStorySystemCompatibility,\n`,
-);
-replaceExact(
-  'apps/Settings.tsx',
-  `          title={pricingModel ? \`模型价格 · \${pricingModel}\` : '模型价格'}\n`,
-  `          title={pricingModel ? \`模型设置 · \${pricingModel}\` : '模型设置'}\n`,
-);
-replaceExact(
-  'apps/Settings.tsx',
-  `                      addToast(\`\${pricingModel} 的价格已保存\`, 'success');\n`,
-  `                      addToast(\`\${pricingModel} 的模型设置已保存\`, 'success');\n`,
-);
-replaceExact(
-  'apps/Settings.tsx',
-  `                  保存价格\n`,
-  `                  保存\n`,
-);
-replaceExact(
-  'apps/Settings.tsx',
-  `      >\n          {pricingDraft && <ApiPricingEditor value={pricingDraft} onChange={setPricingDraft} />}\n      </Modal>\n\n      {/* 编辑预设`,
-  `      >\n          <div className="space-y-3">\n              {pricingDraft && <ApiPricingEditor value={pricingDraft} onChange={setPricingDraft} />}\n              {pricingPresetId && pricingModel && (() => {\n                  const preset = apiPresets.find(item => item.id === pricingPresetId);\n                  if (!preset) return null;\n                  const enabled = getApiPresetStorySystemCompatibility(preset, pricingModel);\n                  return (\n                      <div className="rounded-2xl border border-violet-100 bg-violet-50/60 p-4">\n                          <div className="flex items-center justify-between gap-3">\n                              <div className="min-w-0">\n                                  <div className="text-xs font-bold text-violet-700">文游 System 兼容</div>\n                                  <p className="mt-1 text-[10px] leading-relaxed text-violet-700/65">\n                                      只作用于文游正文和剧情生图规划模型，主聊天不会读取。遇到长 system 导致 400/429 等兼容异常时再开启。\n                                  </p>\n                              </div>\n                              <button\n                                  type="button"\n                                  role="switch"\n                                  aria-checked={enabled}\n                                  onClick={() => {\n                                      const updated = setApiPresetModelStorySystemCompatibility(preset, pricingModel, !enabled);\n                                      updateApiPreset(preset.id, { models: updated.models });\n                                  }}\n                                  className={\`relative h-6 w-11 shrink-0 rounded-full transition-colors \${enabled ? 'bg-violet-500' : 'bg-slate-200'}\`}\n                              >\n                                  <span className={\`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow-sm transition-transform \${enabled ? 'translate-x-5' : 'translate-x-0.5'}\`} />\n                              </button>\n                          </div>\n                      </div>\n                  );\n              })()}\n          </div>\n      </Modal>\n\n      {/* 编辑预设`,
+  'worker/amsg/src/storyEgress.test.ts',
+  `  it('bypasses the relay for 749 while preserving its Authorization header', async () => {\n`,
+  `  it('keeps 749 direct while preserving its Authorization header', async () => {\n`,
 );
 
-console.log('Applied story system compatibility configuration patches.');
+replaceExact(
+  'worker/amsg/src/storyEgress.test.ts',
+  `  it('fails closed when only half of the relay config exists for ordinary upstreams', () => {\n    expect(() => resolveStoryEgressRoute(\n      { STORY_EGRESS_RELAY_URL: 'https://ag.apixb.top/sullyos-story-egress' },\n      'https://example.com/v1/chat/completions',\n    )).toThrow(/必须同时配置/);\n\n    expect(() => resolveStoryEgressRoute(\n      { STORY_EGRESS_RELAY_TOKEN: 'secret' },\n      'https://example.com/v1/chat/completions',\n    )).toThrow(/必须同时配置/);\n  });\n\n  it('refuses to send the relay token over plain HTTP', () => {\n    expect(() => resolveStoryEgressRoute(\n      {\n        STORY_EGRESS_RELAY_URL: 'http://relay.example/relay',\n        STORY_EGRESS_RELAY_TOKEN: 'secret',\n      },\n      'https://example.com/v1/chat/completions',\n    )).toThrow(/必须使用 HTTPS/);\n  });\n`,
+  `  it('treats stale or partial relay settings as inert legacy config', () => {\n    expect(resolveStoryEgressRoute(\n      { STORY_EGRESS_RELAY_URL: 'https://ag.apixb.top/sullyos-story-egress' },\n      'https://example.com/v1/chat/completions',\n    )).toEqual({ url: 'https://example.com/v1/chat/completions', relayed: false });\n\n    expect(resolveStoryEgressRoute(\n      { STORY_EGRESS_RELAY_TOKEN: 'secret' },\n      'https://example.com/v1/chat/completions',\n    )).toEqual({ url: 'https://example.com/v1/chat/completions', relayed: false });\n\n    expect(resolveStoryEgressRoute(\n      {\n        STORY_EGRESS_RELAY_URL: 'http://relay.example/relay',\n        STORY_EGRESS_RELAY_TOKEN: 'secret',\n      },\n      'https://example.com/v1/chat/completions',\n    )).toEqual({ url: 'https://example.com/v1/chat/completions', relayed: false });\n  });\n`,
+);
+
+console.log('Disabled the temporary Japanese story relay and restored direct Worker egress.');
