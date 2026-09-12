@@ -14,17 +14,7 @@ import {
   CHAT_IMAGE_VIEWER_OPEN_EVENT,
   type ChatImageViewerPayload,
 } from '../../utils/chatImageViewer';
-import {
-  callMcpTool,
-  getEnabledMcpServers,
-  type McpServerConfig,
-} from '../../utils/mcpClient';
-import {
-  applyImageGenerationPresetById,
-  getCharacterAutoImageMcpServers,
-} from '../../utils/imageGenerationPresets';
-import { persistMcpGeneratedImages } from '../../utils/mcpImagePersistence';
-import { prepareBuiltinImageToolArguments } from '../../utils/novelAiReference';
+import type { McpServerConfig } from '../../utils/mcpClient';
 import BlobImage from './BlobImage';
 
 const promptArgumentFor = (
@@ -63,8 +53,10 @@ const ChatImageViewerHost: React.FC = () => {
   const [regenerating, setRegenerating] = useState(false);
   const closeButtonRef =
     useRef<HTMLButtonElement | null>(null);
+  const currentImageSrcRef = useRef<string | null>(null);
 
   const close = useCallback(() => {
+    currentImageSrcRef.current = null;
     setImage(null);
     setSourceMessage(null);
     setRegenerating(false);
@@ -76,14 +68,22 @@ const ChatImageViewerHost: React.FC = () => {
         (event as CustomEvent<ChatImageViewerPayload>)
           .detail;
       if (!detail?.src) return;
+      currentImageSrcRef.current = detail.src;
       setImage(detail);
       setSourceMessage(null);
       setRegenerating(false);
 
-      const charId = activeCharacterId;
-      if (!charId) return;
-      void DB.findImageMessageByUrl(charId, detail.src)
+      const charId = detail.charId || activeCharacterId;
+      const lookup = detail.messageId != null
+        ? DB.getMessage(detail.messageId as any)
+        : charId
+          ? DB.findImageMessageByUrl(charId, detail.src)
+          : Promise.resolve(null);
+
+      void lookup
         .then(message => {
+          // 用户可能已经关掉大图或切到另一张；旧查询结果不能污染当前查看器。
+          if (currentImageSrcRef.current !== detail.src) return;
           if (
             message?.role === 'assistant'
             && message.metadata?.mcpGeneratedImage === true
@@ -135,6 +135,23 @@ const ChatImageViewerHost: React.FC = () => {
 
     setRegenerating(true);
     try {
+      // 重生是低频操作；相关 MCP / 生图模块只在用户真正点击按钮时加载，
+      // 不再随着全局大图查看器常驻进主运行路径，降低 Android WebView 基线压力。
+      const [
+        { callMcpTool, getEnabledMcpServers },
+        {
+          applyImageGenerationPresetById,
+          getCharacterAutoImageMcpServers,
+        },
+        { persistMcpGeneratedImages },
+        { prepareBuiltinImageToolArguments },
+      ] = await Promise.all([
+        import('../../utils/mcpClient'),
+        import('../../utils/imageGenerationPresets'),
+        import('../../utils/mcpImagePersistence'),
+        import('../../utils/novelAiReference'),
+      ]);
+
       const configuredServers = [
         ...getCharacterAutoImageMcpServers(),
         ...getEnabledMcpServers(charId),
@@ -208,6 +225,7 @@ const ChatImageViewerHost: React.FC = () => {
         regeneratedAt: Date.now(),
       }));
 
+      currentImageSrcRef.current = asset.blobRef;
       setImage(current => current ? { ...current, src: asset.blobRef } : current);
       setSourceMessage(current => current ? {
         ...current,
