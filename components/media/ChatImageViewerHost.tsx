@@ -153,13 +153,16 @@ const ChatImageViewerHost: React.FC = () => {
         if (!preset) {
           throw new Error('原图使用的生图预设已经被删除，无法保证原样重抽');
         }
-        const remoteSnapshot = metadata.imagePresetRemoteConfig;
-        if (!remoteSnapshot || typeof remoteSnapshot !== 'object' || Array.isArray(remoteSnapshot)) {
-          throw new Error('原图没有保存完整的预设快照，无法保证原样重抽');
+        if (
+          typeof metadata.imagePresetUpdatedAt !== 'number'
+          || metadata.imagePresetUpdatedAt !== preset.updatedAt
+        ) {
+          throw new Error('原图使用的生图预设后来被修改过，无法保证原样重抽；请让角色按当前预设重新生成一张');
         }
 
-        // 用当前预设里保存的连接凭据，临时把“当时那份非敏感远端配置”写回同一生图服务。
-        // 不改本机 active preset，不改 UI 选择，也不把 API Key / Token 写进聊天消息。
+        // 不把远端配置、API Key、Token 复制进聊天消息。
+        // 预设版本没变时，用当前保存的同一预设重新写回远端配置，确保服务端也回到当时的模型配置；
+        // 这不会改变本机 active preset / UI 选择。
         const binding = {
           id: preset.engineId,
           enabled: preset.binding.enabled,
@@ -168,11 +171,11 @@ const ChatImageViewerHost: React.FC = () => {
           token: preset.binding.token,
           tools: preset.binding.tools,
           updatedAt: preset.updatedAt,
-        } as const;
+        };
         const currentRemote = await fetchBuiltinImageRemoteConfig(binding);
         await updateBuiltinImageRemoteConfig(binding, {
           expectedRevision: currentRemote.revision,
-          patch: JSON.parse(JSON.stringify(remoteSnapshot)),
+          patch: JSON.parse(JSON.stringify(preset.remoteConfig)),
           apiKey: preset.apiKey,
         });
 
