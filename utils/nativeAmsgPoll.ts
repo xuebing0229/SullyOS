@@ -79,7 +79,7 @@ const ingest = async (raw: string) => {
 export const drainNativeAmsgPoll = async () => {
   const result = await NativePoll.drain();
   for (const raw of result.messages || []) if (typeof raw === 'string') await ingest(raw);
-  await flushInboxToChat();
+  await flushInboxToChat('原生收件箱');
 };
 
 export const startNativeAmsgPoll = async (workerUrl: string) => {
