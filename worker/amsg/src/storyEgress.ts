@@ -11,11 +11,12 @@ export interface StoryEgressRoute {
 export interface StoryEgressOptions {
   /**
    * 文游专用的 system 兼容模式。true=强制开启，false=强制关闭；
-   * undefined 仅用于旧客户端迁移兜底。
+   * undefined 时优先读取请求里冻结的“线路 + 模型”开关，再做旧客户端迁移兜底。
    */
   systemCompatibility?: boolean;
 }
 
+const STORY_SYSTEM_COMPAT_ROUTES_KEY = '_sullyStorySystemCompatibilityRoutes';
 const STORY_SYSTEM_COMPAT_ANCHOR =
   'The final user message contains a <SULLY_SYSTEM_INSTRUCTIONS> block with the full system instructions for this request. Treat that block as the system instructions and follow it throughout the conversation.';
 
@@ -65,6 +66,77 @@ export const resolveStoryEgressRoute = (
   return { url: parsed.toString(), relayed: true };
 };
 
+const parseBodyRecord = (body: BodyInit | null | undefined): Record<string, unknown> | null => {
+  if (typeof body !== 'string') return null;
+  try {
+    const parsed = JSON.parse(body);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : null;
+  } catch {
+    return null;
+  }
+};
+
+const normalizeRouteBaseUrl = (value: unknown): string => {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  try {
+    const url = new URL(raw);
+    url.hash = '';
+    url.search = '';
+    const path = url.pathname.replace(/\/+$/, '');
+    return `${url.origin}${path}`;
+  } catch {
+    return raw.replace(/\/+$/, '');
+  }
+};
+
+const targetBaseUrl = (targetUrl: string): string => {
+  try {
+    const url = new URL(targetUrl);
+    url.hash = '';
+    url.search = '';
+    url.pathname = url.pathname.replace(/\/chat\/completions\/?$/i, '').replace(/\/+$/, '');
+    return `${url.origin}${url.pathname}`;
+  } catch {
+    return String(targetUrl || '')
+      .replace(/\/chat\/completions\/?$/i, '')
+      .replace(/\/+$/, '');
+  }
+};
+
+/**
+ * 新版 App 把每条故障转移线路当时的显式开关冻结进 story job。
+ * 只要这个字段存在，它就是权威值；找不到当前线路也按 false，绝不再被 749 迁移兜底误开。
+ */
+const resolveFrozenSystemCompatibility = (
+  body: BodyInit | null | undefined,
+  targetUrl: string,
+): boolean | undefined => {
+  const parsed = parseBodyRecord(body);
+  if (!parsed || !Object.prototype.hasOwnProperty.call(parsed, STORY_SYSTEM_COMPAT_ROUTES_KEY)) {
+    return undefined;
+  }
+
+  const routes = parsed[STORY_SYSTEM_COMPAT_ROUTES_KEY];
+  if (!Array.isArray(routes)) return false;
+  const model = String(parsed.model || '').trim();
+  const baseUrl = targetBaseUrl(targetUrl);
+  const matched = routes.find(raw => {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return false;
+    const item = raw as Record<string, unknown>;
+    return normalizeRouteBaseUrl(item.baseUrl) === baseUrl
+      && String(item.model || '').trim() === model;
+  });
+  return Boolean(
+    matched
+    && typeof matched === 'object'
+    && !Array.isArray(matched)
+    && (matched as Record<string, unknown>).enabled === true,
+  );
+};
+
 const compactAdjacentSystemMessages = (messages: unknown[]): unknown[] => {
   const compacted: unknown[] = [];
 
@@ -107,6 +179,12 @@ const sanitizeStoryRequestBody = (
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return body;
 
     let changed = false;
+    // Sully 私有的线路开关只给 Worker 决策，绝不能泄漏给模型供应商。
+    if (Object.prototype.hasOwnProperty.call(parsed, STORY_SYSTEM_COMPAT_ROUTES_KEY)) {
+      delete parsed[STORY_SYSTEM_COMPAT_ROUTES_KEY];
+      changed = true;
+    }
+
     for (const key of ['max_tokens', 'max_completion_tokens', 'max_output_tokens']) {
       if (Object.prototype.hasOwnProperty.call(parsed, key)) {
         delete parsed[key];
@@ -138,18 +216,6 @@ const sanitizeStoryRequestBody = (
     return changed ? JSON.stringify(parsed) : body;
   } catch {
     return body;
-  }
-};
-
-const parseBodyRecord = (body: BodyInit | null | undefined): Record<string, unknown> | null => {
-  if (typeof body !== 'string') return null;
-  try {
-    const parsed = JSON.parse(body);
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-      ? parsed as Record<string, unknown>
-      : null;
-  } catch {
-    return null;
   }
 };
 
@@ -324,11 +390,12 @@ const annotateFailure = async (
  * 剧情云端任务的统一模型出口。
  *
  * - 749：继续 Worker 直连，避免 relay 出口触发不同的上游鉴权路径。
- * - systemCompatibility：由文游预设中的“具体模型”显式决定；主聊天不读。
- * - 旧客户端未携带该字段时，749 + Gemini 暂时沿用迁移兜底，避免 APK 更新前回归 429。
+ * - systemCompatibility：由文游预设中的“具体模型 + 具体站点”显式决定；主聊天不读。
+ * - 新客户端携带线路开关表时它是权威值；显式关闭会覆盖 749 迁移兜底。
+ * - 旧客户端没有该字段时，749 + Gemini 暂时沿用迁移兜底，避免 APK 更新前回归 429。
  * - 其他上游未配置 relay：保持 Cloudflare Worker 直接请求模型上游。
  * - 其他上游 relay URL + token 同时配置：经 relay 出网。
- * - 最终发出前移除最大输出 token 字段、纯 0 penalty，并合并相邻 system 消息。
+ * - 最终发出前移除 Sully 私有字段、最大输出 token 字段、纯 0 penalty，并合并相邻 system 消息。
  */
 export const fetchStoryUpstream = async (
   env: StoryEgressEnv,
@@ -337,10 +404,13 @@ export const fetchStoryUpstream = async (
   options: StoryEgressOptions = {},
 ): Promise<Response> => {
   const route = resolveStoryEgressRoute(env, targetUrl);
+  const frozenSystemCompatibility = resolveFrozenSystemCompatibility(init.body, targetUrl);
   const sanitizedBody = sanitizeStoryRequestBody(init.body);
   const systemCompatibility = options.systemCompatibility !== undefined
     ? options.systemCompatibility
-    : legacySystemCompatibilityFallback(targetUrl, sanitizedBody);
+    : frozenSystemCompatibility !== undefined
+      ? frozenSystemCompatibility
+      : legacySystemCompatibilityFallback(targetUrl, sanitizedBody);
   const compatibleBody = applyStorySystemCompatibility(sanitizedBody, systemCompatibility);
   const requestInit: RequestInit = compatibleBody === init.body
     ? init
