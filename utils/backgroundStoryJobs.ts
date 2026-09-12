@@ -17,6 +17,7 @@ import {
 
 const STORAGE_KEY = 'sully_story_cloud_pending_v1';
 const POLL_MS = 1_000;
+const NATIVE_WEBVIEW_POLL_MS = 2_000;
 const HTTP_TIMEOUT_MS = 20_000;
 const CAPABILITY_CACHE_MS = 60_000;
 
@@ -254,6 +255,9 @@ const waitUntilDocumentVisible = (): Promise<void> => {
  */
 const pauseStoryPollingWhenHidden = (): boolean => !isNativeStoryBackgroundRuntime();
 
+const pollIntervalMs = (): number =>
+    isNativeStoryBackgroundRuntime() ? NATIVE_WEBVIEW_POLL_MS : POLL_MS;
+
 const fetchPollingJson = async (
     config: WorkerConfig,
     path: string,
@@ -371,17 +375,17 @@ const getRemoteJobByClientId = async (
 };
 
 const sleepUntilPollOrVisible = async (): Promise<void> => {
-    // Android 原生 App 有 foreground service 托底，不能再把 JS 状态机绑到 visibility。
-    // 让它在后台继续知道正文何时完成，后续自动配图才能无需用户切回就接着起跑。
+    // Android 原生 App 有 foreground service 托底；WebView 仍负责把 partial/终态接回当前页面，
+    // 但不需要和原生 3 秒状态监控一起按 1 秒频率猛查同一 job。
     if (!pauseStoryPollingWhenHidden()) {
-        await new Promise(resolve => setTimeout(resolve, POLL_MS));
+        await new Promise(resolve => setTimeout(resolve, pollIntervalMs()));
         return;
     }
 
     await waitUntilDocumentVisible();
 
     if (typeof document === 'undefined') {
-        await new Promise(resolve => setTimeout(resolve, POLL_MS));
+        await new Promise(resolve => setTimeout(resolve, pollIntervalMs()));
         return;
     }
 
@@ -404,13 +408,13 @@ const sleepUntilPollOrVisible = async (): Promise<void> => {
         };
         const onVisibility = () => {
             if (document.visibilityState === 'visible') return;
-            // Web/PWA 进入后台就停止这次 1s 轮询时钟；回来后立刻查同一个 job。
+            // Web/PWA 进入后台就停止当前轮询时钟；回来后立刻查同一个 job。
             cleanup();
             void waitUntilDocumentVisible().then(finish);
         };
 
         document.addEventListener('visibilitychange', onVisibility);
-        timer = setTimeout(finish, POLL_MS);
+        timer = setTimeout(finish, pollIntervalMs());
     });
 };
 

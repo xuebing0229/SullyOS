@@ -108,7 +108,7 @@ describe('downloadAndVerifyAndroidUpdate', () => {
       { code: 'DirectoryExists' },
     ));
 
-    await expect(downloadAndVerifyAndroidUpdate(validManifest)).resolves.toBe(
+    await expect(downloadAndVerifyAndroidUpdate(parseAndroidUpdateManifest(validManifest))).resolves.toBe(
       'file:///cache/updates/SullyOS-update.apk',
     );
 
@@ -122,7 +122,7 @@ describe('downloadAndVerifyAndroidUpdate', () => {
   it('does not hide real cache directory creation failures', async () => {
     filesystemMocks.mkdir.mockRejectedValueOnce(new Error('Permission denied'));
 
-    await expect(downloadAndVerifyAndroidUpdate(validManifest)).rejects.toThrow('Permission denied');
+    await expect(downloadAndVerifyAndroidUpdate(parseAndroidUpdateManifest(validManifest))).rejects.toThrow('Permission denied');
     expect(filesystemMocks.downloadFile).not.toHaveBeenCalled();
   });
 });

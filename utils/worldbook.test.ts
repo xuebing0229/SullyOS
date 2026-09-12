@@ -187,8 +187,8 @@ describe('mounted worldbook synchronization', () => {
     it('mounts a complete generated group without duplicates and keeps it injectable', () => {
         const now = Date.now();
         const generated: Worldbook[] = [
-            { ...book({ id: 'generated-1', title: '常驻校规', content: '午夜后禁止离开宿舍。', category: '学院', constant: true, order: 10, position: 1 }), createdAt: now, updatedAt: now },
-            { ...book({ id: 'generated-2', title: '雨夜钟楼', content: '钟楼会在雨夜开放。', category: '学院', constant: false, key: ['钟楼'], scanDepth: 4, order: 20, position: 1 }), createdAt: now, updatedAt: now },
+            { ...book({ id: 'generated-1', title: '常驻校规', content: '午夜后禁止离开宿舍。', category: '学院', constant: true, order: 10, position: 1 }), category: '学院', createdAt: now, updatedAt: now },
+            { ...book({ id: 'generated-2', title: '雨夜钟楼', content: '钟楼会在雨夜开放。', category: '学院', constant: false, key: ['钟楼'], scanDepth: 4, order: 20, position: 1 }), category: '学院', createdAt: now, updatedAt: now },
         ];
         const mounted = upsertMountedWorldbooks([book({ id: 'existing', title: '已有条目', order: 300 })], generated);
         const retried = upsertMountedWorldbooks(mounted, generated);

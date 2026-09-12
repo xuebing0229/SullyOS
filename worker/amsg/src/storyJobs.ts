@@ -140,7 +140,9 @@ const MAX_ROUTES = 8;
 const MAX_REQUEST_BYTES = 2_000_000;
 const PARTIAL_PERSIST_INTERVAL_MS = 900;
 const PARTIAL_PERSIST_CHAR_STEP = 512;
+const PARTIAL_PERSIST_RETRY_BACKOFF_MS = 5_000;
 const CANCEL_POLL_INTERVAL_MS = 750;
+const QUEUED_STATUS_REKICK_AFTER_MS = 12_000;
 
 const jsonSize = (value: unknown): number => new TextEncoder().encode(JSON.stringify(value)).byteLength;
 const now = (): number => Date.now();
@@ -468,6 +470,18 @@ export const kickStoryTick = async (
   }
 };
 
+const claimQueuedStoryRekick = async (
+  env: StoryJobsEnv,
+  row: StoryJobRow,
+): Promise<boolean> => {
+  if (row.status !== 'queued' || now() - row.updated_at < QUEUED_STATUS_REKICK_AFTER_MS) return false;
+  const touchedAt = now();
+  const claimed = await env.DB.prepare(
+    "UPDATE story_jobs SET updated_at = ? WHERE user_id = ? AND job_id = ? AND status = 'queued' AND updated_at = ?",
+  ).bind(touchedAt, row.user_id, row.job_id, row.updated_at).run();
+  return (claimed.meta?.changes ?? 0) > 0;
+};
+
 const routeAttempt = (route: StoryJobRoute, index: number, startedAt: number): StoryAttempt => ({
   routeIndex: index,
   presetId: route.presetId,
@@ -670,16 +684,30 @@ const readStreamingResponse = async (
   let sawDoneMarker = false;
   let lastPersistAt = 0;
   let lastPersistChars = 0;
+  let lastPersistFailureAt = 0;
 
   const maybePersist = async (force = false) => {
     const t = now();
     const enoughTime = t - lastPersistAt >= PARTIAL_PERSIST_INTERVAL_MS;
     const enoughChars = state.content.length - lastPersistChars >= PARTIAL_PERSIST_CHAR_STEP;
     if (!force && !enoughTime && !enoughChars) return;
+    if (!force && lastPersistFailureAt > 0 && t - lastPersistFailureAt < PARTIAL_PERSIST_RETRY_BACKOFF_MS) return;
     if (!state.content && !state.reasoning) return;
-    await persistProgress(env, row, state.content, state.reasoning.length);
-    lastPersistAt = t;
-    lastPersistChars = state.content.length;
+    try {
+      await persistProgress(env, row, state.content, state.reasoning.length);
+      lastPersistAt = t;
+      lastPersistChars = state.content.length;
+      lastPersistFailureAt = 0;
+    } catch (error) {
+      // partial 只是前台预览与中断恢复的辅助快照。D1/加密一次瞬时失败不能反过来
+      // 杀掉仍在正常读取的上游流；完整正文会在最终 succeeded 更新里再次持久化。
+      lastPersistFailureAt = t;
+      console.warn('[amsg:story-job] partial progress persist failed; keeping upstream stream alive', {
+        jobId: row.job_id,
+        visibleChars: state.content.length,
+        error: (error as Error)?.message || String(error),
+      });
+    }
   };
 
   const consumeLine = async (line: string) => {
@@ -1220,7 +1248,7 @@ export const handleStoryJobsRequest = async (
 
   if (method === 'GET' && tail.length === 1 && tail[0]) {
     const row = await loadRowById(env.DB, userId, decodeURIComponent(tail[0]));
-    if (row?.status === 'queued') {
+    if (row?.status === 'queued' && await claimQueuedStoryRekick(env, row)) {
       const kicked = await kickStoryTick(env, userId, row.job_id);
       if (!kicked.ok && kicked.reason === 'kick-failed') {
         console.warn('[amsg:story-job] status 时重叫 INSTANT_TICK story 失败', kicked.error);
