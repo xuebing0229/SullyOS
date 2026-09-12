@@ -22,6 +22,9 @@ import {
 import { persistMcpGeneratedImages } from './mcpImagePersistence';
 import { getActiveVibeReference } from './vibeReference';
 import { snapshotStoryReference, type StoryReferenceUpload } from './storyImageReferenceUploads';
+import { findApiPresetForConfig } from './apiPresetRouteIdentity';
+import { getApiPresetStorySystemCompatibility } from './apiPresetModels';
+import { applyStorySystemCompatibilityToBody } from './storySystemCompatibility';
 
 export interface StoryInlineImagePlan {
     tool: string;
@@ -33,6 +36,8 @@ interface GenerateStoryImageInput {
     apiConfig: APIConfig;
     /** 已按本剧情“快速规划模型”解析好的独立规划 API。 */
     plannerApiConfig?: APIConfig;
+    /** 只影响剧情生图规划器，不影响主聊天或最终 NovelAI/GPT Image 出图请求。 */
+    plannerSystemCompatibility?: boolean;
     entry: StoryTheaterEntry;
     actors: CharacterProfile[];
     userProfile: UserProfile;
@@ -78,6 +83,21 @@ export const resolveStoryImagePlannerApiConfig = (
         // 规划器只返回一次工具调用，不需要占用流式连接。
         stream: false,
     };
+};
+
+export const resolveStoryImagePlannerSystemCompatibility = (
+    entry: StoryTheaterEntry,
+    fallbackApi: APIConfig,
+    presets: ApiPreset[],
+): boolean => {
+    const presetId = String(entry.imageGeneration?.plannerApiPresetId || '').trim();
+    const configuredModel = String(entry.imageGeneration?.plannerModel || '').trim();
+    const preset = presetId
+        ? presets.find(item => item.id === presetId)
+        : findApiPresetForConfig(presets, fallbackApi);
+    if (!preset) return false;
+    const model = configuredModel || (presetId ? preset.config.model : fallbackApi.model);
+    return getApiPresetStorySystemCompatibility(preset, model);
 };
 
 const isBuiltinImageTool = (hit: ResolvedMcpTool): boolean =>
@@ -234,6 +254,7 @@ export interface StoryCloudImagePlannerSpec {
     apiKey: string;
     model: string;
     systemPrompt: string;
+    systemCompatibility?: boolean;
     tools: OpenAIMcpTool[];
 }
 
@@ -270,6 +291,7 @@ export const buildStoryCloudImageHandoffSpec = async (input: {
     entry?: StoryTheaterEntry;
     userName?: string;
     plannerApiConfig?: APIConfig;
+    plannerSystemCompatibility?: boolean;
     messages?: Message[];
 }): Promise<StoryCloudImageHandoffSpec | undefined> => {
     if (!input.actors.length) return undefined;
@@ -399,6 +421,7 @@ export const buildStoryCloudImageHandoffSpec = async (input: {
             baseUrl: plannerBaseUrl,
             apiKey: String(plannerApi.apiKey || ''),
             model: plannerModel,
+            ...(input.plannerSystemCompatibility === true ? { systemCompatibility: true } : {}),
             systemPrompt: buildPlannerInstruction({
                 apiConfig: plannerApi,
                 plannerApiConfig: plannerApi,
@@ -585,8 +608,9 @@ export async function generateStoryTheaterImage(input: GenerateStoryImageInput):
 
         const runPlanner = async (body: Record<string, any>) => executeOpenAiChatPlan({
             // 旧兼容兜底：只有主剧情模型没产出合法 inline plan 时才会走到这里。
+            // 兼容转换只发生在这个剧情规划请求里；同一预设用于主聊天时完全不读该开关。
             plan: resolveApiExecutionPlan('chat', plannerApiConfig, false),
-            body,
+            body: applyStorySystemCompatibilityToBody(body, input.plannerSystemCompatibility === true),
             meta: { appName: '剧情剧场', purpose: '剧情自动配图规划' },
             directMaxRetries: 1,
         });

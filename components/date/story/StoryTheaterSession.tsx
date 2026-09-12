@@ -65,6 +65,7 @@ import {
     buildStoryCloudImageHandoffSpec,
     generateStoryTheaterImage,
     resolveStoryImagePlannerApiConfig,
+    resolveStoryImagePlannerSystemCompatibility,
     type StoryCloudImageHandoffResult,
     type StoryCloudImageHandoffSpec,
 } from '../../../utils/storyTheaterImage';
@@ -510,6 +511,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             const imageResult = await generateStoryTheaterImage({
                 apiConfig,
                 plannerApiConfig: resolveStoryImagePlannerApiConfig(entry, apiConfig, apiPresets),
+                plannerSystemCompatibility: resolveStoryImagePlannerSystemCompatibility(entry, apiConfig, apiPresets),
                 entry,
                 actors,
                 userProfile,
@@ -1507,6 +1509,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                     entry,
                     userName: promptIdentityName,
                     plannerApiConfig: resolveStoryImagePlannerApiConfig(entry, apiConfig, apiPresets),
+                plannerSystemCompatibility: resolveStoryImagePlannerSystemCompatibility(entry, apiConfig, apiPresets),
                     messages: visibleHistory,
                 })
                 : undefined;
@@ -1633,6 +1636,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                         imageResult = await generateStoryTheaterImage({
                             apiConfig,
                             plannerApiConfig: resolveStoryImagePlannerApiConfig(entry, apiConfig, apiPresets),
+                plannerSystemCompatibility: resolveStoryImagePlannerSystemCompatibility(entry, apiConfig, apiPresets),
                             entry,
                             actors,
                             userProfile,

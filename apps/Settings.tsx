@@ -48,9 +48,11 @@ import {
     ensureApiPresetModel,
     getApiPresetModelEntries,
     getApiPresetPricing,
+    getApiPresetStorySystemCompatibility,
     removeApiPresetModel,
     setApiPresetDefaultModel,
     setApiPresetModelPricing,
+    setApiPresetModelStorySystemCompatibility,
 } from '../utils/apiPresetModels';
 import ImageGenerationSettings from '../components/settings/ImageGenerationSettings';
 import OrphanImageCleanupCard from '../components/settings/OrphanImageCleanupCard';
@@ -4459,7 +4461,7 @@ const Settings: React.FC = () => {
 
       <Modal
           isOpen={pricingPresetId !== null}
-          title={pricingModel ? `模型价格 · ${pricingModel}` : '模型价格'}
+          title={pricingModel ? `模型设置 · ${pricingModel}` : '模型设置'}
           onClose={() => { setPricingPresetId(null); setPricingModel(''); setPricingDraft(undefined); }}
           footer={
               <button
@@ -4471,18 +4473,49 @@ const Settings: React.FC = () => {
                       setPricingPresetId(null);
                       setPricingModel('');
                       setPricingDraft(undefined);
-                      addToast(`${pricingModel} 的价格已保存`, 'success');
+                      addToast(`${pricingModel} 的模型设置已保存`, 'success');
                       void backfillUnpricedCallsForPreset(updated).then(count => {
                           if (count > 0) addToast(`已补算最近记录 ${count} 条`, 'info');
                       });
                   }}
                   className="w-full py-3 bg-emerald-500 text-white font-bold rounded-2xl"
               >
-                  保存价格
+                  保存
               </button>
           }
       >
-          {pricingDraft && <ApiPricingEditor value={pricingDraft} onChange={setPricingDraft} />}
+          <div className="space-y-3">
+              {pricingDraft && <ApiPricingEditor value={pricingDraft} onChange={setPricingDraft} />}
+              {pricingPresetId && pricingModel && (() => {
+                  const preset = apiPresets.find(item => item.id === pricingPresetId);
+                  if (!preset) return null;
+                  const enabled = getApiPresetStorySystemCompatibility(preset, pricingModel);
+                  return (
+                      <div className="rounded-2xl border border-violet-100 bg-violet-50/60 p-4">
+                          <div className="flex items-center justify-between gap-3">
+                              <div className="min-w-0">
+                                  <div className="text-xs font-bold text-violet-700">文游 System 兼容</div>
+                                  <p className="mt-1 text-[10px] leading-relaxed text-violet-700/65">
+                                      只作用于文游正文和剧情生图规划模型，主聊天不会读取。遇到长 system 导致 400/429 等兼容异常时再开启。
+                                  </p>
+                              </div>
+                              <button
+                                  type="button"
+                                  role="switch"
+                                  aria-checked={enabled}
+                                  onClick={() => {
+                                      const updated = setApiPresetModelStorySystemCompatibility(preset, pricingModel, !enabled);
+                                      updateApiPreset(preset.id, { models: updated.models });
+                                  }}
+                                  className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${enabled ? 'bg-violet-500' : 'bg-slate-200'}`}
+                              >
+                                  <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow-sm transition-transform ${enabled ? 'translate-x-5' : 'translate-x-0.5'}`} />
+                              </button>
+                          </div>
+                      </div>
+                  );
+              })()}
+          </div>
       </Modal>
 
       {/* 编辑预设：保留每条预设自己的 Stream / Temperature；编辑当前项时同步生效。 */}

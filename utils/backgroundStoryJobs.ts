@@ -1,4 +1,6 @@
-import type { ApiExecutionPlan } from './apiFailover';
+import { loadApiPresetsForFailover, type ApiExecutionPlan } from './apiFailover';
+import { findApiPresetForConfig } from './apiPresetRouteIdentity';
+import { getApiPresetStorySystemCompatibility } from './apiPresetModels';
 import type { StoryCloudImageHandoffSpec } from './storyTheaterImage';
 import { prepareStoryReferenceUploads } from './storyImageReferenceUploads';
 import { ActiveMsgClient } from './activeMsgClient';
@@ -502,6 +504,16 @@ export const executeStoryCompletionInCloudBackground = async (
     const firstRoute = options.plan.routes[0];
     const logId = cloudApiCallLogId(pending.clientRequestId);
     let job: CloudStoryJob | null = null;
+    const apiPresets = loadApiPresetsForFailover();
+    const storySystemCompatibilityRoutes = options.plan.routes.map(route => {
+        const preset = apiPresets.find(item => item.id === route.presetId)
+            || findApiPresetForConfig(apiPresets, route.api);
+        return {
+            baseUrl: String(route.api.baseUrl || '').trim().replace(/\/+$/, ''),
+            model: String(route.api.model || '').trim(),
+            enabled: getApiPresetStorySystemCompatibility(preset, route.api.model),
+        };
+    });
     const spec = {
         jobId: pending.jobId,
         clientRequestId: pending.clientRequestId,
@@ -526,6 +538,9 @@ export const executeStoryCompletionInCloudBackground = async (
         })),
         baseBody: {
             ...options.body,
+            // Worker 会在真正发往模型前消费并删除这个私有字段。它按 baseUrl + model
+            // 区分故障转移线路，因此同一个 Gemini 在不同站子可以一条开、一条关。
+            _sullyStorySystemCompatibilityRoutes: storySystemCompatibilityRoutes,
             stream: true,
         },
         ...(options.imageHandoff ? { imageHandoff: options.imageHandoff } : {}),

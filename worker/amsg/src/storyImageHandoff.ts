@@ -15,6 +15,7 @@ import {
   type NovelAiReferencePolicy,
 } from '../../../utils/novelAiReferencePolicy';
 import { normalizeToolCallsForCompat } from '../../../utils/toolCallCompat';
+import { applyStorySystemCompatibility } from './storyEgress';
 
 export interface StoryCloudImageReferenceFragments {
   actors?: Record<string, Record<string, unknown>>;
@@ -42,6 +43,7 @@ export interface StoryCloudImagePlannerSpec {
   apiKey: string;
   model: string;
   systemPrompt: string;
+  systemCompatibility?: boolean;
   tools: Array<{
     type: 'function';
     function: { name: string; description?: string; parameters?: Record<string, unknown> };
@@ -181,6 +183,7 @@ export const normalizeStoryImageHandoffSpec = (value: unknown): StoryCloudImageH
         apiKey: normalizeApiCredential(plannerRaw.apiKey),
         model: plannerModel,
         systemPrompt: plannerSystemPrompt.slice(0, 80_000),
+        ...(plannerRaw.systemCompatibility === true ? { systemCompatibility: true } : {}),
         tools: plannerTools,
       }
     : undefined;
@@ -505,11 +508,17 @@ const runSeparatePlanner = async (
     stream: false,
   };
 
+  const encodePlannerBody = (body: Record<string, unknown>): string => {
+    const raw = JSON.stringify(body);
+    const compatible = applyStorySystemCompatibility(raw, planner.systemCompatibility === true);
+    return typeof compatible === 'string' ? compatible : raw;
+  };
+
   let native: { response: Response; body: any };
   try {
     native = await fetchJson(url, planner.apiKey, {
       method: 'POST',
-      body: JSON.stringify(nativeBody),
+      body: encodePlannerBody(nativeBody),
     }, 90_000);
   } catch (error) {
     throw new Error(`配图规划器请求失败：${String((error as Error)?.message || error).slice(0, 500)}`);
@@ -531,7 +540,7 @@ const runSeparatePlanner = async (
     try {
       repair = await fetchJson(url, planner.apiKey, {
         method: 'POST',
-        body: JSON.stringify(buildNativeRepairBody(nativeBody)),
+        body: encodePlannerBody(buildNativeRepairBody(nativeBody)),
       }, 90_000);
     } catch (error) {
       throw new Error(`配图规划器纠错重试失败：${String((error as Error)?.message || error).slice(0, 500)}`);
@@ -561,7 +570,7 @@ const runSeparatePlanner = async (
   const schemaText = plannerTools.map(tool => JSON.stringify(tool)).join('\n');
   const fallback = await fetchJson(url, planner.apiKey, {
     method: 'POST',
-    body: JSON.stringify({
+    body: encodePlannerBody({
       model: planner.model,
       messages: [
         {
