@@ -19,6 +19,16 @@ export const normalizeApiPresetModelName = (value: unknown): string =>
 const rawModelEntries = (preset: ApiPreset): ApiPresetModelEntry[] =>
   Array.isArray(preset.models) ? preset.models : [];
 
+const legacy749GeminiCompatibilityDefault = (preset: ApiPreset, model: string): boolean => {
+  if (!model.toLowerCase().includes('gemini')) return false;
+  try {
+    const host = new URL(String(preset.config?.baseUrl || '')).hostname.toLowerCase();
+    return host === '749code.com' || host.endsWith('.749code.com');
+  } catch {
+    return false;
+  }
+};
+
 /**
  * Old presets stored one model + one top-level price. New presets keep a model
  * collection, with pricing attached to each model. Reading stays backwards
@@ -32,11 +42,14 @@ export function getApiPresetModelEntries(preset: ApiPreset): ApiPresetModelEntry
     const model = normalizeApiPresetModelName(item?.model);
     if (!model) continue;
     const previous = byModel.get(model);
+    const explicitCompatibility = typeof item?.storySystemCompatibility === 'boolean'
+      ? item.storySystemCompatibility
+      : previous?.storySystemCompatibility;
     byModel.set(model, {
       model,
       pricing: item?.pricing ?? previous?.pricing,
-      ...(item?.storySystemCompatibility === true || previous?.storySystemCompatibility === true
-        ? { storySystemCompatibility: true }
+      ...(typeof explicitCompatibility === 'boolean'
+        ? { storySystemCompatibility: explicitCompatibility }
         : {}),
     });
   }
@@ -88,9 +101,14 @@ export function getApiPresetStorySystemCompatibility(
   if (!preset) return false;
   const target = normalizeApiPresetModelName(model || preset.config?.model);
   if (!target) return false;
-  return getApiPresetModelEntries(preset)
-    .find(item => item.model === target)
-    ?.storySystemCompatibility === true;
+  const exact = getApiPresetModelEntries(preset).find(item => item.model === target);
+  if (typeof exact?.storySystemCompatibility === 'boolean') {
+    return exact.storySystemCompatibility;
+  }
+
+  // 迁移期只为昨晚已经验证成功的 749 + Gemini 保持旧行为。
+  // 用户在新版 UI 手动开/关一次后就会写入显式 boolean，不再依赖这个默认值。
+  return legacy749GeminiCompatibilityDefault(preset, target);
 }
 
 export function ensureApiPresetModel(
@@ -176,10 +194,10 @@ export function setApiPresetModelStorySystemCompatibility(
   if (!target) return preset;
   const entries = getApiPresetModelEntries(preset);
   const index = entries.findIndex(item => item.model === target);
-  const current = index >= 0 ? entries[index] : { model: target };
-  const next: ApiPresetModelEntry = { ...current };
-  if (enabled) next.storySystemCompatibility = true;
-  else delete next.storySystemCompatibility;
+  const next: ApiPresetModelEntry = {
+    ...(index >= 0 ? entries[index] : { model: target }),
+    storySystemCompatibility: enabled,
+  };
   if (index >= 0) entries[index] = next;
   else entries.push(next);
   return { ...preset, models: entries };
