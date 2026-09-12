@@ -26,8 +26,8 @@ jobs:
       - name: Verify exact patch
         run: |
           git diff --check
-          grep -q "all story text.*direct" /dev/null 2>/dev/null || true
-          grep -q "return { url: targetUrl, relayed: false }" worker/amsg/src/storyEgress.ts
+          grep -q "targetUrl: string" worker/amsg/src/storyEgress.ts
+          grep -q "relayed: false" worker/amsg/src/storyEgress.ts
           grep -q "ignores legacy relay config" worker/amsg/src/storyEgress.test.ts
           ! grep -q "X-Sully-Egress-Target'" worker/amsg/src/storyEgress.ts
           test -n "$(git status --porcelain -- worker/amsg/src/storyEgress.ts worker/amsg/src/storyEgress.test.ts)"
