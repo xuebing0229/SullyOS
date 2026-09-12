@@ -4,6 +4,10 @@ import { blobRefFromId, createImageBlobId } from './blobRef';
 import { extractMcpImageCandidates, getMcpImageCandidateKey, type McpImageCandidate } from './mcpToolBridge';
 import type { McpServerConfig, McpToolResult } from './mcpClient';
 import {
+    getActiveImageGenerationPreset,
+    getImageGenerationPresets,
+} from './imageGenerationPresets';
+import {
     captureImageGenerationBilling,
     detectImageGenerationFeatureUsage,
     recordSuccessfulImageGeneration,
@@ -12,8 +16,10 @@ import {
 import { STORY_THEATER_GALLERY_CHAR_ID } from './storyTheaterGallery';
 
 export const MAX_MCP_IMAGE_BYTES = 25 * 1024 * 1024;
+const MAX_IMAGE_REPLAY_ARGS_JSON_BYTES = 256 * 1024;
+
 export interface PersistMcpImageInput {
-    result: McpToolResult; char: CharacterProfile; server?: Pick<McpServerConfig, 'id' | 'name'>;
+    result: McpToolResult; char: CharacterProfile; server?: Pick<McpServerConfig, 'id' | 'name' | 'imagePresetId'>;
     toolName: string; toolArgs?: Record<string, any>; recentMessages?: Message[]; seenKeys?: Set<string>;
     extraMessageMetadata?: Record<string, unknown>; extraGallerySourceMeta?: Record<string, unknown>;
     allowTemporaryUrlFallback?: boolean;
@@ -93,12 +99,71 @@ const buildRecentChatContext = (messages?: Message[]): string[] | undefined => m
     return text ? `${message.role === 'user' ? '用户' : '角色'}：${text}` : '';
 }).filter(Boolean) as string[] | undefined;
 
+const cloneJsonValue = <T,>(value: T): T | undefined => {
+    if (value == null) return value;
+    try {
+        return JSON.parse(JSON.stringify(value)) as T;
+    } catch {
+        return undefined;
+    }
+};
+
+const snapshotImageRequestArgs = (args?: Record<string, any>): Record<string, any> | undefined => {
+    if (!args || typeof args !== 'object' || Array.isArray(args)) return undefined;
+    const cloned = cloneJsonValue(args);
+    if (!cloned || typeof cloned !== 'object' || Array.isArray(cloned)) return undefined;
+    // after_generate_action 是客户端收尾动作，不属于给生图模型的抽卡参数；reroll 不重复执行它。
+    delete (cloned as Record<string, any>).after_generate_action;
+    try {
+        if (new Blob([JSON.stringify(cloned)]).size > MAX_IMAGE_REPLAY_ARGS_JSON_BYTES) return undefined;
+    } catch {
+        return undefined;
+    }
+    return cloned as Record<string, any>;
+};
+
+const resolvePresetReplayMetadata = (
+    server: PersistMcpImageInput['server'],
+    toolName: string,
+): Record<string, unknown> => {
+    let presetId = server?.imagePresetId;
+    if (!presetId) {
+        const engineId = server?.id === 'builtin_image_novelai' || toolName === 'novelai_generate_image'
+            ? 'novelai'
+            : server?.id === 'builtin_image_gpt-image' || toolName === 'generate_image'
+                ? 'gpt-image'
+                : null;
+        if (engineId) presetId = getActiveImageGenerationPreset(engineId)?.id;
+    }
+    if (!presetId) return {};
+    const preset = getImageGenerationPresets().find(item => item.id === presetId);
+    if (!preset) return { imagePresetId: presetId };
+    const remoteConfig = cloneJsonValue(preset.remoteConfig);
+    return {
+        imagePresetId: preset.id,
+        imagePresetEngineId: preset.engineId,
+        imagePresetUpdatedAt: preset.updatedAt,
+        ...(remoteConfig ? { imagePresetRemoteConfig: remoteConfig } : {}),
+    };
+};
+
+const buildImageReplayMetadata = (input: PersistMcpImageInput): Record<string, unknown> => {
+    const args = snapshotImageRequestArgs(input.toolArgs);
+    if (!args) return {};
+    return {
+        imageRequestVersion: 1,
+        imageRequestArgs: args,
+        ...resolvePresetReplayMetadata(input.server, input.toolName),
+    };
+};
+
 const saveTemporaryUrlMessage = async (candidate: Extract<McpImageCandidate,{kind:'url'}>, input: PersistMcpImageInput, error: unknown) => {
     const message=error instanceof Error ? error.message : String(error);
     await DB.saveMessage({ charId: input.char.id, role:'assistant', type:'image', content:candidate.url, metadata:{
         mcpGeneratedImage:true,persistedLocally:false,temporaryRemoteUrl:true,persistenceError:message,
         mcpServerId:input.server?.id,mcpServerName:input.server?.name,mcpToolName:input.toolName,
         imageEngine:inferEngine(input.toolName,input.server?.name),imagePrompt:extractPrompt(input.toolArgs),
+        ...buildImageReplayMetadata(input),
         ...(input.extraMessageMetadata || {}),
     }} as any);
 };
@@ -107,6 +172,7 @@ export async function persistMcpGeneratedImages(input: PersistMcpImageInput): Pr
     const candidates=extractMcpImageCandidates(input.result);
     const seenKeys=input.seenKeys ?? new Set<string>();
     const output:PersistMcpImageOutput={persisted:0,temporary:0,failed:0,errors:[],assets:[]};
+    const replayMetadata = buildImageReplayMetadata(input);
     const galleryCharId = input.extraGallerySourceMeta?.source === 'story-theater'
         ? STORY_THEATER_GALLERY_CHAR_ID
         : input.char.id;
@@ -125,6 +191,7 @@ export async function persistMcpGeneratedImages(input: PersistMcpImageInput): Pr
                 await DB.saveGeneratedImageBundle({blobId,blob,createdAt,gallery,message:{charId:input.char.id,role:'assistant',type:'image',content:blobRef,metadata:{
                     mcpGeneratedImage:true,persistedLocally:true,galleryImageId:galleryId,mcpServerId:input.server?.id,mcpServerName:input.server?.name,
                     mcpToolName:input.toolName,imageEngine:engine,imagePrompt:prompt,originalRemoteUrl:candidate.kind==='url'?candidate.url:undefined,
+                    ...replayMetadata,
                     ...(input.extraMessageMetadata || {}),
                 }} as any});
             }
