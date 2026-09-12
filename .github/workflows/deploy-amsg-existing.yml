@@ -1,5 +1,6 @@
 name: Deploy existing AMSG Worker code
 
+# Story jobs now use direct Worker -> provider egress; this workflow deploys that Worker source as-is.
 on:
   workflow_dispatch:
   push:
