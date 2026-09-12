@@ -8,9 +8,20 @@ export interface StoryEgressRoute {
   relayed: boolean;
 }
 
+export interface StoryEgressOptions {
+  /**
+   * 文游专用的 system 兼容模式。true=强制开启，false=强制关闭；
+   * undefined 仅用于旧客户端迁移兜底。
+   */
+  systemCompatibility?: boolean;
+}
+
+const STORY_SYSTEM_COMPAT_ANCHOR =
+  'The final user message contains a <SULLY_SYSTEM_INSTRUCTIONS> block with the full system instructions for this request. Treat that block as the system instructions and follow it throughout the conversation.';
+
 const normalizeRelayUrl = (value: string): string => value.trim();
 
-const shouldBypassStoryRelay = (targetUrl: string): boolean => {
+const is749Target = (targetUrl: string): boolean => {
   try {
     const host = new URL(targetUrl).hostname.toLowerCase();
     return host === '749code.com' || host.endsWith('.749code.com');
@@ -19,12 +30,14 @@ const shouldBypassStoryRelay = (targetUrl: string): boolean => {
   }
 };
 
+const shouldBypassStoryRelay = (targetUrl: string): boolean => is749Target(targetUrl);
+
 export const resolveStoryEgressRoute = (
   env: StoryEgressEnv,
   targetUrl: string,
 ): StoryEgressRoute => {
   // 749 对出口来源较敏感；主聊天 / RikkaHub 直连正常而 relay 路径出现上游 OAuth 401。
-  // 文游后台对该站恢复旧的 Worker 直连行为，避免日本 relay 改变 749 的上游路由选择。
+  // 这条仅是网络出口兼容，与下面可配置的 system 兼容开关互相独立。
   if (shouldBypassStoryRelay(targetUrl)) {
     return { url: targetUrl, relayed: false };
   }
@@ -128,6 +141,88 @@ const sanitizeStoryRequestBody = (
   }
 };
 
+const parseBodyRecord = (body: BodyInit | null | undefined): Record<string, unknown> | null => {
+  if (typeof body !== 'string') return null;
+  try {
+    const parsed = JSON.parse(body);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : null;
+  } catch {
+    return null;
+  }
+};
+
+const isGeminiModel = (model: unknown): boolean =>
+  typeof model === 'string' && model.toLowerCase().includes('gemini');
+
+const legacySystemCompatibilityFallback = (
+  targetUrl: string,
+  body: BodyInit | null | undefined,
+): boolean => {
+  if (!is749Target(targetUrl)) return false;
+  return isGeminiModel(parseBodyRecord(body)?.model);
+};
+
+/**
+ * 一些 OpenAI 兼容站会把大段 `system` 映射到提供商自己的 system_instruction，
+ * 从而出现 400/429 等兼容错误。开启后不删任何规则正文：
+ * - 仅保留一个很短的 system 锚点；
+ * - 原 system 文本按原顺序汇总到最后一个 user 消息中的明确规则块；
+ * - 非 system 对话顺序完全保持。
+ *
+ * 这个转换只由文游显式开关调用；主聊天不会经过它。
+ */
+export const applyStorySystemCompatibility = (
+  body: BodyInit | null | undefined,
+  enabled: boolean,
+): BodyInit | null | undefined => {
+  if (!enabled || typeof body !== 'string') return body;
+  const parsed = parseBodyRecord(body);
+  if (!parsed || !Array.isArray(parsed.messages)) return body;
+
+  const systemTextParts: string[] = [];
+  const nonSystemMessages: Record<string, unknown>[] = [];
+  let finalUserIndex = -1;
+
+  for (const rawMessage of parsed.messages) {
+    if (!rawMessage || typeof rawMessage !== 'object' || Array.isArray(rawMessage)) return body;
+    const message = rawMessage as Record<string, unknown>;
+    if (message.role === 'system') {
+      // 复合 system 内容不做静默降级，宁可保持原请求，避免丢图/工具块。
+      if (typeof message.content !== 'string') return body;
+      systemTextParts.push(message.content);
+      continue;
+    }
+
+    const cloned = { ...message };
+    nonSystemMessages.push(cloned);
+    if (cloned.role === 'user' && typeof cloned.content === 'string') {
+      finalUserIndex = nonSystemMessages.length - 1;
+    }
+  }
+
+  if (systemTextParts.length === 0 || finalUserIndex < 0) return body;
+
+  const finalUser = nonSystemMessages[finalUserIndex];
+  const originalUserContent = String(finalUser.content || '');
+  finalUser.content = [
+    '<SULLY_SYSTEM_INSTRUCTIONS>',
+    systemTextParts.join('\n\n'),
+    '</SULLY_SYSTEM_INSTRUCTIONS>',
+    '',
+    '<SULLY_CURRENT_USER_TURN>',
+    originalUserContent,
+    '</SULLY_CURRENT_USER_TURN>',
+  ].join('\n');
+
+  parsed.messages = [
+    { role: 'system', content: STORY_SYSTEM_COMPAT_ANCHOR },
+    ...nonSystemMessages,
+  ];
+  return JSON.stringify(parsed);
+};
+
 const textLength = (value: unknown): number => {
   if (typeof value === 'string') return value.length;
   if (!Array.isArray(value)) return 0;
@@ -145,18 +240,10 @@ const summarizeRequest = (
   body: BodyInit | null | undefined,
   targetUrl: string,
   route: StoryEgressRoute,
+  systemCompatibility: boolean,
 ): Record<string, unknown> => {
   const raw = typeof body === 'string' ? body : '';
-  let parsed: Record<string, unknown> = {};
-  try {
-    const value = raw ? JSON.parse(raw) : {};
-    if (value && typeof value === 'object' && !Array.isArray(value)) {
-      parsed = value as Record<string, unknown>;
-    }
-  } catch {
-    // Only report shape; never include raw request content.
-  }
-
+  const parsed = parseBodyRecord(body) || {};
   const messages = Array.isArray(parsed.messages) ? parsed.messages : [];
   const roleCounts: Record<string, number> = {};
   let messageTextChars = 0;
@@ -189,6 +276,7 @@ const summarizeRequest = (
     egress: route.relayed ? 'relay' : 'direct',
     targetHost: safeHost(targetUrl),
     relayHost: route.relayed ? safeHost(route.url) : undefined,
+    systemCompatibility,
     bodyBytes: raw ? new TextEncoder().encode(raw).byteLength : undefined,
     bodyKeys: Object.keys(parsed).sort(),
     model: typeof parsed.model === 'string' ? parsed.model : undefined,
@@ -213,10 +301,11 @@ const annotateFailure = async (
   requestBody: BodyInit | null | undefined,
   targetUrl: string,
   route: StoryEgressRoute,
+  systemCompatibility: boolean,
 ): Promise<Response> => {
   if (response.ok) return response;
   const original = await response.text().catch(() => '');
-  const diagnostic = summarizeRequest(requestBody, targetUrl, route);
+  const diagnostic = summarizeRequest(requestBody, targetUrl, route, systemCompatibility);
   const headers = new Headers(response.headers);
   headers.delete('content-length');
   headers.delete('content-encoding');
@@ -234,26 +323,32 @@ const annotateFailure = async (
 /**
  * 剧情云端任务的统一模型出口。
  *
- * - 749：恢复 Worker 直连，避免 relay 出口触发与其他前端不同的上游鉴权路径。
+ * - 749：继续 Worker 直连，避免 relay 出口触发不同的上游鉴权路径。
+ * - systemCompatibility：由文游预设中的“具体模型”显式决定；主聊天不读。
+ * - 旧客户端未携带该字段时，749 + Gemini 暂时沿用迁移兜底，避免 APK 更新前回归 429。
  * - 其他上游未配置 relay：保持 Cloudflare Worker 直接请求模型上游。
  * - 其他上游 relay URL + token 同时配置：经 relay 出网。
- * - 只配置一半：明确失败，不偷偷回退 Cloudflare 直连。
- * - 所有文游上游请求：最终发出前移除最大输出 token 字段、纯 0 penalty，并合并相邻 system 消息。
+ * - 最终发出前移除最大输出 token 字段、纯 0 penalty，并合并相邻 system 消息。
  */
 export const fetchStoryUpstream = async (
   env: StoryEgressEnv,
   targetUrl: string,
   init: RequestInit,
+  options: StoryEgressOptions = {},
 ): Promise<Response> => {
   const route = resolveStoryEgressRoute(env, targetUrl);
   const sanitizedBody = sanitizeStoryRequestBody(init.body);
-  const requestInit: RequestInit = sanitizedBody === init.body
+  const systemCompatibility = options.systemCompatibility !== undefined
+    ? options.systemCompatibility
+    : legacySystemCompatibilityFallback(targetUrl, sanitizedBody);
+  const compatibleBody = applyStorySystemCompatibility(sanitizedBody, systemCompatibility);
+  const requestInit: RequestInit = compatibleBody === init.body
     ? init
-    : { ...init, body: sanitizedBody };
+    : { ...init, body: compatibleBody };
 
   if (!route.relayed) {
     const response = await fetch(targetUrl, requestInit);
-    return annotateFailure(response, requestInit.body, targetUrl, route);
+    return annotateFailure(response, requestInit.body, targetUrl, route, systemCompatibility);
   }
 
   const headers = new Headers(requestInit.headers || {});
@@ -265,5 +360,5 @@ export const fetchStoryUpstream = async (
     ...requestInit,
     headers,
   });
-  return annotateFailure(response, requestInit.body, targetUrl, route);
+  return annotateFailure(response, requestInit.body, targetUrl, route, systemCompatibility);
 };
