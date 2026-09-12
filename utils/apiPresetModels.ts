@@ -3,6 +3,12 @@ import type { ApiPreset, ApiPricing } from '../types';
 export type ApiPresetModelEntry = {
   model: string;
   pricing?: ApiPricing;
+  /**
+   * 仅供文游正文与剧情生图规划器读取。主聊天故意忽略这个字段。
+   * 部分 OpenAI 兼容站会在大段 system / Gemini system_instruction 上异常，
+   * 开启后文游会把完整 system 规则转移到普通消息兼容通道。
+   */
+  storySystemCompatibility?: boolean;
 };
 
 const EDGE_INVISIBLE_CHARS = /^[\s\u200B-\u200D\u2060\uFEFF]+|[\s\u200B-\u200D\u2060\uFEFF]+$/g;
@@ -29,6 +35,9 @@ export function getApiPresetModelEntries(preset: ApiPreset): ApiPresetModelEntry
     byModel.set(model, {
       model,
       pricing: item?.pricing ?? previous?.pricing,
+      ...(item?.storySystemCompatibility === true || previous?.storySystemCompatibility === true
+        ? { storySystemCompatibility: true }
+        : {}),
     });
   }
 
@@ -70,6 +79,18 @@ export function getApiPresetPricing(
   }
 
   return undefined;
+}
+
+export function getApiPresetStorySystemCompatibility(
+  preset: ApiPreset | undefined,
+  model: unknown,
+): boolean {
+  if (!preset) return false;
+  const target = normalizeApiPresetModelName(model || preset.config?.model);
+  if (!target) return false;
+  return getApiPresetModelEntries(preset)
+    .find(item => item.model === target)
+    ?.storySystemCompatibility === true;
 }
 
 export function ensureApiPresetModel(
@@ -143,6 +164,24 @@ export function setApiPresetModelPricing(
   } else {
     entries.push({ model: target, pricing });
   }
+  return { ...preset, models: entries };
+}
+
+export function setApiPresetModelStorySystemCompatibility(
+  preset: ApiPreset,
+  model: unknown,
+  enabled: boolean,
+): ApiPreset {
+  const target = normalizeApiPresetModelName(model);
+  if (!target) return preset;
+  const entries = getApiPresetModelEntries(preset);
+  const index = entries.findIndex(item => item.model === target);
+  const current = index >= 0 ? entries[index] : { model: target };
+  const next: ApiPresetModelEntry = { ...current };
+  if (enabled) next.storySystemCompatibility = true;
+  else delete next.storySystemCompatibility;
+  if (index >= 0) entries[index] = next;
+  else entries.push(next);
   return { ...preset, models: entries };
 }
 
