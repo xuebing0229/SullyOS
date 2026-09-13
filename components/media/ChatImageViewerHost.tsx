@@ -53,7 +53,7 @@ const ChatImageViewerHost: React.FC = () => {
 
       const charId = detail.charId || activeCharacterId;
       const lookup = detail.messageId != null
-        ? DB.getMessage(detail.messageId as any)
+        ? DB.getMessageById(detail.messageId)
         : charId
           ? DB.findImageMessageByUrl(charId, detail.src)
           : Promise.resolve(null);
