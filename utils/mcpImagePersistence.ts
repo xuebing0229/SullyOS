@@ -122,11 +122,23 @@ const snapshotImageRequestArgs = (args?: Record<string, any>): Record<string, an
     return cloned as Record<string, any>;
 };
 
+const IMAGE_PRESET_SERVER_PREFIX = 'builtin_image_preset_';
+
+const resolveImagePresetIdFromServer = (
+    server: PersistMcpImageInput['server'],
+): string | undefined => {
+    const explicit = String(server?.imagePresetId || '').trim();
+    if (explicit) return explicit;
+    const serverId = String(server?.id || '');
+    if (!serverId.startsWith(IMAGE_PRESET_SERVER_PREFIX)) return undefined;
+    return serverId.slice(IMAGE_PRESET_SERVER_PREFIX.length).trim() || undefined;
+};
+
 const resolvePresetReplayMetadata = (
     server: PersistMcpImageInput['server'],
     toolName: string,
 ): Record<string, unknown> => {
-    let presetId = server?.imagePresetId;
+    let presetId = resolveImagePresetIdFromServer(server);
     if (!presetId) {
         const engineId = server?.id === 'builtin_image_novelai' || toolName === 'novelai_generate_image'
             ? 'novelai'
@@ -213,9 +225,15 @@ export async function persistMcpGeneratedImages(input: PersistMcpImageInput): Pr
                 : {};
             const requestId = String(structured.requestId || structured.correlationId || `local-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
             const model = String(structured.model || input.toolArgs?.model || engineId);
+            const presetId = resolveImagePresetIdFromServer(input.server);
+            const billingCapture = presetId
+                ? (input.imageBillingCapture?.presetId === presetId
+                    ? input.imageBillingCapture
+                    : captureImageGenerationBilling(engineId, presetId))
+                : (input.imageBillingCapture || captureImageGenerationBilling(engineId));
             try {
                 await recordSuccessfulImageGeneration({
-                    capture: input.imageBillingCapture || captureImageGenerationBilling(engineId),
+                    capture: billingCapture,
                     requestId,
                     model,
                     featureUsage: detectImageGenerationFeatureUsage(input.toolArgs),

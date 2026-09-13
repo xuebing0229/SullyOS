@@ -16,6 +16,9 @@ const nativeStoryKeepAliveSource = read('../native/android/SullyStoryKeepAliveSe
 const nativeStoryBridgeSource = read('./nativeStoryBackground.ts');
 const cloudStoryBridgeSource = read('./backgroundStoryJobs.ts');
 const storyImageSource = read('./storyTheaterImage.ts');
+const backgroundImageJobsSource = read('./backgroundImageJobs.ts');
+const imageGenerationBillingSource = read('./imageGenerationBilling.ts');
+const mcpImagePersistenceSource = read('./mcpImagePersistence.ts');
 const configCheckFetchGuardSource = read('./configCheckFetchGuard.ts');
 const amsgStoryJobsSource = read('../worker/amsg/src/storyJobs.ts');
 const amsgWorkerSource = read('../worker/amsg/src/index.ts');
@@ -211,6 +214,19 @@ describe('story theater billing safety wiring', () => {
         // 纠错发生在真正 callMcpTool* 之前，所以不会因为规划器补救而重复生图。
         expect(storyImageSource.indexOf("retrying planner once"))
             .toBeLessThan(storyImageSource.indexOf("callMcpToolWithBackgroundImage("));
+    });
+
+    it('pins story image billing and replay metadata to the actually selected image preset', () => {
+        expect(imageGenerationBillingSource).toContain('presetId?: string,');
+        expect(imageGenerationBillingSource).toContain('getImageGenerationPresets(engineId).find(item => item.id === requestedPresetId)');
+        expect(backgroundImageJobsSource).toContain("const IMAGE_PRESET_SERVER_PREFIX = 'builtin_image_preset_';");
+        expect(backgroundImageJobsSource).toContain('imagePresetId?: string;');
+        expect(backgroundImageJobsSource).toContain('imagePresetId: imagePresetId || existing.imagePresetId');
+        expect(backgroundImageJobsSource.match(/imagePresetId: localJob\.imagePresetId/g) || []).toHaveLength(2);
+        expect(backgroundImageJobsSource.match(/captureImageGenerationBilling\(engineId, imagePresetId\)/g) || []).toHaveLength(3);
+        expect(mcpImagePersistenceSource).toContain('resolveImagePresetIdFromServer');
+        expect(mcpImagePersistenceSource).toContain('input.imageBillingCapture?.presetId === presetId');
+        expect(mcpImagePersistenceSource).toContain('captureImageGenerationBilling(engineId, presetId)');
     });
 
     it('labels story requests and preserves sampling and transport diagnostics', () => {

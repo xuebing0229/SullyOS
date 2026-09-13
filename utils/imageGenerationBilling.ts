@@ -4,6 +4,7 @@ import { yuanStringToMicros } from './apiPricing';
 import { DB } from './db';
 import {
     getActiveImageGenerationPreset,
+    getImageGenerationPresets,
     type ImageGenerationPricing,
 } from './imageGenerationPresets';
 import type { BuiltinImageEngineId } from './builtinImageMcp';
@@ -27,13 +28,19 @@ const clone = <T,>(value: T): T => JSON.parse(JSON.stringify(value));
 
 export function captureImageGenerationBilling(
     engineId: BuiltinImageEngineId,
+    presetId?: string,
 ): ImageGenerationBillingCapture {
-    const preset = getActiveImageGenerationPreset(engineId);
+    const requestedPresetId = String(presetId || '').trim();
+    const preset = requestedPresetId
+        ? getImageGenerationPresets(engineId).find(item => item.id === requestedPresetId) || null
+        : getActiveImageGenerationPreset(engineId);
     const remote = preset?.remoteConfig as any;
     return {
         engineId,
-        presetId: preset?.id,
-        presetName: preset?.name || (engineId === 'novelai' ? 'NovelAI 当前配置' : 'GPT 生图当前配置'),
+        presetId: preset?.id || (requestedPresetId || undefined),
+        presetName: preset?.name || (requestedPresetId
+            ? '已删除的生图预设'
+            : (engineId === 'novelai' ? 'NovelAI 当前配置' : 'GPT 生图当前配置')),
         baseUrl: String(remote?.baseUrl || ''),
         pricing: clone(preset?.pricing || {
             enabled: false,

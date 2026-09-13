@@ -54,6 +54,7 @@ export interface LocalBackgroundImageJob {
     engineId: BuiltinImageEngineId;
     serverId: string;
     serverName: string;
+    imagePresetId?: string;
     controlBaseUrl: string;
     token: string;
 
@@ -182,6 +183,19 @@ const normalizeBaseUrl = (
 ): string =>
     value.trim().replace(/\/+$/, '');
 
+const IMAGE_PRESET_SERVER_PREFIX = 'builtin_image_preset_';
+
+const resolveImagePresetId = (
+    serverId: string,
+    explicit?: unknown,
+): string | undefined => {
+    const direct = typeof explicit === 'string' ? explicit.trim() : '';
+    if (direct) return direct;
+    const normalizedServerId = String(serverId || '');
+    if (!normalizedServerId.startsWith(IMAGE_PRESET_SERVER_PREFIX)) return undefined;
+    return normalizedServerId.slice(IMAGE_PRESET_SERVER_PREFIX.length).trim() || undefined;
+};
+
 const engineIdFromServer = (
     server: McpServerConfig,
 ): BuiltinImageEngineId | null => {
@@ -258,6 +272,14 @@ const sanitizeLoadedJob = (
         || !Number.isFinite(raw.updatedAt)
     ) return null;
 
+    const imagePresetId = resolveImagePresetId(raw.serverId, raw.imagePresetId);
+    const storedBillingCapture = raw.imageBillingCapture && typeof raw.imageBillingCapture === 'object'
+        ? clone(raw.imageBillingCapture) as ImageGenerationBillingCapture
+        : undefined;
+    const imageBillingCapture = imagePresetId && storedBillingCapture?.presetId !== imagePresetId
+        ? captureImageGenerationBilling(raw.engineId, imagePresetId)
+        : storedBillingCapture;
+
     return {
         id: raw.id,
         clientRequestId:
@@ -269,6 +291,7 @@ const sanitizeLoadedJob = (
         engineId: raw.engineId,
         serverId: raw.serverId,
         serverName: raw.serverName,
+        imagePresetId,
         controlBaseUrl:
             normalizeBaseUrl(
                 raw.controlBaseUrl,
@@ -317,9 +340,7 @@ const sanitizeLoadedJob = (
             typeof raw.lastError === 'string'
                 ? raw.lastError
                 : undefined,
-        imageBillingCapture: raw.imageBillingCapture && typeof raw.imageBillingCapture === 'object'
-            ? clone(raw.imageBillingCapture)
-            : undefined,
+        imageBillingCapture,
     };
 };
 
@@ -857,6 +878,7 @@ const applySucceededJob = async (
             server: {
                 id: localJob.serverId,
                 name: localJob.serverName,
+                imagePresetId: localJob.imagePresetId,
             },
             toolName: localJob.toolName,
             toolArgs: localJob.toolArgs,
@@ -934,6 +956,7 @@ const applySucceededJob = async (
         server: {
             id: localJob.serverId,
             name: localJob.serverName,
+            imagePresetId: localJob.imagePresetId,
         },
         toolName: localJob.toolName,
         toolArgs: localJob.toolArgs,
@@ -1347,6 +1370,7 @@ export async function adoptBackgroundImageJob(
         return { success: false, error: '云端生图任务对应的本地服务配置不完整' };
     }
 
+    const imagePresetId = resolveImagePresetId(server.id, server.imagePresetId);
     const state = readState();
     const existing = state.jobs.find(job => job.clientRequestId === clientRequestId);
     if (existing) {
@@ -1356,6 +1380,10 @@ export async function adoptBackgroundImageJob(
             storyTheaterTarget: context.ownerType === 'story-theater'
                 ? context.storyTheaterTarget
                 : existing.storyTheaterTarget,
+            imagePresetId: imagePresetId || existing.imagePresetId,
+            imageBillingCapture: imagePresetId
+                ? captureImageGenerationBilling(engineId, imagePresetId)
+                : existing.imageBillingCapture,
             workerOwnsSubmission: true,
             lastError: undefined,
         }) || existing;
@@ -1378,6 +1406,7 @@ export async function adoptBackgroundImageJob(
         engineId,
         serverId: server.id,
         serverName: server.name,
+        imagePresetId,
         controlBaseUrl: normalizeBaseUrl(server.controlBaseUrl),
         token: String(server.token || ''),
         charId: context.charId,
@@ -1394,7 +1423,7 @@ export async function adoptBackgroundImageJob(
         // 自动流程永不补交，失败后由用户手动“重新生成”。
         submitAttempts: remote.remoteJobId ? 1 : 0,
         workerOwnsSubmission: true,
-        imageBillingCapture: captureImageGenerationBilling(engineId),
+        imageBillingCapture: captureImageGenerationBilling(engineId, imagePresetId),
     };
     upsertJob(localJob);
     dispatchJobEvent('updated', localJob);
@@ -1450,6 +1479,7 @@ export async function callMcpToolWithBackgroundImage(
         );
     }
 
+    const imagePresetId = resolveImagePresetId(server.id, server.imagePresetId);
     const createdAt = now();
 
     const localJob:
@@ -1460,6 +1490,7 @@ export async function callMcpToolWithBackgroundImage(
         engineId,
         serverId: server.id,
         serverName: server.name,
+        imagePresetId,
         controlBaseUrl:
             normalizeBaseUrl(
                 server.controlBaseUrl,
@@ -1484,7 +1515,7 @@ export async function callMcpToolWithBackgroundImage(
         createdAt,
         updatedAt: createdAt,
         submitAttempts: 1,
-        imageBillingCapture: captureImageGenerationBilling(engineId),
+        imageBillingCapture: captureImageGenerationBilling(engineId, imagePresetId),
     };
 
     upsertJob(localJob);
