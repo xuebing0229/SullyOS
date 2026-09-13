@@ -417,16 +417,24 @@ const Chat: React.FC = () => {
     );
     const draftKey = `chat_draft_${activeCharacterId}`;
 
-    // Filter categories and emojis by active character's visibility (used for both AI prompt and UI)
+    // “聊天可见范围”只决定用户在当前聊天里能不能看到这个分组。
+    // “角色可用”是另一层权限：关闭后用户仍可手动查看/发送，但 AI 完全拿不到该组。
     const visibleCategories = useMemo(() => categories.filter(cat => {
         if (!cat.allowedCharacterIds || cat.allowedCharacterIds.length === 0) return true;
         return cat.allowedCharacterIds.includes(activeCharacterId);
     }), [categories, activeCharacterId]);
 
+    const aiVisibleCategories = useMemo(
+        () => visibleCategories.filter(cat => cat.roleUsable !== false),
+        [visibleCategories],
+    );
+
     const aiVisibleEmojis = useMemo(() => {
-        const hiddenIds = new Set(categories.filter(c => !visibleCategories.some(vc => vc.id === c.id)).map(c => c.id));
-        if (hiddenIds.size === 0) return emojis;
-        return emojis.filter(e => !e.categoryId || !hiddenIds.has(e.categoryId));
+        const blockedIds = new Set(categories.filter(c => (
+            !visibleCategories.some(vc => vc.id === c.id) || c.roleUsable === false
+        )).map(c => c.id));
+        if (blockedIds.size === 0) return emojis;
+        return emojis.filter(e => !e.categoryId || !blockedIds.has(e.categoryId));
     }, [emojis, categories, visibleCategories]);
 
 
@@ -465,7 +473,7 @@ const Chat: React.FC = () => {
         apiConfig,
         groups,
         emojis: aiVisibleEmojis,
-        categories: visibleCategories,
+        categories: aiVisibleCategories,
         addToast,
         showError,
         setMessages: setMessagesFromGen,
@@ -2498,7 +2506,18 @@ const Chat: React.FC = () => {
         await loadEmojiData();
         markEmojiLibraryChanged();
         setSelectedCategory(null);
-        addToast(allowedCharacterIds ? `已设置 ${allowedCharacterIds.length} 个角色可见` : '已设为所有角色可见', 'success');
+        addToast(allowedCharacterIds ? `已设置 ${allowedCharacterIds.length} 个聊天可见` : '已设为所有聊天可见', 'success');
+    };
+
+    const handleSaveCategoryRoleUsable = async (categoryId: string, roleUsable: boolean) => {
+        const cat = categories.find(c => c.id === categoryId);
+        if (!cat) return;
+        const updated = { ...cat, roleUsable };
+        await DB.saveEmojiCategory(updated);
+        setCategories(prev => prev.map(item => item.id === categoryId ? updated : item));
+        setSelectedCategory(prev => prev?.id === categoryId ? updated : prev);
+        markEmojiLibraryChanged();
+        addToast(roleUsable ? '角色现在可以使用这组表情' : '这组表情已仅供你使用', 'success');
     };
 
     const handleSavePrompt = () => {
@@ -4038,7 +4057,7 @@ const Chat: React.FC = () => {
                 messageFavorited={!!(selectedMessage && contentFavoriteIds.has(contentFavoriteIdForMessage(selectedMessage)))}
                 onToggleMessageFavorite={selectedMessage ? () => handleToggleContentFavorite(selectedMessage) : undefined}
                 onDeleteEmoji={handleDeleteEmoji} onDeleteCategory={handleDeleteCategory}
-                allCharacters={characters} onSaveCategoryVisibility={handleSaveCategoryVisibility}
+                allCharacters={characters} onSaveCategoryVisibility={handleSaveCategoryVisibility} onSaveCategoryRoleUsable={handleSaveCategoryRoleUsable}
                 translationEnabled={translationEnabled}
                 onToggleTranslation={() => { const next = !translationEnabled; setTranslationEnabled(next); localStorage.setItem(`chat_translate_enabled_${activeCharacterId}`, JSON.stringify(next)); if (next) { trackEvent('开启聊天翻译', { targetLang: isTranslationLangPreset(translateTargetLang) ? translateTargetLang : 'custom' }); } if (!next) { setShowingTargetIds(new Set()); } }}
                 translateSourceLang={translateSourceLang}
@@ -4966,8 +4985,8 @@ const Chat: React.FC = () => {
                         availableModels={availableModels}
                         characters={characters}
                         groups={groups}
-                        emojis={emojis}
-                        emojiCategories={categories}
+                        emojis={aiVisibleEmojis}
+                        emojiCategories={aiVisibleCategories}
                         recentChatMessages={messages}
                         realtimeConfig={realtimeConfig}
                         chatCollaborationEnabled={!!char.chatCollaborationEnabled}
