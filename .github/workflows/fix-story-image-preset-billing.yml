@@ -59,11 +59,6 @@ jobs:
           )
           replace_once(
               'utils/backgroundImageJobs.ts',
-              """    if (\n        typeof raw.id !== 'string'\n        || typeof raw.clientRequestId !== 'string'\n        || typeof raw.serverId !== 'string'\n        || typeof raw.serverName !== 'string'\n        || typeof raw.controlBaseUrl !== 'string'""",
-              """    if (\n        typeof raw.id !== 'string'\n        || typeof raw.clientRequestId !== 'string'\n        || typeof raw.serverId !== 'string'\n        || typeof raw.serverName !== 'string'\n        || typeof raw.controlBaseUrl !== 'string'""",
-          )
-          replace_once(
-              'utils/backgroundImageJobs.ts',
               """    ) return null;\n\n    return {\n        id: raw.id,""",
               """    ) return null;\n\n    const imagePresetId = resolveImagePresetId(raw.serverId, raw.imagePresetId);\n    const storedBillingCapture = raw.imageBillingCapture && typeof raw.imageBillingCapture === 'object'\n        ? clone(raw.imageBillingCapture) as ImageGenerationBillingCapture\n        : undefined;\n    const imageBillingCapture = imagePresetId && storedBillingCapture?.presetId !== imagePresetId\n        ? captureImageGenerationBilling(raw.engineId, imagePresetId)\n        : storedBillingCapture;\n\n    return {\n        id: raw.id,""",
           )
@@ -78,14 +73,18 @@ jobs:
               """        imageBillingCapture,\n    };""",
           )
 
-          # Preserve preset identity when persisting both story-theater and normal background images.
-          old_server_block = """            server: {\n                id: localJob.serverId,\n                name: localJob.serverName,\n            },"""
-          new_server_block = """            server: {\n                id: localJob.serverId,\n                name: localJob.serverName,\n                imagePresetId: localJob.imagePresetId,\n            },"""
-          p = Path('utils/backgroundImageJobs.ts')
-          text = p.read_text(encoding='utf-8')
-          if text.count(old_server_block) != 2:
-              raise SystemExit(f'utils/backgroundImageJobs.ts: expected two persistence server blocks, found {text.count(old_server_block)}')
-          p.write_text(text.replace(old_server_block, new_server_block), encoding='utf-8')
+          # Preserve preset identity when persisting story-theater images.
+          replace_once(
+              'utils/backgroundImageJobs.ts',
+              """            server: {\n                id: localJob.serverId,\n                name: localJob.serverName,\n            },""",
+              """            server: {\n                id: localJob.serverId,\n                name: localJob.serverName,\n                imagePresetId: localJob.imagePresetId,\n            },""",
+          )
+          # Preserve it for ordinary background images too (different indentation in this block).
+          replace_once(
+              'utils/backgroundImageJobs.ts',
+              """        server: {\n            id: localJob.serverId,\n            name: localJob.serverName,\n        },""",
+              """        server: {\n            id: localJob.serverId,\n            name: localJob.serverName,\n            imagePresetId: localJob.imagePresetId,\n        },""",
+          )
 
           replace_once(
               'utils/backgroundImageJobs.ts',
