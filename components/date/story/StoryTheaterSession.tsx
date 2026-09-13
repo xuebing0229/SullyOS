@@ -92,6 +92,7 @@ import {
 } from '../../../utils/backgroundStoryJobs';
 import { cancelStoryGenerationByOwner } from '../../../utils/storyGenerationCancel';
 import { BACKGROUND_IMAGE_JOB_EVENT } from '../../../utils/backgroundImageJobs';
+import { openChatImageViewer } from '../../../utils/chatImageViewer';
 import {
     buildStoryContinueInstruction,
     MEETING_CONTINUE_DISPLAY_TEXT,
@@ -123,7 +124,15 @@ const StoryRoundImage: React.FC<{ message: Message; busy: boolean; onRegenerate:
         </button>
     </div>;
     return <figure className='mt-5 overflow-hidden rounded-2xl border border-slate-200 bg-slate-100 shadow-sm'>
-        <TokenImg value={frame.imageRef} alt='本轮剧情配图' className='block h-auto w-full object-cover' />
+        <button
+            type='button'
+            onClick={() => openChatImageViewer({ src: frame.imageRef, alt: '本轮剧情配图' })}
+            className='block w-full cursor-zoom-in bg-transparent p-0 text-left'
+            aria-label='查看本轮剧情配图大图'
+            title='点击查看大图'
+        >
+            <TokenImg value={frame.imageRef} alt='本轮剧情配图' className='block h-auto w-full object-cover' />
+        </button>
         <figcaption className='flex items-center gap-3 border-t border-slate-200 bg-white px-3 py-2.5'><span className='min-w-0 flex-1'><strong className='block text-[10px] text-slate-700'>本轮剧情配图</strong><span className='mt-0.5 block truncate text-[9px] text-slate-400'>{frame.engine || '内置生图引擎'}</span></span><button type='button' disabled={busy} onClick={onRegenerate} className='inline-flex shrink-0 items-center gap-1.5 rounded-full border border-slate-200 px-3 py-1.5 text-[9px] font-bold text-slate-500 disabled:opacity-40'>{busy ? <SpinnerGap size={12} className='animate-spin' /> : <ArrowClockwise size={12} />}重新生成</button></figcaption>
     </figure>;
 };
