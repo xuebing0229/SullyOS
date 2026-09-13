@@ -3905,6 +3905,8 @@ export interface EmojiCategory {
     name: string;
     isSystem?: boolean;
     allowedCharacterIds?: string[]; // If set, only these characters can see this category
+    /** false = this group stays available to the user, but roles cannot see/send its emojis. */
+    roleUsable?: boolean;
 }
 
 export interface Emoji {

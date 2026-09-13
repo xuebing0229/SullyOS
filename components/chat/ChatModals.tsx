@@ -97,6 +97,7 @@ interface ChatModalsProps {
     // Category Visibility
     allCharacters?: CharacterProfile[];
     onSaveCategoryVisibility?: (categoryId: string, allowedCharacterIds: string[] | undefined) => void;
+    onSaveCategoryRoleUsable?: (categoryId: string, roleUsable: boolean) => void | Promise<void>;
     // Translation
     translationEnabled?: boolean;
     onToggleTranslation?: () => void;
@@ -268,7 +269,7 @@ const ChatModals: React.FC<ChatModalsProps> = ({
     onBgUpload, onRemoveBg, onOpenHistoryCleanup,
     onArchive, onCreatePrompt, onEditPrompt, onSavePrompt, onDeletePrompt,
     onSetHistoryStart, onRestoreAdaptiveContext, onJumpToMessageInChat, onEnterSelectionMode, onReplyMessage, onEditMessageStart, onConfirmEditMessage, onDeleteMessage, onCopyMessage, onDeleteEmoji, onDeleteCategory,
-    allCharacters = [], onSaveCategoryVisibility,
+    allCharacters = [], onSaveCategoryVisibility, onSaveCategoryRoleUsable,
     translationEnabled, onToggleTranslation, translationExpanded, onToggleTranslationExpanded, translateSourceLang, translateTargetLang, onSetTranslateSourceLang, onSetTranslateLang,
     xhsEnabled, onToggleXhs,
     htmlModeEnabled, onToggleHtmlMode, htmlModeCustomPrompt, setHtmlModeCustomPrompt,
@@ -1077,12 +1078,31 @@ const ChatModals: React.FC<ChatModalsProps> = ({
             {/* Category Options Modal (shown on long-press) */}
             <Modal isOpen={modalType === 'category-options'} title="分类操作" onClose={() => setModalType('none')}>
                 <div className="space-y-3">
+                    <div className="flex items-center justify-between gap-3 rounded-2xl bg-slate-50 px-4 py-3">
+                        <div className="min-w-0 pr-2">
+                            <div className="text-sm font-medium text-slate-700">角色可用</div>
+                            <div className="mt-0.5 text-[10px] leading-relaxed text-slate-400">关闭后你仍可正常使用这组表情，角色不会看到或调用它们。</div>
+                        </div>
+                        <button
+                            type="button"
+                            onClick={() => {
+                                if (selectedCategory && onSaveCategoryRoleUsable) {
+                                    void onSaveCategoryRoleUsable(selectedCategory.id, selectedCategory.roleUsable === false);
+                                }
+                            }}
+                            className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${selectedCategory?.roleUsable === false ? 'bg-slate-300' : 'bg-primary'}`}
+                            aria-pressed={selectedCategory?.roleUsable !== false}
+                            aria-label="角色可用"
+                        >
+                            <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-all ${selectedCategory?.roleUsable === false ? 'left-0.5' : 'left-[22px]'}`} />
+                        </button>
+                    </div>
                     <button onClick={openVisibilityModal} className="w-full py-3 bg-slate-50 text-slate-700 font-medium rounded-2xl active:bg-slate-100 transition-colors flex items-center justify-center gap-2">
                         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5">
                             <path strokeLinecap="round" strokeLinejoin="round" d="M2.036 12.322a1.012 1.012 0 0 1 0-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178Z" />
                             <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z" />
                         </svg>
-                        设置可见角色
+                        设置聊天可见范围
                     </button>
                     {selectedCategory && !selectedCategory.isSystem && selectedCategory.id !== 'default' && (
                         <button onClick={() => setModalType('delete-category')} className="w-full py-3 bg-red-50 text-red-500 font-medium rounded-2xl active:bg-red-100 transition-colors flex items-center justify-center gap-2">
@@ -1097,12 +1117,12 @@ const ChatModals: React.FC<ChatModalsProps> = ({
 
             {/* Category Visibility Modal */}
             <Modal
-                isOpen={modalType === 'category-visibility'} title={`"${selectedCategory?.name}" 可见角色`} onClose={() => setModalType('none')}
+                isOpen={modalType === 'category-visibility'} title={`"${selectedCategory?.name}" 聊天可见范围`} onClose={() => setModalType('none')}
                 footer={<button onClick={handleSaveVisibility} className="w-full py-3 bg-primary text-white font-bold rounded-2xl">保存设置</button>}
             >
                 <div className="space-y-3">
                     <p className="text-xs text-slate-400 leading-relaxed">
-                        选择哪些角色可以使用此表情分组。不勾选任何角色表示所有角色均可使用。
+                        选择这组表情在哪些角色的聊天面板里显示。不勾选任何角色表示所有聊天都显示。
                     </p>
                     <div className="space-y-2 max-h-[40vh] overflow-y-auto no-scrollbar">
                         {allCharacters.map(c => (

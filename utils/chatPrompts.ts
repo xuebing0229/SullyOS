@@ -194,8 +194,8 @@ export const ChatPrompts = {
 
     // 按角色可见性过滤表情包分类与表情。
     // 规则与 Chat.tsx 的 visibleCategories / aiVisibleEmojis 保持一致：
-    // 分类未设 allowedCharacterIds（或为空）= 所有角色可见；否则只有名单内角色可见。
-    // 表情若属于一个对该角色不可见的分类，则一并隐藏（无 categoryId 的表情始终可见）。
+    // roleUsable=false 的分类对所有角色硬隐藏；它只影响角色，不影响用户自己的表情面板。
+    // 其余分类再按 allowedCharacterIds 做聊天可见范围过滤；无 categoryId 的表情始终可见。
     // 主动消息（proactive）等不经过 Chat.tsx UI 的路径必须复用本函数，
     // 否则角色会在主动消息里用到不属于自己范围的表情包。
     filterVisibleEmojis: (
@@ -204,6 +204,7 @@ export const ChatPrompts = {
         charId: string,
     ): { emojis: Emoji[]; categories: EmojiCategory[] } => {
         const visibleCategories = categories.filter(cat => {
+            if (cat.roleUsable === false) return false;
             if (!cat.allowedCharacterIds || cat.allowedCharacterIds.length === 0) return true;
             return cat.allowedCharacterIds.includes(charId);
         });
