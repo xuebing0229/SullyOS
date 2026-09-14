@@ -102,6 +102,8 @@ const ChatInputArea: React.FC<ChatInputAreaProps> = ({
     const emojiPageCount = Math.max(1, Math.ceil(emojis.length / EMOJI_PAGE_SIZE));
     const emojiPageStart = emojiPage * EMOJI_PAGE_SIZE;
     const visibleEmojis = emojis.slice(emojiPageStart, emojiPageStart + EMOJI_PAGE_SIZE);
+    const activeCategoryData = categories.find(cat => cat.id === activeCategory);
+    const activeCategoryRoleUsable = activeCategoryData?.roleUsable !== false;
     useEffect(() => {
         setEmojiPage(0);
     }, [activeCategory]);
@@ -505,12 +507,15 @@ const ChatInputArea: React.FC<ChatInputAreaProps> = ({
                                             {cat.allowedCharacterIds && cat.allowedCharacterIds.length > 0 && (
                                                 <Lock className="w-3 h-3 opacity-60" weight="bold" />
                                             )}
+                                            <span
+                                                className={`w-1.5 h-1.5 shrink-0 rounded-full ${cat.roleUsable === false ? 'bg-slate-300' : 'bg-emerald-400'}`}
+                                                title={cat.roleUsable === false ? '角色不可用' : '角色可用'}
+                                            />
                                         </button>
                                     ))}
                                     <button onClick={() => onPanelAction('add-category')} className={categoryAddButtonClass}>+</button>
-                                    {/* 尾部留白必须 ≥ 右侧浮动按钮区宽度（两个 w-6 + gap + px-3 ≈ 78px），
-                                        否则滚到最右时 + 按钮被浮动小药丸盖住点不到 */}
-                                    <div className="w-24 shrink-0 pointer-events-none" />
+                                    {/* 尾部留白覆盖右侧“角色可用”+ 分组总览 + 编辑按钮区，避免滚到最右时分组被盖住。 */}
+                                    <div className="w-44 shrink-0 pointer-events-none" />
                                 </div>
                                 {emojiSelectionMode ? (
                                     <div 
@@ -535,6 +540,21 @@ const ChatInputArea: React.FC<ChatInputAreaProps> = ({
                                     </div>
                                 ) : (
                                     <div className="absolute right-0 top-0 bottom-0 z-10 flex items-center justify-end gap-1.5 px-3 pointer-events-none">
+                                        {activeCategoryData && (
+                                            <button
+                                                type="button"
+                                                onClick={(e) => { e.stopPropagation(); onPanelAction('toggle-category-role', activeCategoryData); }}
+                                                title={activeCategoryRoleUsable ? '角色可用：点此关闭' : '角色禁用：点此开启'}
+                                                aria-pressed={activeCategoryRoleUsable}
+                                                className={`h-6 px-2 rounded-full flex items-center justify-center text-[9px] font-bold transition-colors shadow-sm pointer-events-auto ${
+                                                    activeCategoryRoleUsable
+                                                        ? (isPixelStyle ? 'bg-[#5f9f75] text-white' : isDiscordStyle ? 'bg-emerald-500/25 text-emerald-200 border border-emerald-400/30' : 'bg-emerald-500 text-white')
+                                                        : (isPixelStyle ? 'bg-[#b9aa99] text-[#fff7ed]' : isDiscordStyle ? 'bg-slate-700 text-slate-300 border border-white/10' : 'bg-slate-200 text-slate-500')
+                                                }`}
+                                            >
+                                                角色{activeCategoryRoleUsable ? '可用' : '禁用'}
+                                            </button>
+                                        )}
                                         {categories.length > 1 && (
                                             <button
                                                 onClick={(e) => { e.stopPropagation(); setShowCategoryOverview(v => !v); }}
@@ -579,6 +599,7 @@ const ChatInputArea: React.FC<ChatInputAreaProps> = ({
                                             {cat.allowedCharacterIds && cat.allowedCharacterIds.length > 0 && (
                                                 <Lock className="w-3 h-3 opacity-60" weight="bold" />
                                             )}
+                                            <span className={`w-1.5 h-1.5 shrink-0 rounded-full ${cat.roleUsable === false ? 'bg-slate-300' : 'bg-emerald-400'}`} />
                                         </button>
                                     ))}
                                     {/* 总览里也能新建分组：横向条分组多时 + 可能滑不到/被浮动按钮挡，这里保底 */}

@@ -1858,6 +1858,7 @@ const Chat: React.FC = () => {
             case 'emoji-options': setSelectedEmoji(payload); setModalType('emoji-options'); break;
             case 'add-category': setModalType('add-category'); break;
             case 'select-category': setActiveCategory(payload); break;
+            case 'toggle-category-role': if (payload?.id) { void handleSaveCategoryRoleUsable(payload.id, payload.roleUsable === false); } break;
             case 'category-options': setSelectedCategory(payload); setModalType('category-options'); break;
             case 'delete-category-req': setSelectedCategory(payload); setModalType('delete-category'); break;
             case 'meetup': if (char) { setShowPanel('none'); openDateWithChar(char.id); } break;
