@@ -13211,6 +13211,263 @@ function normalizeToolCallsForCompat(toolCalls, scope = "tool") {
   });
 }
 
+// worker/amsg/src/storyEgress.ts
+var STORY_SYSTEM_COMPAT_ROUTES_KEY = "_sullyStorySystemCompatibilityRoutes";
+var STORY_SYSTEM_COMPAT_ANCHOR = "The final user message contains a <SULLY_SYSTEM_INSTRUCTIONS> block with the full system instructions for this request. Treat that block as the system instructions and follow it throughout the conversation.";
+var is749Target = (targetUrl) => {
+  try {
+    const host = new URL(targetUrl).hostname.toLowerCase();
+    return host === "749code.com" || host.endsWith(".749code.com");
+  } catch {
+    return false;
+  }
+};
+var resolveStoryEgressRoute = (_env, targetUrl) => ({ url: targetUrl, relayed: false });
+var parseBodyRecord = (body) => {
+  if (typeof body !== "string") return null;
+  try {
+    const parsed = JSON.parse(body);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+};
+var normalizeRouteBaseUrl = (value) => {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  try {
+    const url = new URL(raw);
+    url.hash = "";
+    url.search = "";
+    const path = url.pathname.replace(/\/+$/, "");
+    return `${url.origin}${path}`;
+  } catch {
+    return raw.replace(/\/+$/, "");
+  }
+};
+var targetBaseUrl = (targetUrl) => {
+  try {
+    const url = new URL(targetUrl);
+    url.hash = "";
+    url.search = "";
+    url.pathname = url.pathname.replace(/\/chat\/completions\/?$/i, "").replace(/\/+$/, "");
+    return `${url.origin}${url.pathname}`;
+  } catch {
+    return String(targetUrl || "").replace(/\/chat\/completions\/?$/i, "").replace(/\/+$/, "");
+  }
+};
+var resolveFrozenSystemCompatibility = (body, targetUrl) => {
+  const parsed = parseBodyRecord(body);
+  if (!parsed || !Object.prototype.hasOwnProperty.call(parsed, STORY_SYSTEM_COMPAT_ROUTES_KEY)) {
+    return void 0;
+  }
+  const routes = parsed[STORY_SYSTEM_COMPAT_ROUTES_KEY];
+  if (!Array.isArray(routes)) return false;
+  const model = String(parsed.model || "").trim();
+  const baseUrl = targetBaseUrl(targetUrl);
+  const matched = routes.find((raw) => {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return false;
+    const item = raw;
+    return normalizeRouteBaseUrl(item.baseUrl) === baseUrl && String(item.model || "").trim() === model;
+  });
+  return Boolean(
+    matched && typeof matched === "object" && !Array.isArray(matched) && matched.enabled === true
+  );
+};
+var compactAdjacentSystemMessages = (messages) => {
+  const compacted = [];
+  for (const rawMessage of messages) {
+    if (!rawMessage || typeof rawMessage !== "object" || Array.isArray(rawMessage)) {
+      compacted.push(rawMessage);
+      continue;
+    }
+    const message = rawMessage;
+    const role = String(message.role || "");
+    const previous = compacted[compacted.length - 1];
+    if (role === "system" && typeof message.content === "string" && previous && typeof previous === "object" && !Array.isArray(previous)) {
+      const previousMessage = previous;
+      if (previousMessage.role === "system" && typeof previousMessage.content === "string") {
+        previousMessage.content = `${previousMessage.content}
+
+${message.content}`;
+        continue;
+      }
+    }
+    compacted.push({ ...message });
+  }
+  return compacted;
+};
+var sanitizeStoryRequestBody = (body) => {
+  if (typeof body !== "string") return body;
+  try {
+    const parsed = JSON.parse(body);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return body;
+    let changed = false;
+    if (Object.prototype.hasOwnProperty.call(parsed, STORY_SYSTEM_COMPAT_ROUTES_KEY)) {
+      delete parsed[STORY_SYSTEM_COMPAT_ROUTES_KEY];
+      changed = true;
+    }
+    for (const key of ["max_tokens", "max_completion_tokens", "max_output_tokens"]) {
+      if (Object.prototype.hasOwnProperty.call(parsed, key)) {
+        delete parsed[key];
+        changed = true;
+      }
+    }
+    for (const key of ["frequency_penalty", "presence_penalty"]) {
+      if (Object.prototype.hasOwnProperty.call(parsed, key) && Number(parsed[key]) === 0) {
+        delete parsed[key];
+        changed = true;
+      }
+    }
+    if (Array.isArray(parsed.messages)) {
+      const beforeCount = parsed.messages.length;
+      const compacted = compactAdjacentSystemMessages(parsed.messages);
+      if (compacted.length !== beforeCount) {
+        parsed.messages = compacted;
+        changed = true;
+      }
+    }
+    return changed ? JSON.stringify(parsed) : body;
+  } catch {
+    return body;
+  }
+};
+var isGeminiModel = (model) => typeof model === "string" && model.toLowerCase().includes("gemini");
+var legacySystemCompatibilityFallback = (targetUrl, body) => {
+  if (!is749Target(targetUrl)) return false;
+  return isGeminiModel(parseBodyRecord(body)?.model);
+};
+var applyStorySystemCompatibility = (body, enabled) => {
+  if (!enabled || typeof body !== "string") return body;
+  const parsed = parseBodyRecord(body);
+  if (!parsed || !Array.isArray(parsed.messages)) return body;
+  const systemTextParts = [];
+  const nonSystemMessages = [];
+  let finalUserIndex = -1;
+  for (const rawMessage of parsed.messages) {
+    if (!rawMessage || typeof rawMessage !== "object" || Array.isArray(rawMessage)) return body;
+    const message = rawMessage;
+    if (message.role === "system") {
+      if (typeof message.content !== "string") return body;
+      systemTextParts.push(message.content);
+      continue;
+    }
+    const cloned = { ...message };
+    nonSystemMessages.push(cloned);
+    if (cloned.role === "user" && typeof cloned.content === "string") {
+      finalUserIndex = nonSystemMessages.length - 1;
+    }
+  }
+  if (systemTextParts.length === 0 || finalUserIndex < 0) return body;
+  const finalUser = nonSystemMessages[finalUserIndex];
+  const originalUserContent = String(finalUser.content || "");
+  finalUser.content = [
+    "<SULLY_SYSTEM_INSTRUCTIONS>",
+    systemTextParts.join("\n\n"),
+    "</SULLY_SYSTEM_INSTRUCTIONS>",
+    "",
+    "<SULLY_CURRENT_USER_TURN>",
+    originalUserContent,
+    "</SULLY_CURRENT_USER_TURN>"
+  ].join("\n");
+  parsed.messages = [
+    { role: "system", content: STORY_SYSTEM_COMPAT_ANCHOR },
+    ...nonSystemMessages
+  ];
+  return JSON.stringify(parsed);
+};
+var textLength = (value) => {
+  if (typeof value === "string") return value.length;
+  if (!Array.isArray(value)) return 0;
+  return value.reduce((total, item) => {
+    if (typeof item === "string") return total + item.length;
+    if (!item || typeof item !== "object") return total;
+    const record = item;
+    return total + (typeof record.text === "string" ? record.text.length : 0) + (typeof record.content === "string" ? record.content.length : 0);
+  }, 0);
+};
+var summarizeRequest = (body, targetUrl, route, systemCompatibility) => {
+  const raw = typeof body === "string" ? body : "";
+  const parsed = parseBodyRecord(body) || {};
+  const messages = Array.isArray(parsed.messages) ? parsed.messages : [];
+  const roleCounts = {};
+  let messageTextChars = 0;
+  const contentKinds = /* @__PURE__ */ new Set();
+  for (const item of messages) {
+    if (!item || typeof item !== "object") continue;
+    const message = item;
+    const role = String(message.role || "unknown");
+    roleCounts[role] = (roleCounts[role] || 0) + 1;
+    messageTextChars += textLength(message.content);
+    if (typeof message.content === "string") contentKinds.add("string");
+    else if (Array.isArray(message.content)) {
+      for (const block of message.content) {
+        if (block && typeof block === "object") {
+          contentKinds.add(String(block.type || "object"));
+        } else {
+          contentKinds.add(typeof block);
+        }
+      }
+    } else {
+      contentKinds.add(typeof message.content);
+    }
+  }
+  const safeHost = (value) => {
+    try {
+      return new URL(value).host;
+    } catch {
+      return "invalid-url";
+    }
+  };
+  return {
+    egress: route.relayed ? "relay" : "direct",
+    targetHost: safeHost(targetUrl),
+    relayHost: route.relayed ? safeHost(route.url) : void 0,
+    systemCompatibility,
+    bodyBytes: raw ? new TextEncoder().encode(raw).byteLength : void 0,
+    bodyKeys: Object.keys(parsed).sort(),
+    model: typeof parsed.model === "string" ? parsed.model : void 0,
+    stream: typeof parsed.stream === "boolean" ? parsed.stream : void 0,
+    streamOptions: parsed.stream_options && typeof parsed.stream_options === "object" ? Object.keys(parsed.stream_options).sort() : [],
+    temperature: typeof parsed.temperature === "number" ? parsed.temperature : void 0,
+    topP: typeof parsed.top_p === "number" ? parsed.top_p : void 0,
+    maxTokens: typeof parsed.max_tokens === "number" ? parsed.max_tokens : void 0,
+    maxCompletionTokens: typeof parsed.max_completion_tokens === "number" ? parsed.max_completion_tokens : void 0,
+    reasoningEffort: typeof parsed.reasoning_effort === "string" ? parsed.reasoning_effort : void 0,
+    messageCount: messages.length,
+    roleCounts,
+    messageTextChars,
+    contentKinds: [...contentKinds].sort()
+  };
+};
+var annotateFailure = async (response, requestBody, targetUrl, route, systemCompatibility) => {
+  if (response.ok) return response;
+  const original = await response.text().catch(() => "");
+  const diagnostic = summarizeRequest(requestBody, targetUrl, route, systemCompatibility);
+  const headers = new Headers(response.headers);
+  headers.delete("content-length");
+  headers.delete("content-encoding");
+  headers.set("cache-control", "no-store");
+  return new Response(
+    `${original}${original ? "\n" : ""}[sully_story_diag] ${JSON.stringify(diagnostic)}`,
+    {
+      status: response.status,
+      statusText: response.statusText,
+      headers
+    }
+  );
+};
+var fetchStoryUpstream = async (env, targetUrl, init, options = {}) => {
+  const route = resolveStoryEgressRoute(env, targetUrl);
+  const frozenSystemCompatibility = resolveFrozenSystemCompatibility(init.body, targetUrl);
+  const sanitizedBody = sanitizeStoryRequestBody(init.body);
+  const systemCompatibility = options.systemCompatibility !== void 0 ? options.systemCompatibility : frozenSystemCompatibility !== void 0 ? frozenSystemCompatibility : legacySystemCompatibilityFallback(targetUrl, sanitizedBody);
+  const compatibleBody = applyStorySystemCompatibility(sanitizedBody, systemCompatibility);
+  const requestInit = compatibleBody === init.body ? init : { ...init, body: compatibleBody };
+  const response = await fetch(targetUrl, requestInit);
+  return annotateFailure(response, requestInit.body, targetUrl, route, systemCompatibility);
+};
+
 // worker/amsg/src/storyImageHandoff.ts
 var INLINE_PLAN_OPEN = "<story_image_plan>";
 var INLINE_PLAN_CLOSE = "</story_image_plan>";
@@ -13296,6 +13553,7 @@ var normalizeStoryImageHandoffSpec = (value) => {
     apiKey: normalizeApiCredential(plannerRaw.apiKey),
     model: plannerModel,
     systemPrompt: plannerSystemPrompt.slice(0, 8e4),
+    ...plannerRaw.systemCompatibility === true ? { systemCompatibility: true } : {},
     tools: plannerTools
   } : void 0;
   return tools.length ? { version: 1, tools, ...planner ? { planner } : {} } : void 0;
@@ -13501,18 +13759,26 @@ var extractPlannerSelection = (body, allowedNames, textResolve) => {
   if (faked) return { tool: faked.exposedName, arguments: cloneRecord(faked.args) };
   return parsePlannerText(content, allowedNames);
 };
-var buildNativeRepairBody = (nativeBody) => ({
-  ...nativeBody,
-  temperature: 0,
-  parallel_tool_calls: false,
-  messages: [
+var buildNativeRepairBody = (nativeBody) => {
+  const plannerTools = Array.isArray(nativeBody.tools) ? nativeBody.tools : [];
+  const body = { ...nativeBody };
+  delete body.tools;
+  delete body.tool_choice;
+  delete body.parallel_tool_calls;
+  body.temperature = 0;
+  body.stream = false;
+  body.messages = [
     ...nativeBody.messages || [],
     {
       role: "system",
-      content: "\u7EA0\u9519\u91CD\u8BD5\uFF1A\u4E0A\u4E00\u8F6E\u6CA1\u6709\u8FD4\u56DE\u53EF\u6267\u884C\u7684 tool_calls\u3002\u4F60\u73B0\u5728\u5FC5\u987B\u8C03\u7528\u4E14\u53EA\u80FD\u8C03\u7528\u4E00\u4E2A\u672C\u8F6E\u63D0\u4F9B\u7684\u751F\u56FE\u5DE5\u5177\uFF1B\u7981\u6B62\u53EA\u8F93\u51FA\u6587\u5B57\uFF0C\u7981\u6B62\u8FD4\u56DE\u7A7A\u767D\uFF0C\u7981\u6B62\u540C\u65F6\u8C03\u7528\u591A\u4E2A\u5DE5\u5177\u3002"
+      content: `\u7EA0\u9519\u91CD\u8BD5\uFF1A\u4E0A\u4E00\u8F6E\u539F\u751F tools/tool_choice \u8BF7\u6C42\u867D\u7136\u6210\u529F\u8FD4\u56DE\uFF0C\u4F46\u6CA1\u6709\u4EA7\u751F\u53EF\u6267\u884C\u7684 tool_calls\u3002\u4E3A\u907F\u514D\u7EE7\u7EED\u8D4C\u540C\u4E00\u79CD\u517C\u5BB9\u884C\u4E3A\uFF0C\u672C\u6B21\u6539\u7528\u6587\u5B57\u5DE5\u5177\u8C03\u7528\u3002\u5141\u8BB8\u7684\u5DE5\u5177 schema\uFF1A
+${plannerTools.map((tool) => JSON.stringify(tool)).join("\n")}
+
+\u4F60\u73B0\u5728\u53EA\u5141\u8BB8\u8F93\u51FA\u4E00\u884C\u751F\u56FE\u5DE5\u5177\u8C03\u7528\uFF0C\u4E25\u683C\u4F7F\u7528 tool_name({JSON})\uFF1B\u7981\u6B62\u89E3\u91CA\u3001\u5206\u6790\u3001\u9053\u6B49\u3001\u4EE3\u7801\u5757\u3001\u81EA\u7136\u8BED\u8A00\u524D\u540E\u7F00\uFF0C\u4E5F\u7981\u6B62\u8FD4\u56DE\u7A7A\u767D\u3002`
     }
-  ]
-});
+  ];
+  return body;
+};
 var runSeparatePlanner = async (planner, allowedTools, storyContent) => {
   const allowedNames = new Set(allowedTools.map((tool) => tool.exposedName));
   const plannerTools = planner.tools.filter((tool) => allowedNames.has(tool.function.name));
@@ -13537,11 +13803,16 @@ ${latestStory}`;
     max_tokens: 3e3,
     stream: false
   };
+  const encodePlannerBody = (body) => {
+    const raw = JSON.stringify(body);
+    const compatible = applyStorySystemCompatibility(raw, planner.systemCompatibility === true);
+    return typeof compatible === "string" ? compatible : raw;
+  };
   let native;
   try {
     native = await fetchJson(url, planner.apiKey, {
       method: "POST",
-      body: JSON.stringify(nativeBody)
+      body: encodePlannerBody(nativeBody)
     }, 9e4);
   } catch (error) {
     throw new Error(`\u914D\u56FE\u89C4\u5212\u5668\u8BF7\u6C42\u5931\u8D25\uFF1A${String(error?.message || error).slice(0, 500)}`);
@@ -13549,7 +13820,7 @@ ${latestStory}`;
   if (native.response.ok) {
     const selection2 = extractPlannerSelection(native.body, allowedNames, textResolve);
     if (selection2) return selection2;
-    console.warn("[StoryImageHandoff] image planner omitted executable tool call; retrying native planner once", {
+    console.warn("[StoryImageHandoff] image planner omitted executable tool call; retrying once with text compatibility", {
       plannerModel: planner.model,
       toolCount: plannerTools.length,
       response: plannerResponseShape(native.body)
@@ -13558,7 +13829,7 @@ ${latestStory}`;
     try {
       repair = await fetchJson(url, planner.apiKey, {
         method: "POST",
-        body: JSON.stringify(buildNativeRepairBody(nativeBody))
+        body: encodePlannerBody(buildNativeRepairBody(nativeBody))
       }, 9e4);
     } catch (error) {
       throw new Error(`\u914D\u56FE\u89C4\u5212\u5668\u7EA0\u9519\u91CD\u8BD5\u5931\u8D25\uFF1A${String(error?.message || error).slice(0, 500)}`);
@@ -13582,7 +13853,7 @@ ${latestStory}`;
   const schemaText = plannerTools.map((tool) => JSON.stringify(tool)).join("\n");
   const fallback = await fetchJson(url, planner.apiKey, {
     method: "POST",
-    body: JSON.stringify({
+    body: encodePlannerBody({
       model: planner.model,
       messages: [
         {
@@ -13774,132 +14045,6 @@ var sendStoryBackgroundStatusPush = async (env, job, status, error) => {
   }
 };
 
-// worker/amsg/src/storyEgress.ts
-var normalizeRelayUrl = (value) => value.trim();
-var resolveStoryEgressRoute = (env, targetUrl) => {
-  const relayUrl = normalizeRelayUrl(String(env.STORY_EGRESS_RELAY_URL || ""));
-  const relayToken = String(env.STORY_EGRESS_RELAY_TOKEN || "").trim();
-  if (!relayUrl && !relayToken) {
-    return { url: targetUrl, relayed: false };
-  }
-  if (!relayUrl || !relayToken) {
-    throw new Error("\u5267\u60C5\u7EDF\u4E00\u51FA\u53E3\u914D\u7F6E\u4E0D\u5B8C\u6574\uFF1ASTORY_EGRESS_RELAY_URL \u4E0E STORY_EGRESS_RELAY_TOKEN \u5FC5\u987B\u540C\u65F6\u914D\u7F6E");
-  }
-  let parsed;
-  try {
-    parsed = new URL(relayUrl);
-  } catch {
-    throw new Error("\u5267\u60C5\u7EDF\u4E00\u51FA\u53E3\u5730\u5740\u65E0\u6548\uFF1ASTORY_EGRESS_RELAY_URL \u4E0D\u662F\u5408\u6CD5 URL");
-  }
-  if (parsed.protocol !== "https:") {
-    throw new Error("\u5267\u60C5\u7EDF\u4E00\u51FA\u53E3\u5FC5\u987B\u4F7F\u7528 HTTPS");
-  }
-  return { url: parsed.toString(), relayed: true };
-};
-var textLength = (value) => {
-  if (typeof value === "string") return value.length;
-  if (!Array.isArray(value)) return 0;
-  return value.reduce((total, item) => {
-    if (typeof item === "string") return total + item.length;
-    if (!item || typeof item !== "object") return total;
-    const record = item;
-    return total + (typeof record.text === "string" ? record.text.length : 0) + (typeof record.content === "string" ? record.content.length : 0);
-  }, 0);
-};
-var summarizeRequest = (body, targetUrl, route) => {
-  const raw = typeof body === "string" ? body : "";
-  let parsed = {};
-  try {
-    const value = raw ? JSON.parse(raw) : {};
-    if (value && typeof value === "object" && !Array.isArray(value)) {
-      parsed = value;
-    }
-  } catch {
-  }
-  const messages = Array.isArray(parsed.messages) ? parsed.messages : [];
-  const roleCounts = {};
-  let messageTextChars = 0;
-  const contentKinds = /* @__PURE__ */ new Set();
-  for (const item of messages) {
-    if (!item || typeof item !== "object") continue;
-    const message = item;
-    const role = String(message.role || "unknown");
-    roleCounts[role] = (roleCounts[role] || 0) + 1;
-    messageTextChars += textLength(message.content);
-    if (typeof message.content === "string") contentKinds.add("string");
-    else if (Array.isArray(message.content)) {
-      for (const block of message.content) {
-        if (block && typeof block === "object") {
-          contentKinds.add(String(block.type || "object"));
-        } else {
-          contentKinds.add(typeof block);
-        }
-      }
-    } else {
-      contentKinds.add(typeof message.content);
-    }
-  }
-  const safeHost = (value) => {
-    try {
-      return new URL(value).host;
-    } catch {
-      return "invalid-url";
-    }
-  };
-  return {
-    egress: route.relayed ? "relay" : "direct",
-    targetHost: safeHost(targetUrl),
-    relayHost: route.relayed ? safeHost(route.url) : void 0,
-    bodyBytes: raw ? new TextEncoder().encode(raw).byteLength : void 0,
-    bodyKeys: Object.keys(parsed).sort(),
-    model: typeof parsed.model === "string" ? parsed.model : void 0,
-    stream: typeof parsed.stream === "boolean" ? parsed.stream : void 0,
-    streamOptions: parsed.stream_options && typeof parsed.stream_options === "object" ? Object.keys(parsed.stream_options).sort() : [],
-    temperature: typeof parsed.temperature === "number" ? parsed.temperature : void 0,
-    topP: typeof parsed.top_p === "number" ? parsed.top_p : void 0,
-    maxTokens: typeof parsed.max_tokens === "number" ? parsed.max_tokens : void 0,
-    maxCompletionTokens: typeof parsed.max_completion_tokens === "number" ? parsed.max_completion_tokens : void 0,
-    reasoningEffort: typeof parsed.reasoning_effort === "string" ? parsed.reasoning_effort : void 0,
-    messageCount: messages.length,
-    roleCounts,
-    messageTextChars,
-    contentKinds: [...contentKinds].sort()
-  };
-};
-var annotateFailure = async (response, requestBody, targetUrl, route) => {
-  if (response.ok) return response;
-  const original = await response.text().catch(() => "");
-  const diagnostic = summarizeRequest(requestBody, targetUrl, route);
-  const headers = new Headers(response.headers);
-  headers.delete("content-length");
-  headers.delete("content-encoding");
-  headers.set("cache-control", "no-store");
-  return new Response(
-    `${original}${original ? "\n" : ""}[sully_story_diag] ${JSON.stringify(diagnostic)}`,
-    {
-      status: response.status,
-      statusText: response.statusText,
-      headers
-    }
-  );
-};
-var fetchStoryUpstream = async (env, targetUrl, init) => {
-  const route = resolveStoryEgressRoute(env, targetUrl);
-  if (!route.relayed) {
-    const response2 = await fetch(targetUrl, init);
-    return annotateFailure(response2, init.body, targetUrl, route);
-  }
-  const headers = new Headers(init.headers || {});
-  headers.set("X-Sully-Egress-Version", "1");
-  headers.set("X-Sully-Egress-Target", targetUrl);
-  headers.set("X-Sully-Egress-Token", String(env.STORY_EGRESS_RELAY_TOKEN || "").trim());
-  const response = await fetch(route.url, {
-    ...init,
-    headers
-  });
-  return annotateFailure(response, init.body, targetUrl, route);
-};
-
 // worker/amsg/src/storyJobs.ts
 var storyStatusJob = (row) => ({
   jobId: row.job_id,
@@ -13915,7 +14060,9 @@ var MAX_ROUTES = 8;
 var MAX_REQUEST_BYTES = 2e6;
 var PARTIAL_PERSIST_INTERVAL_MS = 900;
 var PARTIAL_PERSIST_CHAR_STEP = 512;
+var PARTIAL_PERSIST_RETRY_BACKOFF_MS = 5e3;
 var CANCEL_POLL_INTERVAL_MS = 750;
+var QUEUED_STATUS_REKICK_AFTER_MS = 12e3;
 var jsonSize = (value) => new TextEncoder().encode(JSON.stringify(value)).byteLength;
 var now = () => Date.now();
 var normalizeBaseUrl = (value) => value.trim().replace(/\/+$/, "");
@@ -14183,6 +14330,14 @@ var kickStoryTick = async (env, userId, jobId) => {
     return { ok: false, reason: "kick-failed", error };
   }
 };
+var claimQueuedStoryRekick = async (env, row) => {
+  if (row.status !== "queued" || now() - row.updated_at < QUEUED_STATUS_REKICK_AFTER_MS) return false;
+  const touchedAt = now();
+  const claimed = await env.DB.prepare(
+    "UPDATE story_jobs SET updated_at = ? WHERE user_id = ? AND job_id = ? AND status = 'queued' AND updated_at = ?"
+  ).bind(touchedAt, row.user_id, row.job_id, row.updated_at).run();
+  return (claimed.meta?.changes ?? 0) > 0;
+};
 var routeAttempt = (route, index, startedAt) => ({
   routeIndex: index,
   presetId: route.presetId,
@@ -14348,15 +14503,27 @@ var readStreamingResponse = async (env, row, response, model) => {
   let sawDoneMarker = false;
   let lastPersistAt = 0;
   let lastPersistChars = 0;
+  let lastPersistFailureAt = 0;
   const maybePersist = async (force = false) => {
     const t = now();
     const enoughTime = t - lastPersistAt >= PARTIAL_PERSIST_INTERVAL_MS;
     const enoughChars = state.content.length - lastPersistChars >= PARTIAL_PERSIST_CHAR_STEP;
     if (!force && !enoughTime && !enoughChars) return;
+    if (!force && lastPersistFailureAt > 0 && t - lastPersistFailureAt < PARTIAL_PERSIST_RETRY_BACKOFF_MS) return;
     if (!state.content && !state.reasoning) return;
-    await persistProgress(env, row, state.content, state.reasoning.length);
-    lastPersistAt = t;
-    lastPersistChars = state.content.length;
+    try {
+      await persistProgress(env, row, state.content, state.reasoning.length);
+      lastPersistAt = t;
+      lastPersistChars = state.content.length;
+      lastPersistFailureAt = 0;
+    } catch (error) {
+      lastPersistFailureAt = t;
+      console.warn("[amsg:story-job] partial progress persist failed; keeping upstream stream alive", {
+        jobId: row.job_id,
+        visibleChars: state.content.length,
+        error: error?.message || String(error)
+      });
+    }
   };
   const consumeLine = async (line) => {
     const trimmed = line.trimEnd();
@@ -14812,7 +14979,7 @@ var handleStoryJobsRequest = async (request, env) => {
   }
   if (method === "GET" && tail.length === 1 && tail[0]) {
     const row = await loadRowById(env.DB, userId, decodeURIComponent(tail[0]));
-    if (row?.status === "queued") {
+    if (row?.status === "queued" && await claimQueuedStoryRekick(env, row)) {
       const kicked = await kickStoryTick(env, userId, row.job_id);
       if (!kicked.ok && kicked.reason === "kick-failed") {
         console.warn("[amsg:story-job] status \u65F6\u91CD\u53EB INSTANT_TICK story \u5931\u8D25", kicked.error);

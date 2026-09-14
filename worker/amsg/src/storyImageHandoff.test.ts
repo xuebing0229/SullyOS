@@ -330,19 +330,13 @@ describe('story cloud image handoff', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
-  it('keeps native tools on the second attempt when the first native planner response omits a call', async () => {
+  it('switches the second attempt to text compatibility when a successful native response omits a call', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(new Response(JSON.stringify({
         choices: [{ message: { content: '我来画这一幕。' } }],
       }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
       .mockResolvedValueOnce(new Response(JSON.stringify({
-        choices: [{ message: {
-          tool_calls: [{
-            id: '',
-            type: 'function',
-            function: { name: 'image_novelai', arguments: '{"prompt":"native repair"}' },
-          }],
-        } }],
+        choices: [{ message: { content: 'image_novelai({"prompt":"text repair"})' } }],
       }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
       .mockResolvedValueOnce(new Response(JSON.stringify({
         job: { id: 'remote_native_repair', status: 'running' },
@@ -357,11 +351,12 @@ describe('story cloud image handoff', () => {
     expect(result).toMatchObject({
       state: 'submitted',
       remoteJobId: 'remote_native_repair',
-      arguments: { prompt: 'native repair' },
+      arguments: { prompt: 'text repair' },
     });
     const retryBody = JSON.parse(String((fetchMock.mock.calls[1][1] as RequestInit).body));
-    expect(retryBody.tools).toHaveLength(1);
-    expect(retryBody.tool_choice).toEqual({ type: 'function', function: { name: 'image_novelai' } });
+    expect(retryBody.tools).toBeUndefined();
+    expect(retryBody.tool_choice).toBeUndefined();
+    expect(JSON.stringify(retryBody.messages)).toContain('tool_name({JSON})');
   });
 
   it('falls back to the shared text-call format only when the upstream rejects native tools', async () => {

@@ -467,18 +467,26 @@ const extractPlannerSelection = (
   return parsePlannerText(content, allowedNames);
 };
 
-const buildNativeRepairBody = (nativeBody: Record<string, unknown>): Record<string, unknown> => ({
-  ...nativeBody,
-  temperature: 0,
-  parallel_tool_calls: false,
-  messages: [
+const buildNativeRepairBody = (nativeBody: Record<string, unknown>): Record<string, unknown> => {
+  const plannerTools = Array.isArray(nativeBody.tools) ? nativeBody.tools : [];
+  const body: Record<string, unknown> = { ...nativeBody };
+  delete body.tools;
+  delete body.tool_choice;
+  delete body.parallel_tool_calls;
+  body.temperature = 0;
+  body.stream = false;
+  body.messages = [
     ...((nativeBody.messages as unknown[]) || []),
     {
       role: 'system',
-      content: '纠错重试：上一轮没有返回可执行的 tool_calls。你现在必须调用且只能调用一个本轮提供的生图工具；禁止只输出文字，禁止返回空白，禁止同时调用多个工具。',
+      content: `纠错重试：上一轮原生 tools/tool_choice 请求虽然成功返回，但没有产生可执行的 tool_calls。为避免继续赌同一种兼容行为，本次改用文字工具调用。允许的工具 schema：
+${plannerTools.map(tool => JSON.stringify(tool)).join('\n')}
+
+你现在只允许输出一行生图工具调用，严格使用 tool_name({JSON})；禁止解释、分析、道歉、代码块、自然语言前后缀，也禁止返回空白。`,
     },
-  ],
-});
+  ];
+  return body;
+};
 
 const runSeparatePlanner = async (
   planner: StoryCloudImagePlannerSpec,
@@ -528,14 +536,14 @@ const runSeparatePlanner = async (
     const selection = extractPlannerSelection(native.body, allowedNames, textResolve);
     if (selection) return selection;
 
-    console.warn('[StoryImageHandoff] image planner omitted executable tool call; retrying native planner once', {
+    console.warn('[StoryImageHandoff] image planner omitted executable tool call; retrying once with text compatibility', {
       plannerModel: planner.model,
       toolCount: plannerTools.length,
       response: plannerResponseShape(native.body),
     });
 
-    // 旧 App 端的成熟行为：原生 tools 请求成功但模型漏调工具时，第二次仍使用原生 tools
-    // 做纠错，而不是擅自切成另一套 JSON 协议。这样前台/后台看到同一种模型返回时行为一致。
+    // 有些兼容站会 HTTP 200 但偷偷忽略 tool_choice。第二次直接换成已经存在的
+    // 文字工具兼容协议，避免连续两次赌同一个不稳定的原生 function-calling 行为。
     let repair: { response: Response; body: any };
     try {
       repair = await fetchJson(url, planner.apiKey, {

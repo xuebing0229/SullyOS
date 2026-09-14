@@ -25,6 +25,7 @@ import { snapshotStoryReference, type StoryReferenceUpload } from './storyImageR
 import { findApiPresetForConfig } from './apiPresetRouteIdentity';
 import { getApiPresetStorySystemCompatibility } from './apiPresetModels';
 import { applyStorySystemCompatibilityToBody } from './storySystemCompatibility';
+import { extractStoryImagePlannerJsonSelection } from './storyImagePlannerCompat';
 
 export interface StoryInlineImagePlan {
     tool: string;
@@ -521,28 +522,29 @@ const extractPlannerSelection = (
         }
     }
 
-    const faked = extractTextFakedMcpCalls(String(message.content || ''), imageTools.resolve)[0];
-    return faked
-        ? { selectedName: faked.exposedName, rawArgs: faked.args }
+    const content = String(message.content || '');
+    const faked = extractTextFakedMcpCalls(content, imageTools.resolve)[0];
+    if (faked) return { selectedName: faked.exposedName, rawArgs: faked.args };
+
+    const jsonSelection = extractStoryImagePlannerJsonSelection(content, imageTools.resolve.keys());
+    return jsonSelection
+        ? { selectedName: jsonSelection.tool, rawArgs: jsonSelection.arguments }
         : null;
 };
 
 const buildPlannerRepairBody = (
     nativeBody: Record<string, any>,
-    textFallback: boolean,
 ): Record<string, any> => {
-    const body = textFallback
-        ? buildMcpRejectedToolsFallbackBody(nativeBody)
-        : { ...nativeBody };
+    // Some compatible gateways return HTTP 200 while silently ignoring tools/tool_choice.
+    // The repair must change protocol instead of repeating the same unstable native call.
+    const body = buildMcpRejectedToolsFallbackBody(nativeBody);
     body.temperature = 0;
     body.parallel_tool_calls = false;
     body.messages = [
         ...(body.messages || []),
         {
             role: 'system',
-            content: textFallback
-                ? '纠错重试：上一轮没有产生客户端可执行的生图调用。你现在只允许输出一个生图工具调用，严格使用上面 MCP 文字兼容格式 tool_name({JSON})；禁止解释、分析、道歉、代码块、自然语言前后缀，也禁止返回空白。'
-                : '纠错重试：上一轮没有返回可执行的 tool_calls。你现在必须调用且只能调用一个本轮提供的生图工具；禁止只输出文字，禁止返回空白，禁止同时调用多个工具。',
+            content: '纠错重试：上一轮没有产生客户端可执行的生图调用。你现在只允许输出一个生图工具调用，严格使用上面 MCP 文字兼容格式 tool_name({JSON})；禁止解释、分析、道歉、代码块、自然语言前后缀，也禁止返回空白。',
         },
     ];
     return body;
@@ -634,10 +636,10 @@ export async function generateStoryTheaterImage(input: GenerateStoryImageInput):
             // 规划器偶发“明明有工具却只回正文”。真正生图尚未发生，所以这里补一次规划不会重复出图。
             console.warn('[StoryTheater] image planner omitted tool call; retrying planner once', {
                 plannerModel: plannerApiConfig.model,
-                mode: plannerUsedTextFallback ? 'text-fallback' : 'native-tools',
+                mode: plannerUsedTextFallback ? 'text-fallback' : 'native-tools->text-fallback',
                 toolCount: imageTools.tools.length,
             });
-            const repairBody = buildPlannerRepairBody(nativeBody, plannerUsedTextFallback);
+            const repairBody = buildPlannerRepairBody(nativeBody);
             const repairResponse = await runPlanner(repairBody);
             selection = extractPlannerSelection(repairResponse.value, imageTools);
 
