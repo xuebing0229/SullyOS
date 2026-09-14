@@ -4499,18 +4499,18 @@ const Settings: React.FC = () => {
                                       只作用于文游正文和剧情生图规划模型，主聊天不会读取。遇到长 system 导致 400/429 等兼容异常时再开启。
                                   </p>
                               </div>
-                              <button
-                                  type="button"
-                                  role="switch"
-                                  aria-checked={enabled}
-                                  onClick={() => {
-                                      const updated = setApiPresetModelStorySystemCompatibility(preset, pricingModel, !enabled);
-                                      updateApiPreset(preset.id, { models: updated.models });
-                                  }}
-                                  className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${enabled ? 'bg-violet-500' : 'bg-slate-200'}`}
-                              >
-                                  <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow-sm transition-transform ${enabled ? 'translate-x-5' : 'translate-x-0.5'}`} />
-                              </button>
+                                                            <label className="relative inline-flex items-center cursor-pointer shrink-0">
+                                  <input
+                                      type="checkbox"
+                                      checked={enabled}
+                                      onChange={event => {
+                                          const updated = setApiPresetModelStorySystemCompatibility(preset, pricingModel, event.target.checked);
+                                          updateApiPreset(preset.id, { models: updated.models });
+                                      }}
+                                      className="sr-only peer"
+                                  />
+                                  <div className="w-11 h-6 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-violet-500"></div>
+                              </label>
                           </div>
                       </div>
                   );
