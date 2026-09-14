@@ -1,0 +1,71 @@
+name: Apply emoji role permission entry patch
+
+on:
+  push:
+    branches:
+      - fix/emoji-role-permission-entry
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/emoji-role-permission-entry
+      - name: Expose emoji role permission in panel
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          # 1) Emoji panel: visible status + one-tap toggle for the active group.
+          path = Path('components/chat/ChatInputArea.tsx')
+          text = path.read_text(encoding='utf-8')
+
+          old = """    const emojiPageStart = emojiPage * EMOJI_PAGE_SIZE;\n    const visibleEmojis = emojis.slice(emojiPageStart, emojiPageStart + EMOJI_PAGE_SIZE);\n"""
+          new = """    const emojiPageStart = emojiPage * EMOJI_PAGE_SIZE;\n    const visibleEmojis = emojis.slice(emojiPageStart, emojiPageStart + EMOJI_PAGE_SIZE);\n    const activeCategoryData = categories.find(cat => cat.id === activeCategory);\n    const activeCategoryRoleUsable = activeCategoryData?.roleUsable !== false;\n"""
+          if text.count(old) != 1:
+              raise SystemExit(f'unexpected pagination anchor count: {text.count(old)}')
+          text = text.replace(old, new, 1)
+
+          old = """                                            {cat.allowedCharacterIds && cat.allowedCharacterIds.length > 0 && (\n                                                <Lock className=\"w-3 h-3 opacity-60\" weight=\"bold\" />\n                                            )}\n                                        </button>\n                                    ))}\n                                    <button onClick={() => onPanelAction('add-category')} className={categoryAddButtonClass}>+</button>\n                                    {/* 尾部留白必须 ≥ 右侧浮动按钮区宽度（两个 w-6 + gap + px-3 ≈ 78px），\n                                        否则滚到最右时 + 按钮被浮动小药丸盖住点不到 */}\n                                    <div className=\"w-24 shrink-0 pointer-events-none\" />\n"""
+          new = """                                            {cat.allowedCharacterIds && cat.allowedCharacterIds.length > 0 && (\n                                                <Lock className=\"w-3 h-3 opacity-60\" weight=\"bold\" />\n                                            )}\n                                            <span\n                                                className={`w-1.5 h-1.5 shrink-0 rounded-full ${cat.roleUsable === false ? 'bg-slate-300' : 'bg-emerald-400'}`}\n                                                title={cat.roleUsable === false ? '角色不可用' : '角色可用'}\n                                            />\n                                        </button>\n                                    ))}\n                                    <button onClick={() => onPanelAction('add-category')} className={categoryAddButtonClass}>+</button>\n                                    {/* 尾部留白覆盖右侧“角色可用”+ 分组总览 + 编辑按钮区，避免滚到最右时分组被盖住。 */}\n                                    <div className=\"w-44 shrink-0 pointer-events-none\" />\n"""
+          if text.count(old) != 1:
+              raise SystemExit(f'unexpected category chip anchor count: {text.count(old)}')
+          text = text.replace(old, new, 1)
+
+          old = """                                    <div className=\"absolute right-0 top-0 bottom-0 z-10 flex items-center justify-end gap-1.5 px-3 pointer-events-none\">\n                                        {categories.length > 1 && (\n"""
+          new = """                                    <div className=\"absolute right-0 top-0 bottom-0 z-10 flex items-center justify-end gap-1.5 px-3 pointer-events-none\">\n                                        {activeCategoryData && (\n                                            <button\n                                                type=\"button\"\n                                                onClick={(e) => { e.stopPropagation(); onPanelAction('toggle-category-role', activeCategoryData); }}\n                                                title={activeCategoryRoleUsable ? '角色可用：点此关闭' : '角色禁用：点此开启'}\n                                                aria-pressed={activeCategoryRoleUsable}\n                                                className={`h-6 px-2 rounded-full flex items-center justify-center text-[9px] font-bold transition-colors shadow-sm pointer-events-auto ${\n                                                    activeCategoryRoleUsable\n                                                        ? (isPixelStyle ? 'bg-[#5f9f75] text-white' : isDiscordStyle ? 'bg-emerald-500/25 text-emerald-200 border border-emerald-400/30' : 'bg-emerald-500 text-white')\n                                                        : (isPixelStyle ? 'bg-[#b9aa99] text-[#fff7ed]' : isDiscordStyle ? 'bg-slate-700 text-slate-300 border border-white/10' : 'bg-slate-200 text-slate-500')\n                                                }`}\n                                            >\n                                                角色{activeCategoryRoleUsable ? '可用' : '禁用'}\n                                            </button>\n                                        )}\n                                        {categories.length > 1 && (\n"""
+          if text.count(old) != 1:
+              raise SystemExit(f'unexpected toolbar anchor count: {text.count(old)}')
+          text = text.replace(old, new, 1)
+
+          old = """                                            {cat.allowedCharacterIds && cat.allowedCharacterIds.length > 0 && (\n                                                <Lock className=\"w-3 h-3 opacity-60\" weight=\"bold\" />\n                                            )}\n                                        </button>\n                                    ))}\n                                    {/* 总览里也能新建分组：横向条分组多时 + 可能滑不到/被浮动按钮挡，这里保底 */}\n"""
+          new = """                                            {cat.allowedCharacterIds && cat.allowedCharacterIds.length > 0 && (\n                                                <Lock className=\"w-3 h-3 opacity-60\" weight=\"bold\" />\n                                            )}\n                                            <span className={`w-1.5 h-1.5 shrink-0 rounded-full ${cat.roleUsable === false ? 'bg-slate-300' : 'bg-emerald-400'}`} />\n                                        </button>\n                                    ))}\n                                    {/* 总览里也能新建分组：横向条分组多时 + 可能滑不到/被浮动按钮挡，这里保底 */}\n"""
+          if text.count(old) != 1:
+              raise SystemExit(f'unexpected overview chip anchor count: {text.count(old)}')
+          text = text.replace(old, new, 1)
+
+          path.write_text(text, encoding='utf-8')
+
+          # 2) Chat action bridge: reuse the already-persisted roleUsable handler.
+          path = Path('apps/Chat.tsx')
+          text = path.read_text(encoding='utf-8')
+          old = """            case 'select-category': setActiveCategory(payload); break;\n            case 'category-options': setSelectedCategory(payload); setModalType('category-options'); break;\n"""
+          new = """            case 'select-category': setActiveCategory(payload); break;\n            case 'toggle-category-role': if (payload?.id) { void handleSaveCategoryRoleUsable(payload.id, payload.roleUsable === false); } break;\n            case 'category-options': setSelectedCategory(payload); setModalType('category-options'); break;\n"""
+          if text.count(old) != 1:
+              raise SystemExit(f'unexpected chat action anchor count: {text.count(old)}')
+          text = text.replace(old, new, 1)
+          path.write_text(text, encoding='utf-8')
+          PY
+
+          git diff --check
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add components/chat/ChatInputArea.tsx apps/Chat.tsx
+          git commit -m "fix: expose emoji role permission toggle"
+          git push origin HEAD:fix/emoji-role-permission-entry
