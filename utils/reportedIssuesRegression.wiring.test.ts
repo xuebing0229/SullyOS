@@ -102,6 +102,22 @@ describe('用户反馈回归保护', () => {
         expect(source).toContain('initialBottomFollowRef');
         expect(source).toContain('ResizeObserver');
         expect(source).toContain('autoFollowStreamRef.current = distanceFromBottom <= 96');
-        expect(source).toContain('整段上下滑动浏览');
+        expect(source).toContain('StoryHistoryPreview');
+    });
+
+    it('文游把大量归档楼层合并成单个可搜索历史入口，并能从缩略内容跳回原楼层', () => {
+        const source = read('../components/date/story/StoryTheaterSession.tsx');
+        const history = read('../components/date/story/StoryHistoryPreview.tsx');
+
+        expect(source).toContain('历史剧情 · 已归档 {archivedCount} 条');
+        expect(source).toContain('setShowHistoryPreview(true)');
+        expect(source).toContain('archived && message.id !== historySpotlightId');
+        expect(source).toContain('pendingHistoryJumpRef');
+        expect(source).not.toContain('expandedArchivedIds');
+        expect(source).not.toContain('setArchiveExpanded');
+        expect(history).toContain("placeholder='搜索历史剧情'");
+        expect(history).toContain('storyHistorySnippet');
+        expect(history).toContain('onJump(message)');
+        expect(history).toContain('第 {index + 1} 楼');
     });
 });
