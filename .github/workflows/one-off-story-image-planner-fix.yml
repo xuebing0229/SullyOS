@@ -1,0 +1,312 @@
+name: One-off Story Image Planner Compatibility Fix
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - .github/workflows/one-off-story-image-planner-fix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Apply focused planner compatibility patch
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              file = Path(path)
+              text = file.read_text(encoding='utf-8')
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{path}: expected exactly one match, got {count}')
+              file.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+          # Pure, conservative parser for planners that return a normal JSON object in message.content
+          # instead of OpenAI message.tool_calls.
+          Path('utils/storyImagePlannerCompat.ts').write_text(r'''export interface StoryImagePlannerJsonSelection {
+              tool: string;
+              arguments: Record<string, unknown>;
+          }
+
+          const isRecord = (value: unknown): value is Record<string, unknown> =>
+              Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+
+          const parseArguments = (value: unknown): Record<string, unknown> | null => {
+              if (isRecord(value)) return { ...value };
+              if (typeof value !== 'string' || !value.trim()) return null;
+              try {
+                  const parsed = JSON.parse(value);
+                  return isRecord(parsed) ? { ...parsed } : null;
+              } catch {
+                  return null;
+              }
+          };
+
+          /**
+           * Some OpenAI-compatible gateways accept tools/tool_choice but occasionally return the
+           * selected call as plain JSON in message.content. Accept only known tool names and only a
+           * single JSON object (optionally wrapped in a Markdown fence), so arbitrary prose cannot
+           * accidentally become an executable image call.
+           */
+          export const extractStoryImagePlannerJsonSelection = (
+              content: string,
+              allowedToolNames: Iterable<string>,
+          ): StoryImagePlannerJsonSelection | null => {
+              const allowed = new Set(Array.from(allowedToolNames, name => String(name || '').trim()).filter(Boolean));
+              if (!allowed.size) return null;
+
+              const clean = String(content || '')
+                  .trim()
+                  .replace(/^```(?:json)?\s*/i, '')
+                  .replace(/\s*```$/, '')
+                  .trim();
+              if (!clean) return null;
+
+              const first = clean.indexOf('{');
+              const last = clean.lastIndexOf('}');
+              if (first < 0 || last <= first) return null;
+
+              let raw: Record<string, unknown>;
+              try {
+                  const parsed = JSON.parse(clean.slice(first, last + 1));
+                  if (!isRecord(parsed)) return null;
+                  raw = parsed;
+              } catch {
+                  return null;
+              }
+
+              const fn = isRecord(raw.function) ? raw.function : undefined;
+              const tool = String(
+                  raw.tool
+                  || raw.tool_name
+                  || raw.name
+                  || fn?.name
+                  || '',
+              ).trim();
+              if (!tool || !allowed.has(tool)) return null;
+
+              const args = parseArguments(raw.arguments ?? raw.args ?? fn?.arguments);
+              return args ? { tool, arguments: args } : null;
+          };
+          ''', encoding='utf-8')
+
+          Path('utils/storyImagePlannerCompat.test.ts').write_text(r'''import { describe, expect, it } from 'vitest';
+          import { extractStoryImagePlannerJsonSelection } from './storyImagePlannerCompat';
+
+          describe('story image planner JSON compatibility', () => {
+              const allowed = ['image_novelai', 'image_gpt'];
+
+              it('accepts a plain JSON tool selection', () => {
+                  expect(extractStoryImagePlannerJsonSelection(
+                      '{"tool":"image_novelai","arguments":{"prompt":"rainy platform"}}',
+                      allowed,
+                  )).toEqual({
+                      tool: 'image_novelai',
+                      arguments: { prompt: 'rainy platform' },
+                  });
+              });
+
+              it('accepts fenced JSON and stringified function arguments', () => {
+                  expect(extractStoryImagePlannerJsonSelection(
+                      '```json\n{"function":{"name":"image_gpt","arguments":"{\\"prompt\\":\\"night street\\"}"}}\n```',
+                      allowed,
+                  )).toEqual({
+                      tool: 'image_gpt',
+                      arguments: { prompt: 'night street' },
+                  });
+              });
+
+              it('rejects unknown tools even when the JSON is otherwise valid', () => {
+                  expect(extractStoryImagePlannerJsonSelection(
+                      '{"tool":"unknown_tool","arguments":{"prompt":"nope"}}',
+                      allowed,
+                  )).toBeNull();
+              });
+          });
+          ''', encoding='utf-8')
+
+          # Foreground/manual planner: accept plain JSON, and make the second attempt text-compatible
+          # even when the first native tools request returned HTTP 200 but silently ignored tool_choice.
+          replace_once(
+              'utils/storyTheaterImage.ts',
+              "import { applyStorySystemCompatibilityToBody } from './storySystemCompatibility';\n",
+              "import { applyStorySystemCompatibilityToBody } from './storySystemCompatibility';\nimport { extractStoryImagePlannerJsonSelection } from './storyImagePlannerCompat';\n",
+          )
+
+          replace_once(
+              'utils/storyTheaterImage.ts',
+              """    const faked = extractTextFakedMcpCalls(String(message.content || ''), imageTools.resolve)[0];
+              return faked
+                  ? { selectedName: faked.exposedName, rawArgs: faked.args }
+                  : null;
+          };
+          """,
+              """    const content = String(message.content || '');
+              const faked = extractTextFakedMcpCalls(content, imageTools.resolve)[0];
+              if (faked) return { selectedName: faked.exposedName, rawArgs: faked.args };
+
+              const jsonSelection = extractStoryImagePlannerJsonSelection(content, imageTools.resolve.keys());
+              return jsonSelection
+                  ? { selectedName: jsonSelection.tool, rawArgs: jsonSelection.arguments }
+                  : null;
+          };
+          """,
+          )
+
+          replace_once(
+              'utils/storyTheaterImage.ts',
+              """    const body = textFallback
+                  ? buildMcpRejectedToolsFallbackBody(nativeBody)
+                  : { ...nativeBody };
+          """,
+              """    // A successful HTTP response can still come from an OpenAI-compatible gateway that
+              // silently ignored tools/tool_choice. Do not wager the second attempt on the same protocol:
+              // always downgrade the repair request to the established textual MCP call format.
+              const body = buildMcpRejectedToolsFallbackBody(nativeBody);
+          """,
+          )
+
+          replace_once(
+              'utils/storyTheaterImage.ts',
+              "mode: plannerUsedTextFallback ? 'text-fallback' : 'native-tools',",
+              "mode: plannerUsedTextFallback ? 'text-fallback' : 'native-tools->text-fallback',",
+          )
+
+          # Cloud Story Worker: same policy. Its parser already accepts both shared fake-tool syntax and
+          # plain JSON, so only the repair request needs to shed native tools/tool_choice.
+          replace_once(
+              'worker/amsg/src/storyImageHandoff.ts',
+              """const buildNativeRepairBody = (nativeBody: Record<string, unknown>): Record<string, unknown> => ({
+            ...nativeBody,
+            temperature: 0,
+            parallel_tool_calls: false,
+            messages: [
+              ...((nativeBody.messages as unknown[]) || []),
+              {
+                role: 'system',
+                content: '纠错重试：上一轮没有返回可执行的 tool_calls。你现在必须调用且只能调用一个本轮提供的生图工具；禁止只输出文字，禁止返回空白，禁止同时调用多个工具。',
+              },
+            ],
+          });
+          """,
+              """const buildNativeRepairBody = (nativeBody: Record<string, unknown>): Record<string, unknown> => {
+            const plannerTools = Array.isArray(nativeBody.tools) ? nativeBody.tools : [];
+            const body: Record<string, unknown> = { ...nativeBody };
+            delete body.tools;
+            delete body.tool_choice;
+            delete body.parallel_tool_calls;
+            body.temperature = 0;
+            body.stream = false;
+            body.messages = [
+              ...((nativeBody.messages as unknown[]) || []),
+              {
+                role: 'system',
+                content: `纠错重试：上一轮原生 tools/tool_choice 请求虽然成功返回，但没有产生可执行的 tool_calls。为避免继续赌同一种兼容行为，本次改用文字工具调用。允许的工具 schema：\n${plannerTools.map(tool => JSON.stringify(tool)).join('\\n')}\n\n你现在只允许输出一行生图工具调用，严格使用 tool_name({JSON})；禁止解释、分析、道歉、代码块、自然语言前后缀，也禁止返回空白。`,
+              },
+            ];
+            return body;
+          };
+          """,
+          )
+
+          replace_once(
+              'worker/amsg/src/storyImageHandoff.ts',
+              "image planner omitted executable tool call; retrying native planner once",
+              "image planner omitted executable tool call; retrying once with text compatibility",
+          )
+
+          replace_once(
+              'worker/amsg/src/storyImageHandoff.ts',
+              """    // 旧 App 端的成熟行为：原生 tools 请求成功但模型漏调工具时，第二次仍使用原生 tools
+              // 做纠错，而不是擅自切成另一套 JSON 协议。这样前台/后台看到同一种模型返回时行为一致。
+          """,
+              """    // 有些兼容站会 HTTP 200 但偷偷忽略 tool_choice。第二次直接换成已经存在的
+              // 文字工具兼容协议，避免连续两次赌同一个不稳定的原生 function-calling 行为。
+          """,
+          )
+
+          # Flip the regression test: after a successful-but-empty native response, the second request
+          # must no longer contain tools/tool_choice and a textual tool call must be accepted.
+          replace_once(
+              'worker/amsg/src/storyImageHandoff.test.ts',
+              "it('keeps native tools on the second attempt when the first native planner response omits a call', async () => {",
+              "it('switches the second attempt to text compatibility when a successful native response omits a call', async () => {",
+          )
+
+          replace_once(
+              'worker/amsg/src/storyImageHandoff.test.ts',
+              """      .mockResolvedValueOnce(new Response(JSON.stringify({
+                choices: [{ message: {
+                  tool_calls: [{
+                    id: '',
+                    type: 'function',
+                    function: { name: 'image_novelai', arguments: '{\"prompt\":\"native repair\"}' },
+                  }],
+                } }],
+              }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+          """,
+              """      .mockResolvedValueOnce(new Response(JSON.stringify({
+                choices: [{ message: { content: 'image_novelai({\"prompt\":\"text repair\"})' } }],
+              }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+          """,
+          )
+
+          replace_once(
+              'worker/amsg/src/storyImageHandoff.test.ts',
+              "arguments: { prompt: 'native repair' },",
+              "arguments: { prompt: 'text repair' },",
+          )
+
+          replace_once(
+              'worker/amsg/src/storyImageHandoff.test.ts',
+              """    expect(retryBody.tools).toHaveLength(1);
+              expect(retryBody.tool_choice).toEqual({ type: 'function', function: { name: 'image_novelai' } });
+          """,
+              """    expect(retryBody.tools).toBeUndefined();
+              expect(retryBody.tool_choice).toBeUndefined();
+              expect(JSON.stringify(retryBody.messages)).toContain('tool_name({JSON})');
+          """,
+          )
+
+          print('story image planner compatibility patch applied')
+          PY
+
+      - name: Install dependencies
+        run: |
+          corepack enable
+          pnpm install --frozen-lockfile
+
+      - name: Run focused regression tests
+        run: pnpm vitest run utils/storyImagePlannerCompat.test.ts worker/amsg/src/storyImageHandoff.test.ts --pool=forks --maxWorkers=1 --minWorkers=1
+
+      - name: Typecheck worker
+        run: pnpm typecheck:worker
+
+      - name: Build web app
+        run: pnpm build
+
+      - name: Check patch cleanliness
+        run: git diff --check
+
+      - name: Commit tested fix
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add utils/storyTheaterImage.ts utils/storyImagePlannerCompat.ts utils/storyImagePlannerCompat.test.ts worker/amsg/src/storyImageHandoff.ts worker/amsg/src/storyImageHandoff.test.ts
+          git commit -m '[story-image-planner-fix] make planner retry change protocol'
+          git push origin HEAD:master
