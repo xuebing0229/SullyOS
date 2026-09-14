@@ -1,0 +1,108 @@
+name: One-off Story Image Planner Compatibility Fix v4
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - .github/workflows/one-off-story-image-planner-fix-v4.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch-test-build-commit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Reuse validated v3 patch script
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          workflow = Path('.github/workflows/one-off-story-image-planner-fix-v3.yml').read_text(encoding='utf-8')
+          open_marker = "          python3 - <<'PY'\n"
+          close_marker = "\n          PY\n"
+          start = workflow.index(open_marker) + len(open_marker)
+          end = workflow.index(close_marker, start)
+          body = workflow[start:end]
+          lines = []
+          for line in body.splitlines():
+              lines.append(line[10:] if line.startswith('          ') else line)
+          Path('/tmp/story-image-planner-patch.py').write_text('\n'.join(lines) + '\n', encoding='utf-8')
+          PY
+          python3 /tmp/story-image-planner-patch.py
+
+      - name: Install dependencies
+        run: |
+          corepack enable
+          pnpm install --frozen-lockfile
+
+      - name: Run focused regression tests
+        run: pnpm vitest run utils/storyImagePlannerCompat.test.ts worker/amsg/src/storyImageHandoff.test.ts --pool=forks --maxWorkers=1 --minWorkers=1
+
+      - name: Build workers and web app
+        run: pnpm build
+
+      - name: Verify only intended tracked files changed
+        shell: bash
+        run: |
+          git diff --check
+          python3 - <<'PY'
+          import subprocess
+          allowed = {
+              'utils/storyTheaterImage.ts',
+              'utils/storyImagePlannerCompat.ts',
+              'utils/storyImagePlannerCompat.test.ts',
+              'worker/amsg/src/storyImageHandoff.ts',
+              'worker/amsg/src/storyImageHandoff.test.ts',
+              'worker/amsg/worker.bundle.js',
+              'public/amsg-worker.bundle.js',
+          }
+          raw = subprocess.check_output(['git', 'status', '--porcelain=v1'], text=True)
+          changed = set()
+          for line in raw.splitlines():
+              if not line.strip():
+                  continue
+              path = line[3:]
+              if ' -> ' in path:
+                  path = path.split(' -> ', 1)[1]
+              changed.add(path)
+          unexpected = sorted(changed - allowed)
+          missing_core = sorted({
+              'utils/storyTheaterImage.ts',
+              'utils/storyImagePlannerCompat.ts',
+              'utils/storyImagePlannerCompat.test.ts',
+              'worker/amsg/src/storyImageHandoff.ts',
+              'worker/amsg/src/storyImageHandoff.test.ts',
+              'worker/amsg/worker.bundle.js',
+              'public/amsg-worker.bundle.js',
+          } - changed)
+          if unexpected:
+              raise SystemExit(f'unexpected changed paths: {unexpected}')
+          if missing_core:
+              raise SystemExit(f'expected changed paths missing: {missing_core}')
+          print('intended changes only:', *sorted(changed), sep='\n- ')
+          PY
+
+      - name: Commit tested fix
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add \
+            utils/storyTheaterImage.ts \
+            utils/storyImagePlannerCompat.ts \
+            utils/storyImagePlannerCompat.test.ts \
+            worker/amsg/src/storyImageHandoff.ts \
+            worker/amsg/src/storyImageHandoff.test.ts \
+            worker/amsg/worker.bundle.js \
+            public/amsg-worker.bundle.js
+          git commit -m '[story-image-planner-fix] make planner retry change protocol'
+          git push origin HEAD:master
