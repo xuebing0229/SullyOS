@@ -58,6 +58,7 @@ import {
 import { processNewMessagesWithAutoArchive } from '../../../utils/memoryPalace/autoArchive';
 import { incrementDigestRound, runCognitiveDigestion } from '../../../utils/memoryPalace';
 import StoryQuickPresetPanel from './StoryQuickPresetPanel';
+import StoryHistoryPreview from './StoryHistoryPreview';
 import { StoryAppearanceButton, useStoryTheaterAppearance } from './StoryTheaterTheme';
 import { shareOrDownloadFile } from '../../../utils/shareExport';
 import {
@@ -449,7 +450,8 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
     const [showAffinityInput, setShowAffinityInput] = useState(false);
     const [affinityDrafts, setAffinityDrafts] = useState<Record<string, AffinityDraft>>({});
     const [selectedAffinityActorId, setSelectedAffinityActorId] = useState('');
-    const [expandedArchivedIds, setExpandedArchivedIds] = useState<Set<number>>(() => new Set());
+    const [showHistoryPreview, setShowHistoryPreview] = useState(false);
+    const [historySpotlightId, setHistorySpotlightId] = useState<number | null>(null);
     const [exporting, setExporting] = useState(false);
     const [memoryCandidates, setMemoryCandidates] = useState<AppMemoryCandidate[]>([]);
     const [showMemoryCards, setShowMemoryCards] = useState(false);
@@ -480,6 +482,8 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
     // 首次渲染后图片/字体/折叠摘要还会继续改变正文高度，只滚一次很容易停在中段。
     const initialBottomFollowRef = useRef(true);
     const bottomRef = useRef<HTMLDivElement>(null);
+    const storyMessageElementsRef = useRef<Map<number, HTMLElement>>(new Map());
+    const pendingHistoryJumpRef = useRef<number | null>(null);
     const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
     const longPressOrigin = useRef<{ x: number; y: number } | null>(null);
     const loadMessages = useCallback(async () => {
@@ -554,7 +558,10 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
         setShowAffinityInput(false);
         setAffinityDrafts({});
         setSelectedAffinityActorId('');
-        setExpandedArchivedIds(new Set());
+        setShowHistoryPreview(false);
+        setHistorySpotlightId(null);
+        storyMessageElementsRef.current.clear();
+        pendingHistoryJumpRef.current = null;
         setMessageMenu(null);
         setEditingMessage(null);
         setDeletingMessage(null);
@@ -575,6 +582,10 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
     useEffect(() => {
         return registerBackHandler(() => {
             // Android 返回键遵循“最上层先退”的顺序，不再直接把整个文游 App 关掉。
+            if (showHistoryPreview) {
+                setShowHistoryPreview(false);
+                return true;
+            }
             if (branchingMessage) {
                 if (!branching) {
                     setBranchingMessage(null);
@@ -629,6 +640,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
         registerBackHandler,
         showAffinityInput,
         showHeaderMenu,
+        showHistoryPreview,
         showMemoryCards,
         showQuickPreset,
     ]);
@@ -792,24 +804,43 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
         () => messages.filter(message => mirrorArchived(message, entry)).map(message => message.id),
         [entry, messages],
     );
-    const allArchivesExpanded = archivedMessageIds.length > 0 && archivedMessageIds.every(id => expandedArchivedIds.has(id));
-    const toggleAllArchives = useCallback(() => {
-        setExpandedArchivedIds(current => {
-            const next = new Set(current);
-            if (archivedMessageIds.every(id => next.has(id))) archivedMessageIds.forEach(id => next.delete(id));
-            else archivedMessageIds.forEach(id => next.add(id));
-            return next;
-        });
-    }, [archivedMessageIds]);
-    const setArchiveExpanded = useCallback((messageId: number, open: boolean) => {
-        setExpandedArchivedIds(current => {
-            if (current.has(messageId) === open) return current;
-            const next = new Set(current);
-            if (open) next.add(messageId);
-            else next.delete(messageId);
-            return next;
-        });
+    const archivedMessageIdSet = useMemo(() => new Set(archivedMessageIds), [archivedMessageIds]);
+    const setStoryMessageElement = useCallback((messageId: number, element: HTMLElement | null) => {
+        if (element) storyMessageElementsRef.current.set(messageId, element);
+        else storyMessageElementsRef.current.delete(messageId);
     }, []);
+    const jumpToHistoryMessage = useCallback((message: Message) => {
+        autoFollowStreamRef.current = false;
+        initialBottomFollowRef.current = false;
+        pendingHistoryJumpRef.current = message.id;
+        setHistorySpotlightId(mirrorArchived(message, entry) ? message.id : null);
+        setShowHistoryPreview(false);
+    }, [entry]);
+    useEffect(() => {
+        if (showHistoryPreview) return;
+        const messageId = pendingHistoryJumpRef.current;
+        if (!messageId) return;
+
+        let cancelled = false;
+        let frame = 0;
+        let attempts = 0;
+        const jump = () => {
+            if (cancelled) return;
+            const element = storyMessageElementsRef.current.get(messageId);
+            if (element) {
+                element.scrollIntoView({ behavior: 'auto', block: 'center' });
+                pendingHistoryJumpRef.current = null;
+                return;
+            }
+            attempts += 1;
+            if (attempts < 10) frame = requestAnimationFrame(jump);
+        };
+        frame = requestAnimationFrame(jump);
+        return () => {
+            cancelled = true;
+            cancelAnimationFrame(frame);
+        };
+    }, [historySpotlightId, messages.length, showHistoryPreview]);
     const storedTokenInfo = useMemo(() => {
         const source = [...messages].reverse().find(message => Number(message.metadata?.theaterPromptTokens) > 0);
         return source ? {
@@ -1890,6 +1921,14 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             />
         )}
 
+        {showHistoryPreview && <StoryHistoryPreview
+            title={entry.title}
+            messages={messages}
+            archivedIds={archivedMessageIdSet}
+            onClose={() => setShowHistoryPreview(false)}
+            onJump={jumpToHistoryMessage}
+        />}
+
         <main
             ref={scrollContainerRef}
             onScroll={handleStoryScroll}
@@ -1903,37 +1942,41 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                     <p className='mt-6 text-[10px] text-slate-400'>{canWriteOpening ? '输入框留空，点击推进即可开场' : '这一幕由你先落笔'}</p>
                     <p className='mt-3 text-[9px] leading-5 text-slate-400'>小提示：生成正文后，长按楼层可编辑或删除；“预设”和“关系”浮钮都可以拖到顺手的位置。</p>
                 </section> : entry.writesToCharacterMemory && <div className='mb-8 py-3 border-y border-amber-200 text-center text-[11px] text-amber-700'>和朋友们已经分别相处了一段时间……</div>}
-                {archivedMessageIds.length > 0 && <div className='mb-7 px-1 flex items-center justify-between gap-3 text-[9px] text-slate-400'><span>{archivedMessageIds.length} 条归档原文 · 默认折叠，整段上下滑动浏览</span><button onClick={toggleAllArchives} className='shrink-0 px-3 py-1.5 rounded-full bg-white border border-slate-200 font-bold text-violet-600'>{allArchivesExpanded ? '全部收起' : '全部展开'}</button></div>}
+                {archivedCount > 0 && <button type='button' onClick={() => setShowHistoryPreview(true)} className='mb-7 w-full rounded-2xl border border-violet-200 bg-white px-4 py-3 text-left shadow-sm active:scale-[.99] transition-transform'>
+                    <span className='flex items-center gap-3'>
+                        <span className='w-9 h-9 shrink-0 rounded-full bg-violet-100 text-violet-600 grid place-items-center'><Archive size={16} /></span>
+                        <span className='min-w-0 flex-1'>
+                            <strong className='block text-[11px] font-bold text-slate-700'>历史剧情 · 已归档 {archivedCount} 条</strong>
+                            <span className='mt-0.5 block truncate text-[9px] text-slate-400'>旧楼已合并收起 · 点击搜索、浏览并跳转</span>
+                        </span>
+                        <span className='shrink-0 text-[9px] font-bold text-violet-600'>查看</span>
+                    </span>
+                </button>}
 
                 <div className='space-y-8'>
                     {messages.map(message => {
                         const archived = mirrorArchived(message, entry);
+                        if (archived && message.id !== historySpotlightId) return null;
                         if (archived) {
                             const archiveLabel = entry.writesToCharacterMemory
                                 ? '已作为正常记忆归档'
                                 : message.metadata?.theaterArchiveStrategy === 'vector'
                                     ? '已存入本剧情向量分区'
                                     : '已收进剧场事件盒';
-                            const isExpanded = expandedArchivedIds.has(message.id);
-                            return <details key={message.id} open={isExpanded} onToggle={event => setArchiveExpanded(message.id, event.currentTarget.open)} className='group border-y border-slate-200'>
-                                <summary className='list-none cursor-pointer py-3 flex items-center gap-3 text-slate-400 [&::-webkit-details-marker]:hidden'>
+                            return <article key={message.id} ref={element => setStoryMessageElement(message.id, element)} {...pressHandlersFor(message)} className='rounded-2xl border border-violet-200 bg-violet-50/60 px-4 py-4 shadow-sm'>
+                                <div className='mb-4 flex items-center gap-2 text-[9px] text-violet-600'>
                                     <Archive size={13} className='shrink-0' />
-                                    <span className='min-w-0 flex-1'>
-                                        <strong className='block text-[10px] font-semibold tracking-wide'>{archiveLabel}</strong>
-                                        <span className='block mt-0.5 text-[9px]'>{message.role === 'user' ? '你的推进' : '剧场正文'} · 展开查看原文</span>
-                                    </span>
-                                    <CaretDown size={14} className='shrink-0 transition-transform group-open:rotate-180' />
-                                </summary>
-                                {isExpanded && <div {...pressHandlersFor(message)} className='pb-5 pl-7'>
-                                    {message.role === 'user'
-                                        ? <p className='text-sm leading-7 text-slate-600 whitespace-pre-wrap'>{message.content}</p>
-                                        : <><StoryOutput content={message.content} affinityInputs={affinityInputsFromMessage(message, actors)} /><StoryRoundImage message={message} busy={regeneratingImageId === message.id} onRegenerate={() => void regenerateStoryImage(message)} /></>}
-                                </div>}
-                            </details>;
+                                    <span className='min-w-0 flex-1 truncate'>历史定位 · {archiveLabel}</span>
+                                    <button type='button' onClick={() => setHistorySpotlightId(null)} className='shrink-0 rounded-full border border-violet-200 bg-white px-2.5 py-1 font-bold'>收起</button>
+                                </div>
+                                {message.role === 'user'
+                                    ? <div className='pl-4 border-l-2 border-violet-300'><div className='text-[9px] tracking-[.16em] font-bold text-violet-500'>你写下</div><p className='mt-2 text-sm leading-7 text-slate-600 whitespace-pre-wrap'>{message.content}</p></div>
+                                    : <><StoryOutput content={message.content} onChoose={choice => setInput(choice)} affinityInputs={affinityInputsFromMessage(message, actors)} /><StoryRoundImage message={message} busy={regeneratingImageId === message.id} onRegenerate={() => void regenerateStoryImage(message)} /></>}
+                            </article>;
                         }
-                        if (message.role === 'user') return <section key={message.id} {...pressHandlersFor(message)} className='pl-4 border-l-2 border-violet-300'><div className='text-[9px] tracking-[.16em] font-bold text-violet-500'>你写下</div><p className='mt-2 text-sm leading-7 text-slate-600 whitespace-pre-wrap'>{message.content}</p></section>;
+                        if (message.role === 'user') return <section key={message.id} ref={element => setStoryMessageElement(message.id, element)} {...pressHandlersFor(message)} className='pl-4 border-l-2 border-violet-300'><div className='text-[9px] tracking-[.16em] font-bold text-violet-500'>你写下</div><p className='mt-2 text-sm leading-7 text-slate-600 whitespace-pre-wrap'>{message.content}</p></section>;
                         const isLatest = message.id === messages[messages.length - 1]?.id;
-                        return <article key={message.id} {...pressHandlersFor(message)}><StoryOutput content={message.content} onChoose={choice => setInput(choice)} affinityInputs={affinityInputsFromMessage(message, actors)} /><StoryRoundImage message={message} busy={regeneratingImageId === message.id} onRegenerate={() => void regenerateStoryImage(message)} />{isLatest && <div className='mt-4 flex items-center justify-end gap-2'><span className='w-1.5 h-1.5 rounded-full bg-violet-400' /><button disabled={sending} onClick={() => void send(message)} className='inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-slate-200 bg-white text-[10px] font-bold text-slate-500 disabled:opacity-40'>{rerollingId === message.id ? <SpinnerGap size={12} className='animate-spin' /> : <ArrowClockwise size={12} />}换一种写法</button></div>}</article>;
+                        return <article key={message.id} ref={element => setStoryMessageElement(message.id, element)} {...pressHandlersFor(message)}><StoryOutput content={message.content} onChoose={choice => setInput(choice)} affinityInputs={affinityInputsFromMessage(message, actors)} /><StoryRoundImage message={message} busy={regeneratingImageId === message.id} onRegenerate={() => void regenerateStoryImage(message)} />{isLatest && <div className='mt-4 flex items-center justify-end gap-2'><span className='w-1.5 h-1.5 rounded-full bg-violet-400' /><button disabled={sending} onClick={() => void send(message)} className='inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-slate-200 bg-white text-[10px] font-bold text-slate-500 disabled:opacity-40'>{rerollingId === message.id ? <SpinnerGap size={12} className='animate-spin' /> : <ArrowClockwise size={12} />}换一种写法</button></div>}</article>;
                     })}
                     {streamingText && <article className='relative'>
                         <StoryOutput content={streamingText} affinityInputs={[]} />
@@ -1943,7 +1986,6 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                         </div>
                     </article>}
                 </div>
-                {archivedCount > 0 && <div className='mt-10 flex items-center justify-center gap-2 text-[9px] text-slate-400'><Archive size={13} />{archivedCount} 条旧内容已归档，仍会通过所选记忆方式参与续写</div>}
                 <div ref={bottomRef} className='h-6' />
             </div>
         </main>
