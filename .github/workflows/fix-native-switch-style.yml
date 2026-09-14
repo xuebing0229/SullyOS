@@ -23,33 +23,34 @@ jobs:
           from pathlib import Path
           p = Path('apps/Settings.tsx')
           s = p.read_text()
-          old = '''                              <button
-                                  type="button"
-                                  role="switch"
-                                  aria-checked={enabled}
-                                  onClick={() => {
-                                      const updated = setApiPresetModelStorySystemCompatibility(preset, pricingModel, !enabled);
-                                      updateApiPreset(preset.id, { models: updated.models });
-                                  }}
-                                  className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${enabled ? 'bg-violet-500' : 'bg-slate-200'}`}
-                              >
-                                  <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow-sm transition-transform ${enabled ? 'translate-x-5' : 'translate-x-0.5'}`} />
-                              </button>'''
-          new = '''                              <label className="relative inline-flex items-center cursor-pointer shrink-0">
-                                  <input
-                                      type="checkbox"
-                                      checked={enabled}
-                                      onChange={event => {
-                                          const updated = setApiPresetModelStorySystemCompatibility(preset, pricingModel, event.target.checked);
-                                          updateApiPreset(preset.id, { models: updated.models });
-                                      }}
-                                      className="sr-only peer"
-                                  />
-                                  <div className="w-11 h-6 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-violet-500"></div>
-                              </label>'''
-          if old not in s:
-              raise SystemExit('target switch block not found')
-          p.write_text(s.replace(old, new, 1))
+          marker = 'setApiPresetModelStorySystemCompatibility(preset, pricingModel, !enabled);'
+          pos = s.find(marker)
+          if pos < 0:
+              raise SystemExit('target switch marker not found')
+          start = s.rfind('<button', 0, pos)
+          end = s.find('</button>', pos)
+          if start < 0 or end < 0:
+              raise SystemExit('target switch boundaries not found')
+          end += len('</button>')
+          line_start = s.rfind('\n', 0, start) + 1
+          indent = s[line_start:start]
+          i1 = indent + '    '
+          i2 = indent + '        '
+          new = '\n'.join([
+              indent + '<label className="relative inline-flex items-center cursor-pointer shrink-0">',
+              i1 + '<input',
+              i2 + 'type="checkbox"',
+              i2 + 'checked={enabled}',
+              i2 + 'onChange={event => {',
+              i2 + '    const updated = setApiPresetModelStorySystemCompatibility(preset, pricingModel, event.target.checked);',
+              i2 + '    updateApiPreset(preset.id, { models: updated.models });',
+              i2 + '}}',
+              i2 + 'className="sr-only peer"',
+              i1 + '/>',
+              i1 + '<div className="w-11 h-6 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full after:content-[\'\'] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-violet-500"></div>',
+              indent + '</label>',
+          ])
+          p.write_text(s[:start] + new + s[end:])
           PY
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
