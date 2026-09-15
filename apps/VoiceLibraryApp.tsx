@@ -68,10 +68,22 @@ const VoiceLibraryApp: React.FC = () => {
     const objectUrlRef = useRef<string | null>(null);
 
     const stopPlayback = useCallback(() => {
-        if (audioRef.current) {
-            audioRef.current.pause();
-            audioRef.current.currentTime = 0;
-            audioRef.current.src = '';
+        const audio = audioRef.current;
+        audioRef.current = null;
+
+        if (audio) {
+            audio.onerror = null;
+            audio.onended = null;
+            audio.onloadedmetadata = null;
+            audio.ontimeupdate = null;
+
+            try {
+                audio.pause();
+                audio.removeAttribute('src');
+                audio.load();
+            } catch (error) {
+                console.warn('[VoiceLibrary] playback cleanup failed', error);
+            }
         }
         if (objectUrlRef.current) {
             URL.revokeObjectURL(objectUrlRef.current);
@@ -155,8 +167,27 @@ const VoiceLibraryApp: React.FC = () => {
 
         const url = URL.createObjectURL(blob);
         objectUrlRef.current = url;
-        const audio = audioRef.current || new Audio();
+        const audio = new Audio();
         audioRef.current = audio;
+        let playbackFailed = false;
+
+        const logPlaybackFailure = (reason: string, error?: unknown) => {
+            const mediaError = audio.error;
+            console.warn('[VoiceLibrary] playback failed', {
+                reason,
+                itemId: item.id,
+                source: item.source,
+                provider: item.provider,
+                model: item.model,
+                voiceId: item.voiceId,
+                blobType: blob.type,
+                blobSize: blob.size,
+                mediaErrorCode: mediaError?.code,
+                mediaErrorMessage: mediaError?.message,
+                error,
+            });
+        };
+
         audio.src = url;
         audio.onloadedmetadata = () => {
             if (Number.isFinite(audio.duration)) {
@@ -166,14 +197,20 @@ const VoiceLibraryApp: React.FC = () => {
         audio.ontimeupdate = () => setCurrentTime(audio.currentTime || 0);
         audio.onended = () => stopPlayback();
         audio.onerror = () => {
+            if (playbackFailed || audioRef.current !== audio) return;
+            playbackFailed = true;
+            logPlaybackFailure('media-error');
             stopPlayback();
             addToast('语音播放失败', 'error');
         };
 
         try {
             await audio.play();
-            setPlayingId(item.id);
-        } catch {
+            if (audioRef.current === audio) setPlayingId(item.id);
+        } catch (error) {
+            if (playbackFailed || audioRef.current !== audio) return;
+            playbackFailed = true;
+            logPlaybackFailure('play-rejected', error);
             stopPlayback();
             addToast('系统阻止了播放，请再点一次', 'info');
         }
