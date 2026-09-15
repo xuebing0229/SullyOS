@@ -209,7 +209,7 @@ describe('story theater billing safety wiring', () => {
         expect(storyImageSource).toContain("parallel_tool_calls: false");
         expect(storyImageSource).toContain("image planner omitted tool call; retrying planner once");
         expect(storyImageSource).toContain("body.temperature = 0");
-        expect(storyImageSource).toContain("纠错重试：上一轮没有返回可执行的 tool_calls");
+        expect(storyImageSource).toContain("纠错重试：上一轮没有产生客户端可执行的生图调用");
         expect(storyImageSource).toContain("连续两次没有返回可执行的生图工具调用");
         // 纠错发生在真正 callMcpTool* 之前，所以不会因为规划器补救而重复生图。
         expect(storyImageSource.indexOf("retrying planner once"))
