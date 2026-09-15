@@ -348,8 +348,40 @@ const StorySceneRelationships: React.FC<{ inputs: StoryAffinityInput[] }> = ({ i
     })}</div>
 </div>;
 
-const StoryOutput: React.FC<{ content: string; onChoose?: (text: string) => void; affinityInputs?: StoryAffinityInput[]; voiceSpeakers?: Array<StoryVoiceSpeaker | null>; onDialogueClick?: (dialogueIndex: number, text: string, speaker: StoryVoiceSpeaker) => void }> = ({ content, onChoose, affinityInputs = [], voiceSpeakers, onDialogueClick }) => {
+const StoryOutput: React.FC<{ content: string; onChoose?: (text: string) => void; affinityInputs?: StoryAffinityInput[]; voiceSpeakers?: Array<StoryVoiceSpeaker | null>; onDialogueClick?: (dialogueIndex: number, text: string, speaker: StoryVoiceSpeaker) => void; onDialogueLongPress?: (dialogueIndex: number, text: string, speaker: StoryVoiceSpeaker) => void }> = ({ content, onChoose, affinityInputs = [], voiceSpeakers, onDialogueClick, onDialogueLongPress }) => {
     const appearance = useStoryTheaterAppearance();
+    const dialoguePressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const dialoguePressOriginRef = useRef<{ x: number; y: number } | null>(null);
+    const suppressDialogueClickRef = useRef(false);
+    const cancelDialogueLongPress = useCallback(() => {
+        if (dialoguePressTimerRef.current) clearTimeout(dialoguePressTimerRef.current);
+        dialoguePressTimerRef.current = null;
+        dialoguePressOriginRef.current = null;
+    }, []);
+    useEffect(() => () => cancelDialogueLongPress(), [cancelDialogueLongPress]);
+    const beginDialogueLongPress = useCallback((
+        event: React.PointerEvent<HTMLSpanElement>,
+        dialogueIndex: number,
+        dialogueText: string,
+        speaker: StoryVoiceSpeaker,
+    ) => {
+        event.stopPropagation();
+        cancelDialogueLongPress();
+        suppressDialogueClickRef.current = false;
+        dialoguePressOriginRef.current = { x: event.clientX, y: event.clientY };
+        dialoguePressTimerRef.current = setTimeout(() => {
+            dialoguePressTimerRef.current = null;
+            dialoguePressOriginRef.current = null;
+            suppressDialogueClickRef.current = true;
+            onDialogueLongPress?.(dialogueIndex, dialogueText, speaker);
+        }, 520);
+    }, [cancelDialogueLongPress, onDialogueLongPress]);
+    const moveDialogueLongPress = useCallback((event: React.PointerEvent<HTMLSpanElement>) => {
+        event.stopPropagation();
+        const origin = dialoguePressOriginRef.current;
+        if (!origin) return;
+        if (Math.abs(event.clientX - origin.x) > 10 || Math.abs(event.clientY - origin.y) > 10) cancelDialogueLongPress();
+    }, [cancelDialogueLongPress]);
     const inlineVoice = parseStoryVoiceMessage(content);
     const effectiveVoiceSpeakers = voiceSpeakers ?? inlineVoice.dialogueSpeakers;
     const blocks = parseStoryDisplayBlocks(inlineVoice.cleanText);
@@ -390,10 +422,28 @@ const StoryOutput: React.FC<{ content: string; onChoose?: (text: string) => void
                                     key={segmentIndex}
                                     data-story-speaker={segment.speaker}
                                     data-story-dialogue-index={segment.dialogueIndex}
-                                    onClick={segment.kind === 'dialogue' && (segment.speaker === 'char' || segment.speaker === 'user') && segment.dialogueIndex !== undefined && onDialogueClick
-                                        ? () => onDialogueClick(segment.dialogueIndex as number, segment.text, segment.speaker as StoryVoiceSpeaker)
+                                    onClick={segment.kind === 'dialogue' && (segment.speaker === 'char' || segment.speaker === 'user') && segment.dialogueIndex !== undefined && (onDialogueClick || onDialogueLongPress)
+                                        ? event => {
+                                            event.stopPropagation();
+                                            if (suppressDialogueClickRef.current) {
+                                                suppressDialogueClickRef.current = false;
+                                                event.preventDefault();
+                                                return;
+                                            }
+                                            onDialogueClick?.(segment.dialogueIndex as number, segment.text, segment.speaker as StoryVoiceSpeaker);
+                                        }
                                         : undefined}
-                                    className={segment.kind === 'dialogue' && (segment.speaker === 'char' || segment.speaker === 'user') && onDialogueClick ? 'cursor-pointer' : undefined}
+                                    onPointerDown={segment.kind === 'dialogue' && (segment.speaker === 'char' || segment.speaker === 'user') && segment.dialogueIndex !== undefined && onDialogueLongPress
+                                        ? event => beginDialogueLongPress(event, segment.dialogueIndex as number, segment.text, segment.speaker as StoryVoiceSpeaker)
+                                        : undefined}
+                                    onPointerMove={onDialogueLongPress ? moveDialogueLongPress : undefined}
+                                    onPointerUp={onDialogueLongPress ? event => { event.stopPropagation(); cancelDialogueLongPress(); } : undefined}
+                                    onPointerCancel={onDialogueLongPress ? event => { event.stopPropagation(); cancelDialogueLongPress(); } : undefined}
+                                    onPointerLeave={onDialogueLongPress ? event => { event.stopPropagation(); cancelDialogueLongPress(); } : undefined}
+                                    onContextMenu={segment.kind === 'dialogue' && (segment.speaker === 'char' || segment.speaker === 'user') && onDialogueLongPress
+                                        ? event => { event.preventDefault(); event.stopPropagation(); }
+                                        : undefined}
+                                    className={segment.kind === 'dialogue' && (segment.speaker === 'char' || segment.speaker === 'user') && (onDialogueClick || onDialogueLongPress) ? 'cursor-pointer' : undefined}
                                     style={appearance.textToneEnabled ? {
                                         color: segment.kind === 'dialogue'
                                             ? appearance.dialogueColor
@@ -506,6 +556,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
     const [rerollingId, setRerollingId] = useState<number | null>(null);
     const [regeneratingImageId, setRegeneratingImageId] = useState<number | null>(null);
     const [messageMenu, setMessageMenu] = useState<Message | null>(null);
+    const [voiceRefreshMenu, setVoiceRefreshMenu] = useState<{ messageId: number; dialogueIndex: number; text: string; speaker: StoryVoiceSpeaker } | null>(null);
     const [editingMessage, setEditingMessage] = useState<Message | null>(null);
     const [deletingMessage, setDeletingMessage] = useState<Message | null>(null);
     const [branchingMessage, setBranchingMessage] = useState<Message | null>(null);
@@ -547,13 +598,14 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
         dialogueIndex: number,
         text: string,
         speaker: StoryVoiceSpeaker,
+        force = false,
     ) => {
         const actor = speaker === 'char' ? actors[0] : speaker === 'user' ? createUserVoiceTarget(userProfile) : undefined;
         if (!actor) return;
 
         const key = storyVoiceAssetKey(entry.id, messageId, dialogueIndex);
         const currentAudio = storyVoiceAudioRef.current;
-        if (storyVoicePlayingKeyRef.current === key && currentAudio && !currentAudio.paused) {
+        if (!force && storyVoicePlayingKeyRef.current === key && currentAudio && !currentAudio.paused) {
             storyVoicePlayRequestRef.current += 1;
             storyVoiceTargetKeyRef.current = null;
             stopStoryVoicePlayback();
@@ -578,6 +630,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 apiConfig: storyTtsApiConfig,
                 languageBoost: actor.chatVoiceLang || undefined,
                 groupId: apiConfig.minimaxGroupId || undefined,
+                force,
             });
 
             if (requestId !== storyVoicePlayRequestRef.current) {
@@ -603,6 +656,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 storyVoiceTargetKeyRef.current = null;
             };
             await audio.play();
+            if (force) addToast('这句语音已刷新', 'success');
         } catch (error) {
             if (requestId !== storyVoicePlayRequestRef.current) return;
             storyVoiceTargetKeyRef.current = null;
@@ -747,6 +801,10 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 if (!mutatingMessage) setDeletingMessage(null);
                 return true;
             }
+            if (voiceRefreshMenu) {
+                setVoiceRefreshMenu(null);
+                return true;
+            }
             if (messageMenu) {
                 setMessageMenu(null);
                 return true;
@@ -778,6 +836,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
         deletingMessage,
         editingMessage,
         messageMenu,
+        voiceRefreshMenu,
         mutatingMessage,
         onBack,
         registerBackHandler,
@@ -2118,12 +2177,12 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                                 </div>
                                 {message.role === 'user'
                                     ? <div className='pl-4 border-l-2 border-violet-300'><div className='text-[9px] tracking-[.16em] font-bold text-violet-500'>你写下</div><p className='mt-2 text-sm leading-7 text-slate-600 whitespace-pre-wrap'>{message.content}</p></div>
-                                    : <><StoryOutput content={message.content} onChoose={choice => setInput(choice)} affinityInputs={affinityInputsFromMessage(message, actors)} voiceSpeakers={voiceSpeakersFromMessage(message)} onDialogueClick={(dialogueIndex, text, speaker) => void playStoryDialogue(message.id, dialogueIndex, text, speaker)} /><StoryRoundImage message={message} busy={regeneratingImageId === message.id} onRegenerate={() => void regenerateStoryImage(message)} /></>}
+                                    : <><StoryOutput content={message.content} onChoose={choice => setInput(choice)} affinityInputs={affinityInputsFromMessage(message, actors)} voiceSpeakers={voiceSpeakersFromMessage(message)} onDialogueClick={(dialogueIndex, text, speaker) => void playStoryDialogue(message.id, dialogueIndex, text, speaker)} onDialogueLongPress={(dialogueIndex, text, speaker) => setVoiceRefreshMenu({ messageId: message.id, dialogueIndex, text, speaker })} /><StoryRoundImage message={message} busy={regeneratingImageId === message.id} onRegenerate={() => void regenerateStoryImage(message)} /></>}
                             </article>;
                         }
                         if (message.role === 'user') return <section key={message.id} ref={element => setStoryMessageElement(message.id, element)} {...pressHandlersFor(message)} className='pl-4 border-l-2 border-violet-300'><div className='text-[9px] tracking-[.16em] font-bold text-violet-500'>你写下</div><p className='mt-2 text-sm leading-7 text-slate-600 whitespace-pre-wrap'>{message.content}</p></section>;
                         const isLatest = message.id === messages[messages.length - 1]?.id;
-                        return <article key={message.id} ref={element => setStoryMessageElement(message.id, element)} {...pressHandlersFor(message)}><StoryOutput content={message.content} onChoose={choice => setInput(choice)} affinityInputs={affinityInputsFromMessage(message, actors)} voiceSpeakers={voiceSpeakersFromMessage(message)} onDialogueClick={(dialogueIndex, text, speaker) => void playStoryDialogue(message.id, dialogueIndex, text, speaker)} /><StoryRoundImage message={message} busy={regeneratingImageId === message.id} onRegenerate={() => void regenerateStoryImage(message)} />{isLatest && <div className='mt-4 flex items-center justify-end gap-2'><span className='w-1.5 h-1.5 rounded-full bg-violet-400' /><button disabled={sending} onClick={() => void send(message)} className='inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-slate-200 bg-white text-[10px] font-bold text-slate-500 disabled:opacity-40'>{rerollingId === message.id ? <SpinnerGap size={12} className='animate-spin' /> : <ArrowClockwise size={12} />}换一种写法</button></div>}</article>;
+                        return <article key={message.id} ref={element => setStoryMessageElement(message.id, element)} {...pressHandlersFor(message)}><StoryOutput content={message.content} onChoose={choice => setInput(choice)} affinityInputs={affinityInputsFromMessage(message, actors)} voiceSpeakers={voiceSpeakersFromMessage(message)} onDialogueClick={(dialogueIndex, text, speaker) => void playStoryDialogue(message.id, dialogueIndex, text, speaker)} onDialogueLongPress={(dialogueIndex, text, speaker) => setVoiceRefreshMenu({ messageId: message.id, dialogueIndex, text, speaker })} /><StoryRoundImage message={message} busy={regeneratingImageId === message.id} onRegenerate={() => void regenerateStoryImage(message)} />{isLatest && <div className='mt-4 flex items-center justify-end gap-2'><span className='w-1.5 h-1.5 rounded-full bg-violet-400' /><button disabled={sending} onClick={() => void send(message)} className='inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-slate-200 bg-white text-[10px] font-bold text-slate-500 disabled:opacity-40'>{rerollingId === message.id ? <SpinnerGap size={12} className='animate-spin' /> : <ArrowClockwise size={12} />}换一种写法</button></div>}</article>;
                     })}
                     {streamingText && <article className='relative'>
                         <StoryOutput content={streamingText} affinityInputs={[]} />
@@ -2358,6 +2417,35 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             onReset={async () => { await onEntryChange({ ...entry, presetOverride: undefined, updatedAt: Date.now() }); addToast('已恢复本剧情的原预设', 'info'); }}
             onClose={() => setShowQuickPreset(false)}
         />}
+        {voiceRefreshMenu && <div className='fixed inset-0 z-[74] flex items-end bg-slate-900/25' onClick={() => setVoiceRefreshMenu(null)}>
+            <div className='story-safe-sheet w-full rounded-t-3xl bg-stone-100 px-5 pt-4 shadow-2xl' onClick={event => event.stopPropagation()}>
+                <div className='mx-auto mb-4 h-1 w-9 rounded-full bg-slate-300' />
+                <div className='flex items-start justify-between gap-4'>
+                    <div className='min-w-0'>
+                        <div className='text-[9px] tracking-[.18em] font-bold text-violet-500'>{voiceRefreshMenu.speaker === 'user' ? '你的对白' : '角色对白'}</div>
+                        <p className='mt-1 max-w-[75vw] truncate text-xs text-slate-500'>{voiceRefreshMenu.text}</p>
+                    </div>
+                    <button onClick={() => setVoiceRefreshMenu(null)} className='w-8 h-8 rounded-full grid place-items-center text-slate-400'><X size={16} /></button>
+                </div>
+                <div className='mt-5 border-y border-slate-200'>
+                    <button
+                        type='button'
+                        onClick={() => {
+                            const target = voiceRefreshMenu;
+                            setVoiceRefreshMenu(null);
+                            void playStoryDialogue(target.messageId, target.dialogueIndex, target.text, target.speaker, true);
+                        }}
+                        className='w-full py-4 flex items-center gap-3 text-left'
+                    >
+                        <ArrowClockwise size={17} className='text-violet-600' />
+                        <span>
+                            <strong className='block text-xs text-slate-700'>刷新语音</strong>
+                            <span className='block mt-0.5 text-[9px] text-slate-400'>只重新请求并替换这一句的已保存音频，其他对白不变</span>
+                        </span>
+                    </button>
+                </div>
+            </div>
+        </div>}
         {messageMenu && <div className='fixed inset-0 z-[70] flex items-end bg-slate-900/25' onClick={() => setMessageMenu(null)}>
             <div className='story-safe-sheet w-full rounded-t-3xl bg-stone-100 px-5 pt-4 shadow-2xl' onClick={event => event.stopPropagation()}>
                 <div className='mx-auto mb-4 h-1 w-9 rounded-full bg-slate-300' />
