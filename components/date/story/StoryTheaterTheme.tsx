@@ -153,6 +153,11 @@ const STORY_THEME_CSS = `
 .story-theme .story-safe-sheet { padding-bottom: calc(var(--safe-bottom) + 18px); }
 .story-theme .story-quick-preset { bottom: calc(var(--safe-bottom) + 112px); }
 .story-theme .story-page-scroll { overscroll-behavior-y: contain; -webkit-overflow-scrolling: touch; }
+/* TTS only needs pointer handling on char/user dialogue. Let narration, psychology and NPC text
+   fall through to the message container so its move/up handlers can cancel the normal long-press timer. */
+.story-theme .story-page-scroll p > span:not([data-story-speaker="char"]):not([data-story-speaker="user"]) { pointer-events: none; }
+.story-theme .story-page-scroll p > span[data-story-speaker="char"],
+.story-theme .story-page-scroll p > span[data-story-speaker="user"] { touch-action: pan-y; -webkit-touch-callout: none; }
 .story-theme.story-decor-plain .shadow-sm { box-shadow: none !important; }
 .story-theme.story-decor-cinema .story-cinema-rule { position: relative; }
 .story-theme.story-decor-cinema .story-cinema-rule::after {
