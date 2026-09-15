@@ -38,7 +38,7 @@ const parseClassifierObject = (value: string): Record<string, unknown> => {
         : parsed as Record<string, unknown>;
 };
 
-/** STV hidden tags remain the zero-cost fast path. Only unresolved dialogue reaches this classifier. */
+/** STV hidden tags remain the zero-cost fast path. Missing tags fall back here so tappable dialogue never silently dead-ends. */
 export const classifyStoryVoiceSpeakers = async ({
     apiConfig,
     content,
