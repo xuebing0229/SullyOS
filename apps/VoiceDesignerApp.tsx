@@ -8,6 +8,7 @@ import { minimaxFetch } from '../utils/minimaxEndpoint';
 import { getCachedTts, saveCachedTts } from '../utils/ttsCache';
 import { trackEvent } from '../utils/analytics';
 import { buildMiniMaxTtsCacheKey, buildMiniMaxTtsPayload, getMiniMaxParamVersion, type MiniMaxParamVersion } from '../utils/minimaxTts';
+import { createUserVoiceTarget } from '../utils/userVoice';
 
 const DEFAULT_MODEL = 'speech-2.8-hd';
 // 多语言试听样例：点一下切换试听文本 + 对应 language_boost，方便听不同语种下的发音
@@ -58,8 +59,19 @@ const fetchRemoteAudioBlob = async (sourceUrl: string): Promise<Blob> => {
 type DesignerTab = 'mix' | 'modify';
 
 const VoiceDesignerApp: React.FC = () => {
-  const { closeApp, apiConfig, addToast, characters, activeCharacterId, updateCharacter } = useOS();
-  const selectedChar = useMemo(() => characters.find(c => c.id === activeCharacterId) || characters[0], [characters, activeCharacterId]);
+  const { closeApp, apiConfig, addToast, characters, activeCharacterId, updateCharacter, userProfile, updateUserProfile } = useOS();
+  const selectedCharacter = useMemo(() => characters.find(c => c.id === activeCharacterId) || characters[0], [characters, activeCharacterId]);
+  const [voiceTargetKind, setVoiceTargetKind] = useState<'character' | 'user'>(() => {
+    try {
+      const requested = sessionStorage.getItem('sully_voice_designer_target');
+      if (requested === 'user') { sessionStorage.removeItem('sully_voice_designer_target'); return 'user'; }
+    } catch { /* ignore */ }
+    return 'character';
+  });
+  const selectedChar = useMemo(
+    () => voiceTargetKind === 'user' ? createUserVoiceTarget(userProfile) : selectedCharacter,
+    [voiceTargetKind, userProfile, selectedCharacter],
+  );
 
   // ── Available voices (for picker) ──
   const [availableVoices, setAvailableVoices] = useState<MiniMaxVoiceItem[]>([]);
@@ -95,6 +107,28 @@ const VoiceDesignerApp: React.FC = () => {
   const [emotion, setEmotion] = useState(selectedChar?.voiceProfile?.emotion ?? '');
   const [model, setModel] = useState(selectedChar?.voiceProfile?.model || DEFAULT_MODEL);
   const [minimaxParamVersion, setMinimaxParamVersion] = useState<MiniMaxParamVersion>(() => getMiniMaxParamVersion(selectedChar?.voiceProfile));
+
+  useEffect(() => {
+    const vp = selectedChar?.voiceProfile;
+    const saved = vp?.timberWeights;
+    if (saved && saved.length > 0) {
+      setTimberWeights(saved.map((tw, i) => ({ id: `target-${i}`, voice_id: tw.voice_id, voice_name: '', weight: tw.weight })));
+    } else if (vp?.voiceId) {
+      setTimberWeights([{ id: 'target-0', voice_id: vp.voiceId, voice_name: vp.voiceName || '', weight: 1 }]);
+    } else {
+      setTimberWeights([]);
+    }
+    setModifyPitch(vp?.voiceModify?.pitch ?? 0);
+    setModifyIntensity(vp?.voiceModify?.intensity ?? 0);
+    setModifyTimbre(vp?.voiceModify?.timbre ?? 0);
+    setSoundEffect(vp?.voiceModify?.sound_effects ?? '');
+    setSpeed(vp?.speed ?? 1);
+    setVolume(vp?.vol ?? 1);
+    setPitch(vp?.pitch ?? 0);
+    setEmotion(vp?.emotion ?? '');
+    setModel(vp?.model || DEFAULT_MODEL);
+    setMinimaxParamVersion(getMiniMaxParamVersion(vp));
+  }, [voiceTargetKind, selectedCharacter?.id]);
 
   // ── Preview ──
   const [previewText, setPreviewText] = useState(PREVIEW_TEXT);
@@ -398,9 +432,15 @@ const VoiceDesignerApp: React.FC = () => {
         pitch: pitch !== 0 ? pitch : undefined,
       },
     };
-    updateCharacter(selectedChar.id, updatedProfile);
-    trackEvent('把捏好的声音应用到角色');
-    addToast(`已将捏好的声音应用到「${selectedChar.name}」`, 'success');
+    if (voiceTargetKind === 'user') {
+      updateUserProfile({ voiceProfile: updatedProfile.voiceProfile });
+      trackEvent('保存我的声线');
+      addToast('已保存「我的声线」', 'success');
+    } else {
+      updateCharacter(selectedChar.id, updatedProfile);
+      trackEvent('把捏好的声音应用到角色');
+      addToast(`已将捏好的声音应用到「${selectedChar.name}」`, 'success');
+    }
   };
 
   const filteredVoices = useMemo(() => {
@@ -431,7 +471,7 @@ const VoiceDesignerApp: React.FC = () => {
         <div>
           <h2 className="text-sm font-bold text-slate-800">捏声音</h2>
           <p className="text-[10px] text-slate-400">
-            {selectedChar ? `为「${selectedChar.name}」设计声线` : 'MiniMax 音色设计器'}
+            {voiceTargetKind === 'user' ? '设计全局「我的声线」' : selectedChar ? `为「${selectedChar.name}」设计声线` : 'MiniMax 音色设计器'}
           </p>
         </div>
         <div className="flex gap-2">
@@ -441,6 +481,11 @@ const VoiceDesignerApp: React.FC = () => {
           <button onClick={() => closeApp()} className="text-[10px] px-3 py-1.5 rounded-full bg-slate-100 text-slate-600 font-bold">关闭</button>
         </div>
       </header>
+
+      <div className="px-4 py-2 bg-white/70 border-b border-slate-100 flex gap-2 shrink-0">
+        <button type="button" onClick={() => setVoiceTargetKind('character')} className={`flex-1 rounded-xl px-3 py-2 text-xs font-bold ${voiceTargetKind === 'character' ? 'bg-violet-100 text-violet-700' : 'bg-slate-100 text-slate-400'}`}>角色声线</button>
+        <button type="button" onClick={() => setVoiceTargetKind('user')} className={`flex-1 rounded-xl px-3 py-2 text-xs font-bold ${voiceTargetKind === 'user' ? 'bg-violet-100 text-violet-700' : 'bg-slate-100 text-slate-400'}`}>我的声线</button>
+      </div>
 
       {/* Tabs */}
       <div className="flex border-b border-slate-100 bg-white/60 shrink-0">

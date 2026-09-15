@@ -8,9 +8,10 @@ import PerCharAvatarPicker from '../components/user/PerCharAvatarPicker';
 import NovelAiReferenceSettings from '../components/character/NovelAiReferenceSettings';
 import TokenImg from '../components/os/TokenImg';
 import { trackEvent } from '../utils/analytics';
+import { AppID } from '../types';
 
 const UserApp: React.FC = () => {
-    const { closeApp, userProfile, updateUserProfile, addToast } = useOS();
+    const { closeApp, openApp, userProfile, updateUserProfile, addToast } = useOS();
     const fileInputRef = useRef<HTMLInputElement>(null);
     const [tab, setTab] = useState<'profile' | 'life'>('profile');
 
@@ -114,6 +115,24 @@ const UserApp: React.FC = () => {
                     onChange={(next) => updateUserProfile({ novelAiReference: next })}
                     addToast={addToast}
                 />
+
+                <button
+                    type="button"
+                    onClick={() => {
+                        try { sessionStorage.setItem('sully_voice_designer_target', 'user'); } catch { /* ignore */ }
+                        openApp(AppID.VoiceDesigner);
+                    }}
+                    className="w-full bg-white rounded-[1.75rem] shadow-[0_10px_30px_-12px_rgba(80,70,120,0.18)] border border-slate-100 p-5 text-left active:scale-[0.99] transition-transform"
+                >
+                    <div className="flex items-center justify-between gap-3">
+                        <div className="min-w-0">
+                            <div className="text-sm font-bold text-slate-700">我的声线</div>
+                            <div className="mt-1 text-[11px] text-slate-400 truncate">{userProfile.voiceProfile?.voiceName || userProfile.voiceProfile?.voiceId || '尚未配置 · 点这里进入捏声音'}</div>
+                        </div>
+                        <span className="shrink-0 text-primary text-lg">›</span>
+                    </div>
+                    <p className="mt-2 text-[10px] leading-5 text-slate-400">与角色声线共用同一套 MiniMax 配置和全局 API Key，文游里的 User 对白会读取这里。</p>
+                </button>
 
                 {/* About / setting card */}
                 <div className="bg-white rounded-[1.75rem] shadow-[0_10px_30px_-12px_rgba(80,70,120,0.18)] border border-slate-100 p-5">
