@@ -1,9 +1,8 @@
 import React, { useMemo, useRef, useState } from 'react';
-import { ArrowLeft, CaretRight, DownloadSimple, LockSimple, SpeakerHigh, UploadSimple, UserCircle } from '@phosphor-icons/react';
+import { ArrowLeft, DownloadSimple, LockSimple, SpeakerHigh, UploadSimple, UserCircle } from '@phosphor-icons/react';
 import TokenImg from '../../os/TokenImg';
 import type { CharacterProfile, StoryTheaterEntry, StoryTheaterMask, StoryTheaterPreset, UserProfile } from '../../../types';
 import { buildBareTheaterActorContext, buildTheaterPersona, dedupeTheaterWorldbooks, downloadStoryPreset, estimateStoryTokens, getPresetPromptStats, resolveStoryPresetDocument, resolveStoryTheaterMask } from '../../../utils/storyTheater';
-import VoiceDesignerApp from '../../../apps/VoiceDesignerApp';
 
 interface Props {
     initial: StoryTheaterEntry;
@@ -37,7 +36,6 @@ const voiceProfileLabel = (profile?: CharacterProfile['voiceProfile']): string =
 const StoryTheaterEditor: React.FC<Props> = ({ initial, characters, user, masks, maskLocked, presets, onCancel, onSave, onImportPreset, onEditPreset, onOpenMaskBox }) => {
     const [draft, setDraft] = useState<StoryTheaterEntry>({ ...initial });
     const [saving, setSaving] = useState(false);
-    const [voiceDesignerTarget, setVoiceDesignerTarget] = useState<'character' | 'user' | null>(null);
     const fileInput = useRef<HTMLInputElement>(null);
     const actors = useMemo(() => characters.filter(char => draft.characterIds.includes(char.id)), [characters, draft.characterIds]);
     const resolvedMask = useMemo(() => resolveStoryTheaterMask(draft.mask, user, characters, masks), [characters, draft.mask, masks, user]);
@@ -167,10 +165,10 @@ const StoryTheaterEditor: React.FC<Props> = ({ initial, characters, user, masks,
                 <div className='mt-2 flex items-start justify-between gap-4'><div><h2 className='text-lg font-semibold'>语音</h2><p className='mt-1 text-[10px] leading-5 text-slate-500'>只给角色 / User 的直接对白配音；旁白、心理和 NPC 不读。不会自动播放，只有点对白才会播。</p></div><Toggle label='文游语音' value={draft.storyTtsEnabled === true} onChange={value => update('storyTtsEnabled', value)} /></div>
                 <div className='mt-4 divide-y divide-slate-100 overflow-hidden rounded-2xl border border-slate-200 bg-white'>
                     <label className='flex items-center gap-3 px-4 py-3.5'><span className='w-8 h-8 shrink-0 rounded-xl bg-violet-50 text-violet-600 grid place-items-center'><SpeakerHigh size={17} /></span><span className='min-w-0 flex-1'><strong className='block text-xs text-slate-700'>语音服务</strong><span className='block mt-0.5 text-[9px] text-slate-400'>当前文游独立路由</span></span><select value={draft.storyTtsProvider || 'minimax'} onChange={event => update('storyTtsProvider', event.target.value as 'minimax')} className='bg-transparent text-xs font-bold text-slate-600 outline-none'><option value='minimax'>MiniMax</option></select></label>
-                    <button type='button' disabled={!actors[0]} onClick={() => setVoiceDesignerTarget('character')} className='w-full flex items-center gap-3 px-4 py-3.5 text-left disabled:opacity-40'><span className='min-w-0 flex-1'><strong className='block text-xs text-slate-700'>角色声线 · {actors[0]?.name || '未选择主角色'}</strong><span className='block mt-0.5 truncate text-[9px] text-slate-400'>{voiceProfileLabel(actors[0]?.voiceProfile)}</span></span><CaretRight size={15} className='text-slate-300' /></button>
-                    <button type='button' onClick={() => setVoiceDesignerTarget('user')} className='w-full flex items-center gap-3 px-4 py-3.5 text-left'><span className='min-w-0 flex-1'><strong className='block text-xs text-slate-700'>User 声线 · 我的声线</strong><span className='block mt-0.5 truncate text-[9px] text-slate-400'>{voiceProfileLabel(user.voiceProfile)}</span></span><CaretRight size={15} className='text-slate-300' /></button>
+                    <div className='w-full flex items-center gap-3 px-4 py-3.5'><span className='min-w-0 flex-1'><strong className='block text-xs text-slate-700'>角色声线 · {actors[0]?.name || '未选择主角色'}</strong><span className='block mt-0.5 truncate text-[9px] text-slate-400'>{actors[0] ? `自动复用角色设置 · ${voiceProfileLabel(actors[0].voiceProfile)}` : '选择主角色后自动复用该角色已保存的声线'}</span></span><span className='shrink-0 text-[9px] font-bold text-violet-500'>自动复用</span></div>
+                    <div className='w-full flex items-center gap-3 px-4 py-3.5'><span className='min-w-0 flex-1'><strong className='block text-xs text-slate-700'>User 声线 · 我的声线</strong><span className='block mt-0.5 truncate text-[9px] text-slate-400'>自动复用个人档案 · {voiceProfileLabel(user.voiceProfile)}</span></span><span className='shrink-0 text-[9px] font-bold text-violet-500'>自动复用</span></div>
                 </div>
-                <p className='mt-2 text-[10px] leading-5 text-slate-400'>关闭只禁止点读与刷新，不删除已生成音频；再次开启仍会直接重播旧资产。MiniMax Key 继续读取全局设置，这里不会复制保存。</p>
+                <p className='mt-2 text-[10px] leading-5 text-slate-400'>角色声线直接复用角色设置，User 声线直接复用个人档案里的「我的声线」；文游不另存 voice_id、语速等声线参数。关闭只禁止点读与刷新，不删除已生成音频。MiniMax Key 继续读取全局设置。</p>
             </section>
             <section className='pt-6 border-t border-slate-200'>
                 <div className='text-[9px] tracking-[.22em] uppercase font-bold text-violet-500'>07 / Budget</div>
@@ -179,7 +177,6 @@ const StoryTheaterEditor: React.FC<Props> = ({ initial, characters, user, masks,
             </section>
             <button onClick={save} disabled={saving || !draft.title.trim() || draft.characterIds.length === 0} className='w-full py-4 rounded-2xl bg-slate-900 text-white text-sm font-bold disabled:opacity-30'>{saving ? '正在保存……' : '保存并进入剧情'}</button>
         </div></main>
-        {voiceDesignerTarget && <div className='fixed inset-0 z-[120] bg-white'><VoiceDesignerApp key={voiceDesignerTarget} initialTarget={voiceDesignerTarget} characterId={actors[0]?.id} onClose={() => setVoiceDesignerTarget(null)} /></div>}
     </div>;
 };
 
