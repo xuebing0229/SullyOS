@@ -20,6 +20,7 @@ interface UseLongPressGestureOptions<TPayload> {
  * It deliberately owns only recognition: one active pointer, a hold timer,
  * movement cancellation, pointer-cancel cleanup, and context-menu parity.
  * Callers keep their own business action and any extra gestures such as reply swipe.
+ * Story dialogue taps stay native button clicks; this hook only owns the hold gesture.
  */
 export const useLongPressGesture = <TElement extends HTMLElement, TPayload>({
     onLongPress,
