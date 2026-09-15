@@ -51,3 +51,5 @@ jobs:
           git add -A
           git commit -m "fix: restore Story Theater dialogue TTS speaker flow"
           git push origin HEAD:master
+
+# rerun after escape matcher fix
