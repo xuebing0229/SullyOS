@@ -1,0 +1,61 @@
+name: Fix story dialogue native click
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - '.github/workflows/fix-story-dialogue-native-click-once.yml'
+      - '.github/scripts/fix-story-dialogue-native-click.py'
+
+permissions:
+  contents: write
+
+jobs:
+  fix-story-dialogue-click:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+
+      - name: Apply story-only click patch
+        run: python .github/scripts/fix-story-dialogue-native-click.py
+
+      - name: Verify scope and patch shape
+        run: |
+          git diff --exit-code b1688b3f2d38d144f456e136896d9043dfdcf424 -- components/chat/MessageItem.tsx
+          grep -q "useLongPressGesture<HTMLButtonElement, StoryDialoguePressTarget>" components/date/story/StoryTheaterSession.tsx
+          grep -q "type='button'" components/date/story/StoryTheaterSession.tsx
+          grep -q "onDialogueClick?.(segment.dialogueIndex" components/date/story/StoryTheaterSession.tsx
+          git diff --check
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+          run_install: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check TypeScript
+        run: pnpm exec tsc --noEmit
+
+      - name: Build web app
+        run: pnpm run build
+
+      - name: Commit verified story-only fix
+        run: |
+          rm .github/workflows/fix-story-dialogue-native-click-once.yml
+          rm .github/scripts/fix-story-dialogue-native-click.py
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add components/date/story/StoryTheaterSession.tsx .github/workflows/fix-story-dialogue-native-click-once.yml .github/scripts/fix-story-dialogue-native-click.py
+          git diff --cached --check
+          git commit -m "fix(story): use native button for dialogue voice taps"
+          git push origin HEAD:master
