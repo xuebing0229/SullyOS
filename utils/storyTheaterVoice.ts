@@ -1,4 +1,5 @@
 export type StoryVoiceSpeaker = 'char' | 'user';
+export type StoryVoiceDialogueSpeaker = StoryVoiceSpeaker | null;
 
 export interface StoryVoiceSpan {
     speaker: StoryVoiceSpeaker;
@@ -12,8 +13,15 @@ export interface ParsedStoryVoiceMarkup {
     spans: StoryVoiceSpan[];
 }
 
+export interface ParsedStoryVoiceMessage {
+    cleanText: string;
+    dialogueSpeakers: StoryVoiceDialogueSpeaker[];
+}
+
 const STORY_VOICE_PAIR_PATTERN = /\[\[STV:(char|user)\]\]([\s\S]*?)\[\[\/STV\]\]/gi;
 const STORY_VOICE_MARKER_PATTERN = /\[\[STV:[^\]\r\n]{1,32}\]\]|\[\[\/STV\]\]/gi;
+const STORY_TEXT_PATTERN = /<story_text\b[^>]*>([\s\S]*?)(?:<\/story_text\s*>|$)/i;
+const STORY_DIALOGUE_PATTERN = /(「[^」\n]*」|『[^』\n]*』|“[^”\n]*”|‘[^’\n]*’|"[^"\n]*")/g;
 
 /**
  * Speaker metadata is transport-only. It must never be rendered, copied, exported,
@@ -51,6 +59,33 @@ export const parseStoryVoiceMarkup = (value: string): ParsedStoryVoiceMarkup => 
 
     cleanText += stripStoryVoiceMarkup(source.slice(cursor));
     return { cleanText, spans };
+};
+
+/**
+ * Convert hidden speaker spans into the ordinal sequence used by the existing story
+ * tone parser. Every quoted dialogue consumes one slot; NPC/untagged dialogue keeps
+ * a null slot, so repeated identical text never causes char/user voices to cross.
+ */
+export const parseStoryVoiceMessage = (value: string): ParsedStoryVoiceMessage => {
+    const source = String(value || '');
+    const parsedMessage = parseStoryVoiceMarkup(source);
+    const storySource = STORY_TEXT_PATTERN.exec(source)?.[1] ?? source;
+    const parsedStory = parseStoryVoiceMarkup(storySource);
+    const dialogueSpeakers: StoryVoiceDialogueSpeaker[] = [];
+
+    STORY_DIALOGUE_PATTERN.lastIndex = 0;
+    let dialogue: RegExpExecArray | null;
+    while ((dialogue = STORY_DIALOGUE_PATTERN.exec(parsedStory.cleanText))) {
+        const start = dialogue.index;
+        const end = start + dialogue[0].length;
+        const owner = parsedStory.spans.find(span => start >= span.start && end <= span.end);
+        dialogueSpeakers.push(owner?.speaker ?? null);
+    }
+
+    return {
+        cleanText: parsedMessage.cleanText,
+        dialogueSpeakers,
+    };
 };
 
 export const buildStoryVoiceSpeakerFormatReminder = (
