@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
     buildStoryVoiceSpeakerFormatReminder,
     parseStoryVoiceMarkup,
+    parseStoryVoiceMessage,
     stripStoryVoiceMarkup,
 } from './storyTheaterVoice';
 
@@ -36,6 +37,14 @@ describe('story theater speaker markup', () => {
         expect(parsed.spans[0].speaker).toBe('char');
         expect(parsed.spans[1].speaker).toBe('user');
         expect(parsed.spans[0].start).not.toBe(parsed.spans[1].start);
+    });
+
+    it('maps NPC, char and user dialogue by ordinal even when text is identical', () => {
+        const raw = '<story_text>NPC说“好。”\n[[STV:char]]“好。”[[/STV]]\n[[STV:user]]“好。”[[/STV]]</story_text><backstage>“这里不算正文对白”</backstage>';
+        const parsed = parseStoryVoiceMessage(raw);
+
+        expect(parsed.cleanText).toBe('<story_text>NPC说“好。”\n“好。”\n“好。”</story_text><backstage>“这里不算正文对白”</backstage>');
+        expect(parsed.dialogueSpeakers).toEqual([null, 'char', 'user']);
     });
 
     it('removes unsupported or malformed STV markers without making them voiceable', () => {
