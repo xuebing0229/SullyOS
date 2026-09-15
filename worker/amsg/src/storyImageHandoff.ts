@@ -305,6 +305,57 @@ const mergeNovelAiReferences = (
   }).arguments;
 };
 
+const compactPromptFragment = (value: unknown): string =>
+  String(value || '').replace(/\s+/g, ' ').trim();
+
+const mergePromptFragments = (base: unknown, fragments: string[]): string => {
+  const source = typeof base === 'string' ? base.trim() : '';
+  const lower = source.toLocaleLowerCase();
+  const additions = fragments
+    .map(compactPromptFragment)
+    .filter(Boolean)
+    .filter(fragment => !lower.includes(fragment.toLocaleLowerCase()));
+  return [source, ...additions].filter(Boolean).join(', ');
+};
+
+const applyStoryNovelAiTextAnchors = (
+  rawArgs: Record<string, unknown>,
+  planner: StoryCloudImagePlannerSpec | undefined,
+): Record<string, unknown> => {
+  const args = cloneRecord(rawArgs);
+  const systemPrompt = String(planner?.systemPrompt || '');
+  if (!systemPrompt) return args;
+
+  // buildPlannerInstruction 会稳定写出“出场角色”块。这里不让最终出图再只靠规划器
+  // 自觉抄角色锚点：单角色必带；多角色只带本轮 prompt 中明确出现名字的角色，避免串人。
+  const actorBlock = systemPrompt.match(/出场角色：\n([\s\S]*?)\n\n最近剧情：/)?.[1] || '';
+  const actorAnchors = actorBlock.split(/\n+/).map(line => {
+    const splitAt = line.indexOf('：');
+    if (splitAt <= 0) return null;
+    const name = line.slice(0, splitAt).replace(/（[^）]*）/g, '').trim();
+    const anchor = compactPromptFragment(line.slice(splitAt + 1));
+    if (!name || !anchor || anchor === '根据正文与角色设定保持外貌一致') return null;
+    return { name, anchor };
+  }).filter((value): value is { name: string; anchor: string } => Boolean(value));
+
+  const promptKeys = ['prompt', 'positive_prompt', 'positivePrompt', 'description', 'tags', 'input'];
+  const promptKey = promptKeys.find(key => typeof args[key] === 'string') || 'prompt';
+  const originalPrompt = typeof args[promptKey] === 'string' ? String(args[promptKey]) : '';
+  const matchedAnchors = actorAnchors.length === 1
+    ? actorAnchors.map(item => item.anchor)
+    : actorAnchors.filter(item => originalPrompt.includes(item.name)).map(item => item.anchor);
+  const stylePrompt = compactPromptFragment(systemPrompt.match(/\n额外画风：([^\n]+)/)?.[1]);
+  const mergedPrompt = mergePromptFragments(originalPrompt, [...matchedAnchors, stylePrompt]);
+  if (mergedPrompt) args[promptKey] = mergedPrompt;
+
+  const negativePrompt = compactPromptFragment(systemPrompt.match(/\n避免内容：([^\n]+)/)?.[1]);
+  const negativeKey = ['negative_prompt', 'negativePrompt', 'uc'].find(key => typeof args[key] === 'string');
+  if (negativeKey && negativePrompt) {
+    args[negativeKey] = mergePromptFragments(args[negativeKey], [negativePrompt]);
+  }
+  return args;
+};
+
 const findExistingJob = async (
   tool: StoryCloudImageToolHandoff,
   clientRequestId: string,
@@ -335,12 +386,15 @@ const prepareStoryImageHandoffFromPlan = (
 ): StoryCloudImageHandoffResult => {
   const tool = spec.tools.find(item => item.exposedName === plan.tool);
   if (!tool) return { state: 'failed', exposedTool: plan.tool, error: '配图规划器选择的生图工具已不可用' };
+  const anchoredArgs = tool.engineId === 'novelai'
+    ? applyStoryNovelAiTextAnchors(plan.arguments, spec.planner)
+    : plan.arguments;
   return {
     state: 'submitted',
     exposedTool: tool.exposedName,
     toolName: tool.toolName,
     clientRequestId: stableImageClientRequestId(storyClientRequestId),
-    arguments: mergeNovelAiReferences(tool, plan.arguments),
+    arguments: mergeNovelAiReferences(tool, anchoredArgs),
     uncertain: true,
   };
 };
@@ -372,21 +426,38 @@ const parsePlannerText = (
   allowedNames: Set<string>,
 ): { tool: string; arguments: Record<string, unknown> } | null => {
   const clean = String(text || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
-  if (clean) {
-    const first = clean.indexOf('{');
-    const last = clean.lastIndexOf('}');
-    if (first >= 0 && last > first) {
-      try {
-        const parsed = JSON.parse(clean.slice(first, last + 1));
-        if (isRecord(parsed)) {
-          const tool = String(parsed.tool || parsed.tool_name || parsed.name || '').trim();
-          const args = parsePlannerArgs(parsed.arguments ?? parsed.args);
-          if (tool && allowedNames.has(tool) && args) return { tool, arguments: args };
-        }
-      } catch { /* try shared text-call parser below */ }
+  if (!clean) return null;
+  const first = clean.indexOf('{');
+  const last = clean.lastIndexOf('}');
+  if (first < 0 || last <= first) return null;
+
+  try {
+    const parsed = JSON.parse(clean.slice(first, last + 1));
+    if (!isRecord(parsed)) return null;
+    const fn = isRecord(parsed.function) ? parsed.function : undefined;
+    const explicitTool = String(parsed.tool || parsed.tool_name || parsed.name || fn?.name || '').trim();
+    if (explicitTool) {
+      const args = parsePlannerArgs(parsed.arguments ?? parsed.args ?? parsed.input ?? parsed.parameters ?? fn?.arguments);
+      return allowedNames.has(explicitTool) && args ? { tool: explicitTool, arguments: args } : null;
     }
+
+    // 与 App 端保持一致：只有一个可用生图工具时，模型即使省略 function-call 外壳，
+    // 只返回 arguments 或直接返回 prompt/尺寸 JSON，也仍然是唯一可执行选择。
+    if (allowedNames.size !== 1) return null;
+    const soleTool = Array.from(allowedNames)[0];
+    const wrappedArgs = parsePlannerArgs(parsed.arguments ?? parsed.args ?? parsed.input ?? parsed.parameters ?? fn?.arguments);
+    if (wrappedArgs) return { tool: soleTool, arguments: wrappedArgs };
+    const likelyKeys = new Set([
+      'prompt', 'positive_prompt', 'negative_prompt', 'width', 'height', 'size', 'model',
+      'steps', 'scale', 'cfg_scale', 'sampler', 'seed', 'use_character_reference',
+      'use_user_reference', 'use_vibe_reference', 'story_reference_actor_id',
+    ]);
+    return Object.keys(parsed).some(key => likelyKeys.has(key))
+      ? { tool: soleTool, arguments: cloneRecord(parsed) }
+      : null;
+  } catch {
+    return null;
   }
-  return null;
 };
 
 type PlannerTextResolve = Map<string, McpResolvedToolCore<McpFireServer>>;
@@ -463,7 +534,7 @@ const extractPlannerSelection = (
   const faked = extractTextFakedMcpCalls(content, textResolve)[0];
   if (faked) return { tool: faked.exposedName, arguments: cloneRecord(faked.args) };
 
-  // Worker 原有的 {"tool":"...","arguments":{...}} 兼容返回继续保留。
+  // Worker 原有的显式 JSON + 单工具 arguments-only JSON 兼容返回。
   return parsePlannerText(content, allowedNames);
 };
 
