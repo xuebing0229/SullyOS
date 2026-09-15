@@ -24,6 +24,35 @@ const STORY_TEXT_PATTERN = /<story_text\b[^>]*>([\s\S]*?)(?:<\/story_text\s*>|$)
 const STORY_DIALOGUE_PATTERN = /(「[^」\n]*」|『[^』\n]*』|“[^”\n]*”|‘[^’\n]*’|"[^"\n]*")/g;
 
 /**
+ * StoryTheaterSession strips the hidden STV tags inside its async completion helper,
+ * then saves the parsed speaker ordinals in the caller's next microtask. Keep that
+ * tiny handoff available across the async boundary without leaking tags into the
+ * visible story text. Re-publishing in a microtask keeps concurrent completions from
+ * stealing each other's speaker list before their own await continuation resumes.
+ */
+declare global {
+    var storyVoiceSpeakers: StoryVoiceDialogueSpeaker[];
+}
+
+if (!Array.isArray(globalThis.storyVoiceSpeakers)) {
+    globalThis.storyVoiceSpeakers = [];
+}
+
+const handoffStoryVoiceSpeakers = (speakers: StoryVoiceDialogueSpeaker[]) => {
+    const snapshot = [...speakers];
+    const publish = () => {
+        globalThis.storyVoiceSpeakers = snapshot;
+    };
+
+    publish();
+    if (typeof queueMicrotask === 'function') {
+        queueMicrotask(publish);
+    } else {
+        void Promise.resolve().then(publish);
+    }
+};
+
+/**
  * Speaker metadata is transport-only. It must never be rendered, copied, exported,
  * archived, sent to image planning, or forwarded into later story prompts.
  */
@@ -81,6 +110,8 @@ export const parseStoryVoiceMessage = (value: string): ParsedStoryVoiceMessage =
         const owner = parsedStory.spans.find(span => start >= span.start && end <= span.end);
         dialogueSpeakers.push(owner?.speaker ?? null);
     }
+
+    handoffStoryVoiceSpeakers(dialogueSpeakers);
 
     return {
         cleanText: parsedMessage.cleanText,
