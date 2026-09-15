@@ -85,6 +85,12 @@ import {
     synthesizeSpeechDetailed,
 } from '../utils/ttsRouter';
 import { shouldAutoGenerateVoice, shouldAutoPlayGeneratedVoice } from '../utils/voicePlayback';
+import {
+    chatVoiceAssetKey,
+    deletePersistedVoiceAsset,
+    loadPersistedVoiceAsset,
+    savePersistedVoiceAsset,
+} from '../utils/voiceAsset';
 import { voiceLanguageAnalyticsValue, voiceLanguagePromptLabel } from '../utils/voiceLanguage';
 import { fetchBlobForShare, shareOrDownloadBlob } from '../utils/shareExport';
 import { CollaborationStore } from '../features/collaboration/store';
@@ -534,7 +540,7 @@ const Chat: React.FC = () => {
         lang?: string;
     }
     type GeneratedVoiceData = VoiceData & { blob: Blob | null };
-    const voiceAssetKey = (msgId: number) => `voice_msg_${msgId}`;
+    const voiceAssetKey = chatVoiceAssetKey;
     const chatFavoriteSourceKey = (msg: Pick<Message, 'charId' | 'id'>) => `${msg.charId}:${msg.id}`;
     const [voiceDataMap, setVoiceDataMap] = useState<Record<number, VoiceData>>({});
     const [chatFavoriteKeys, setChatFavoriteKeys] = useState<Set<string>>(new Set());
@@ -561,7 +567,7 @@ const Chat: React.FC = () => {
             const stored: StoredVoice = blob
                 ? { blob, originalText, spokenText, lang, favorite: false }
                 : { remoteUrl: url, originalText, spokenText, lang, favorite: false };
-            await DB.saveAssetRaw(voiceAssetKey(msgId), stored);
+            await savePersistedVoiceAsset(voiceAssetKey(msgId), stored);
         } catch (e) {
             console.warn('[Chat] persist voice failed', e);
         }
@@ -589,7 +595,7 @@ const Chat: React.FC = () => {
         if (!deletePersisted) return; // 区间清理已在同一事务中删掉磁盘语音。
         // Best-effort: remove persisted entries so they don't reappear on next load.
         for (const id of idList) {
-            DB.deleteAsset(voiceAssetKey(id)).catch(() => { /* ignore */ });
+            deletePersistedVoiceAsset(voiceAssetKey(id)).catch(() => { /* ignore */ });
         }
     };
 
@@ -804,7 +810,7 @@ const Chat: React.FC = () => {
     const handleDownloadVoice = async (msg: Message) => {
         if (!msg?.id) return;
         try {
-            const stored = await DB.getAssetRaw(voiceAssetKey(msg.id)) as StoredVoice | null;
+            const stored = await loadPersistedVoiceAsset(voiceAssetKey(msg.id)) as StoredVoice | null;
             let blob: Blob | null = stored?.blob instanceof Blob ? stored.blob : null;
             if (!blob && stored?.remoteUrl) {
                 try { blob = await fetchBlobForShare(stored.remoteUrl, 'audio/mpeg'); } catch { /* 下面给出明确提示 */ }
@@ -838,7 +844,7 @@ const Chat: React.FC = () => {
             let current: GeneratedVoiceData | VoiceData | undefined = voiceDataMap[msg.id];
             if (!current) current = await handleManualTts(msg, false) || undefined;
             if (!current) return;
-            const stored = await DB.getAssetRaw(voiceAssetKey(msg.id)) as StoredVoice | null;
+            const stored = await loadPersistedVoiceAsset(voiceAssetKey(msg.id)) as StoredVoice | null;
 
             let blob: Blob | null = 'blob' in current && current.blob instanceof Blob
                 ? current.blob
@@ -962,7 +968,7 @@ const Chat: React.FC = () => {
             if (!cancelled) setChatFavoriteKeys(favoriteKeys);
             for (const m of toFetch) {
                 try {
-                    const stored = await DB.getAssetRaw(voiceAssetKey(m.id)) as StoredVoice | null;
+                    const stored = await loadPersistedVoiceAsset(voiceAssetKey(m.id)) as StoredVoice | null;
                     if (!stored) continue;
                     let url: string | null = null;
                     if (stored.blob instanceof Blob) {
@@ -977,7 +983,7 @@ const Chat: React.FC = () => {
                     // (收字幕没做对齐校验)。认出来就清掉并回写, 别让错翻译一直挂在面板上。
                     if (stored.lang && originalText && isPoisonedVoiceSubtitle(messages, m.id, originalText)) {
                         originalText = '';
-                        DB.saveAssetRaw(voiceAssetKey(m.id), { ...stored, originalText: '' })
+                        savePersistedVoiceAsset(voiceAssetKey(m.id), { ...stored, originalText: '' })
                             .catch(() => { /* 回写失败下次进聊天再试 */ });
                     }
                     let favorited = favoriteKeys.has(chatFavoriteSourceKey(m));
@@ -997,7 +1003,7 @@ const Chat: React.FC = () => {
                                 blob: stored.blob,
                             });
                             favorited = true;
-                            DB.saveAssetRaw(voiceAssetKey(m.id), { ...stored, favorite: undefined }).catch(() => undefined);
+                            savePersistedVoiceAsset(voiceAssetKey(m.id), { ...stored, favorite: undefined }).catch(() => undefined);
                         } catch { /* keep the legacy marker and retry next entry */ }
                     }
                     updates[m.id] = { url, originalText, spokenText: stored.spokenText, lang: stored.lang, favorite: favorited };
