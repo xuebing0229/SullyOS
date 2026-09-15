@@ -10,6 +10,12 @@ import { trackEvent } from '../utils/analytics';
 import { buildMiniMaxTtsCacheKey, buildMiniMaxTtsPayload, getMiniMaxParamVersion, type MiniMaxParamVersion } from '../utils/minimaxTts';
 import { createUserVoiceTarget } from '../utils/userVoice';
 
+export interface VoiceDesignerAppProps {
+  initialTarget?: 'character' | 'user';
+  characterId?: string;
+  onClose?: () => void;
+}
+
 const DEFAULT_MODEL = 'speech-2.8-hd';
 // 多语言试听样例：点一下切换试听文本 + 对应 language_boost，方便听不同语种下的发音
 const PREVIEW_SAMPLES: { code: string; label: string; boost: string; text: string }[] = [
@@ -58,16 +64,21 @@ const fetchRemoteAudioBlob = async (sourceUrl: string): Promise<Blob> => {
 
 type DesignerTab = 'mix' | 'modify';
 
-const VoiceDesignerApp: React.FC = () => {
+const VoiceDesignerApp: React.FC<VoiceDesignerAppProps> = ({ initialTarget, characterId, onClose }) => {
   const { closeApp, apiConfig, addToast, characters, activeCharacterId, updateCharacter, userProfile, updateUserProfile } = useOS();
-  const selectedCharacter = useMemo(() => characters.find(c => c.id === activeCharacterId) || characters[0], [characters, activeCharacterId]);
+  const selectedCharacter = useMemo(() => characters.find(c => c.id === (characterId || activeCharacterId)) || characters[0], [characters, activeCharacterId, characterId]);
   const [voiceTargetKind, setVoiceTargetKind] = useState<'character' | 'user'>(() => {
+    if (initialTarget) return initialTarget;
     try {
       const requested = sessionStorage.getItem('sully_voice_designer_target');
       if (requested === 'user') { sessionStorage.removeItem('sully_voice_designer_target'); return 'user'; }
     } catch { /* ignore */ }
     return 'character';
   });
+  const handleClose = () => {
+    if (onClose) onClose();
+    else closeApp();
+  };
   const selectedChar = useMemo(
     () => voiceTargetKind === 'user' ? createUserVoiceTarget(userProfile) : selectedCharacter,
     [voiceTargetKind, userProfile, selectedCharacter],
@@ -478,7 +489,7 @@ const VoiceDesignerApp: React.FC = () => {
           <button onClick={handleApply} className="text-[10px] px-3 py-1.5 rounded-full bg-violet-500 text-white font-bold flex items-center gap-1 active:scale-95 transition-transform">
             <FloppyDisk size={12} weight="bold" /> 应用
           </button>
-          <button onClick={() => closeApp()} className="text-[10px] px-3 py-1.5 rounded-full bg-slate-100 text-slate-600 font-bold">关闭</button>
+          <button onClick={handleClose} className="text-[10px] px-3 py-1.5 rounded-full bg-slate-100 text-slate-600 font-bold">关闭</button>
         </div>
       </header>
 

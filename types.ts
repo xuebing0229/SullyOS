@@ -2212,6 +2212,10 @@ export interface StoryTheaterEntry {
     premise: string;
     /** 谁写下本剧情第一段：用户当前身份或模型故事正文。 */
     openingMode?: 'user' | 'assistant';
+    /** 文游对白点读总开关；缺省/旧数据按关闭处理，避免升级后意外产生 TTS 请求。 */
+    storyTtsEnabled?: boolean;
+    /** 文游独立 TTS 路由。当前只开放 MiniMax，保留字段以便以后扩展服务商。 */
+    storyTtsProvider?: 'minimax';
     /** 本剧情中用户执笔的身份；缺省时使用真实用户档案。 */
     mask?: StoryTheaterMaskSelection;
     characterIds: string[];

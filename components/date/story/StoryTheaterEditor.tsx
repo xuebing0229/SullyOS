@@ -1,8 +1,9 @@
 import React, { useMemo, useRef, useState } from 'react';
-import { ArrowLeft, DownloadSimple, LockSimple, UploadSimple, UserCircle } from '@phosphor-icons/react';
+import { ArrowLeft, CaretRight, DownloadSimple, LockSimple, SpeakerHigh, UploadSimple, UserCircle } from '@phosphor-icons/react';
 import TokenImg from '../../os/TokenImg';
 import type { CharacterProfile, StoryTheaterEntry, StoryTheaterMask, StoryTheaterPreset, UserProfile } from '../../../types';
 import { buildBareTheaterActorContext, buildTheaterPersona, dedupeTheaterWorldbooks, downloadStoryPreset, estimateStoryTokens, getPresetPromptStats, resolveStoryPresetDocument, resolveStoryTheaterMask } from '../../../utils/storyTheater';
+import VoiceDesignerApp from '../../../apps/VoiceDesignerApp';
 
 interface Props {
     initial: StoryTheaterEntry;
@@ -25,9 +26,18 @@ const localDateTime = (timestamp = Date.now()): string => {
 
 const Toggle: React.FC<{ value: boolean; onChange: (value: boolean) => void; label?: string }> = ({ value, onChange, label }) => <button type='button' aria-label={label} aria-pressed={value} onClick={() => onChange(!value)} className={`w-11 h-6 shrink-0 rounded-full p-1 transition-colors ${value ? 'bg-violet-600' : 'bg-slate-200'}`}><span className={`block w-4 h-4 rounded-full bg-white transition-transform ${value ? 'translate-x-5' : ''}`} /></button>;
 
+const voiceProfileLabel = (profile?: CharacterProfile['voiceProfile']): string => {
+    if (!profile) return '尚未配置';
+    if (profile.voiceName?.trim()) return profile.voiceName.trim();
+    if (profile.voiceId?.trim()) return profile.voiceId.trim();
+    const mixed = profile.timberWeights?.filter(item => item.voice_id?.trim()) || [];
+    return mixed.length > 0 ? `${mixed.length} 个音色混合` : '尚未配置';
+};
+
 const StoryTheaterEditor: React.FC<Props> = ({ initial, characters, user, masks, maskLocked, presets, onCancel, onSave, onImportPreset, onEditPreset, onOpenMaskBox }) => {
     const [draft, setDraft] = useState<StoryTheaterEntry>({ ...initial });
     const [saving, setSaving] = useState(false);
+    const [voiceDesignerTarget, setVoiceDesignerTarget] = useState<'character' | 'user' | null>(null);
     const fileInput = useRef<HTMLInputElement>(null);
     const actors = useMemo(() => characters.filter(char => draft.characterIds.includes(char.id)), [characters, draft.characterIds]);
     const resolvedMask = useMemo(() => resolveStoryTheaterMask(draft.mask, user, characters, masks), [characters, draft.mask, masks, user]);
@@ -153,12 +163,23 @@ const StoryTheaterEditor: React.FC<Props> = ({ initial, characters, user, masks,
                 </div>
             </section>
             <section className='pt-6 border-t border-slate-200'>
-                <div className='text-[9px] tracking-[.22em] uppercase font-bold text-violet-500'>06 / Budget</div>
+                <div className='text-[9px] tracking-[.22em] uppercase font-bold text-violet-500'>06 / Voice</div>
+                <div className='mt-2 flex items-start justify-between gap-4'><div><h2 className='text-lg font-semibold'>语音</h2><p className='mt-1 text-[10px] leading-5 text-slate-500'>只给角色 / User 的直接对白配音；旁白、心理和 NPC 不读。不会自动播放，只有点对白才会播。</p></div><Toggle label='文游语音' value={draft.storyTtsEnabled === true} onChange={value => update('storyTtsEnabled', value)} /></div>
+                <div className='mt-4 divide-y divide-slate-100 overflow-hidden rounded-2xl border border-slate-200 bg-white'>
+                    <label className='flex items-center gap-3 px-4 py-3.5'><span className='w-8 h-8 shrink-0 rounded-xl bg-violet-50 text-violet-600 grid place-items-center'><SpeakerHigh size={17} /></span><span className='min-w-0 flex-1'><strong className='block text-xs text-slate-700'>语音服务</strong><span className='block mt-0.5 text-[9px] text-slate-400'>当前文游独立路由</span></span><select value={draft.storyTtsProvider || 'minimax'} onChange={event => update('storyTtsProvider', event.target.value as 'minimax')} className='bg-transparent text-xs font-bold text-slate-600 outline-none'><option value='minimax'>MiniMax</option></select></label>
+                    <button type='button' disabled={!actors[0]} onClick={() => setVoiceDesignerTarget('character')} className='w-full flex items-center gap-3 px-4 py-3.5 text-left disabled:opacity-40'><span className='min-w-0 flex-1'><strong className='block text-xs text-slate-700'>角色声线 · {actors[0]?.name || '未选择主角色'}</strong><span className='block mt-0.5 truncate text-[9px] text-slate-400'>{voiceProfileLabel(actors[0]?.voiceProfile)}</span></span><CaretRight size={15} className='text-slate-300' /></button>
+                    <button type='button' onClick={() => setVoiceDesignerTarget('user')} className='w-full flex items-center gap-3 px-4 py-3.5 text-left'><span className='min-w-0 flex-1'><strong className='block text-xs text-slate-700'>User 声线 · 我的声线</strong><span className='block mt-0.5 truncate text-[9px] text-slate-400'>{voiceProfileLabel(user.voiceProfile)}</span></span><CaretRight size={15} className='text-slate-300' /></button>
+                </div>
+                <p className='mt-2 text-[10px] leading-5 text-slate-400'>关闭只禁止点读与刷新，不删除已生成音频；再次开启仍会直接重播旧资产。MiniMax Key 继续读取全局设置，这里不会复制保存。</p>
+            </section>
+            <section className='pt-6 border-t border-slate-200'>
+                <div className='text-[9px] tracking-[.22em] uppercase font-bold text-violet-500'>07 / Budget</div>
                 <div className='mt-2 flex items-end justify-between gap-4'><div><h2 className='text-lg font-semibold'>静态配置预算</h2><p className='mt-1 text-[10px] leading-5 text-slate-500'>这里只估算每轮固定发送的角色卡、当前身份、世界书、预设与常驻归档；不会把角色长期记忆 JSON、最近原文、向量召回或剧情历史冒充成静态配置。剧场内实际请求仍以运行时上下文统计为准。</p></div><strong className='text-2xl font-serif'>{Object.values(tokenPreview).reduce((sum, value) => sum + value, 0).toLocaleString()}</strong></div>
                 <div className='mt-4 grid grid-cols-5 gap-2'>{Object.entries({ '角色卡': tokenPreview.actor, '当前身份': tokenPreview.persona, '世界书': tokenPreview.book, '预设': tokenPreview.preset, '归档': tokenPreview.archive }).map(([label, value]) => <div key={label} className='min-w-0 py-3 rounded-xl bg-white border border-slate-200 text-center'><div className='text-[8px] text-slate-400 truncate'>{label}</div><div className='mt-1 text-[11px] font-bold tabular-nums'>{value.toLocaleString()}</div></div>)}</div>
             </section>
             <button onClick={save} disabled={saving || !draft.title.trim() || draft.characterIds.length === 0} className='w-full py-4 rounded-2xl bg-slate-900 text-white text-sm font-bold disabled:opacity-30'>{saving ? '正在保存……' : '保存并进入剧情'}</button>
         </div></main>
+        {voiceDesignerTarget && <div className='fixed inset-0 z-[120] bg-white'><VoiceDesignerApp key={voiceDesignerTarget} initialTarget={voiceDesignerTarget} characterId={actors[0]?.id} onClose={() => setVoiceDesignerTarget(null)} /></div>}
     </div>;
 };
 

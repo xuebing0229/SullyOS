@@ -600,6 +600,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
         speaker: StoryVoiceSpeaker,
         force = false,
     ) => {
+        if (entry.storyTtsEnabled !== true) return;
         const actor = speaker === 'char' ? actors[0] : speaker === 'user' ? createUserVoiceTarget(userProfile) : undefined;
         if (!actor) return;
 
@@ -612,7 +613,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             return;
         }
 
-        const storyTtsApiConfig = { ...apiConfig, ttsProvider: 'minimax' as const };
+        const storyTtsApiConfig = { ...apiConfig, ttsProvider: entry.storyTtsProvider || 'minimax' };
         if (!canSynthesizeSpeech(actor, storyTtsApiConfig)) {
             addToast(speaker === 'user' ? '请先在个人档案配置「我的声线」，并填写 MiniMax 语音 API Key' : '请先给当前角色配置 MiniMax 声线，并填写 MiniMax 语音 API Key', 'info');
             return;
@@ -664,7 +665,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             console.warn('[StoryTheater] dialogue voice failed', error);
             addToast(error instanceof Error ? error.message : '语音生成或播放失败', 'error');
         }
-    }, [actors, userProfile, addToast, apiConfig, entry.id, stopStoryVoicePlayback]);
+    }, [actors, userProfile, addToast, apiConfig, entry.id, entry.storyTtsEnabled, entry.storyTtsProvider, stopStoryVoicePlayback]);
 
     useEffect(() => () => {
         storyVoicePlayRequestRef.current += 1;
@@ -2177,12 +2178,12 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                                 </div>
                                 {message.role === 'user'
                                     ? <div className='pl-4 border-l-2 border-violet-300'><div className='text-[9px] tracking-[.16em] font-bold text-violet-500'>你写下</div><p className='mt-2 text-sm leading-7 text-slate-600 whitespace-pre-wrap'>{message.content}</p></div>
-                                    : <><StoryOutput content={message.content} onChoose={choice => setInput(choice)} affinityInputs={affinityInputsFromMessage(message, actors)} voiceSpeakers={voiceSpeakersFromMessage(message)} onDialogueClick={(dialogueIndex, text, speaker) => void playStoryDialogue(message.id, dialogueIndex, text, speaker)} onDialogueLongPress={(dialogueIndex, text, speaker) => setVoiceRefreshMenu({ messageId: message.id, dialogueIndex, text, speaker })} /><StoryRoundImage message={message} busy={regeneratingImageId === message.id} onRegenerate={() => void regenerateStoryImage(message)} /></>}
+                                    : <><StoryOutput content={message.content} onChoose={choice => setInput(choice)} affinityInputs={affinityInputsFromMessage(message, actors)} voiceSpeakers={voiceSpeakersFromMessage(message)} onDialogueClick={entry.storyTtsEnabled ? (dialogueIndex, text, speaker) => void playStoryDialogue(message.id, dialogueIndex, text, speaker) : undefined} onDialogueLongPress={entry.storyTtsEnabled ? (dialogueIndex, text, speaker) => setVoiceRefreshMenu({ messageId: message.id, dialogueIndex, text, speaker }) : undefined} /><StoryRoundImage message={message} busy={regeneratingImageId === message.id} onRegenerate={() => void regenerateStoryImage(message)} /></>}
                             </article>;
                         }
                         if (message.role === 'user') return <section key={message.id} ref={element => setStoryMessageElement(message.id, element)} {...pressHandlersFor(message)} className='pl-4 border-l-2 border-violet-300'><div className='text-[9px] tracking-[.16em] font-bold text-violet-500'>你写下</div><p className='mt-2 text-sm leading-7 text-slate-600 whitespace-pre-wrap'>{message.content}</p></section>;
                         const isLatest = message.id === messages[messages.length - 1]?.id;
-                        return <article key={message.id} ref={element => setStoryMessageElement(message.id, element)} {...pressHandlersFor(message)}><StoryOutput content={message.content} onChoose={choice => setInput(choice)} affinityInputs={affinityInputsFromMessage(message, actors)} voiceSpeakers={voiceSpeakersFromMessage(message)} onDialogueClick={(dialogueIndex, text, speaker) => void playStoryDialogue(message.id, dialogueIndex, text, speaker)} onDialogueLongPress={(dialogueIndex, text, speaker) => setVoiceRefreshMenu({ messageId: message.id, dialogueIndex, text, speaker })} /><StoryRoundImage message={message} busy={regeneratingImageId === message.id} onRegenerate={() => void regenerateStoryImage(message)} />{isLatest && <div className='mt-4 flex items-center justify-end gap-2'><span className='w-1.5 h-1.5 rounded-full bg-violet-400' /><button disabled={sending} onClick={() => void send(message)} className='inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-slate-200 bg-white text-[10px] font-bold text-slate-500 disabled:opacity-40'>{rerollingId === message.id ? <SpinnerGap size={12} className='animate-spin' /> : <ArrowClockwise size={12} />}换一种写法</button></div>}</article>;
+                        return <article key={message.id} ref={element => setStoryMessageElement(message.id, element)} {...pressHandlersFor(message)}><StoryOutput content={message.content} onChoose={choice => setInput(choice)} affinityInputs={affinityInputsFromMessage(message, actors)} voiceSpeakers={voiceSpeakersFromMessage(message)} onDialogueClick={entry.storyTtsEnabled ? (dialogueIndex, text, speaker) => void playStoryDialogue(message.id, dialogueIndex, text, speaker) : undefined} onDialogueLongPress={entry.storyTtsEnabled ? (dialogueIndex, text, speaker) => setVoiceRefreshMenu({ messageId: message.id, dialogueIndex, text, speaker }) : undefined} /><StoryRoundImage message={message} busy={regeneratingImageId === message.id} onRegenerate={() => void regenerateStoryImage(message)} />{isLatest && <div className='mt-4 flex items-center justify-end gap-2'><span className='w-1.5 h-1.5 rounded-full bg-violet-400' /><button disabled={sending} onClick={() => void send(message)} className='inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-slate-200 bg-white text-[10px] font-bold text-slate-500 disabled:opacity-40'>{rerollingId === message.id ? <SpinnerGap size={12} className='animate-spin' /> : <ArrowClockwise size={12} />}换一种写法</button></div>}</article>;
                     })}
                     {streamingText && <article className='relative'>
                         <StoryOutput content={streamingText} affinityInputs={[]} />

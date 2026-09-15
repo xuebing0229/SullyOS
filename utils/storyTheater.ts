@@ -179,6 +179,8 @@ export const createStoryTheaterDraft = (now: number = Date.now()): StoryTheaterE
     title: '',
     premise: '',
     openingMode: 'user',
+    storyTtsEnabled: false,
+    storyTtsProvider: 'minimax',
     mask: { type: 'user' },
     characterIds: [],
     imageGeneration: { enabled: false, width: 1216, height: 832, characterAnchors: {} },
@@ -206,6 +208,8 @@ export const normalizeStoryTheater = (entry: StoryTheaterEntry): StoryTheaterEnt
         title: String(entry.title || '未命名剧情'),
         premise: String(entry.premise || ''),
         openingMode: entry.openingMode === 'assistant' ? 'assistant' : 'user',
+        storyTtsEnabled: entry.storyTtsEnabled === true,
+        storyTtsProvider: 'minimax',
         mask: entry.writesToCharacterMemory ? { type: 'user' } : entry.mask?.type === 'character' && entry.mask.id
             ? { type: 'character', id: entry.mask.id }
             : entry.mask?.type === 'custom' && entry.mask.id
