@@ -358,7 +358,7 @@ interface StoryDialoguePressTarget {
 
 const StoryOutput: React.FC<{ content: string; onChoose?: (text: string) => void; affinityInputs?: StoryAffinityInput[]; voiceSpeakers?: Array<StoryVoiceSpeaker | null>; onDialogueClick?: (dialogueIndex: number, text: string, speaker?: StoryVoiceSpeaker) => void; onDialogueLongPress?: (dialogueIndex: number, text: string, speaker: StoryVoiceSpeaker) => void }> = ({ content, onChoose, affinityInputs = [], voiceSpeakers, onDialogueClick, onDialogueLongPress }) => {
     const appearance = useStoryTheaterAppearance();
-    const dialoguePress = useLongPressGesture<HTMLSpanElement, StoryDialoguePressTarget>({
+    const dialoguePress = useLongPressGesture<HTMLButtonElement, StoryDialoguePressTarget>({
         delay: 600,
         moveTolerance: 10,
         onLongPress: target => onDialogueLongPress?.(target.dialogueIndex, target.text, target.speaker),
@@ -398,72 +398,86 @@ const StoryOutput: React.FC<{ content: string; onChoose?: (text: string) => void
                             className='max-w-full font-serif text-[15px] leading-8 text-slate-800 whitespace-pre-wrap break-words [overflow-wrap:anywhere]'
                             style={{ textIndent: appearance.firstLineIndent ? '2em' : undefined }}
                         >
-                            {splitStoryToneSegments(paragraph, nextStoryDialogue).map((segment, segmentIndex) => (
-                                <span
+                            {splitStoryToneSegments(paragraph, nextStoryDialogue).map((segment, segmentIndex) => {
+                                const renderedText = appearance.textToneEnabled
+                                    ? segment.text
+                                    : segment.kind === 'psychology'
+                                        ? `*${segment.text}*`
+                                        : segment.text;
+                                const toneStyle = appearance.textToneEnabled ? {
+                                    color: segment.kind === 'dialogue'
+                                        ? appearance.dialogueColor
+                                        : segment.kind === 'psychology'
+                                            ? appearance.psychologyColor
+                                            : appearance.narrationColor,
+                                    ...(segment.kind === 'psychology' ? { fontStyle: 'italic' as const } : {}),
+                                } : undefined;
+                                const clickableDialogue = segment.kind === 'dialogue'
+                                    && segment.dialogueIndex !== undefined
+                                    && Boolean(onDialogueClick);
+
+                                if (!clickableDialogue) {
+                                    return <span key={segmentIndex} style={toneStyle}>{renderedText}</span>;
+                                }
+
+                                const canRefreshVoice = (segment.speaker === 'char' || segment.speaker === 'user')
+                                    && Boolean(onDialogueLongPress);
+
+                                return <button
                                     key={segmentIndex}
+                                    type='button'
                                     data-story-speaker={segment.speaker}
                                     data-story-dialogue-index={segment.dialogueIndex}
-                                    onClick={segment.kind === 'dialogue' && segment.dialogueIndex !== undefined && onDialogueClick
-                                        ? event => {
-                                            event.stopPropagation();
-                                            if (dialoguePress.consumeSuppressedClick()) {
-                                                event.preventDefault();
-                                                return;
-                                            }
-                                            onDialogueClick(segment.dialogueIndex as number, segment.text, segment.speaker);
+                                    onClick={event => {
+                                        event.stopPropagation();
+                                        if (dialoguePress.consumeSuppressedClick()) {
+                                            event.preventDefault();
+                                            return;
                                         }
-                                        : undefined}
-                                    onPointerDown={segment.kind === 'dialogue' && segment.dialogueIndex !== undefined && onDialogueClick
-                                        ? event => {
-                                            event.stopPropagation();
-                                            if ((segment.speaker === 'char' || segment.speaker === 'user') && onDialogueLongPress) {
-                                                dialoguePress.beginPress(event, {
-                                                    dialogueIndex: segment.dialogueIndex as number,
-                                                    text: segment.text,
-                                                    speaker: segment.speaker,
-                                                });
-                                            }
-                                        }
-                                        : undefined}
-                                    onPointerMove={segment.kind === 'dialogue' && segment.dialogueIndex !== undefined && onDialogueClick
-                                        ? event => { event.stopPropagation(); dialoguePress.movePress(event); }
-                                        : undefined}
-                                    onPointerUp={segment.kind === 'dialogue' && segment.dialogueIndex !== undefined && onDialogueClick
-                                        ? event => { event.stopPropagation(); dialoguePress.endPress(event); }
-                                        : undefined}
-                                    onPointerCancel={segment.kind === 'dialogue' && segment.dialogueIndex !== undefined && onDialogueClick
-                                        ? event => { event.stopPropagation(); dialoguePress.cancelPress(); }
-                                        : undefined}
-                                    onPointerLeave={segment.kind === 'dialogue' && segment.dialogueIndex !== undefined && onDialogueClick
-                                        ? () => dialoguePress.cancelPress()
-                                        : undefined}
-                                    onContextMenu={segment.kind === 'dialogue' && segment.dialogueIndex !== undefined && (segment.speaker === 'char' || segment.speaker === 'user') && onDialogueLongPress
-                                        ? event => {
-                                            event.stopPropagation();
-                                            dialoguePress.openContextMenu(event, {
-                                                dialogueIndex: segment.dialogueIndex as number,
-                                                text: segment.text,
-                                                speaker: segment.speaker as StoryVoiceSpeaker,
-                                            });
-                                        }
-                                        : undefined}
-                                    className={segment.kind === 'dialogue' && segment.dialogueIndex !== undefined && (onDialogueClick || ((segment.speaker === 'char' || segment.speaker === 'user') && onDialogueLongPress)) ? 'cursor-pointer' : undefined}
-                                    style={appearance.textToneEnabled ? {
-                                        color: segment.kind === 'dialogue'
-                                            ? appearance.dialogueColor
-                                            : segment.kind === 'psychology'
-                                                ? appearance.psychologyColor
-                                                : appearance.narrationColor,
-                                        ...(segment.kind === 'psychology' ? { fontStyle: 'italic' } : {}),
+                                        onDialogueClick?.(segment.dialogueIndex as number, segment.text, segment.speaker);
+                                    }}
+                                    onPointerDown={event => {
+                                        event.stopPropagation();
+                                        if (!canRefreshVoice) return;
+                                        dialoguePress.beginPress(event, {
+                                            dialogueIndex: segment.dialogueIndex as number,
+                                            text: segment.text,
+                                            speaker: segment.speaker as StoryVoiceSpeaker,
+                                        });
+                                    }}
+                                    onPointerMove={event => {
+                                        event.stopPropagation();
+                                        dialoguePress.movePress(event);
+                                    }}
+                                    onPointerUp={event => {
+                                        event.stopPropagation();
+                                        dialoguePress.endPress(event);
+                                    }}
+                                    onPointerCancel={event => {
+                                        event.stopPropagation();
+                                        dialoguePress.cancelPress();
+                                    }}
+                                    onPointerLeave={() => dialoguePress.cancelPress()}
+                                    onContextMenu={canRefreshVoice ? event => {
+                                        event.stopPropagation();
+                                        dialoguePress.openContextMenu(event, {
+                                            dialogueIndex: segment.dialogueIndex as number,
+                                            text: segment.text,
+                                            speaker: segment.speaker as StoryVoiceSpeaker,
+                                        });
                                     } : undefined}
+                                    className='inline cursor-pointer border-0 bg-transparent p-0 m-0 text-left align-baseline'
+                                    style={{
+                                        ...(toneStyle || {}),
+                                        font: 'inherit',
+                                        lineHeight: 'inherit',
+                                        letterSpacing: 'inherit',
+                                        whiteSpace: 'inherit',
+                                    }}
                                 >
-                                    {appearance.textToneEnabled
-                                        ? segment.text
-                                        : segment.kind === 'psychology'
-                                            ? `*${segment.text}*`
-                                            : segment.text}
-                                </span>
-                            ))}
+                                    {renderedText}
+                                </button>;
+                            })}
                         </p>
                     ))}
                 </div>;
