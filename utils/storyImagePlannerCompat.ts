@@ -17,9 +17,34 @@ const parseArguments = (value: unknown): Record<string, unknown> | null => {
     }
 };
 
+const looksLikeDirectImageArguments = (value: Record<string, unknown>): boolean => {
+    const likelyKeys = new Set([
+        'prompt',
+        'positive_prompt',
+        'negative_prompt',
+        'width',
+        'height',
+        'size',
+        'model',
+        'steps',
+        'scale',
+        'cfg_scale',
+        'sampler',
+        'seed',
+        'use_character_reference',
+        'use_user_reference',
+        'use_vibe_reference',
+        'story_reference_actor_id',
+    ]);
+    return Object.keys(value).some(key => likelyKeys.has(key));
+};
+
 /**
  * OpenAI-compatible gateways sometimes accept tools/tool_choice yet return the selected
- * call as ordinary JSON in message.content. Only known tool names are accepted.
+ * call as ordinary JSON in message.content. Explicit known tool names are preferred.
+ * When there is exactly one available image tool, also accept arguments-only JSON so
+ * Gemini/OpenAI-compatible gateways cannot make regeneration fail merely by omitting the
+ * function-call envelope.
  */
 export const extractStoryImagePlannerJsonSelection = (
     content: string,
@@ -49,9 +74,17 @@ export const extractStoryImagePlannerJsonSelection = (
     }
 
     const fn = isRecord(raw.function) ? raw.function : undefined;
-    const tool = String(raw.tool || raw.tool_name || raw.name || fn?.name || '').trim();
-    if (!tool || !allowed.has(tool)) return null;
+    const explicitTool = String(raw.tool || raw.tool_name || raw.name || fn?.name || '').trim();
+    if (explicitTool) {
+        if (!allowed.has(explicitTool)) return null;
+        const args = parseArguments(raw.arguments ?? raw.args ?? raw.input ?? raw.parameters ?? fn?.arguments);
+        return args ? { tool: explicitTool, arguments: args } : null;
+    }
 
-    const args = parseArguments(raw.arguments ?? raw.args ?? fn?.arguments);
-    return args ? { tool, arguments: args } : null;
+    if (allowed.size !== 1) return null;
+    const soleTool = Array.from(allowed)[0];
+    const wrappedArgs = parseArguments(raw.arguments ?? raw.args ?? raw.input ?? raw.parameters ?? fn?.arguments);
+    if (wrappedArgs) return { tool: soleTool, arguments: wrappedArgs };
+    if (looksLikeDirectImageArguments(raw)) return { tool: soleTool, arguments: { ...raw } };
+    return null;
 };
