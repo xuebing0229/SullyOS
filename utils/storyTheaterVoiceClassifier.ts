@@ -38,7 +38,7 @@ const parseClassifierObject = (value: string): Record<string, unknown> => {
         : parsed as Record<string, unknown>;
 };
 
-/** STV hidden tags remain the zero-cost fast path. Missing tags fall back here so tappable dialogue never silently dead-ends. */
+/** STV hidden tags remain the zero-cost fast path. Android dialogue taps dispatch before this fallback so missing tags never silently dead-end. */
 export const classifyStoryVoiceSpeakers = async ({
     apiConfig,
     content,
