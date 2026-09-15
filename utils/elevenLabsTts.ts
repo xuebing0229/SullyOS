@@ -193,7 +193,7 @@ export const buildElevenLabsRequestBody = (
       stability,
       similarity_boost: clamp(apiConfig.elevenLabsSimilarityBoost, 0.8, 0, 1),
       style: clamp(apiConfig.elevenLabsStyle, 0, 0, 1),
-      speed: clamp(char.voiceProfile?.speed, 1, 0.7, 1.2),
+      speed: clamp(char.voiceProfile?.elevenLabsSpeed ?? char.voiceProfile?.speed, 1, 0.7, 1.2),
       use_speaker_boost: apiConfig.elevenLabsUseSpeakerBoost === true,
     },
   };

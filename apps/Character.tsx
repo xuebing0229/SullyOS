@@ -182,6 +182,16 @@ const Character: React.FC = () => {
       voice_cloning: [],
       voice_generation: [],
   });
+  // 语速拉条使用本地草稿：避免手指误触后被角色页自动保存 effect 立即写入。
+  const [miniMaxSpeedDraft, setMiniMaxSpeedDraft] = useState(1);
+  const [elevenLabsSpeedDraft, setElevenLabsSpeedDraft] = useState(1);
+
+  useEffect(() => {
+      if (!formData?.id) return;
+      const profile = formData.voiceProfile;
+      setMiniMaxSpeedDraft(profile?.speed ?? 1);
+      setElevenLabsSpeedDraft(profile?.elevenLabsSpeed ?? profile?.speed ?? 1);
+  }, [formData?.id]);
 
   const handleLoadMiniMaxVoices = async () => {
       const minimaxApiKey = resolveMiniMaxApiKey(apiConfig);
@@ -1586,25 +1596,56 @@ ${isInitialGeneration ? `
                                     <p className="text-[10px] text-slate-400">从 ElevenLabs Voices / Voice Library 复制 Voice ID；也可直接粘贴含 Voice ID 的页面链接。设置里语音选 ElevenLabs 后使用，与 MiniMax、鱼声音色分别保存。</p>
                                 </div>
 
-                                {/* 语速：三家 TTS 共用 voiceProfile.speed */}
-                               <div className="space-y-1 pt-1">
-                                   <div className="flex items-center justify-between">
-                                       <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">语速</label>
-                                       <span className="text-[11px] font-mono text-slate-500">{(formData.voiceProfile?.speed ?? 1).toFixed(2)}×</span>
+                               {/* 语速：MiniMax/Fish 与 ElevenLabs 分开；拖动只改草稿，点保存才写角色。 */}
+                               <div className="rounded-2xl border border-slate-200 bg-slate-50/70 p-3 space-y-4 pt-3">
+                                   <div className="space-y-1">
+                                       <div className="flex items-center justify-between">
+                                           <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">MiniMax / Fish 语速</label>
+                                           <span className="text-[11px] font-mono text-slate-500">{miniMaxSpeedDraft.toFixed(2)}×</span>
+                                       </div>
+                                       <input
+                                           type="range"
+                                           min={0.5}
+                                           max={2}
+                                           step={0.05}
+                                           value={miniMaxSpeedDraft}
+                                           onChange={(e) => setMiniMaxSpeedDraft(parseFloat(e.target.value))}
+                                           className="w-full accent-primary"
+                                       />
                                    </div>
-                                   <input
-                                       type="range"
-                                       min={0.5}
-                                       max={1.5}
-                                       step={0.05}
-                                       value={formData.voiceProfile?.speed ?? 1}
-                                       onChange={(e) => handleChange('voiceProfile', {
-                                           ...(formData.voiceProfile || {}),
-                                           speed: parseFloat(e.target.value),
-                                       })}
-                                       className="w-full accent-primary"
-                                   />
-                                   <p className="text-[10px] text-slate-400">越小越慢、越像娓娓道来。1.0 正常；觉得"赶"就拉到 0.85–0.95。MiniMax、鱼声与 ElevenLabs 共用该角色的语速（鱼声没单独配时默认略慢 0.9）。</p>
+
+                                   <div className="space-y-1">
+                                       <div className="flex items-center justify-between">
+                                           <label className="text-[10px] font-bold text-violet-500 uppercase tracking-widest">ElevenLabs 语速</label>
+                                           <span className="text-[11px] font-mono text-slate-500">{elevenLabsSpeedDraft.toFixed(2)}×</span>
+                                       </div>
+                                       <input
+                                           type="range"
+                                           min={0.7}
+                                           max={1.2}
+                                           step={0.05}
+                                           value={elevenLabsSpeedDraft}
+                                           onChange={(e) => setElevenLabsSpeedDraft(parseFloat(e.target.value))}
+                                           className="w-full accent-violet-500"
+                                       />
+                                   </div>
+
+                                   <button
+                                       type="button"
+                                       onClick={() => {
+                                           if (!formData) return;
+                                           handleChange('voiceProfile', {
+                                               ...(formData.voiceProfile || {}),
+                                               speed: miniMaxSpeedDraft,
+                                               elevenLabsSpeed: elevenLabsSpeedDraft,
+                                           });
+                                           addToast('语速已保存', 'success');
+                                       }}
+                                       className="w-full rounded-xl bg-slate-800 px-3 py-2.5 text-xs font-bold text-white active:scale-[0.99] transition-transform"
+                                   >
+                                       保存语速
+                                   </button>
+                                   <p className="text-[10px] leading-relaxed text-slate-400">拖动拉条只改当前草稿，不会立即写进角色。MiniMax 与 Fish 沿用第一条；ElevenLabs 使用自己的语速。旧角色首次升级时，ElevenLabs 会先继承原语速。</p>
                                </div>
 
                                {(voiceOptions.system.length + voiceOptions.voice_cloning.length + voiceOptions.voice_generation.length) > 0 && (

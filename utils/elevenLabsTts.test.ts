@@ -19,6 +19,7 @@ const character = {
   voiceProfile: {
     elevenLabsVoiceId: '21m00Tcm4TlvDq8ikWAM',
     speed: 1.1,
+    elevenLabsSpeed: 0.85,
   },
 } as CharacterProfile;
 
@@ -70,10 +71,19 @@ describe('ElevenLabs request body', () => {
         stability: 0.35,
         similarity_boost: 1,
         style: 0,
-        speed: 1.1,
+        speed: 0.85,
         use_speaker_boost: true,
       },
     });
+  });
+
+  it('falls back to the legacy shared speed when no ElevenLabs speed was saved yet', () => {
+    const legacyCharacter = {
+      ...character,
+      voiceProfile: { ...character.voiceProfile, elevenLabsSpeed: undefined, speed: 1.1 },
+    } as CharacterProfile;
+    const body = buildElevenLabsRequestBody('你好', legacyCharacter, {} as APIConfig);
+    expect(body.voice_settings.speed).toBe(1.1);
   });
 
   it('snaps v3 stability to supported tiers and adds an emotion cue once', () => {

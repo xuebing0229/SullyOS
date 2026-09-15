@@ -2974,6 +2974,8 @@ export interface CharacterProfile {
       fishModel?: string;
       // ElevenLabs 角色音色 ID。与 MiniMax voiceId / Fish reference_id 各存各的。
       elevenLabsVoiceId?: string;
+      // ElevenLabs 独立语速；旧存档缺省时回退到 speed，避免升级后语速突变。
+      elevenLabsSpeed?: number;
       voiceName?: string;
       source?: 'system' | 'voice_cloning' | 'voice_generation' | 'custom';
       model?: string;
