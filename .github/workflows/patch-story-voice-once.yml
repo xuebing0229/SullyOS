@@ -1,0 +1,58 @@
+name: Apply story voice playback cache patch
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - '.github/workflows/patch-story-voice-once.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch-story-voice:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+
+      - name: Patch StoryTheaterSession voice playback
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path('components/date/story/StoryTheaterSession.tsx')
+          text = path.read_text(encoding='utf-8')
+
+          old_refs = """    const storyVoiceAudioRef = useRef<HTMLAudioElement | null>(null);\n    const storyVoicePlayingKeyRef = useRef<string | null>(null);\n    const storyVoiceObjectUrlRef = useRef<string | null>(null);\n    const storyVoicePlayRequestRef = useRef(0);\n    const storyVoiceTargetKeyRef = useRef<string | null>(null);\n    const storyVoiceSpeakersRef = useRef<Array<StoryVoiceSpeaker | null>>([]);\n\n    const stopStoryVoicePlayback = useCallback(() => {\n        const audio = storyVoiceAudioRef.current;\n        if (audio) {\n            try { audio.pause(); } catch { /* ignore */ }\n            audio.onended = null;\n            audio.onerror = null;\n            audio.removeAttribute('src');\n            try { audio.load(); } catch { /* ignore */ }\n        }\n        if (storyVoiceObjectUrlRef.current) {\n            try { URL.revokeObjectURL(storyVoiceObjectUrlRef.current); } catch { /* ignore */ }\n            storyVoiceObjectUrlRef.current = null;\n        }\n        storyVoicePlayingKeyRef.current = null;\n    }, []);\n"""
+          new_refs = """    const storyVoiceAudioRef = useRef<HTMLAudioElement | null>(null);\n    const storyVoicePlayingKeyRef = useRef<string | null>(null);\n    const storyVoicePlayRequestRef = useRef(0);\n    const storyVoiceTargetKeyRef = useRef<string | null>(null);\n    const storyVoiceSpeakersRef = useRef<Array<StoryVoiceSpeaker | null>>([]);\n    // Match main chat's proven playback lifecycle: keep materialized audio URLs alive\n    // for the current story session so replay is immediate instead of re-reading IDB.\n    const storyVoiceCacheRef = useRef<Map<string, { url: string; originalText: string }>>(new Map());\n    const storyVoiceBlobUrlsRef = useRef<Set<string>>(new Set());\n\n    const stopStoryVoicePlayback = useCallback(() => {\n        const audio = storyVoiceAudioRef.current;\n        if (audio) {\n            try { audio.pause(); } catch { /* ignore */ }\n            audio.onended = null;\n            audio.onerror = null;\n        }\n        storyVoicePlayingKeyRef.current = null;\n    }, []);\n\n    const releaseStoryVoicePlayback = useCallback(() => {\n        stopStoryVoicePlayback();\n        const audio = storyVoiceAudioRef.current;\n        if (audio) {\n            audio.removeAttribute('src');\n            try { audio.load(); } catch { /* ignore */ }\n        }\n        storyVoiceAudioRef.current = null;\n        for (const url of storyVoiceBlobUrlsRef.current) {\n            try { URL.revokeObjectURL(url); } catch { /* ignore */ }\n        }\n        storyVoiceBlobUrlsRef.current.clear();\n        storyVoiceCacheRef.current.clear();\n    }, [stopStoryVoicePlayback]);\n"""
+          if text.count(old_refs) != 1:
+              raise SystemExit(f'voice ref block match count: {text.count(old_refs)}')
+          text = text.replace(old_refs, new_refs, 1)
+
+          old_play = """        const requestId = ++storyVoicePlayRequestRef.current;\n        storyVoiceTargetKeyRef.current = key;\n        stopStoryVoicePlayback();\n\n        try {\n            const playable = await ensureVoiceAsset({\n                key,\n                text,\n                char: actor,\n                apiConfig: storyTtsApiConfig,\n                languageBoost: actor.chatVoiceLang || undefined,\n                groupId: apiConfig.minimaxGroupId || undefined,\n                force,\n            });\n\n            if (requestId !== storyVoicePlayRequestRef.current) {\n                if (storyVoiceTargetKeyRef.current !== key && playable.url.startsWith('blob:')) {\n                    try { URL.revokeObjectURL(playable.url); } catch { /* ignore */ }\n                }\n                return;\n            }\n\n            if (!storyVoiceAudioRef.current) storyVoiceAudioRef.current = new Audio();\n            const audio = storyVoiceAudioRef.current;\n            storyVoicePlayingKeyRef.current = key;\n            storyVoiceObjectUrlRef.current = playable.url.startsWith('blob:') ? playable.url : null;\n            audio.src = playable.url;\n            audio.onended = () => {\n                if (storyVoicePlayingKeyRef.current !== key) return;\n                stopStoryVoicePlayback();\n                storyVoiceTargetKeyRef.current = null;\n            };\n            audio.onerror = () => {\n                if (storyVoicePlayingKeyRef.current !== key) return;\n                stopStoryVoicePlayback();\n                storyVoiceTargetKeyRef.current = null;\n            };\n            await audio.play();\n            if (force) addToast('这句语音已刷新', 'success');\n        } catch (error) {\n            if (requestId !== storyVoicePlayRequestRef.current) return;\n            storyVoiceTargetKeyRef.current = null;\n            stopStoryVoicePlayback();\n            console.warn('[StoryTheater] dialogue voice failed', error);\n            addToast(error instanceof Error ? error.message : '语音生成或播放失败', 'error');\n        }\n"""
+          new_play = """        const requestId = ++storyVoicePlayRequestRef.current;\n        storyVoiceTargetKeyRef.current = key;\n        stopStoryVoicePlayback();\n\n        const playReadyVoice = (url: string) => {\n            if (!storyVoiceAudioRef.current) storyVoiceAudioRef.current = new Audio();\n            const audio = storyVoiceAudioRef.current;\n            storyVoicePlayingKeyRef.current = key;\n            audio.src = url;\n            audio.onended = () => {\n                if (storyVoicePlayingKeyRef.current !== key) return;\n                storyVoicePlayingKeyRef.current = null;\n                storyVoiceTargetKeyRef.current = null;\n            };\n            audio.onerror = () => {\n                if (storyVoicePlayingKeyRef.current !== key) return;\n                storyVoicePlayingKeyRef.current = null;\n                storyVoiceTargetKeyRef.current = null;\n            };\n            return audio.play();\n        };\n\n        const cached = !force ? storyVoiceCacheRef.current.get(key) : undefined;\n        if (cached?.originalText === text) {\n            // Same hot path as main chat: once materialized, replay the in-memory URL\n            // immediately from the user's tap without another IndexedDB round trip.\n            try {\n                await playReadyVoice(cached.url);\n            } catch (error) {\n                if (requestId !== storyVoicePlayRequestRef.current) return;\n                storyVoiceTargetKeyRef.current = null;\n                stopStoryVoicePlayback();\n                console.warn('[StoryTheater] cached dialogue voice failed', error);\n                addToast(error instanceof Error ? error.message : '语音播放失败', 'error');\n            }\n            return;\n        }\n\n        try {\n            const playable = await ensureVoiceAsset({\n                key,\n                text,\n                char: actor,\n                apiConfig: storyTtsApiConfig,\n                languageBoost: actor.chatVoiceLang || undefined,\n                groupId: apiConfig.minimaxGroupId || undefined,\n                force,\n            });\n\n            if (requestId !== storyVoicePlayRequestRef.current) {\n                if (playable.url.startsWith('blob:')) {\n                    try { URL.revokeObjectURL(playable.url); } catch { /* ignore */ }\n                }\n                return;\n            }\n\n            const previous = storyVoiceCacheRef.current.get(key);\n            if (previous?.url !== playable.url && previous?.url.startsWith('blob:')) {\n                storyVoiceBlobUrlsRef.current.delete(previous.url);\n                try { URL.revokeObjectURL(previous.url); } catch { /* ignore */ }\n            }\n            storyVoiceCacheRef.current.set(key, { url: playable.url, originalText: text });\n            if (playable.url.startsWith('blob:')) storyVoiceBlobUrlsRef.current.add(playable.url);\n\n            await playReadyVoice(playable.url);\n            if (force) addToast('这句语音已刷新', 'success');\n        } catch (error) {\n            if (requestId !== storyVoicePlayRequestRef.current) return;\n            storyVoiceTargetKeyRef.current = null;\n            stopStoryVoicePlayback();\n            console.warn('[StoryTheater] dialogue voice failed', error);\n            addToast(error instanceof Error ? error.message : '语音生成或播放失败', 'error');\n        }\n"""
+          if text.count(old_play) != 1:
+              raise SystemExit(f'voice playback block match count: {text.count(old_play)}')
+          text = text.replace(old_play, new_play, 1)
+
+          old_cleanup = """    useEffect(() => () => {\n        storyVoicePlayRequestRef.current += 1;\n        storyVoiceTargetKeyRef.current = null;\n        stopStoryVoicePlayback();\n    }, [entry.id, stopStoryVoicePlayback]);\n"""
+          new_cleanup = """    useEffect(() => () => {\n        storyVoicePlayRequestRef.current += 1;\n        storyVoiceTargetKeyRef.current = null;\n        releaseStoryVoicePlayback();\n    }, [entry.id, releaseStoryVoicePlayback]);\n"""
+          if text.count(old_cleanup) != 1:
+              raise SystemExit(f'voice cleanup block match count: {text.count(old_cleanup)}')
+          text = text.replace(old_cleanup, new_cleanup, 1)
+
+          path.write_text(text, encoding='utf-8')
+
+      - name: Remove one-shot workflow and commit patch
+        shell: bash
+        run: |
+          rm .github/workflows/patch-story-voice-once.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add components/date/story/StoryTheaterSession.tsx .github/workflows/patch-story-voice-once.yml
+          git diff --cached --check
+          git commit -m "fix(story): reuse cached voice playback like chat"
+          git push origin HEAD:master
