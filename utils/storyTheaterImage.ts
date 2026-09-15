@@ -65,6 +65,62 @@ const compact = (value?: string): string => (value || '').replace(/\s+/g, ' ').t
 const INLINE_PLAN_OPEN = '<story_image_plan>';
 const INLINE_PLAN_CLOSE = '</story_image_plan>';
 
+const mergePromptFragments = (
+    base: unknown,
+    fragments: Array<string | undefined>,
+): string => {
+    const source = typeof base === 'string' ? base.trim() : '';
+    const normalizedSource = source.toLocaleLowerCase();
+    const additions = fragments
+        .map(fragment => compact(fragment))
+        .filter(Boolean)
+        .filter(fragment => !normalizedSource.includes(fragment.toLocaleLowerCase()));
+    return [source, ...additions].filter(Boolean).join(', ');
+};
+
+const applyStoryNovelAiTextAnchors = (
+    args: Record<string, any>,
+    input: GenerateStoryImageInput,
+    referenceActor?: CharacterProfile,
+): Record<string, any> => {
+    const config = input.entry.imageGeneration;
+    if (!config) return args;
+
+    const result = { ...args };
+    const promptKeys = ['prompt', 'positive_prompt', 'positivePrompt', 'description', 'tags', 'input'];
+    const promptKey = promptKeys.find(key => typeof result[key] === 'string') || 'prompt';
+    const originalPrompt = typeof result[promptKey] === 'string' ? result[promptKey] : '';
+
+    const actorAnchors = input.actors
+        .filter(actor => {
+            const anchor = compact(config.characterAnchors?.[actor.id]);
+            if (!anchor) return false;
+            if (input.actors.length === 1 || actor.id === referenceActor?.id) return true;
+            const name = compact(actor.name);
+            return Boolean(name && originalPrompt.includes(name));
+        })
+        .map(actor => compact(config.characterAnchors?.[actor.id]));
+
+    const referenceActorAnchor = referenceActor
+        ? compact(config.characterAnchors?.[referenceActor.id])
+        : '';
+    if (!actorAnchors.length && referenceActorAnchor) actorAnchors.push(referenceActorAnchor);
+
+    const mergedPrompt = mergePromptFragments(originalPrompt, [
+        ...actorAnchors,
+        compact(config.stylePrompt),
+    ]);
+    if (mergedPrompt) result[promptKey] = mergedPrompt;
+
+    // 已有负面字段时才合并，避免给严格 schema 的工具凭空增加未知字段。
+    const negativeKey = ['negative_prompt', 'negativePrompt', 'uc'].find(key => typeof result[key] === 'string');
+    const configuredNegative = compact(config.negativePrompt);
+    if (negativeKey && configuredNegative) {
+        result[negativeKey] = mergePromptFragments(result[negativeKey], [configuredNegative]);
+    }
+    return result;
+};
+
 export const resolveStoryImagePlannerApiConfig = (
     entry: StoryTheaterEntry,
     fallbackApi: APIConfig,
@@ -664,7 +720,7 @@ export async function generateStoryTheaterImage(input: GenerateStoryImageInput):
         await applyImageGenerationPresetById(selected.server.imagePresetId);
     }
 
-    const clientArgs = { ...rawArgs };
+    let clientArgs = { ...rawArgs };
     const requestedActorId = typeof clientArgs.story_reference_actor_id === 'string'
         ? clientArgs.story_reference_actor_id
         : '';
@@ -674,6 +730,13 @@ export async function generateStoryTheaterImage(input: GenerateStoryImageInput):
         input.actors.find(actor => actor.id === requestedActorId)
         || input.actors.find(actor => actor.novelAiReference?.enabled)
         || input.actors[0];
+
+    // 规划器仍负责构图/动作/场景，但 NovelAI 的人物文本锚点不能只靠模型“记得抄”。
+    // 在真正执行前再做一次客户端兜底：角色锚点与画风一定进入最终正向 prompt；
+    // 已存在负面字段时也合并剧情负面词。参考图开关仍完全沿用原有策略。
+    if (selected.toolName === 'novelai_generate_image') {
+        clientArgs = applyStoryNovelAiTextAnchors(clientArgs, input, referenceActor);
+    }
 
     const preparedArgs = await prepareBuiltinImageToolArguments({
         server: selected.server,
