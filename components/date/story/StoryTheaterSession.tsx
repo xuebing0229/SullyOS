@@ -103,6 +103,8 @@ import {
     parseStoryVoiceMessage,
     type StoryVoiceSpeaker,
 } from '../../../utils/storyTheaterVoice';
+import { canSynthesizeSpeech } from '../../../utils/ttsRouter';
+import { ensureVoiceAsset, storyVoiceAssetKey } from '../../../utils/voiceAsset';
 
 
 interface Props {
@@ -345,7 +347,7 @@ const StorySceneRelationships: React.FC<{ inputs: StoryAffinityInput[] }> = ({ i
     })}</div>
 </div>;
 
-const StoryOutput: React.FC<{ content: string; onChoose?: (text: string) => void; affinityInputs?: StoryAffinityInput[]; voiceSpeakers?: Array<StoryVoiceSpeaker | null> }> = ({ content, onChoose, affinityInputs = [], voiceSpeakers }) => {
+const StoryOutput: React.FC<{ content: string; onChoose?: (text: string) => void; affinityInputs?: StoryAffinityInput[]; voiceSpeakers?: Array<StoryVoiceSpeaker | null>; onDialogueClick?: (dialogueIndex: number, text: string, speaker: StoryVoiceSpeaker) => void }> = ({ content, onChoose, affinityInputs = [], voiceSpeakers, onDialogueClick }) => {
     const appearance = useStoryTheaterAppearance();
     const inlineVoice = parseStoryVoiceMessage(content);
     const effectiveVoiceSpeakers = voiceSpeakers ?? inlineVoice.dialogueSpeakers;
@@ -387,6 +389,10 @@ const StoryOutput: React.FC<{ content: string; onChoose?: (text: string) => void
                                     key={segmentIndex}
                                     data-story-speaker={segment.speaker}
                                     data-story-dialogue-index={segment.dialogueIndex}
+                                    onClick={segment.kind === 'dialogue' && segment.speaker === 'char' && segment.dialogueIndex !== undefined && onDialogueClick
+                                        ? () => onDialogueClick(segment.dialogueIndex as number, segment.text, segment.speaker as StoryVoiceSpeaker)
+                                        : undefined}
+                                    className={segment.kind === 'dialogue' && segment.speaker === 'char' && onDialogueClick ? 'cursor-pointer' : undefined}
                                     style={appearance.textToneEnabled ? {
                                         color: segment.kind === 'dialogue'
                                             ? appearance.dialogueColor
@@ -513,6 +519,105 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
     const stopRequestedRef = useRef(false);
     const streamingTextRef = useRef('');
     const archiveLock = useRef(false);
+    const storyVoiceAudioRef = useRef<HTMLAudioElement | null>(null);
+    const storyVoicePlayingKeyRef = useRef<string | null>(null);
+    const storyVoiceObjectUrlRef = useRef<string | null>(null);
+    const storyVoicePlayRequestRef = useRef(0);
+    const storyVoiceTargetKeyRef = useRef<string | null>(null);
+
+    const stopStoryVoicePlayback = useCallback(() => {
+        const audio = storyVoiceAudioRef.current;
+        if (audio) {
+            try { audio.pause(); } catch { /* ignore */ }
+            audio.onended = null;
+            audio.onerror = null;
+            audio.removeAttribute('src');
+            try { audio.load(); } catch { /* ignore */ }
+        }
+        if (storyVoiceObjectUrlRef.current) {
+            try { URL.revokeObjectURL(storyVoiceObjectUrlRef.current); } catch { /* ignore */ }
+            storyVoiceObjectUrlRef.current = null;
+        }
+        storyVoicePlayingKeyRef.current = null;
+    }, []);
+
+    const playStoryCharDialogue = useCallback(async (
+        messageId: number,
+        dialogueIndex: number,
+        text: string,
+        speaker: StoryVoiceSpeaker,
+    ) => {
+        if (speaker !== 'char') return;
+        const actor = actors[0];
+        if (!actor) return;
+
+        const key = storyVoiceAssetKey(entry.id, messageId, dialogueIndex);
+        const currentAudio = storyVoiceAudioRef.current;
+        if (storyVoicePlayingKeyRef.current === key && currentAudio && !currentAudio.paused) {
+            storyVoicePlayRequestRef.current += 1;
+            storyVoiceTargetKeyRef.current = null;
+            stopStoryVoicePlayback();
+            return;
+        }
+
+        const storyTtsApiConfig = { ...apiConfig, ttsProvider: 'minimax' as const };
+        if (!canSynthesizeSpeech(actor, storyTtsApiConfig)) {
+            addToast('请先给当前角色配置 MiniMax 声线，并填写 MiniMax 语音 API Key', 'info');
+            return;
+        }
+
+        const requestId = ++storyVoicePlayRequestRef.current;
+        storyVoiceTargetKeyRef.current = key;
+        stopStoryVoicePlayback();
+
+        try {
+            const playable = await ensureVoiceAsset({
+                key,
+                text,
+                char: actor,
+                apiConfig: storyTtsApiConfig,
+                languageBoost: actor.chatVoiceLang || undefined,
+                groupId: apiConfig.minimaxGroupId || undefined,
+            });
+
+            if (requestId !== storyVoicePlayRequestRef.current) {
+                if (storyVoiceTargetKeyRef.current !== key && playable.url.startsWith('blob:')) {
+                    try { URL.revokeObjectURL(playable.url); } catch { /* ignore */ }
+                }
+                return;
+            }
+
+            if (!storyVoiceAudioRef.current) storyVoiceAudioRef.current = new Audio();
+            const audio = storyVoiceAudioRef.current;
+            storyVoicePlayingKeyRef.current = key;
+            storyVoiceObjectUrlRef.current = playable.url.startsWith('blob:') ? playable.url : null;
+            audio.src = playable.url;
+            audio.onended = () => {
+                if (storyVoicePlayingKeyRef.current !== key) return;
+                stopStoryVoicePlayback();
+                storyVoiceTargetKeyRef.current = null;
+            };
+            audio.onerror = () => {
+                if (storyVoicePlayingKeyRef.current !== key) return;
+                stopStoryVoicePlayback();
+                storyVoiceTargetKeyRef.current = null;
+            };
+            await audio.play();
+        } catch (error) {
+            if (requestId !== storyVoicePlayRequestRef.current) return;
+            storyVoiceTargetKeyRef.current = null;
+            stopStoryVoicePlayback();
+            console.warn('[StoryTheater] dialogue voice failed', error);
+            addToast(error instanceof Error ? error.message : '语音生成或播放失败', 'error');
+        }
+    }, [actors, addToast, apiConfig, entry.id, stopStoryVoicePlayback]);
+
+    useEffect(() => () => {
+        storyVoicePlayRequestRef.current += 1;
+        storyVoiceTargetKeyRef.current = null;
+        stopStoryVoicePlayback();
+    }, [entry.id, stopStoryVoicePlayback]);
+
     const scrollContainerRef = useRef<HTMLElement>(null);
     const scrollContentRef = useRef<HTMLDivElement>(null);
     const autoFollowStreamRef = useRef(true);
@@ -2013,12 +2118,12 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                                 </div>
                                 {message.role === 'user'
                                     ? <div className='pl-4 border-l-2 border-violet-300'><div className='text-[9px] tracking-[.16em] font-bold text-violet-500'>你写下</div><p className='mt-2 text-sm leading-7 text-slate-600 whitespace-pre-wrap'>{message.content}</p></div>
-                                    : <><StoryOutput content={message.content} onChoose={choice => setInput(choice)} affinityInputs={affinityInputsFromMessage(message, actors)} voiceSpeakers={voiceSpeakersFromMessage(message)} /><StoryRoundImage message={message} busy={regeneratingImageId === message.id} onRegenerate={() => void regenerateStoryImage(message)} /></>}
+                                    : <><StoryOutput content={message.content} onChoose={choice => setInput(choice)} affinityInputs={affinityInputsFromMessage(message, actors)} voiceSpeakers={voiceSpeakersFromMessage(message)} onDialogueClick={(dialogueIndex, text, speaker) => void playStoryCharDialogue(message.id, dialogueIndex, text, speaker)} /><StoryRoundImage message={message} busy={regeneratingImageId === message.id} onRegenerate={() => void regenerateStoryImage(message)} /></>}
                             </article>;
                         }
                         if (message.role === 'user') return <section key={message.id} ref={element => setStoryMessageElement(message.id, element)} {...pressHandlersFor(message)} className='pl-4 border-l-2 border-violet-300'><div className='text-[9px] tracking-[.16em] font-bold text-violet-500'>你写下</div><p className='mt-2 text-sm leading-7 text-slate-600 whitespace-pre-wrap'>{message.content}</p></section>;
                         const isLatest = message.id === messages[messages.length - 1]?.id;
-                        return <article key={message.id} ref={element => setStoryMessageElement(message.id, element)} {...pressHandlersFor(message)}><StoryOutput content={message.content} onChoose={choice => setInput(choice)} affinityInputs={affinityInputsFromMessage(message, actors)} voiceSpeakers={voiceSpeakersFromMessage(message)} /><StoryRoundImage message={message} busy={regeneratingImageId === message.id} onRegenerate={() => void regenerateStoryImage(message)} />{isLatest && <div className='mt-4 flex items-center justify-end gap-2'><span className='w-1.5 h-1.5 rounded-full bg-violet-400' /><button disabled={sending} onClick={() => void send(message)} className='inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-slate-200 bg-white text-[10px] font-bold text-slate-500 disabled:opacity-40'>{rerollingId === message.id ? <SpinnerGap size={12} className='animate-spin' /> : <ArrowClockwise size={12} />}换一种写法</button></div>}</article>;
+                        return <article key={message.id} ref={element => setStoryMessageElement(message.id, element)} {...pressHandlersFor(message)}><StoryOutput content={message.content} onChoose={choice => setInput(choice)} affinityInputs={affinityInputsFromMessage(message, actors)} voiceSpeakers={voiceSpeakersFromMessage(message)} onDialogueClick={(dialogueIndex, text, speaker) => void playStoryCharDialogue(message.id, dialogueIndex, text, speaker)} /><StoryRoundImage message={message} busy={regeneratingImageId === message.id} onRegenerate={() => void regenerateStoryImage(message)} />{isLatest && <div className='mt-4 flex items-center justify-end gap-2'><span className='w-1.5 h-1.5 rounded-full bg-violet-400' /><button disabled={sending} onClick={() => void send(message)} className='inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-slate-200 bg-white text-[10px] font-bold text-slate-500 disabled:opacity-40'>{rerollingId === message.id ? <SpinnerGap size={12} className='animate-spin' /> : <ArrowClockwise size={12} />}换一种写法</button></div>}</article>;
                     })}
                     {streamingText && <article className='relative'>
                         <StoryOutput content={streamingText} affinityInputs={[]} />
