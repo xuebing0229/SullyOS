@@ -18,39 +18,10 @@ export interface ParsedStoryVoiceMessage {
     dialogueSpeakers: StoryVoiceDialogueSpeaker[];
 }
 
-const STORY_VOICE_PAIR_PATTERN = /\[\[STV:(char|user)\]\]([\s\S]*?)\[\[\/STV\]\]/gi;
-const STORY_VOICE_MARKER_PATTERN = /\[\[STV:[^\]\r\n]{1,32}\]\]|\[\[\/STV\]\]/gi;
+const STORY_VOICE_PAIR_PATTERN = /(?:\[\[STV:(char|user)\]\]|\[STV:(char|user)\])([\s\S]*?)(?:\[\[\/STV\]\]|\[\/STV\])/gi;
+const STORY_VOICE_MARKER_PATTERN = /(?:\[\[STV:[^\]\r\n]{1,32}\]\]|\[STV:[^\]\r\n]{1,32}\]|\[\[\/STV\]\]|\[\/STV\])/gi;
 const STORY_TEXT_PATTERN = /<story_text\b[^>]*>([\s\S]*?)(?:<\/story_text\s*>|$)/i;
 const STORY_DIALOGUE_PATTERN = /(「[^」\n]*」|『[^』\n]*』|“[^”\n]*”|‘[^’\n]*’|"[^"\n]*")/g;
-
-/**
- * StoryTheaterSession strips the hidden STV tags inside its async completion helper,
- * then saves the parsed speaker ordinals in the caller's next microtask. Keep that
- * tiny handoff available across the async boundary without leaking tags into the
- * visible story text. Re-publishing in a microtask keeps concurrent completions from
- * stealing each other's speaker list before their own await continuation resumes.
- */
-declare global {
-    var storyVoiceSpeakers: StoryVoiceDialogueSpeaker[];
-}
-
-if (!Array.isArray(globalThis.storyVoiceSpeakers)) {
-    globalThis.storyVoiceSpeakers = [];
-}
-
-const handoffStoryVoiceSpeakers = (speakers: StoryVoiceDialogueSpeaker[]) => {
-    const snapshot = [...speakers];
-    const publish = () => {
-        globalThis.storyVoiceSpeakers = snapshot;
-    };
-
-    publish();
-    if (typeof queueMicrotask === 'function') {
-        queueMicrotask(publish);
-    } else {
-        void Promise.resolve().then(publish);
-    }
-};
 
 /**
  * Speaker metadata is transport-only. It must never be rendered, copied, exported,
@@ -76,8 +47,8 @@ export const parseStoryVoiceMarkup = (value: string): ParsedStoryVoiceMarkup => 
     while ((match = STORY_VOICE_PAIR_PATTERN.exec(source))) {
         cleanText += stripStoryVoiceMarkup(source.slice(cursor, match.index));
 
-        const speaker = match[1].toLowerCase() as StoryVoiceSpeaker;
-        const text = stripStoryVoiceMarkup(match[2]);
+        const speaker = String(match[1] || match[2]).toLowerCase() as StoryVoiceSpeaker;
+        const text = stripStoryVoiceMarkup(match[3]);
         const start = cleanText.length;
         cleanText += text;
         const end = cleanText.length;
@@ -111,12 +82,24 @@ export const parseStoryVoiceMessage = (value: string): ParsedStoryVoiceMessage =
         dialogueSpeakers.push(owner?.speaker ?? null);
     }
 
-    handoffStoryVoiceSpeakers(dialogueSpeakers);
-
     return {
         cleanText: parsedMessage.cleanText,
         dialogueSpeakers,
     };
+};
+
+export const extractStoryVoiceDialogues = (value: string): string[] => {
+    const source = String(value || '');
+    const storySource = STORY_TEXT_PATTERN.exec(source)?.[1] ?? source;
+    const parsedStory = parseStoryVoiceMarkup(storySource);
+    const dialogues: string[] = [];
+
+    STORY_DIALOGUE_PATTERN.lastIndex = 0;
+    let dialogue: RegExpExecArray | null;
+    while ((dialogue = STORY_DIALOGUE_PATTERN.exec(parsedStory.cleanText))) {
+        dialogues.push(dialogue[0]);
+    }
+    return dialogues;
 };
 
 export const buildStoryVoiceSpeakerFormatReminder = (

@@ -103,6 +103,7 @@ import {
     parseStoryVoiceMessage,
     type StoryVoiceSpeaker,
 } from '../../../utils/storyTheaterVoice';
+import { classifyStoryVoiceSpeakers } from '../../../utils/storyTheaterVoiceClassifier';
 import { canSynthesizeSpeech } from '../../../utils/ttsRouter';
 import { ensureVoiceAsset, storyVoiceAssetKey } from '../../../utils/voiceAsset';
 import { createUserVoiceTarget } from '../../../utils/userVoice';
@@ -348,7 +349,7 @@ const StorySceneRelationships: React.FC<{ inputs: StoryAffinityInput[] }> = ({ i
     })}</div>
 </div>;
 
-const StoryOutput: React.FC<{ content: string; onChoose?: (text: string) => void; affinityInputs?: StoryAffinityInput[]; voiceSpeakers?: Array<StoryVoiceSpeaker | null>; onDialogueClick?: (dialogueIndex: number, text: string, speaker: StoryVoiceSpeaker) => void; onDialogueLongPress?: (dialogueIndex: number, text: string, speaker: StoryVoiceSpeaker) => void }> = ({ content, onChoose, affinityInputs = [], voiceSpeakers, onDialogueClick, onDialogueLongPress }) => {
+const StoryOutput: React.FC<{ content: string; onChoose?: (text: string) => void; affinityInputs?: StoryAffinityInput[]; voiceSpeakers?: Array<StoryVoiceSpeaker | null>; onDialogueClick?: (dialogueIndex: number, text: string, speaker?: StoryVoiceSpeaker) => void; onDialogueLongPress?: (dialogueIndex: number, text: string, speaker: StoryVoiceSpeaker) => void }> = ({ content, onChoose, affinityInputs = [], voiceSpeakers, onDialogueClick, onDialogueLongPress }) => {
     const appearance = useStoryTheaterAppearance();
     const dialoguePressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const dialoguePressOriginRef = useRef<{ x: number; y: number } | null>(null);
@@ -383,7 +384,7 @@ const StoryOutput: React.FC<{ content: string; onChoose?: (text: string) => void
         if (Math.abs(event.clientX - origin.x) > 10 || Math.abs(event.clientY - origin.y) > 10) cancelDialogueLongPress();
     }, [cancelDialogueLongPress]);
     const inlineVoice = parseStoryVoiceMessage(content);
-    const effectiveVoiceSpeakers = voiceSpeakers ?? inlineVoice.dialogueSpeakers;
+    const effectiveVoiceSpeakers = voiceSpeakers && voiceSpeakers.length > 0 ? voiceSpeakers : inlineVoice.dialogueSpeakers;
     const blocks = parseStoryDisplayBlocks(inlineVoice.cleanText);
     let storyDialogueIndex = 0;
     const nextStoryDialogue = (): StoryDialogueCursor => {
@@ -422,7 +423,7 @@ const StoryOutput: React.FC<{ content: string; onChoose?: (text: string) => void
                                     key={segmentIndex}
                                     data-story-speaker={segment.speaker}
                                     data-story-dialogue-index={segment.dialogueIndex}
-                                    onClick={segment.kind === 'dialogue' && (segment.speaker === 'char' || segment.speaker === 'user') && segment.dialogueIndex !== undefined && (onDialogueClick || onDialogueLongPress)
+                                    onClick={segment.kind === 'dialogue' && segment.dialogueIndex !== undefined && onDialogueClick
                                         ? event => {
                                             event.stopPropagation();
                                             if (suppressDialogueClickRef.current) {
@@ -430,20 +431,20 @@ const StoryOutput: React.FC<{ content: string; onChoose?: (text: string) => void
                                                 event.preventDefault();
                                                 return;
                                             }
-                                            onDialogueClick?.(segment.dialogueIndex as number, segment.text, segment.speaker as StoryVoiceSpeaker);
+                                            onDialogueClick?.(segment.dialogueIndex as number, segment.text, segment.speaker);
                                         }
                                         : undefined}
                                     onPointerDown={segment.kind === 'dialogue' && (segment.speaker === 'char' || segment.speaker === 'user') && segment.dialogueIndex !== undefined && onDialogueLongPress
                                         ? event => beginDialogueLongPress(event, segment.dialogueIndex as number, segment.text, segment.speaker as StoryVoiceSpeaker)
                                         : undefined}
-                                    onPointerMove={onDialogueLongPress ? moveDialogueLongPress : undefined}
-                                    onPointerUp={onDialogueLongPress ? event => { event.stopPropagation(); cancelDialogueLongPress(); } : undefined}
-                                    onPointerCancel={onDialogueLongPress ? event => { event.stopPropagation(); cancelDialogueLongPress(); } : undefined}
-                                    onPointerLeave={onDialogueLongPress ? event => { event.stopPropagation(); cancelDialogueLongPress(); } : undefined}
+                                    onPointerMove={segment.kind === 'dialogue' && (segment.speaker === 'char' || segment.speaker === 'user') && segment.dialogueIndex !== undefined && onDialogueLongPress ? moveDialogueLongPress : undefined}
+                                    onPointerUp={segment.kind === 'dialogue' && (segment.speaker === 'char' || segment.speaker === 'user') && segment.dialogueIndex !== undefined && onDialogueLongPress ? event => { event.stopPropagation(); cancelDialogueLongPress(); } : undefined}
+                                    onPointerCancel={segment.kind === 'dialogue' && (segment.speaker === 'char' || segment.speaker === 'user') && segment.dialogueIndex !== undefined && onDialogueLongPress ? event => { event.stopPropagation(); cancelDialogueLongPress(); } : undefined}
+                                    onPointerLeave={segment.kind === 'dialogue' && (segment.speaker === 'char' || segment.speaker === 'user') && segment.dialogueIndex !== undefined && onDialogueLongPress ? event => { event.stopPropagation(); cancelDialogueLongPress(); } : undefined}
                                     onContextMenu={segment.kind === 'dialogue' && (segment.speaker === 'char' || segment.speaker === 'user') && onDialogueLongPress
                                         ? event => { event.preventDefault(); event.stopPropagation(); }
                                         : undefined}
-                                    className={segment.kind === 'dialogue' && (segment.speaker === 'char' || segment.speaker === 'user') && (onDialogueClick || onDialogueLongPress) ? 'cursor-pointer' : undefined}
+                                    className={segment.kind === 'dialogue' && segment.dialogueIndex !== undefined && (onDialogueClick || ((segment.speaker === 'char' || segment.speaker === 'user') && onDialogueLongPress)) ? 'cursor-pointer' : undefined}
                                     style={appearance.textToneEnabled ? {
                                         color: segment.kind === 'dialogue'
                                             ? appearance.dialogueColor
@@ -576,6 +577,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
     const storyVoiceObjectUrlRef = useRef<string | null>(null);
     const storyVoicePlayRequestRef = useRef(0);
     const storyVoiceTargetKeyRef = useRef<string | null>(null);
+    const storyVoiceSpeakersRef = useRef<Array<StoryVoiceSpeaker | null>>([]);
 
     const stopStoryVoicePlayback = useCallback(() => {
         const audio = storyVoiceAudioRef.current;
@@ -597,11 +599,50 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
         messageId: number,
         dialogueIndex: number,
         text: string,
-        speaker: StoryVoiceSpeaker,
+        speaker?: StoryVoiceSpeaker,
         force = false,
     ) => {
         if (entry.storyTtsEnabled !== true) return;
-        const actor = speaker === 'char' ? actors[0] : speaker === 'user' ? createUserVoiceTarget(userProfile) : undefined;
+
+        let resolvedSpeaker = speaker;
+        if (!resolvedSpeaker) {
+            const message = messages.find(item => item.id === messageId);
+            if (!message) return;
+            const currentSpeakers = voiceSpeakersFromMessage(message);
+            try {
+                const classified = await classifyStoryVoiceSpeakers({
+                    apiConfig,
+                    content: message.content,
+                    characterName: actors[0]?.name || '当前主角色',
+                    userName: promptIdentityName,
+                    currentSpeakers,
+                });
+                resolvedSpeaker = classified[dialogueIndex] || undefined;
+
+                const changed = classified.length !== currentSpeakers.length
+                    || classified.some((value, index) => value !== (currentSpeakers[index] ?? null));
+                if (changed) {
+                    await DB.updateMessageMetadata(messageId, previous => ({
+                        ...previous,
+                        theaterVoiceSpeakers: classified,
+                    }));
+                    setMessages(current => current.map(item => item.id === messageId
+                        ? { ...item, metadata: { ...(item.metadata || {}), theaterVoiceSpeakers: classified } }
+                        : item));
+                }
+            } catch (error) {
+                console.warn('[StoryTheater] dialogue speaker classification failed', error);
+                addToast(error instanceof Error ? `对白说话人识别失败：${error.message}` : '对白说话人识别失败', 'error');
+                return;
+            }
+
+            if (!resolvedSpeaker) {
+                addToast('这句被识别为 NPC / 其他角色对白，按设置不配音', 'info');
+                return;
+            }
+        }
+
+        const actor = resolvedSpeaker === 'char' ? actors[0] : resolvedSpeaker === 'user' ? createUserVoiceTarget(userProfile) : undefined;
         if (!actor) return;
 
         const key = storyVoiceAssetKey(entry.id, messageId, dialogueIndex);
@@ -615,7 +656,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
 
         const storyTtsApiConfig = { ...apiConfig, ttsProvider: entry.storyTtsProvider || 'minimax' };
         if (!canSynthesizeSpeech(actor, storyTtsApiConfig)) {
-            addToast(speaker === 'user' ? '请先在个人档案配置「我的声线」，并填写 MiniMax 语音 API Key' : '请先给当前角色配置 MiniMax 声线，并填写 MiniMax 语音 API Key', 'info');
+            addToast(resolvedSpeaker === 'user' ? '请先在个人档案配置「我的声线」，并填写 MiniMax 语音 API Key' : '请先给当前角色配置 MiniMax 声线，并填写 MiniMax 语音 API Key', 'info');
             return;
         }
 
@@ -665,7 +706,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             console.warn('[StoryTheater] dialogue voice failed', error);
             addToast(error instanceof Error ? error.message : '语音生成或播放失败', 'error');
         }
-    }, [actors, userProfile, addToast, apiConfig, entry.id, entry.storyTtsEnabled, entry.storyTtsProvider, stopStoryVoicePlayback]);
+    }, [actors, userProfile, addToast, apiConfig, entry.id, entry.storyTtsEnabled, entry.storyTtsProvider, messages, promptIdentityName, stopStoryVoicePlayback]);
 
     useEffect(() => () => {
         storyVoicePlayRequestRef.current += 1;
@@ -1302,7 +1343,8 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             if (Number.isFinite(reportedPromptTokens) && reportedPromptTokens > 0) onPromptTokens?.(reportedPromptTokens);
             const rawAssistantContent = extractContent(data).trim();
             if (!rawAssistantContent) throw new Error(describeEmptyStoryCompletion(data));
-            const { cleanText: content, dialogueSpeakers: storyVoiceSpeakers } = parseStoryVoiceMessage(rawAssistantContent);
+            const { cleanText: content, dialogueSpeakers: parsedVoiceSpeakers } = parseStoryVoiceMessage(rawAssistantContent);
+            storyVoiceSpeakersRef.current = [...parsedVoiceSpeakers];
 
             const finishReason = String(
                 data?.choices?.[0]?.finish_reason
@@ -1765,6 +1807,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 })
                 : undefined;
             usedNativeBackground = isNativeStoryBackgroundRuntime();
+            storyVoiceSpeakersRef.current = [];
             const generated = await callCompletion(payload, compiled.settings, reported => {
                 promptTokenCount = reported;
                 promptTokenCountExact = true;
@@ -1814,6 +1857,27 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                     actors.map(actor => ({ id: actor.id, name: actor.name })),
                 )
                 : rawContent;
+            let storyVoiceSpeakers = [...storyVoiceSpeakersRef.current];
+            if (entry.storyTtsEnabled === true) {
+                const dialogueCount = parseStoryVoiceMessage(rawContent).dialogueSpeakers.length;
+                if (dialogueCount > 0) {
+                    storyVoiceSpeakers = Array.from({ length: dialogueCount }, (_, index) => storyVoiceSpeakers[index] ?? null);
+                    if (storyVoiceSpeakers.some(speaker => speaker === null)) {
+                        try {
+                            storyVoiceSpeakers = await classifyStoryVoiceSpeakers({
+                                apiConfig,
+                                content: rawContent,
+                                characterName: actors[0]?.name || '当前主角色',
+                                userName: promptIdentityName,
+                                currentSpeakers: storyVoiceSpeakers,
+                            });
+                        } catch (voiceClassifyError) {
+                            // 正文永远优先保存。补判失败只让无法确认的对白保持静音，绝不误套 char 声线。
+                            console.warn('[StoryTheater] generated dialogue speaker repair failed', voiceClassifyError);
+                        }
+                    }
+                }
+            }
             const replyMetadata = {
                 theaterPromptTokens: promptTokenCount,
                 theaterPromptTokensExact: promptTokenCountExact,

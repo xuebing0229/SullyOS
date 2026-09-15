@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
     buildStoryVoiceSpeakerFormatReminder,
+    extractStoryVoiceDialogues,
     parseStoryVoiceMarkup,
     parseStoryVoiceMessage,
     stripStoryVoiceMarkup,
@@ -54,6 +55,15 @@ describe('story theater speaker markup', () => {
         expect(parsed.cleanText).toBe('“欢迎。” 残缺标签');
         expect(parsed.spans).toEqual([]);
         expect(stripStoryVoiceMarkup(raw)).not.toContain('STV');
+    });
+
+    it('accepts single-bracket compatibility markers without leaking them to visible text', () => {
+        const raw = '<story_text>[STV:char]“先走。”[/STV]\n[STV:user]“等等我。”[/STV]</story_text>';
+        const parsed = parseStoryVoiceMessage(raw);
+
+        expect(parsed.cleanText).toBe('<story_text>“先走。”\n“等等我。”</story_text>');
+        expect(parsed.dialogueSpeakers).toEqual(['char', 'user']);
+        expect(extractStoryVoiceDialogues(parsed.cleanText)).toEqual(['“先走。”', '“等等我。”']);
     });
 
     it('only emits the speaker protocol reminder when enabled', () => {
