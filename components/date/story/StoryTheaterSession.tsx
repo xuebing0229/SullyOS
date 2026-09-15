@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useLongPressGesture } from '../../../hooks/useLongPressGesture';
 import { loadStoryActorContext, replaceStoryTheaterReply, STORY_REROLL_INSTRUCTION } from '../../../utils/storyTheaterReply';
 import { Archive, ArrowBendDownRight, ArrowClockwise, ArrowLeft, ArrowUp, Broadcast, CaretDown, ChatCircleDots, Clock, Database, DownloadSimple, Eye, EyeSlash, FilmSlate, GearSix, GitBranch, HeartStraight, Key, MapPin, PaperPlaneTilt, PencilSimple, SlidersHorizontal, Sparkle, SpinnerGap, Trash, X } from '@phosphor-icons/react';
 import { useOS } from '../../../context/OSContext';
@@ -349,79 +350,19 @@ const StorySceneRelationships: React.FC<{ inputs: StoryAffinityInput[] }> = ({ i
     })}</div>
 </div>;
 
+interface StoryDialoguePressTarget {
+    dialogueIndex: number;
+    text: string;
+    speaker: StoryVoiceSpeaker;
+}
+
 const StoryOutput: React.FC<{ content: string; onChoose?: (text: string) => void; affinityInputs?: StoryAffinityInput[]; voiceSpeakers?: Array<StoryVoiceSpeaker | null>; onDialogueClick?: (dialogueIndex: number, text: string, speaker?: StoryVoiceSpeaker) => void; onDialogueLongPress?: (dialogueIndex: number, text: string, speaker: StoryVoiceSpeaker) => void }> = ({ content, onChoose, affinityInputs = [], voiceSpeakers, onDialogueClick, onDialogueLongPress }) => {
     const appearance = useStoryTheaterAppearance();
-    const dialoguePressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-    const dialoguePressOriginRef = useRef<{ x: number; y: number } | null>(null);
-    const suppressDialogueClickRef = useRef(false);
-    const cancelDialogueLongPress = useCallback(() => {
-        if (dialoguePressTimerRef.current) clearTimeout(dialoguePressTimerRef.current);
-        dialoguePressTimerRef.current = null;
-        dialoguePressOriginRef.current = null;
-    }, []);
-    useEffect(() => () => cancelDialogueLongPress(), [cancelDialogueLongPress]);
-    const dialoguePressMovedRef = useRef(false);
-    const dialogueLongPressTriggeredRef = useRef(false);
-    const beginDialoguePress = useCallback((
-        event: React.PointerEvent<HTMLSpanElement>,
-        dialogueIndex: number,
-        dialogueText: string,
-        speaker?: StoryVoiceSpeaker,
-    ) => {
-        event.stopPropagation();
-        cancelDialogueLongPress();
-        suppressDialogueClickRef.current = false;
-        dialoguePressMovedRef.current = false;
-        dialogueLongPressTriggeredRef.current = false;
-        dialoguePressOriginRef.current = { x: event.clientX, y: event.clientY };
-        if ((speaker === 'char' || speaker === 'user') && onDialogueLongPress) {
-            dialoguePressTimerRef.current = setTimeout(() => {
-                dialoguePressTimerRef.current = null;
-                dialoguePressOriginRef.current = null;
-                dialogueLongPressTriggeredRef.current = true;
-                suppressDialogueClickRef.current = true;
-                onDialogueLongPress(dialogueIndex, dialogueText, speaker);
-            }, 520);
-        }
-    }, [cancelDialogueLongPress, onDialogueLongPress]);
-    const moveDialoguePress = useCallback((event: React.PointerEvent<HTMLSpanElement>) => {
-        event.stopPropagation();
-        const origin = dialoguePressOriginRef.current;
-        if (!origin) return;
-        if (Math.abs(event.clientX - origin.x) > 10 || Math.abs(event.clientY - origin.y) > 10) {
-            dialoguePressMovedRef.current = true;
-            if (dialoguePressTimerRef.current) clearTimeout(dialoguePressTimerRef.current);
-            dialoguePressTimerRef.current = null;
-        }
-    }, []);
-    const finishDialoguePress = useCallback((
-        event: React.PointerEvent<HTMLSpanElement>,
-        dialogueIndex: number,
-        dialogueText: string,
-        speaker?: StoryVoiceSpeaker,
-    ) => {
-        event.stopPropagation();
-        const shouldPlay = !dialoguePressMovedRef.current && !dialogueLongPressTriggeredRef.current;
-        if (dialoguePressTimerRef.current) clearTimeout(dialoguePressTimerRef.current);
-        dialoguePressTimerRef.current = null;
-        dialoguePressOriginRef.current = null;
-        dialoguePressMovedRef.current = false;
-        dialogueLongPressTriggeredRef.current = false;
-        if (shouldPlay && onDialogueClick) {
-            // Android WebView 在嵌套滚动/长按手势中可能不再派发 synthetic click。
-            // 直接在 pointerup 完成轻点播放，再吞掉随后可能到达的 click，避免双播。
-            suppressDialogueClickRef.current = true;
-            onDialogueClick(dialogueIndex, dialogueText, speaker);
-        }
-    }, [onDialogueClick]);
-    const abortDialoguePress = useCallback((event: React.PointerEvent<HTMLSpanElement>) => {
-        event.stopPropagation();
-        if (dialoguePressTimerRef.current) clearTimeout(dialoguePressTimerRef.current);
-        dialoguePressTimerRef.current = null;
-        dialoguePressOriginRef.current = null;
-        dialoguePressMovedRef.current = false;
-        dialogueLongPressTriggeredRef.current = false;
-    }, []);
+    const dialoguePress = useLongPressGesture<HTMLSpanElement, StoryDialoguePressTarget>({
+        delay: 600,
+        moveTolerance: 10,
+        onLongPress: target => onDialogueLongPress?.(target.dialogueIndex, target.text, target.speaker),
+    });
     const inlineVoice = parseStoryVoiceMessage(content);
     const effectiveVoiceSpeakers = voiceSpeakers && voiceSpeakers.length > 0 ? voiceSpeakers : inlineVoice.dialogueSpeakers;
     const blocks = parseStoryDisplayBlocks(inlineVoice.cleanText);
@@ -465,25 +406,46 @@ const StoryOutput: React.FC<{ content: string; onChoose?: (text: string) => void
                                     onClick={segment.kind === 'dialogue' && segment.dialogueIndex !== undefined && onDialogueClick
                                         ? event => {
                                             event.stopPropagation();
-                                            if (suppressDialogueClickRef.current) {
-                                                suppressDialogueClickRef.current = false;
+                                            if (dialoguePress.consumeSuppressedClick()) {
                                                 event.preventDefault();
                                                 return;
                                             }
-                                            onDialogueClick?.(segment.dialogueIndex as number, segment.text, segment.speaker);
+                                            onDialogueClick(segment.dialogueIndex as number, segment.text, segment.speaker);
                                         }
                                         : undefined}
                                     onPointerDown={segment.kind === 'dialogue' && segment.dialogueIndex !== undefined && onDialogueClick
-                                        ? event => beginDialoguePress(event, segment.dialogueIndex as number, segment.text, segment.speaker)
+                                        ? event => {
+                                            event.stopPropagation();
+                                            if ((segment.speaker === 'char' || segment.speaker === 'user') && onDialogueLongPress) {
+                                                dialoguePress.beginPress(event, {
+                                                    dialogueIndex: segment.dialogueIndex as number,
+                                                    text: segment.text,
+                                                    speaker: segment.speaker,
+                                                });
+                                            }
+                                        }
                                         : undefined}
-                                    onPointerMove={segment.kind === 'dialogue' && segment.dialogueIndex !== undefined && onDialogueClick ? moveDialoguePress : undefined}
+                                    onPointerMove={segment.kind === 'dialogue' && segment.dialogueIndex !== undefined && onDialogueClick
+                                        ? event => { event.stopPropagation(); dialoguePress.movePress(event); }
+                                        : undefined}
                                     onPointerUp={segment.kind === 'dialogue' && segment.dialogueIndex !== undefined && onDialogueClick
-                                        ? event => finishDialoguePress(event, segment.dialogueIndex as number, segment.text, segment.speaker)
+                                        ? event => { event.stopPropagation(); dialoguePress.endPress(event); }
                                         : undefined}
-                                    onPointerCancel={segment.kind === 'dialogue' && segment.dialogueIndex !== undefined && onDialogueClick ? abortDialoguePress : undefined}
-                                    onPointerLeave={segment.kind === 'dialogue' && segment.dialogueIndex !== undefined && onDialogueClick ? abortDialoguePress : undefined}
-                                    onContextMenu={segment.kind === 'dialogue' && (segment.speaker === 'char' || segment.speaker === 'user') && onDialogueLongPress
-                                        ? event => { event.preventDefault(); event.stopPropagation(); }
+                                    onPointerCancel={segment.kind === 'dialogue' && segment.dialogueIndex !== undefined && onDialogueClick
+                                        ? event => { event.stopPropagation(); dialoguePress.cancelPress(); }
+                                        : undefined}
+                                    onPointerLeave={segment.kind === 'dialogue' && segment.dialogueIndex !== undefined && onDialogueClick
+                                        ? () => dialoguePress.cancelPress()
+                                        : undefined}
+                                    onContextMenu={segment.kind === 'dialogue' && segment.dialogueIndex !== undefined && (segment.speaker === 'char' || segment.speaker === 'user') && onDialogueLongPress
+                                        ? event => {
+                                            event.stopPropagation();
+                                            dialoguePress.openContextMenu(event, {
+                                                dialogueIndex: segment.dialogueIndex as number,
+                                                text: segment.text,
+                                                speaker: segment.speaker as StoryVoiceSpeaker,
+                                            });
+                                        }
                                         : undefined}
                                     className={segment.kind === 'dialogue' && segment.dialogueIndex !== undefined && (onDialogueClick || ((segment.speaker === 'char' || segment.speaker === 'user') && onDialogueLongPress)) ? 'cursor-pointer' : undefined}
                                     style={appearance.textToneEnabled ? {
@@ -804,8 +766,6 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
     const bottomRef = useRef<HTMLDivElement>(null);
     const storyMessageElementsRef = useRef<Map<number, HTMLElement>>(new Map());
     const pendingHistoryJumpRef = useRef<number | null>(null);
-    const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-    const longPressOrigin = useRef<{ x: number; y: number } | null>(null);
     const loadMessages = useCallback(async () => {
         const rows = await DB.getMessagesByCharId(threadId, true);
         setMessages(rows.filter(message => message.metadata?.source === 'story_theater').sort((a, b) => a.id - b.id));
@@ -975,39 +935,25 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             [characterId]: { ...(current[characterId] || EMPTY_AFFINITY_DRAFT), ...patch },
         }));
     }, []);
-    const cancelLongPress = useCallback(() => {
-        if (longPressTimer.current) clearTimeout(longPressTimer.current);
-        longPressTimer.current = null;
-        longPressOrigin.current = null;
-    }, []);
-    useEffect(() => () => cancelLongPress(), [cancelLongPress]);
-    const beginLongPress = useCallback((message: Message, event: React.PointerEvent<HTMLElement>) => {
-        if ((event.target as HTMLElement).closest('button, a, input, textarea, select, summary')) return;
-        cancelLongPress();
-        longPressOrigin.current = { x: event.clientX, y: event.clientY };
-        longPressTimer.current = setTimeout(() => {
-            setMessageMenu(message);
-            longPressTimer.current = null;
-            longPressOrigin.current = null;
-        }, 520);
-    }, [cancelLongPress]);
-    const moveLongPress = useCallback((event: React.PointerEvent<HTMLElement>) => {
-        const origin = longPressOrigin.current;
-        if (origin && Math.hypot(event.clientX - origin.x, event.clientY - origin.y) > 10) cancelLongPress();
-    }, [cancelLongPress]);
-    const openMessageMenu = useCallback((message: Message, event?: React.MouseEvent<HTMLElement>) => {
-        event?.preventDefault();
-        if (event && (event.target as HTMLElement).closest('button, a, input, textarea, select, summary')) return;
-        cancelLongPress();
-        setMessageMenu(message);
-    }, [cancelLongPress]);
+    const storyMessagePress = useLongPressGesture<HTMLElement, Message>({
+        delay: 600,
+        moveTolerance: 10,
+        onLongPress: message => setMessageMenu(message),
+    });
     const pressHandlersFor = (message: Message) => ({
-        onPointerDown: (event: React.PointerEvent<HTMLElement>) => beginLongPress(message, event),
-        onPointerMove: moveLongPress,
-        onPointerUp: cancelLongPress,
-        onPointerCancel: cancelLongPress,
-        onPointerLeave: cancelLongPress,
-        onContextMenu: (event: React.MouseEvent<HTMLElement>) => openMessageMenu(message, event),
+        onPointerDown: (event: React.PointerEvent<HTMLElement>) => {
+            if ((event.target as HTMLElement).closest('button, a, input, textarea, select, summary')) return;
+            storyMessagePress.beginPress(event, message);
+        },
+        onPointerMove: (event: React.PointerEvent<HTMLElement>) => { storyMessagePress.movePress(event); },
+        onPointerUp: (event: React.PointerEvent<HTMLElement>) => { storyMessagePress.endPress(event); },
+        onPointerCancel: () => storyMessagePress.cancelPress(),
+        onPointerLeave: () => storyMessagePress.cancelPress(),
+        onContextMenu: (event: React.MouseEvent<HTMLElement>) => {
+            event.preventDefault();
+            if ((event.target as HTMLElement).closest('button, a, input, textarea, select, summary')) return;
+            storyMessagePress.openContextMenu(event, message);
+        },
     });
 
     const relatedMessageIds = useCallback((message: Message): number[] => {
