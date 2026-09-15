@@ -98,6 +98,11 @@ import {
     buildStoryContinueInstruction,
     MEETING_CONTINUE_DISPLAY_TEXT,
 } from '../../../utils/meetingContinue';
+import {
+    buildStoryVoiceSpeakerFormatReminder,
+    parseStoryVoiceMessage,
+    type StoryVoiceSpeaker,
+} from '../../../utils/storyTheaterVoice';
 
 
 interface Props {
@@ -159,6 +164,12 @@ const affinityInputsFromMessage = (message: Message | undefined, actors: Charact
         .filter((value): value is StoryAffinityInput => Boolean(value));
     const legacy = normalizeAffinityInput(message?.metadata?.theaterAffinityInput, actors[0]);
     return legacy ? [legacy] : [];
+};
+
+const voiceSpeakersFromMessage = (message: Message | undefined): Array<StoryVoiceSpeaker | null> => {
+    const values = message?.metadata?.theaterVoiceSpeakers;
+    if (!Array.isArray(values)) return [];
+    return values.map(value => value === 'char' || value === 'user' ? value : null);
 };
 
 interface AffinityDraft { delta: number; reason: string; awareness: 'noticed' | 'unnoticed'; }
@@ -268,9 +279,16 @@ type StoryToneKind = 'narration' | 'dialogue' | 'psychology';
 interface StoryToneSegment {
     kind: StoryToneKind;
     text: string;
+    speaker?: StoryVoiceSpeaker;
+    dialogueIndex?: number;
 }
 
-const splitStoryToneSegments = (text: string): StoryToneSegment[] => {
+interface StoryDialogueCursor {
+    dialogueIndex: number;
+    speaker?: StoryVoiceSpeaker;
+}
+
+const splitStoryToneSegments = (text: string, nextDialogue?: () => StoryDialogueCursor): StoryToneSegment[] => {
     const source = String(text || '');
     const pattern = /(\*(?!\*)[^*\n]+?\*|「[^」\n]*」|『[^』\n]*』|“[^”\n]*”|‘[^’\n]*’|"[^"\n]*")/g;
     const segments: StoryToneSegment[] = [];
@@ -283,7 +301,13 @@ const splitStoryToneSegments = (text: string): StoryToneSegment[] => {
         if (token.startsWith('*') && token.endsWith('*')) {
             segments.push({ kind: 'psychology', text: token.slice(1, -1) });
         } else {
-            segments.push({ kind: 'dialogue', text: token });
+            const voice = nextDialogue?.();
+            const segment: StoryToneSegment = { kind: 'dialogue', text: token };
+            if (voice) {
+                segment.dialogueIndex = voice.dialogueIndex;
+                if (voice.speaker) segment.speaker = voice.speaker;
+            }
+            segments.push(segment);
         }
         cursor = match.index + token.length;
     }
@@ -321,9 +345,19 @@ const StorySceneRelationships: React.FC<{ inputs: StoryAffinityInput[] }> = ({ i
     })}</div>
 </div>;
 
-const StoryOutput: React.FC<{ content: string; onChoose?: (text: string) => void; affinityInputs?: StoryAffinityInput[] }> = ({ content, onChoose, affinityInputs = [] }) => {
+const StoryOutput: React.FC<{ content: string; onChoose?: (text: string) => void; affinityInputs?: StoryAffinityInput[]; voiceSpeakers?: Array<StoryVoiceSpeaker | null> }> = ({ content, onChoose, affinityInputs = [], voiceSpeakers }) => {
     const appearance = useStoryTheaterAppearance();
-    const blocks = parseStoryDisplayBlocks(content);
+    const inlineVoice = parseStoryVoiceMessage(content);
+    const effectiveVoiceSpeakers = voiceSpeakers ?? inlineVoice.dialogueSpeakers;
+    const blocks = parseStoryDisplayBlocks(inlineVoice.cleanText);
+    let storyDialogueIndex = 0;
+    const nextStoryDialogue = (): StoryDialogueCursor => {
+        const dialogueIndex = storyDialogueIndex++;
+        return {
+            dialogueIndex,
+            speaker: effectiveVoiceSpeakers[dialogueIndex] || undefined,
+        };
+    };
     const relationshipSceneIndex = blocks.findIndex(block => block.kind === 'scene');
     const hasScene = relationshipSceneIndex >= 0;
     const relationship = affinityInputs.length > 0 ? <StorySceneRelationships inputs={affinityInputs} /> : null;
@@ -348,23 +382,27 @@ const StoryOutput: React.FC<{ content: string; onChoose?: (text: string) => void
                             className='max-w-full font-serif text-[15px] leading-8 text-slate-800 whitespace-pre-wrap break-words [overflow-wrap:anywhere]'
                             style={{ textIndent: appearance.firstLineIndent ? '2em' : undefined }}
                         >
-                            {appearance.textToneEnabled
-                                ? splitStoryToneSegments(paragraph).map((segment, segmentIndex) => (
-                                    <span
-                                        key={segmentIndex}
-                                        style={{
-                                            color: segment.kind === 'dialogue'
-                                                ? appearance.dialogueColor
-                                                : segment.kind === 'psychology'
-                                                    ? appearance.psychologyColor
-                                                    : appearance.narrationColor,
-                                            ...(segment.kind === 'psychology' ? { fontStyle: 'italic' } : {}),
-                                        }}
-                                    >
-                                        {segment.text}
-                                    </span>
-                                ))
-                                : paragraph}
+                            {splitStoryToneSegments(paragraph, nextStoryDialogue).map((segment, segmentIndex) => (
+                                <span
+                                    key={segmentIndex}
+                                    data-story-speaker={segment.speaker}
+                                    data-story-dialogue-index={segment.dialogueIndex}
+                                    style={appearance.textToneEnabled ? {
+                                        color: segment.kind === 'dialogue'
+                                            ? appearance.dialogueColor
+                                            : segment.kind === 'psychology'
+                                                ? appearance.psychologyColor
+                                                : appearance.narrationColor,
+                                        ...(segment.kind === 'psychology' ? { fontStyle: 'italic' } : {}),
+                                    } : undefined}
+                                >
+                                    {appearance.textToneEnabled
+                                        ? segment.text
+                                        : segment.kind === 'psychology'
+                                            ? `*${segment.text}*`
+                                            : segment.text}
+                                </span>
+                            ))}
                         </p>
                     ))}
                 </div>;
@@ -1097,8 +1135,9 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             }
             const reportedPromptTokens = Number(data?.usage?.prompt_tokens);
             if (Number.isFinite(reportedPromptTokens) && reportedPromptTokens > 0) onPromptTokens?.(reportedPromptTokens);
-            const content = extractContent(data).trim();
-            if (!content) throw new Error(describeEmptyStoryCompletion(data));
+            const rawAssistantContent = extractContent(data).trim();
+            if (!rawAssistantContent) throw new Error(describeEmptyStoryCompletion(data));
+            const { cleanText: content, dialogueSpeakers: storyVoiceSpeakers } = parseStoryVoiceMessage(rawAssistantContent);
 
             const finishReason = String(
                 data?.choices?.[0]?.finish_reason
@@ -1522,6 +1561,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             const miniTheaterReminder = buildStoryMiniTheaterReminder(effectivePreset.document, promptIdentityName, actors.map(actor => actor.name));
             const backstageAftermathReminder = buildStoryBackstageAftermathReminder(effectivePreset.document);
             const textToneFormatReminder = buildStoryTextToneFormatReminder(appearance.textToneEnabled);
+            const voiceSpeakerReminder = buildStoryVoiceSpeakerFormatReminder(true, actors[0]?.name || '当前主角色', promptIdentityName);
             const multiAffinityGuide = affinityEnabled ? buildStoryMultiAffinityGuide(actors.map(actor => ({ id: actor.id, name: actor.name }))) : '';
             const affinityAwarenessReminder = affinityInputs.map(item => buildStoryAffinityAwarenessReminder(item, item.characterName || '当前角色')).filter(Boolean).join('\n\n');
             const identityGuard = buildStoryIdentityGuard(effectivePreset.document, promptIdentityName, actors.map(actor => actor.name));
@@ -1532,6 +1572,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 ...(backstageAftermathReminder ? [{ role: 'system' as const, content: backstageAftermathReminder }] : []),
                 ...(miniTheaterReminder ? [{ role: 'system' as const, content: miniTheaterReminder }] : []),
                 ...(textToneFormatReminder ? [{ role: 'system' as const, content: textToneFormatReminder }] : []),
+                ...(voiceSpeakerReminder ? [{ role: 'system' as const, content: voiceSpeakerReminder }] : []),
                 ...(multiAffinityGuide ? [{ role: 'system' as const, content: multiAffinityGuide }] : []),
                 ...(affinityEnabled ? [{ role: 'system' as const, content: RELATIONSHIP_TEXTURE_GUIDE }] : []),
                 ...(affinityAwarenessReminder ? [{ role: 'system' as const, content: affinityAwarenessReminder }] : []),
@@ -1613,6 +1654,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 theaterPromptTokensExact: promptTokenCountExact,
                 theaterRequestKey: activeRequestKey,
                 ...(affinityInputs.length > 0 ? { theaterAffinityInputs: affinityInputs } : {}),
+                ...(storyVoiceSpeakers.length > 0 ? { theaterVoiceSpeakers: storyVoiceSpeakers } : {}),
             };
             const rowsBeforeCommit = (await DB.getMessagesByCharId(threadId, true))
                 .filter(message => message.metadata?.source === 'story_theater')
@@ -1971,12 +2013,12 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                                 </div>
                                 {message.role === 'user'
                                     ? <div className='pl-4 border-l-2 border-violet-300'><div className='text-[9px] tracking-[.16em] font-bold text-violet-500'>你写下</div><p className='mt-2 text-sm leading-7 text-slate-600 whitespace-pre-wrap'>{message.content}</p></div>
-                                    : <><StoryOutput content={message.content} onChoose={choice => setInput(choice)} affinityInputs={affinityInputsFromMessage(message, actors)} /><StoryRoundImage message={message} busy={regeneratingImageId === message.id} onRegenerate={() => void regenerateStoryImage(message)} /></>}
+                                    : <><StoryOutput content={message.content} onChoose={choice => setInput(choice)} affinityInputs={affinityInputsFromMessage(message, actors)} voiceSpeakers={voiceSpeakersFromMessage(message)} /><StoryRoundImage message={message} busy={regeneratingImageId === message.id} onRegenerate={() => void regenerateStoryImage(message)} /></>}
                             </article>;
                         }
                         if (message.role === 'user') return <section key={message.id} ref={element => setStoryMessageElement(message.id, element)} {...pressHandlersFor(message)} className='pl-4 border-l-2 border-violet-300'><div className='text-[9px] tracking-[.16em] font-bold text-violet-500'>你写下</div><p className='mt-2 text-sm leading-7 text-slate-600 whitespace-pre-wrap'>{message.content}</p></section>;
                         const isLatest = message.id === messages[messages.length - 1]?.id;
-                        return <article key={message.id} ref={element => setStoryMessageElement(message.id, element)} {...pressHandlersFor(message)}><StoryOutput content={message.content} onChoose={choice => setInput(choice)} affinityInputs={affinityInputsFromMessage(message, actors)} /><StoryRoundImage message={message} busy={regeneratingImageId === message.id} onRegenerate={() => void regenerateStoryImage(message)} />{isLatest && <div className='mt-4 flex items-center justify-end gap-2'><span className='w-1.5 h-1.5 rounded-full bg-violet-400' /><button disabled={sending} onClick={() => void send(message)} className='inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-slate-200 bg-white text-[10px] font-bold text-slate-500 disabled:opacity-40'>{rerollingId === message.id ? <SpinnerGap size={12} className='animate-spin' /> : <ArrowClockwise size={12} />}换一种写法</button></div>}</article>;
+                        return <article key={message.id} ref={element => setStoryMessageElement(message.id, element)} {...pressHandlersFor(message)}><StoryOutput content={message.content} onChoose={choice => setInput(choice)} affinityInputs={affinityInputsFromMessage(message, actors)} voiceSpeakers={voiceSpeakersFromMessage(message)} /><StoryRoundImage message={message} busy={regeneratingImageId === message.id} onRegenerate={() => void regenerateStoryImage(message)} />{isLatest && <div className='mt-4 flex items-center justify-end gap-2'><span className='w-1.5 h-1.5 rounded-full bg-violet-400' /><button disabled={sending} onClick={() => void send(message)} className='inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-slate-200 bg-white text-[10px] font-bold text-slate-500 disabled:opacity-40'>{rerollingId === message.id ? <SpinnerGap size={12} className='animate-spin' /> : <ArrowClockwise size={12} />}换一种写法</button></div>}</article>;
                     })}
                     {streamingText && <article className='relative'>
                         <StoryOutput content={streamingText} affinityInputs={[]} />
