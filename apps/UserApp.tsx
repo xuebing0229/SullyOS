@@ -10,6 +10,8 @@ import TokenImg from '../components/os/TokenImg';
 import { trackEvent } from '../utils/analytics';
 import { AppID } from '../types';
 
+const DEFAULT_MINIMAX_TTS_MODEL = 'speech-2.8-hd';
+
 const UserApp: React.FC = () => {
     const { closeApp, openApp, userProfile, updateUserProfile, addToast } = useOS();
     const fileInputRef = useRef<HTMLInputElement>(null);
@@ -28,6 +30,38 @@ const UserApp: React.FC = () => {
                 addToast(err.message, 'error');
             }
         }
+    };
+
+    const updateMyMiniMaxVoiceId = (voiceId: string) => {
+        const previous = userProfile.voiceProfile;
+        updateUserProfile({
+            voiceProfile: {
+                ...previous,
+                provider: 'minimax',
+                voiceId,
+                voiceName: voiceId || undefined,
+                source: 'custom',
+                model: previous?.model || DEFAULT_MINIMAX_TTS_MODEL,
+                // 手填 voice_id 明确表示改用这一条单音色；旧混合配方不能继续抢优先级。
+                timberWeights: undefined,
+            },
+        });
+    };
+
+    const updateMyMiniMaxModel = (model: string) => {
+        const previous = userProfile.voiceProfile;
+        updateUserProfile({
+            voiceProfile: {
+                ...previous,
+                provider: 'minimax',
+                model,
+            },
+        });
+    };
+
+    const openMyVoiceDesigner = () => {
+        try { sessionStorage.setItem('sully_voice_designer_target', 'user'); } catch { /* ignore */ }
+        openApp(AppID.VoiceDesigner);
     };
 
     return (
@@ -116,23 +150,44 @@ const UserApp: React.FC = () => {
                     addToast={addToast}
                 />
 
-                <button
-                    type="button"
-                    onClick={() => {
-                        try { sessionStorage.setItem('sully_voice_designer_target', 'user'); } catch { /* ignore */ }
-                        openApp(AppID.VoiceDesigner);
-                    }}
-                    className="w-full bg-white rounded-[1.75rem] shadow-[0_10px_30px_-12px_rgba(80,70,120,0.18)] border border-slate-100 p-5 text-left active:scale-[0.99] transition-transform"
-                >
+                <div className="w-full bg-white rounded-[1.75rem] shadow-[0_10px_30px_-12px_rgba(80,70,120,0.18)] border border-slate-100 p-5 text-left">
                     <div className="flex items-center justify-between gap-3">
                         <div className="min-w-0">
                             <div className="text-sm font-bold text-slate-700">我的声线</div>
-                            <div className="mt-1 text-[11px] text-slate-400 truncate">{userProfile.voiceProfile?.voiceName || userProfile.voiceProfile?.voiceId || '尚未配置 · 点这里进入捏声音'}</div>
+                            <div className="mt-1 text-[11px] text-slate-400">文游里的 User 对白会直接读取这里。</div>
                         </div>
-                        <span className="shrink-0 text-primary text-lg">›</span>
+                        <button
+                            type="button"
+                            onClick={openMyVoiceDesigner}
+                            className="shrink-0 rounded-xl bg-violet-50 px-3 py-2 text-[11px] font-bold text-violet-600 active:scale-95 transition-transform"
+                        >
+                            捏声音
+                        </button>
                     </div>
-                    <p className="mt-2 text-[10px] leading-5 text-slate-400">与角色声线共用同一套 MiniMax 配置和全局 API Key，文游里的 User 对白会读取这里。</p>
-                </button>
+
+                    <div className="mt-4 space-y-3">
+                        <div>
+                            <label className="mb-1.5 block text-[10px] font-bold tracking-wide text-slate-400">MINIMAX VOICE_ID</label>
+                            <input
+                                value={userProfile.voiceProfile?.voiceId || ''}
+                                onChange={(e) => updateMyMiniMaxVoiceId(e.target.value)}
+                                placeholder="直接粘贴 voice_id"
+                                className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700 outline-none transition-colors focus:border-primary/30 focus:bg-white"
+                            />
+                        </div>
+                        <div>
+                            <label className="mb-1.5 block text-[10px] font-bold tracking-wide text-slate-400">MINIMAX 模型</label>
+                            <input
+                                value={userProfile.voiceProfile?.model || DEFAULT_MINIMAX_TTS_MODEL}
+                                onChange={(e) => updateMyMiniMaxModel(e.target.value)}
+                                placeholder={DEFAULT_MINIMAX_TTS_MODEL}
+                                className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700 outline-none transition-colors focus:border-primary/30 focus:bg-white"
+                            />
+                        </div>
+                    </div>
+
+                    <p className="mt-3 text-[10px] leading-5 text-slate-400">可以直接填 MiniMax 已有 voice_id，不需要先捏声音。手填新 ID 会切换为这一条单音色；API Key 仍与角色声线共用全局 MiniMax 配置。</p>
+                </div>
 
                 {/* About / setting card */}
                 <div className="bg-white rounded-[1.75rem] shadow-[0_10px_30px_-12px_rgba(80,70,120,0.18)] border border-slate-100 p-5">
