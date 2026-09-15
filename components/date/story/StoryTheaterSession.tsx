@@ -615,10 +615,13 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
     const archiveLock = useRef(false);
     const storyVoiceAudioRef = useRef<HTMLAudioElement | null>(null);
     const storyVoicePlayingKeyRef = useRef<string | null>(null);
-    const storyVoiceObjectUrlRef = useRef<string | null>(null);
     const storyVoicePlayRequestRef = useRef(0);
     const storyVoiceTargetKeyRef = useRef<string | null>(null);
     const storyVoiceSpeakersRef = useRef<Array<StoryVoiceSpeaker | null>>([]);
+    // Match main chat's proven playback lifecycle: keep materialized audio URLs alive
+    // for the current story session so replay is immediate instead of re-reading IDB.
+    const storyVoiceCacheRef = useRef<Map<string, { url: string; originalText: string }>>(new Map());
+    const storyVoiceBlobUrlsRef = useRef<Set<string>>(new Set());
 
     const stopStoryVoicePlayback = useCallback(() => {
         const audio = storyVoiceAudioRef.current;
@@ -626,15 +629,24 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             try { audio.pause(); } catch { /* ignore */ }
             audio.onended = null;
             audio.onerror = null;
-            audio.removeAttribute('src');
-            try { audio.load(); } catch { /* ignore */ }
-        }
-        if (storyVoiceObjectUrlRef.current) {
-            try { URL.revokeObjectURL(storyVoiceObjectUrlRef.current); } catch { /* ignore */ }
-            storyVoiceObjectUrlRef.current = null;
         }
         storyVoicePlayingKeyRef.current = null;
     }, []);
+
+    const releaseStoryVoicePlayback = useCallback(() => {
+        stopStoryVoicePlayback();
+        const audio = storyVoiceAudioRef.current;
+        if (audio) {
+            audio.removeAttribute('src');
+            try { audio.load(); } catch { /* ignore */ }
+        }
+        storyVoiceAudioRef.current = null;
+        for (const url of storyVoiceBlobUrlsRef.current) {
+            try { URL.revokeObjectURL(url); } catch { /* ignore */ }
+        }
+        storyVoiceBlobUrlsRef.current.clear();
+        storyVoiceCacheRef.current.clear();
+    }, [stopStoryVoicePlayback]);
 
     const playStoryDialogue = useCallback(async (
         messageId: number,
@@ -706,6 +718,40 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
         storyVoiceTargetKeyRef.current = key;
         stopStoryVoicePlayback();
 
+        const playReadyVoice = (url: string) => {
+            if (!storyVoiceAudioRef.current) storyVoiceAudioRef.current = new Audio();
+            const audio = storyVoiceAudioRef.current;
+            storyVoicePlayingKeyRef.current = key;
+            audio.src = url;
+            audio.onended = () => {
+                if (storyVoicePlayingKeyRef.current !== key) return;
+                storyVoicePlayingKeyRef.current = null;
+                storyVoiceTargetKeyRef.current = null;
+            };
+            audio.onerror = () => {
+                if (storyVoicePlayingKeyRef.current !== key) return;
+                storyVoicePlayingKeyRef.current = null;
+                storyVoiceTargetKeyRef.current = null;
+            };
+            return audio.play();
+        };
+
+        const cached = !force ? storyVoiceCacheRef.current.get(key) : undefined;
+        if (cached?.originalText === text) {
+            // Same hot path as main chat: once materialized, replay the in-memory URL
+            // immediately from the user's tap without another IndexedDB round trip.
+            try {
+                await playReadyVoice(cached.url);
+            } catch (error) {
+                if (requestId !== storyVoicePlayRequestRef.current) return;
+                storyVoiceTargetKeyRef.current = null;
+                stopStoryVoicePlayback();
+                console.warn('[StoryTheater] cached dialogue voice failed', error);
+                addToast(error instanceof Error ? error.message : '语音播放失败', 'error');
+            }
+            return;
+        }
+
         try {
             const playable = await ensureVoiceAsset({
                 key,
@@ -718,28 +764,21 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             });
 
             if (requestId !== storyVoicePlayRequestRef.current) {
-                if (storyVoiceTargetKeyRef.current !== key && playable.url.startsWith('blob:')) {
+                if (playable.url.startsWith('blob:')) {
                     try { URL.revokeObjectURL(playable.url); } catch { /* ignore */ }
                 }
                 return;
             }
 
-            if (!storyVoiceAudioRef.current) storyVoiceAudioRef.current = new Audio();
-            const audio = storyVoiceAudioRef.current;
-            storyVoicePlayingKeyRef.current = key;
-            storyVoiceObjectUrlRef.current = playable.url.startsWith('blob:') ? playable.url : null;
-            audio.src = playable.url;
-            audio.onended = () => {
-                if (storyVoicePlayingKeyRef.current !== key) return;
-                stopStoryVoicePlayback();
-                storyVoiceTargetKeyRef.current = null;
-            };
-            audio.onerror = () => {
-                if (storyVoicePlayingKeyRef.current !== key) return;
-                stopStoryVoicePlayback();
-                storyVoiceTargetKeyRef.current = null;
-            };
-            await audio.play();
+            const previous = storyVoiceCacheRef.current.get(key);
+            if (previous?.url !== playable.url && previous?.url.startsWith('blob:')) {
+                storyVoiceBlobUrlsRef.current.delete(previous.url);
+                try { URL.revokeObjectURL(previous.url); } catch { /* ignore */ }
+            }
+            storyVoiceCacheRef.current.set(key, { url: playable.url, originalText: text });
+            if (playable.url.startsWith('blob:')) storyVoiceBlobUrlsRef.current.add(playable.url);
+
+            await playReadyVoice(playable.url);
             if (force) addToast('这句语音已刷新', 'success');
         } catch (error) {
             if (requestId !== storyVoicePlayRequestRef.current) return;
@@ -753,8 +792,8 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
     useEffect(() => () => {
         storyVoicePlayRequestRef.current += 1;
         storyVoiceTargetKeyRef.current = null;
-        stopStoryVoicePlayback();
-    }, [entry.id, stopStoryVoicePlayback]);
+        releaseStoryVoicePlayback();
+    }, [entry.id, releaseStoryVoicePlayback]);
 
     const scrollContainerRef = useRef<HTMLElement>(null);
     const scrollContentRef = useRef<HTMLDivElement>(null);
