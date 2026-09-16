@@ -295,7 +295,7 @@ interface StoryDialogueCursor {
 
 const splitStoryToneSegments = (text: string, nextDialogue?: () => StoryDialogueCursor): StoryToneSegment[] => {
     const source = String(text || '');
-    const pattern = /(\*(?!\*)[^*\n]+?\*|「[^」\n]*」|『[^』\n]*』|“[^”\n]*”|‘[^’\n]*’|"[^"\n]*")/g;
+    const pattern = /(\*(?!\*)[^*\n]+?\*|「[^」\n]*」)/g;
     const segments: StoryToneSegment[] = [];
     let cursor = 0;
     let match: RegExpExecArray | null;
