@@ -102,6 +102,7 @@ import {
 import {
     buildStoryVoiceSpeakerFormatReminder,
     parseStoryVoiceMessage,
+    type StoryVoiceActing,
     type StoryVoiceSpeaker,
 } from '../../../utils/storyTheaterVoice';
 import { classifyStoryVoiceSpeakers } from '../../../utils/storyTheaterVoiceClassifier';
@@ -175,6 +176,18 @@ const voiceSpeakersFromMessage = (message: Message | undefined): Array<StoryVoic
     const values = message?.metadata?.theaterVoiceSpeakers;
     if (!Array.isArray(values)) return [];
     return values.map(value => value === 'char' || value === 'user' ? value : null);
+};
+
+const voiceActingFromMessage = (message: Message | undefined): Array<StoryVoiceActing | null> => {
+    const values = message?.metadata?.theaterVoiceActing;
+    if (!Array.isArray(values)) return [];
+    return values.map(value => {
+        if (!value || typeof value !== 'object') return null;
+        const speech = String((value as any).speech || '').trim();
+        if (!speech) return null;
+        const emotion = String((value as any).emotion || '').trim().toLowerCase();
+        return { speech, ...(emotion ? { emotion } : {}) };
+    });
 };
 
 interface AffinityDraft { delta: number; reason: string; awareness: 'noticed' | 'unnoticed'; }
@@ -598,6 +611,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
     const storyVoicePlayRequestRef = useRef(0);
     const storyVoiceTargetKeyRef = useRef<string | null>(null);
     const storyVoiceSpeakersRef = useRef<Array<StoryVoiceSpeaker | null>>([]);
+    const storyVoiceActingRef = useRef<Array<StoryVoiceActing | null>>([]);
     // Match main chat's proven playback lifecycle: keep materialized audio URLs alive
     // for the current story session so replay is immediate instead of re-reading IDB.
     const storyVoiceCacheRef = useRef<Map<string, { url: string; originalText: string }>>(new Map());
@@ -637,9 +651,10 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
     ) => {
         if (entry.storyTtsEnabled !== true) return;
 
+        const targetMessage = messages.find(item => item.id === messageId);
         let resolvedSpeaker = speaker;
         if (!resolvedSpeaker) {
-            const message = messages.find(item => item.id === messageId);
+            const message = targetMessage;
             if (!message) return;
             const currentSpeakers = voiceSpeakersFromMessage(message);
             addToast('正在识别这句对白是谁说的…', 'info');
@@ -679,6 +694,8 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
         const actor = resolvedSpeaker === 'char' ? actors[0] : resolvedSpeaker === 'user' ? createUserVoiceTarget(userProfile) : undefined;
         if (!actor) return;
 
+        const acting = voiceActingFromMessage(targetMessage)[dialogueIndex] ?? null;
+        const synthesisText = String(acting?.speech || text).trim() || text;
         const key = storyVoiceAssetKey(entry.id, messageId, dialogueIndex);
         const currentAudio = storyVoiceAudioRef.current;
         if (!force && storyVoicePlayingKeyRef.current === key && currentAudio && !currentAudio.paused) {
@@ -737,7 +754,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
         };
 
         const cached = !force ? storyVoiceCacheRef.current.get(key) : undefined;
-        if (cached?.originalText === text) {
+        if (cached?.originalText === synthesisText) {
             // Same hot path as main chat: once materialized, replay the in-memory URL
             // immediately from the user's tap without another IndexedDB round trip.
             try {
@@ -756,11 +773,13 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
         try {
             const playable = await ensureVoiceAsset({
                 key,
-                text,
+                text: synthesisText,
+                spokenText: text,
                 char: actor,
                 apiConfig: storyTtsApiConfig,
                 languageBoost: actor.chatVoiceLang || undefined,
                 groupId: apiConfig.minimaxGroupId || undefined,
+                emotion: acting?.emotion,
                 force,
             });
 
@@ -776,7 +795,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 storyVoiceBlobUrlsRef.current.delete(previous.url);
                 try { URL.revokeObjectURL(previous.url); } catch { /* ignore */ }
             }
-            storyVoiceCacheRef.current.set(key, { url: playable.url, originalText: text });
+            storyVoiceCacheRef.current.set(key, { url: playable.url, originalText: synthesisText });
             if (playable.url.startsWith('blob:')) storyVoiceBlobUrlsRef.current.add(playable.url);
 
             playbackUrl = playable.url;
@@ -1416,8 +1435,13 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             if (Number.isFinite(reportedPromptTokens) && reportedPromptTokens > 0) onPromptTokens?.(reportedPromptTokens);
             const rawAssistantContent = extractContent(data).trim();
             if (!rawAssistantContent) throw new Error(describeEmptyStoryCompletion(data));
-            const { cleanText: content, dialogueSpeakers: parsedVoiceSpeakers } = parseStoryVoiceMessage(rawAssistantContent);
+            const {
+                cleanText: content,
+                dialogueSpeakers: parsedVoiceSpeakers,
+                dialogueActing: parsedVoiceActing,
+            } = parseStoryVoiceMessage(rawAssistantContent);
             storyVoiceSpeakersRef.current = [...parsedVoiceSpeakers];
+            storyVoiceActingRef.current = [...parsedVoiceActing];
 
             const finishReason = String(
                 data?.choices?.[0]?.finish_reason
@@ -1881,6 +1905,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 : undefined;
             usedNativeBackground = isNativeStoryBackgroundRuntime();
             storyVoiceSpeakersRef.current = [];
+            storyVoiceActingRef.current = [];
             const generated = await callCompletion(payload, compiled.settings, reported => {
                 promptTokenCount = reported;
                 promptTokenCountExact = true;
@@ -1931,10 +1956,12 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 )
                 : rawContent;
             let storyVoiceSpeakers = [...storyVoiceSpeakersRef.current];
+            let storyVoiceActing = [...storyVoiceActingRef.current];
             if (entry.storyTtsEnabled === true) {
                 const dialogueCount = parseStoryVoiceMessage(rawContent).dialogueSpeakers.length;
                 if (dialogueCount > 0) {
                     storyVoiceSpeakers = Array.from({ length: dialogueCount }, (_, index) => storyVoiceSpeakers[index] ?? null);
+                    storyVoiceActing = Array.from({ length: dialogueCount }, (_, index) => storyVoiceActing[index] ?? null);
                     if (storyVoiceSpeakers.some(speaker => speaker === null)) {
                         try {
                             storyVoiceSpeakers = await classifyStoryVoiceSpeakers({
@@ -1957,6 +1984,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 theaterRequestKey: activeRequestKey,
                 ...(affinityInputs.length > 0 ? { theaterAffinityInputs: affinityInputs } : {}),
                 ...(storyVoiceSpeakers.length > 0 ? { theaterVoiceSpeakers: storyVoiceSpeakers } : {}),
+                ...(storyVoiceActing.some(Boolean) ? { theaterVoiceActing: storyVoiceActing } : {}),
             };
             const rowsBeforeCommit = (await DB.getMessagesByCharId(threadId, true))
                 .filter(message => message.metadata?.source === 'story_theater')
@@ -2085,7 +2113,9 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 || error?.storyIncompleteCompletion?.content
                 || '',
             ).trim();
-            const committedPartial = (partialStreamText || streamingTextRef.current || returnedPartial).trim();
+            const committedPartialRaw = (partialStreamText || streamingTextRef.current || returnedPartial).trim();
+            const parsedPartialVoice = parseStoryVoiceMessage(committedPartialRaw);
+            const committedPartial = parsedPartialVoice.cleanText.trim();
             if (committedPartial) {
                 try {
                     if (partialIsReroll && partialRerollTarget) {
@@ -2107,6 +2137,8 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                             theaterInterrupted: true,
                             ...(activeRequestKey ? { theaterRequestKey: activeRequestKey } : {}),
                             ...(partialAffinityInputs.length > 0 ? { theaterAffinityInputs: partialAffinityInputs } : {}),
+                            ...(parsedPartialVoice.dialogueSpeakers.length > 0 ? { theaterVoiceSpeakers: parsedPartialVoice.dialogueSpeakers } : {}),
+                            ...(parsedPartialVoice.dialogueActing.some(Boolean) ? { theaterVoiceActing: parsedPartialVoice.dialogueActing } : {}),
                         });
                     }
                     if (!partialIsReroll && activeUserMessageId > 0) {
