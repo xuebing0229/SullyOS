@@ -1,3 +1,4 @@
+// Story intentionally reuses the shared acting guide so char/user TTS stay behaviorally aligned.
 import { VOICE_ACTING_GUIDE, VALID_EMOTIONS, cleanVoiceMarkupForDisplay, parseVoiceOutput } from './minimaxTts';
 
 export type StoryVoiceSpeaker = 'char' | 'user';
