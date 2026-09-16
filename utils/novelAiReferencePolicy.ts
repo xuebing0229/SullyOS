@@ -88,6 +88,37 @@ const copyFragment = (
 };
 
 /**
+ * Count NovelAI V4+ multi-character separators while ignoring Prompt Randomizer
+ * blocks such as ||red|blue|green|| and escaped pipes. A real two-character
+ * prompt is `base | character A | character B`, therefore it has at least two
+ * separators outside randomizer blocks.
+ */
+export const countNovelAiCharacterPromptSeparators = (value: unknown): number => {
+    if (typeof value !== 'string' || !value.includes('|')) return 0;
+    let count = 0;
+    let inRandomizer = false;
+    for (let index = 0; index < value.length; index += 1) {
+        const char = value[index];
+        if (char === '\\') {
+            index += 1;
+            continue;
+        }
+        if (char !== '|') continue;
+        if (value[index + 1] === '|') {
+            inRandomizer = !inRandomizer;
+            index += 1;
+            continue;
+        }
+        if (!inRandomizer) count += 1;
+    }
+    return count;
+};
+
+export const isNovelAiMultiCharacterPrompt = (
+    args?: Record<string, any> | null,
+): boolean => countNovelAiCharacterPromptSeparators(args?.prompt) >= 2;
+
+/**
  * Remove every NovelAI managed reference field and every client-only selector.
  * A planner may ask whether a managed reference should be used, but it can never
  * smuggle its own slot id/strength/fidelity into the real image backend request.
@@ -115,6 +146,8 @@ export const normalizeNovelAiReferencePolicy = (
  * - use_* defaults to true when omitted;
  * - story_use_* is an additional client selector used by background story planning;
  * - selected-tool policy is authoritative over planner wishes;
+ * - NovelAI multi-character prompts deliberately disable Precise Reference because
+ *   Precise Reference is generation-wide and can leak one identity into another;
  * - an available+requested Vibe reference wins over all Precise references because
  *   NovelAI does not allow Vibe Transfer and Precise Reference together;
  * - only whitelisted managed fragments can be merged into the final arguments.
@@ -126,12 +159,15 @@ export const resolveNovelAiReferenceArguments = (input: {
 }): NovelAiReferenceResolution => {
     const source = input.args || {};
     const policy = normalizeNovelAiReferencePolicy(input.policy);
+    const multiCharacterPrompt = isNovelAiMultiCharacterPrompt(source);
     const requested = {
         character:
-            source.story_use_character_reference !== false
+            !multiCharacterPrompt
+            && source.story_use_character_reference !== false
             && source.use_character_reference !== false,
         user:
-            source.story_use_user_reference !== false
+            !multiCharacterPrompt
+            && source.story_use_user_reference !== false
             && source.use_user_reference !== false,
         vibe:
             source.story_use_vibe_reference !== false
