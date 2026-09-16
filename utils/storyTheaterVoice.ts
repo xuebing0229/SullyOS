@@ -1,8 +1,11 @@
 export type StoryVoiceSpeaker = 'char' | 'user';
-export type StoryVoiceDialogueSpeaker = StoryVoiceSpeaker | null;
+export type StoryDialogueRole = StoryVoiceSpeaker | 'npc' | 'quote';
+export type StoryVoiceDialogueSpeaker = StoryDialogueRole | null;
+
+type StorySpokenRole = Exclude<StoryDialogueRole, 'quote'>;
 
 export interface StoryVoiceSpan {
-    speaker: StoryVoiceSpeaker;
+    speaker: StorySpokenRole;
     start: number;
     end: number;
     text: string;
@@ -18,7 +21,7 @@ export interface ParsedStoryVoiceMessage {
     dialogueSpeakers: StoryVoiceDialogueSpeaker[];
 }
 
-const STORY_VOICE_PAIR_PATTERN = /(?:\[\[STV:(char|user)\]\]|\[STV:(char|user)\])([\s\S]*?)(?:\[\[\/STV\]\]|\[\/STV\])/gi;
+const STORY_VOICE_PAIR_PATTERN = /(?:\[\[STV:(char|user|npc)\]\]|\[STV:(char|user|npc)\])([\s\S]*?)(?:\[\[\/STV\]\]|\[\/STV\])/gi;
 const STORY_VOICE_MARKER_PATTERN = /(?:\[\[STV:[^\]\r\n]{1,32}\]\]|\[STV:[^\]\r\n]{1,32}\]|\[\[\/STV\]\]|\[\/STV\])/gi;
 const STORY_TEXT_PATTERN = /<story_text\b[^>]*>([\s\S]*?)(?:<\/story_text\s*>|$)/i;
 const STORY_DIALOGUE_PATTERN = /(「[^」\n]*」|『[^』\n]*』|“[^”\n]*”|‘[^’\n]*’|"[^"\n]*")/g;
@@ -31,11 +34,7 @@ export const stripStoryVoiceMarkup = (value: string): string => (
     String(value || '').replace(STORY_VOICE_MARKER_PATTERN, '')
 );
 
-/**
- * Remove hidden STV speaker tags while retaining their positions in the clean text.
- * This deliberately does not decide whether a span is dialogue: the existing story
- * tone parser remains the single source of truth for narration/dialogue/psychology.
- */
+/** Remove hidden STV tags while retaining their positions in the clean text. */
 export const parseStoryVoiceMarkup = (value: string): ParsedStoryVoiceMarkup => {
     const source = String(value || '');
     const spans: StoryVoiceSpan[] = [];
@@ -47,7 +46,7 @@ export const parseStoryVoiceMarkup = (value: string): ParsedStoryVoiceMarkup => 
     while ((match = STORY_VOICE_PAIR_PATTERN.exec(source))) {
         cleanText += stripStoryVoiceMarkup(source.slice(cursor, match.index));
 
-        const speaker = String(match[1] || match[2]).toLowerCase() as StoryVoiceSpeaker;
+        const speaker = String(match[1] || match[2]).toLowerCase() as StorySpokenRole;
         const text = stripStoryVoiceMarkup(match[3]);
         const start = cleanText.length;
         cleanText += text;
@@ -66,12 +65,10 @@ const resolveDialogueSpeaker = (
     end: number,
     spans: StoryVoiceSpan[],
 ): StoryVoiceDialogueSpeaker => {
-    let best: { speaker: StoryVoiceSpeaker; overlap: number } | undefined;
+    let best: { speaker: StorySpokenRole; overlap: number } | undefined;
     for (const span of spans) {
         // Preferred form is [[STV:user]]“...”[[/STV]], but some models put the
-        // hidden marker just inside the quotation marks: “[[STV:user]]...[[/STV]]”.
-        // After stripping tags that span still overlaps the same dialogue, so use
-        // the largest positive overlap instead of requiring full containment.
+        // hidden marker just inside the quotation marks. Positive overlap is enough.
         const overlap = Math.min(end, span.end) - Math.max(start, span.start);
         if (overlap <= 0) continue;
         if (!best || overlap > best.overlap) best = { speaker: span.speaker, overlap };
@@ -80,9 +77,9 @@ const resolveDialogueSpeaker = (
 };
 
 /**
- * Convert hidden speaker spans into the ordinal sequence used by the existing story
- * tone parser. Every quoted dialogue consumes one slot; NPC/untagged dialogue keeps
- * a null slot, so repeated identical text never causes char/user voices to cross.
+ * Every quote-like span consumes one stable ordinal slot. STV marks actual spoken
+ * lines as char/user/npc. Untagged spans stay null until the semantic classifier
+ * decides whether they are spoken dialogue or merely quoted text/reference.
  */
 export const parseStoryVoiceMessage = (value: string): ParsedStoryVoiceMessage => {
     const source = String(value || '');
@@ -126,15 +123,17 @@ export const buildStoryVoiceSpeakerFormatReminder = (
 ): string => {
     if (!enabled) return '';
     return [
-        '### 文游对白说话人隐藏标记（仅作用于 <story_text> 主正文）',
-        '- 保持原有正文与三色格式完全不变；这些标记只用于内部识别对白说话人。',
-        `- ${characterName} 明确说出口的对白：在整段对白外包一层 [[STV:char]]...[[/STV]]。`,
-        `- ${userName} 明确说出口的对白：在整段对白外包一层 [[STV:user]]...[[/STV]]。`,
+        '### 文游对白语义隐藏标记（仅作用于 <story_text> 主正文）',
+        '- 保持原有正文与三色格式完全不变；这些标记只用于内部判断“是否真的说出口”以及说话人。',
+        `- ${characterName} 真实说出口的对白：在整段对白外包 [[STV:char]]...[[/STV]]。`,
+        `- ${userName} 真实说出口的对白：在整段对白外包 [[STV:user]]...[[/STV]]。`,
+        '- NPC、路人、其他人物真实说出口的对白：在整段对白外包 [[STV:npc]]...[[/STV]]。NPC 只用于对白样式，不会配音。',
+        '- 引号里的专有名词、术语、标题、代号、引用原文、转述片段等，只是“被引用的文字”而不是现场说出口的对白时，绝对不要加 STV。',
+        '- 不要求正文必须出现“说、问、开口、低声道”等发言动词。根据上下文、动作承接、对话轮次、回应关系判断是否真实发言；发言动词只是证据之一，不是必要条件。',
         '- STV 标记必须放在整句引号外侧，例如 [[STV:user]]“那就走吧。”[[/STV]]；不要写成 “[[STV:user]]那就走吧。[[/STV]]”。',
-        '- NPC、路人、其他角色的对白不要添加任何 STV 标记。',
         '- 旁白、动作、环境描写、心理活动绝对不要添加 STV 标记。',
-        '- 不要根据轮次猜 speaker；只有能明确判断是当前主角色或用户本人说出口时才标记。',
+        '- 不要仅凭“有引号”就判断为对白，也不要仅凭轮次猜 speaker。',
         '- STV 标记必须成对出现，不要解释标记，不要把标记放到 <story_text> 之外。',
-        '- 示例：[[STV:char]]“我知道。”[[/STV]] / [[STV:user]]“那就走吧。”[[/STV]]',
+        '- 示例：[[STV:char]]“我知道。”[[/STV]] / [[STV:user]]“那就走吧。”[[/STV]] / [[STV:npc]]“请出示凭证。”[[/STV]]；“金环”作为专名则不加 STV。',
     ].join('\n');
 };
