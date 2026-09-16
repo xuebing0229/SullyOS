@@ -1,8 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { ImageSquare, X } from '@phosphor-icons/react';
+import { CaretDown, ImageSquare, SpeakerHigh, X } from '@phosphor-icons/react';
 import { useOS } from '../../../context/OSContext';
-import type { StoryTheaterEntry, StoryTheaterImageConfig } from '../../../types';
+import type { CharacterProfile, StoryTheaterEntry, StoryTheaterImageConfig } from '../../../types';
 import { getBuiltinImageMcpServers, loadBuiltinImageSettings } from '../../../utils/builtinImageMcp';
 import { getApiPresetModelEntries } from '../../../utils/apiPresetModels';
 
@@ -65,11 +65,20 @@ const persistImageTextPresets = (presets: StoryImageTextPreset[]) => {
     localStorage.setItem(STORY_IMAGE_TEXT_PRESETS_KEY, JSON.stringify(presets));
 };
 
+const voiceProfileLabel = (profile?: CharacterProfile['voiceProfile']): string => {
+    if (!profile) return '尚未配置';
+    if (profile.voiceName?.trim()) return profile.voiceName.trim();
+    if (profile.voiceId?.trim()) return profile.voiceId.trim();
+    const mixed = profile.timberWeights?.filter(item => item.voice_id?.trim()) || [];
+    return mixed.length > 0 ? `${mixed.length} 个音色混合` : '尚未配置';
+};
+
 const Toggle: React.FC<{ value: boolean; onChange: (value: boolean) => void }> = ({ value, onChange }) => <button type='button' aria-pressed={value} onClick={() => onChange(!value)} className={`relative h-7 w-12 shrink-0 rounded-full transition ${value ? 'bg-violet-600' : 'bg-slate-200'}`}><span className={`absolute top-1 h-5 w-5 rounded-full bg-white shadow transition ${value ? 'left-6' : 'left-1'}`} /></button>;
 
 const StoryImageSettingsButton: React.FC<Props> = ({ entry, onChange, triggerLabel, triggerClassName }) => {
     const { addToast, characters, userProfile, registerBackHandler, apiPresets, apiConfig } = useOS();
     const [open, setOpen] = useState(false);
+    const [voiceOpen, setVoiceOpen] = useState(false);
     const [draft, setDraft] = useState<StoryTheaterImageConfig>(() => fallback(entry));
     const [textPresets, setTextPresets] = useState<StoryImageTextPreset[]>(() => loadImageTextPresets());
     const [presetName, setPresetName] = useState('');
@@ -183,6 +192,15 @@ const StoryImageSettingsButton: React.FC<Props> = ({ entry, onChange, triggerLab
         addToast(draft.enabled ? '本剧情自动配图已开启' : '本剧情自动配图已关闭', 'success');
         setOpen(false);
     };
+
+    const updateStoryVoice = async (patch: Pick<StoryTheaterEntry, 'storyTtsEnabled'> | Pick<StoryTheaterEntry, 'storyTtsProvider'>) => {
+        try {
+            await onChange({ ...entry, ...patch, updatedAt: Date.now() });
+        } catch {
+            addToast('剧情语音设置保存失败', 'error');
+        }
+    };
+
     return <>
         <button
             type='button'
@@ -195,6 +213,39 @@ const StoryImageSettingsButton: React.FC<Props> = ({ entry, onChange, triggerLab
             {triggerLabel && <span className='min-w-0 flex-1 text-left'>{triggerLabel}</span>}
             {entry.imageGeneration?.enabled && <span className={triggerLabel ? 'ml-auto h-2 w-2 shrink-0 rounded-full bg-emerald-500' : 'absolute right-1 top-1 h-2 w-2 rounded-full border border-stone-100 bg-emerald-500'} />}
         </button>
+        {triggerLabel && <button
+            type='button'
+            onClick={() => setVoiceOpen(current => !current)}
+            className={triggerClassName || 'h-11 w-full rounded-2xl border border-slate-200 bg-white px-3 flex items-center gap-2 text-[10px] font-bold text-slate-700'}
+            title='剧情语音'
+            aria-label='剧情语音'
+            aria-expanded={voiceOpen}
+        >
+            <SpeakerHigh size={18} weight={entry.storyTtsEnabled ? 'fill' : 'regular'} />
+            <span className='min-w-0 flex-1 text-left'>剧情语音</span>
+            <span className='ml-auto flex shrink-0 items-center gap-2'>
+                {entry.storyTtsEnabled && <span className='h-2 w-2 rounded-full bg-emerald-500' />}
+                <CaretDown size={13} className={`transition-transform ${voiceOpen ? 'rotate-180' : ''}`} />
+            </span>
+        </button>}
+        {triggerLabel && voiceOpen && <div className='col-span-2 overflow-hidden rounded-2xl border border-violet-200 bg-white text-slate-700'>
+            <div className='flex items-start justify-between gap-4 px-4 py-3.5'>
+                <div className='min-w-0'><div className='text-xs font-bold'>剧情语音</div><p className='mt-1 text-[9px] leading-4 text-slate-500'>只给角色 / User 的直接对白配音；旁白、心理和 NPC 不读。不会自动播放，只有点对白才会播。</p></div>
+                <Toggle value={entry.storyTtsEnabled === true} onChange={value => void updateStoryVoice({ storyTtsEnabled: value })} />
+            </div>
+            <div className='border-t border-slate-100 px-4 py-3 flex items-center gap-3'>
+                <span className='w-8 h-8 shrink-0 rounded-xl bg-violet-50 text-violet-600 grid place-items-center'><SpeakerHigh size={17} /></span>
+                <span className='min-w-0 flex-1'><strong className='block text-[10px]'>语音服务</strong><span className='block mt-0.5 text-[9px] text-slate-400'>当前文游独立路由</span></span>
+                <select value={entry.storyTtsProvider || 'minimax'} onChange={event => void updateStoryVoice({ storyTtsProvider: event.target.value as 'minimax' })} className='bg-transparent text-[10px] font-bold text-slate-600 outline-none'><option value='minimax'>MiniMax</option></select>
+            </div>
+            <div className='border-t border-slate-100 px-4 py-3 flex items-center gap-3'>
+                <span className='min-w-0 flex-1'><strong className='block text-[10px]'>角色声线 · {actors[0]?.name || '未选择主角色'}</strong><span className='block mt-0.5 truncate text-[9px] text-slate-400'>{actors[0] ? `自动复用角色设置 · ${voiceProfileLabel(actors[0].voiceProfile)}` : '选择主角色后自动复用该角色已保存的声线'}</span></span><span className='shrink-0 text-[9px] font-bold text-violet-500'>自动复用</span>
+            </div>
+            <div className='border-t border-slate-100 px-4 py-3 flex items-center gap-3'>
+                <span className='min-w-0 flex-1'><strong className='block text-[10px]'>User 声线 · 我的声线</strong><span className='block mt-0.5 truncate text-[9px] text-slate-400'>自动复用个人档案 · {voiceProfileLabel(userProfile.voiceProfile)}</span></span><span className='shrink-0 text-[9px] font-bold text-violet-500'>自动复用</span>
+            </div>
+            <p className='border-t border-slate-100 px-4 py-3 text-[9px] leading-4 text-slate-400'>文游不另存 voice_id、语速等声线参数。关闭只禁止点读与刷新，不删除已生成音频。MiniMax Key 继续读取全局设置。</p>
+        </div>}
         {open && createPortal(<div
             className='story-theme fixed inset-0 z-[95] flex items-end justify-center bg-slate-950/35'
             style={{ position: 'fixed', inset: 0, pointerEvents: 'auto' }}
