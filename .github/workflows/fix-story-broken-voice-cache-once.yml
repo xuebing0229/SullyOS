@@ -1,0 +1,85 @@
+name: Fix broken story voice cache once
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - '.github/workflows/fix-story-broken-voice-cache-once.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - name: Patch Story-only broken voice cache recovery
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('components/date/story/StoryTheaterSession.tsx')
+          s = path.read_text()
+
+          old = "import { ensureVoiceAsset, storyVoiceAssetKey } from '../../../utils/voiceAsset';"
+          new = "import { deletePersistedVoiceAsset, ensureVoiceAsset, storyVoiceAssetKey } from '../../../utils/voiceAsset';"
+          if old not in s:
+              raise SystemExit('voiceAsset import anchor not found')
+          s = s.replace(old, new, 1)
+
+          anchor = """        const cached = !force ? storyVoiceCacheRef.current.get(key) : undefined;\n"""
+          helper = """        const discardBrokenVoiceAsset = async (url: string) => {\n            stopStoryVoicePlayback();\n            const audio = storyVoiceAudioRef.current;\n            if (audio) {\n                audio.removeAttribute('src');\n                try { audio.load(); } catch { /* ignore */ }\n            }\n            const cachedVoice = storyVoiceCacheRef.current.get(key);\n            if (cachedVoice?.url === url) storyVoiceCacheRef.current.delete(key);\n            if (url.startsWith('blob:')) {\n                storyVoiceBlobUrlsRef.current.delete(url);\n                try { URL.revokeObjectURL(url); } catch { /* ignore */ }\n            }\n            try {\n                await deletePersistedVoiceAsset(key);\n            } catch (deleteError) {\n                console.warn('[StoryTheater] failed to delete broken dialogue voice cache', deleteError);\n            }\n        };\n\n        const cached = !force ? storyVoiceCacheRef.current.get(key) : undefined;\n"""
+          if anchor not in s:
+              raise SystemExit('cached anchor not found')
+          s = s.replace(anchor, helper, 1)
+
+          old_cached_catch = """            } catch (error) {\n                if (requestId !== storyVoicePlayRequestRef.current) return;\n                storyVoiceTargetKeyRef.current = null;\n                stopStoryVoicePlayback();\n                console.warn('[StoryTheater] cached dialogue voice failed', error);\n                addToast(error instanceof Error ? error.message : '语音播放失败', 'error');\n            }\n            return;\n"""
+          new_cached_catch = """            } catch (error) {\n                if (requestId !== storyVoicePlayRequestRef.current) return;\n                storyVoiceTargetKeyRef.current = null;\n                await discardBrokenVoiceAsset(cached.url);\n                console.warn('[StoryTheater] cached dialogue voice failed; broken asset removed', error);\n                addToast('这句缓存语音无法播放，已自动清理；再点一次会重新生成', 'error');\n            }\n            return;\n"""
+          if old_cached_catch not in s:
+              raise SystemExit('cached catch anchor not found')
+          s = s.replace(old_cached_catch, new_cached_catch, 1)
+
+          old_try = """        try {\n            const playable = await ensureVoiceAsset({\n"""
+          new_try = """        let playbackUrl: string | null = null;\n        try {\n            const playable = await ensureVoiceAsset({\n"""
+          if old_try not in s:
+              raise SystemExit('ensure try anchor not found')
+          s = s.replace(old_try, new_try, 1)
+
+          old_play = """            await playReadyVoice(playable.url);\n            if (force) addToast('这句语音已刷新', 'success');\n        } catch (error) {\n            if (requestId !== storyVoicePlayRequestRef.current) return;\n            storyVoiceTargetKeyRef.current = null;\n            stopStoryVoicePlayback();\n            console.warn('[StoryTheater] dialogue voice failed', error);\n            addToast(error instanceof Error ? error.message : '语音生成或播放失败', 'error');\n        }\n"""
+          new_play = """            playbackUrl = playable.url;\n            await playReadyVoice(playable.url);\n            if (force) addToast('这句语音已刷新', 'success');\n        } catch (error) {\n            if (requestId !== storyVoicePlayRequestRef.current) return;\n            storyVoiceTargetKeyRef.current = null;\n            if (playbackUrl) {\n                await discardBrokenVoiceAsset(playbackUrl);\n                console.warn('[StoryTheater] dialogue voice playback failed; broken asset removed', error);\n                addToast('这次拿到的语音文件无法播放，已丢弃；再点一次可重新生成', 'error');\n            } else {\n                stopStoryVoicePlayback();\n                console.warn('[StoryTheater] dialogue voice generation failed', error);\n                addToast(error instanceof Error ? error.message : '语音生成失败', 'error');\n            }\n        }\n"""
+          if old_play not in s:
+              raise SystemExit('play catch anchor not found')
+          s = s.replace(old_play, new_play, 1)
+
+          path.write_text(s)
+          PY
+
+      - name: Verify Story-only scope
+        run: |
+          git diff --exit-code HEAD -- components/chat/MessageItem.tsx
+          git diff --check
+          grep -F "deletePersistedVoiceAsset" components/date/story/StoryTheaterSession.tsx
+          grep -F "这句缓存语音无法播放，已自动清理" components/date/story/StoryTheaterSession.tsx
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build
+        run: pnpm run build
+      - name: Commit final Story fix and remove one-shot workflow
+        shell: bash
+        run: |
+          rm -f .github/workflows/fix-story-broken-voice-cache-once.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add components/date/story/StoryTheaterSession.tsx .github/workflows/fix-story-broken-voice-cache-once.yml
+          git commit -m "fix(story): discard unplayable dialogue voice cache"
+          git push origin HEAD:master
