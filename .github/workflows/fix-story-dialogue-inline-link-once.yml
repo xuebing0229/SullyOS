@@ -1,0 +1,103 @@
+name: Fix Story dialogue inline link once
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - '.github/workflows/fix-story-dialogue-inline-link-once.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Patch Story voiced dialogue interaction element only
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('components/date/story/StoryTheaterSession.tsx')
+          text = path.read_text()
+
+          replacements = [
+              (
+                  "const dialoguePress = useLongPressGesture<HTMLButtonElement, StoryDialoguePressTarget>({",
+                  "const dialoguePress = useLongPressGesture<HTMLAnchorElement, StoryDialoguePressTarget>({",
+              ),
+              (
+                  """                                return <button\n                                    key={segmentIndex}\n                                    type='button'\n                                    data-story-speaker={segment.speaker}\n""",
+                  """                                return <a\n                                    key={segmentIndex}\n                                    href='#'\n                                    role='button'\n                                    data-story-speaker={segment.speaker}\n""",
+              ),
+              (
+                  """                                    onClick={event => {\n                                        event.stopPropagation();\n                                        if (dialoguePress.consumeSuppressedClick()) {\n                                            event.preventDefault();\n                                            return;\n                                        }\n""",
+                  """                                    onClick={event => {\n                                        event.preventDefault();\n                                        event.stopPropagation();\n                                        if (dialoguePress.consumeSuppressedClick()) {\n                                            return;\n                                        }\n""",
+              ),
+              (
+                  """                                    onContextMenu={canRefreshVoice ? event => {\n                                        event.stopPropagation();\n                                        dialoguePress.openContextMenu(event, {\n                                            dialogueIndex: segment.dialogueIndex as number,\n                                            text: segment.text,\n                                            speaker: segment.speaker as StoryVoiceSpeaker,\n                                        });\n                                    } : undefined}\n                                    className='inline cursor-pointer border-0 bg-transparent p-0 m-0 text-left align-baseline'\n""",
+                  """                                    onContextMenu={event => {\n                                        event.preventDefault();\n                                        event.stopPropagation();\n                                        if (!canRefreshVoice) return;\n                                        dialoguePress.openContextMenu(event, {\n                                            dialogueIndex: segment.dialogueIndex as number,\n                                            text: segment.text,\n                                            speaker: segment.speaker as StoryVoiceSpeaker,\n                                        });\n                                    }}\n                                    className='inline cursor-pointer bg-transparent p-0 m-0 text-left align-baseline no-underline'\n""",
+              ),
+              (
+                  """                                        whiteSpace: 'inherit',\n                                        // The paragraph owns the 2em first-line indent. The native\n                                        // dialogue button must not inherit it or every wrapped line\n                                        // becomes indented and the spoken text collapses into a narrow column.\n                                        textIndent: 0,\n""",
+                  """                                        whiteSpace: 'inherit',\n""",
+              ),
+              (
+                  """                                >\n                                    {renderedText}\n                                </button>;\n""",
+                  """                                >\n                                    {renderedText}\n                                </a>;\n""",
+              ),
+          ]
+
+          for old, new in replacements:
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'expected exactly one target, found {count}: {old[:80]!r}')
+              text = text.replace(old, new, 1)
+
+          path.write_text(text)
+          PY
+
+      - name: Verify scope and interaction shape
+        run: |
+          git diff --check
+          test "$(git diff --name-only | grep -v '^\.github/workflows/fix-story-dialogue-inline-link-once.yml$' | tr -d '\r')" = "components/date/story/StoryTheaterSession.tsx"
+          grep -q "useLongPressGesture<HTMLAnchorElement" components/date/story/StoryTheaterSession.tsx
+          grep -q "href='#'" components/date/story/StoryTheaterSession.tsx
+          grep -q "role='button'" components/date/story/StoryTheaterSession.tsx
+          if grep -q "dialogue button must not inherit" components/date/story/StoryTheaterSession.tsx; then
+            echo 'old button indent workaround still present' >&2
+            exit 1
+          fi
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm exec tsc --noEmit
+
+      - name: Build
+        run: pnpm run build
+
+      - name: Commit source fix and remove one-shot workflow
+        run: |
+          rm .github/workflows/fix-story-dialogue-inline-link-once.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add components/date/story/StoryTheaterSession.tsx .github/workflows/fix-story-dialogue-inline-link-once.yml
+          git commit -m "fix(story): keep voiced dialogue truly inline"
+          git push origin HEAD:master
