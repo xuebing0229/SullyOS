@@ -106,7 +106,7 @@ import {
 } from '../../../utils/storyTheaterVoice';
 import { classifyStoryVoiceSpeakers } from '../../../utils/storyTheaterVoiceClassifier';
 import { canSynthesizeSpeech } from '../../../utils/ttsRouter';
-import { ensureVoiceAsset, storyVoiceAssetKey } from '../../../utils/voiceAsset';
+import { deletePersistedVoiceAsset, ensureVoiceAsset, storyVoiceAssetKey } from '../../../utils/voiceAsset';
 import { createUserVoiceTarget } from '../../../utils/userVoice';
 
 
@@ -712,6 +712,26 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             return audio.play();
         };
 
+        const discardBrokenVoiceAsset = async (url: string) => {
+            stopStoryVoicePlayback();
+            const audio = storyVoiceAudioRef.current;
+            if (audio) {
+                audio.removeAttribute('src');
+                try { audio.load(); } catch { /* ignore */ }
+            }
+            const cachedVoice = storyVoiceCacheRef.current.get(key);
+            if (cachedVoice?.url === url) storyVoiceCacheRef.current.delete(key);
+            if (url.startsWith('blob:')) {
+                storyVoiceBlobUrlsRef.current.delete(url);
+                try { URL.revokeObjectURL(url); } catch { /* ignore */ }
+            }
+            try {
+                await deletePersistedVoiceAsset(key);
+            } catch (deleteError) {
+                console.warn('[StoryTheater] failed to delete broken dialogue voice cache', deleteError);
+            }
+        };
+
         const cached = !force ? storyVoiceCacheRef.current.get(key) : undefined;
         if (cached?.originalText === text) {
             // Same hot path as main chat: once materialized, replay the in-memory URL
@@ -721,13 +741,14 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             } catch (error) {
                 if (requestId !== storyVoicePlayRequestRef.current) return;
                 storyVoiceTargetKeyRef.current = null;
-                stopStoryVoicePlayback();
-                console.warn('[StoryTheater] cached dialogue voice failed', error);
-                addToast(error instanceof Error ? error.message : '语音播放失败', 'error');
+                await discardBrokenVoiceAsset(cached.url);
+                console.warn('[StoryTheater] cached dialogue voice failed; broken asset removed', error);
+                addToast('这句缓存语音无法播放，已自动清理；再点一次会重新生成', 'error');
             }
             return;
         }
 
+        let playbackUrl: string | null = null;
         try {
             const playable = await ensureVoiceAsset({
                 key,
@@ -754,14 +775,21 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             storyVoiceCacheRef.current.set(key, { url: playable.url, originalText: text });
             if (playable.url.startsWith('blob:')) storyVoiceBlobUrlsRef.current.add(playable.url);
 
+            playbackUrl = playable.url;
             await playReadyVoice(playable.url);
             if (force) addToast('这句语音已刷新', 'success');
         } catch (error) {
             if (requestId !== storyVoicePlayRequestRef.current) return;
             storyVoiceTargetKeyRef.current = null;
-            stopStoryVoicePlayback();
-            console.warn('[StoryTheater] dialogue voice failed', error);
-            addToast(error instanceof Error ? error.message : '语音生成或播放失败', 'error');
+            if (playbackUrl) {
+                await discardBrokenVoiceAsset(playbackUrl);
+                console.warn('[StoryTheater] dialogue voice playback failed; broken asset removed', error);
+                addToast('这次拿到的语音文件无法播放，已丢弃；再点一次可重新生成', 'error');
+            } else {
+                stopStoryVoicePlayback();
+                console.warn('[StoryTheater] dialogue voice generation failed', error);
+                addToast(error instanceof Error ? error.message : '语音生成失败', 'error');
+            }
         }
     }, [actors, userProfile, addToast, apiConfig, entry.id, entry.storyTtsEnabled, entry.storyTtsProvider, messages, promptIdentityName, stopStoryVoicePlayback]);
 
