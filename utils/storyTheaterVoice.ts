@@ -22,6 +22,7 @@ const STORY_VOICE_PAIR_PATTERN = /(?:\[\[STV:(char|user)\]\]|\[STV:(char|user)\]
 const STORY_VOICE_MARKER_PATTERN = /(?:\[\[STV:[^\]\r\n]{1,32}\]\]|\[STV:[^\]\r\n]{1,32}\]|\[\[\/STV\]\]|\[\/STV\])/gi;
 const STORY_TEXT_PATTERN = /<story_text\b[^>]*>([\s\S]*?)(?:<\/story_text\s*>|$)/i;
 // 文游格式协议：只有「……」是人物说出口的对白。普通中文双引号、书名号式引号、英文引号等都只是正文标点。
+// 播放阶段的坏音频缓存自愈由 Story 会话层处理；这里仅负责对白索引与说话人协议。
 const STORY_DIALOGUE_PATTERN = /(「[^」\n]*」)/g;
 
 /**
