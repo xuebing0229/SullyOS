@@ -35,9 +35,9 @@ const parseClassifierObject = (value: string): Record<string, unknown> => {
 };
 
 /**
- * Every candidate has already been identified as spoken dialogue by the 「……」 format
- * protocol. This fallback only decides who spoke it; it never decides whether quoted
- * prose is dialogue.
+ * Format first, speaker second: every candidate has already been identified as
+ * spoken dialogue by the 「……」 protocol. This fallback only decides who spoke it;
+ * it never decides whether ordinary quoted prose is dialogue.
  */
 export const classifyStoryVoiceSpeakers = async ({
     apiConfig,
