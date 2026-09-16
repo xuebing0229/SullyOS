@@ -1,8 +1,9 @@
 export type StoryVoiceSpeaker = 'char' | 'user';
+export type StoryVoiceTaggedSpeaker = StoryVoiceSpeaker | 'npc';
 export type StoryVoiceDialogueSpeaker = StoryVoiceSpeaker | null;
 
 export interface StoryVoiceSpan {
-    speaker: StoryVoiceSpeaker;
+    speaker: StoryVoiceTaggedSpeaker;
     start: number;
     end: number;
     text: string;
@@ -18,7 +19,7 @@ export interface ParsedStoryVoiceMessage {
     dialogueSpeakers: StoryVoiceDialogueSpeaker[];
 }
 
-const STORY_VOICE_PAIR_PATTERN = /(?:\[\[STV:(char|user)\]\]|\[STV:(char|user)\])([\s\S]*?)(?:\[\[\/STV\]\]|\[\/STV\])/gi;
+const STORY_VOICE_PAIR_PATTERN = /(?:\[\[STV:(char|user|npc)\]\]|\[STV:(char|user|npc)\])([\s\S]*?)(?:\[\[\/STV\]\]|\[\/STV\])/gi;
 const STORY_VOICE_MARKER_PATTERN = /(?:\[\[STV:[^\]\r\n]{1,32}\]\]|\[STV:[^\]\r\n]{1,32}\]|\[\[\/STV\]\]|\[\/STV\])/gi;
 const STORY_TEXT_PATTERN = /<story_text\b[^>]*>([\s\S]*?)(?:<\/story_text\s*>|$)/i;
 // 文游格式协议：只有「……」是人物说出口的对白。普通中文双引号、书名号式引号、英文引号等都只是正文标点。
@@ -33,6 +34,36 @@ export const stripStoryVoiceMarkup = (value: string): string => (
     String(value || '').replace(STORY_VOICE_MARKER_PATTERN, '')
 );
 
+/**
+ * STV is the structural source of truth for spoken dialogue. Models occasionally
+ * drift back to Chinese/English double quotes because older story history contains
+ * them, so normalize ONLY tagged speech to the Story dialogue punctuation. Untagged
+ * “quoted prose” is deliberately left untouched and remains ordinary narration.
+ */
+const normalizeTaggedDialogueText = (value: string): string => {
+    const text = stripStoryVoiceMarkup(value);
+    const leading = text.match(/^\s*/)?.[0] || '';
+    const trailing = text.match(/\s*$/)?.[0] || '';
+    let core = text.slice(leading.length, text.length - trailing.length);
+    if (!core) return text;
+
+    const quotePairs: Array<[string, string]> = [
+        ['「', '」'],
+        ['“', '”'],
+        ['『', '』'],
+        ['‘', '’'],
+        ['"', '"'],
+        ["'", "'"],
+    ];
+    for (const [open, close] of quotePairs) {
+        if (core.startsWith(open) && core.endsWith(close) && core.length >= open.length + close.length) {
+            core = core.slice(open.length, core.length - close.length);
+            break;
+        }
+    }
+    return `${leading}「${core}」${trailing}`;
+};
+
 /** Remove hidden speaker tags while retaining their positions in the clean text. */
 export const parseStoryVoiceMarkup = (value: string): ParsedStoryVoiceMarkup => {
     const source = String(value || '');
@@ -45,8 +76,8 @@ export const parseStoryVoiceMarkup = (value: string): ParsedStoryVoiceMarkup => 
     while ((match = STORY_VOICE_PAIR_PATTERN.exec(source))) {
         cleanText += stripStoryVoiceMarkup(source.slice(cursor, match.index));
 
-        const speaker = String(match[1] || match[2]).toLowerCase() as StoryVoiceSpeaker;
-        const text = stripStoryVoiceMarkup(match[3]);
+        const speaker = String(match[1] || match[2]).toLowerCase() as StoryVoiceTaggedSpeaker;
+        const text = normalizeTaggedDialogueText(match[3]);
         const start = cleanText.length;
         cleanText += text;
         const end = cleanText.length;
@@ -64,13 +95,13 @@ const resolveDialogueSpeaker = (
     end: number,
     spans: StoryVoiceSpan[],
 ): StoryVoiceDialogueSpeaker => {
-    let best: { speaker: StoryVoiceSpeaker; overlap: number } | undefined;
+    let best: { speaker: StoryVoiceTaggedSpeaker; overlap: number } | undefined;
     for (const span of spans) {
         const overlap = Math.min(end, span.end) - Math.max(start, span.start);
         if (overlap <= 0) continue;
         if (!best || overlap > best.overlap) best = { speaker: span.speaker, overlap };
     }
-    return best?.speaker ?? null;
+    return best?.speaker === 'char' || best?.speaker === 'user' ? best.speaker : null;
 };
 
 /**
@@ -122,12 +153,12 @@ export const buildStoryVoiceSpeakerFormatReminder = (
         '### 文游对白与语音隐藏标记（仅作用于 <story_text> 主正文）',
         '- 人物真实说出口的对白一律使用「……」。只有「……」会被视为对白。',
         '- “……”、『……』、‘……’、英文引号等都是普通正文标点，可用于专名、标题、引用、强调等；它们不是对白，不参与对白着色或语音。',
+        '- 每一句真实说出口的对白都必须有且只有一组 STV，说话人归属由 STV 决定，不依赖“说、问、开口”等发言动词。',
         `- ${characterName} 说出口的对白：[[STV:char]]「……」[[/STV]]。`,
         `- ${userName} 说出口的对白：[[STV:user]]「……」[[/STV]]。`,
-        '- NPC、路人和其他人物说出口的对白也使用「……」，但不要添加 STV；目前不为他们配音。',
-        '- 不要求正文出现“说、问、开口、低声道”等发言动词；「……」本身已经表示这是说出口的对白，STV 只负责标记 char / user 归属。',
-        '- 旁白、动作、环境描写、心理活动不要添加 STV。',
+        '- NPC、路人和其他人物说出口的对白：[[STV:npc]]「……」[[/STV]]；他们正常显示为对白，但目前不配音。',
+        '- 旁白、动作、环境描写、心理活动不要添加 STV；普通引用与专名也绝不能添加 STV。',
         '- STV 必须成对出现，不要解释标记，不要把标记放到 <story_text> 之外。',
-        '- 示例：[[STV:char]]「我知道。」[[/STV]] / [[STV:user]]「那就走吧。」[[/STV]]；“金环”作为专名保持普通正文。',
+        '- 示例：[[STV:char]]「我知道。」[[/STV]] / [[STV:user]]「那就走吧。」[[/STV]] / [[STV:npc]]「请出示证件。」[[/STV]]；“金环”作为专名保持普通正文。',
     ].join('\n');
 };
