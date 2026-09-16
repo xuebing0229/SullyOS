@@ -1,156 +1,61 @@
-name: Fix story user voice click once
+name: Fix story user voice click
 
 on:
   push:
     branches: [master]
     paths:
-      - '.github/story-user-voice-click-trigger'
+      - '.github/workflows/fix-story-user-voice-click-once.yml'
+      - '.github/scripts/fix-story-user-voice-click.py'
 
 permissions:
   contents: write
 
 jobs:
-  patch:
+  fix-story-user-voice:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: master
           fetch-depth: 0
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 10
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: pnpm
-      - name: Patch user dialogue voice path
-        shell: bash
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
 
-          story = Path('components/date/story/StoryTheaterSession.tsx')
-          text = story.read_text()
+      - name: Apply user dialogue voice patch
+        run: python .github/scripts/fix-story-user-voice-click.py
 
-          old = "const StoryOutput: React.FC<{ content: string; onChoose?: (text: string) => void; affinityInputs?: StoryAffinityInput[]; voiceSpeakers?: Array<StoryVoiceSpeaker | null>; onDialogueClick?: (dialogueIndex: number, text: string, speaker?: StoryVoiceSpeaker) => void; onDialogueLongPress?: (dialogueIndex: number, text: string, speaker: StoryVoiceSpeaker) => void }> = ({ content, onChoose, affinityInputs = [], voiceSpeakers, onDialogueClick, onDialogueLongPress }) => {"
-          new = "const StoryOutput: React.FC<{ content: string; onChoose?: (text: string) => void; affinityInputs?: StoryAffinityInput[]; voiceSpeakers?: Array<StoryVoiceSpeaker | null>; plainUserInput?: boolean; onDialogueClick?: (dialogueIndex: number, text: string, speaker?: StoryVoiceSpeaker) => void; onDialogueLongPress?: (dialogueIndex: number, text: string, speaker: StoryVoiceSpeaker) => void }> = ({ content, onChoose, affinityInputs = [], voiceSpeakers, plainUserInput = false, onDialogueClick, onDialogueLongPress }) => {"
-          assert text.count(old) == 1, text.count(old)
-          text = text.replace(old, new)
-
-          old = """                        <p
-                            key={paragraphIndex}
-                            className='max-w-full font-serif text-[15px] leading-8 text-slate-800 whitespace-pre-wrap break-words [overflow-wrap:anywhere]'
-                            style={{ textIndent: appearance.firstLineIndent ? '2em' : undefined }}
-                        >"""
-          new = """                        <p
-                            key={paragraphIndex}
-                            className={plainUserInput
-                                ? 'max-w-full text-sm leading-7 text-slate-600 whitespace-pre-wrap break-words [overflow-wrap:anywhere]'
-                                : 'max-w-full font-serif text-[15px] leading-8 text-slate-800 whitespace-pre-wrap break-words [overflow-wrap:anywhere]'}
-                            style={{ textIndent: !plainUserInput && appearance.firstLineIndent ? '2em' : undefined }}
-                        >"""
-          assert text.count(old) == 1, text.count(old)
-          text = text.replace(old, new)
-
-          old = """                                const renderedText = appearance.textToneEnabled
-                                    ? segment.text
-                                    : segment.kind === 'psychology'
-                                        ? `*${segment.text}*`
-                                        : segment.text;
-                                const toneStyle = appearance.textToneEnabled ? {
-                                    color: segment.kind === 'dialogue'
-                                        ? appearance.dialogueColor
-                                        : segment.kind === 'psychology'
-                                            ? appearance.psychologyColor
-                                            : appearance.narrationColor,
-                                    ...(segment.kind === 'psychology' ? { fontStyle: 'italic' as const } : {}),
-                                } : undefined;"""
-          new = """                                const renderedText = plainUserInput
-                                    ? (segment.kind === 'psychology' ? `*${segment.text}*` : segment.text)
-                                    : appearance.textToneEnabled
-                                        ? segment.text
-                                        : segment.kind === 'psychology'
-                                            ? `*${segment.text}*`
-                                            : segment.text;
-                                const toneStyle = !plainUserInput && appearance.textToneEnabled ? {
-                                    color: segment.kind === 'dialogue'
-                                        ? appearance.dialogueColor
-                                        : segment.kind === 'psychology'
-                                            ? appearance.psychologyColor
-                                            : appearance.narrationColor,
-                                    ...(segment.kind === 'psychology' ? { fontStyle: 'italic' as const } : {}),
-                                } : undefined;"""
-          assert text.count(old) == 1, text.count(old)
-          text = text.replace(old, new)
-
-          old = "<p className='mt-2 text-sm leading-7 text-slate-600 whitespace-pre-wrap'>{message.content}</p>"
-          replacement = "<div className='mt-2'><StoryOutput content={message.content} plainUserInput voiceSpeakers={voiceSpeakersFromMessage(message)} onDialogueClick={entry.storyTtsEnabled ? (dialogueIndex, text, speaker) => void playStoryDialogue(message.id, dialogueIndex, text, speaker) : undefined} onDialogueLongPress={entry.storyTtsEnabled ? (dialogueIndex, text, speaker) => setVoiceRefreshMenu({ messageId: message.id, dialogueIndex, text, speaker }) : undefined} /></div>"
-          assert text.count(old) == 2, text.count(old)
-          text = text.replace(old, replacement)
-
-          old = """                    userName: promptIdentityName,
-                    currentSpeakers,"""
-          new = """                    userName: promptIdentityName,
-                    sourceRole: message.role === 'user' ? 'user' : 'assistant',
-                    currentSpeakers,"""
-          assert text.count(old) == 1, text.count(old)
-          text = text.replace(old, new)
-          story.write_text(text)
-
-          classifier = Path('utils/storyTheaterVoiceClassifier.ts')
-          text = classifier.read_text()
-          old = """    userName: string;
-    currentSpeakers?: StoryVoiceDialogueSpeaker[];"""
-          new = """    userName: string;
-    sourceRole?: 'user' | 'assistant';
-    currentSpeakers?: StoryVoiceDialogueSpeaker[];"""
-          assert text.count(old) == 1, text.count(old)
-          text = text.replace(old, new)
-
-          old = """    characterName,
-    userName,
-    currentSpeakers = [],"""
-          new = """    characterName,
-    userName,
-    sourceRole = 'assistant',
-    currentSpeakers = [],"""
-          assert text.count(old) == 1, text.count(old)
-          text = text.replace(old, new)
-
-          old = """                        `用户侧身份：${userName}`,
-                        '每句只能分类为 char / user / npc。',"""
-          new = """                        `用户侧身份：${userName}`,
-                        sourceRole === 'user'
-                            ? '当前这段正文来自用户侧自己提交的推进。消息作者是用户不代表所有引号都属于 user；但没有明确其他人物归属、作为用户本人直接说出口的对白应判为 user。'
-                            : '当前这段正文来自剧情模型生成。',
-                        '每句只能分类为 char / user / npc。',"""
-          assert text.count(old) == 1, text.count(old)
-          text = text.replace(old, new)
-          classifier.write_text(text)
-          PY
-
-      - name: Verify patch scope
-        shell: bash
+      - name: Verify scope and patch shape
         run: |
           git diff --check
-          CHANGED="$(git diff --name-only)"
-          printf '%s\n' "$CHANGED"
-          test "$CHANGED" = $'components/date/story/StoryTheaterSession.tsx\nutils/storyTheaterVoiceClassifier.ts'
           grep -q "plainUserInput voiceSpeakers" components/date/story/StoryTheaterSession.tsx
           grep -q "sourceRole: message.role" components/date/story/StoryTheaterSession.tsx
           grep -q "sourceRole?: 'user' | 'assistant'" utils/storyTheaterVoiceClassifier.ts
 
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+          run_install: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
-      - name: TypeScript check
+
+      - name: Check TypeScript
         run: pnpm exec tsc --noEmit
+
       - name: Build web app
         run: pnpm run build
+
       - name: Commit verified fix
-        shell: bash
         run: |
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add components/date/story/StoryTheaterSession.tsx utils/storyTheaterVoiceClassifier.ts
-          git commit -m 'fix(story): enable user dialogue voice taps'
+          rm .github/workflows/fix-story-user-voice-click-once.yml
+          rm .github/scripts/fix-story-user-voice-click.py
+          rm -f .github/story-user-voice-click-trigger
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add components/date/story/StoryTheaterSession.tsx utils/storyTheaterVoiceClassifier.ts .github/workflows/fix-story-user-voice-click-once.yml .github/scripts/fix-story-user-voice-click.py .github/story-user-voice-click-trigger
+          git diff --cached --check
+          git commit -m "fix(story): enable user dialogue voice taps"
           git push origin HEAD:master
