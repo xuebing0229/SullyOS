@@ -358,7 +358,7 @@ interface StoryDialoguePressTarget {
 
 const StoryOutput: React.FC<{ content: string; onChoose?: (text: string) => void; affinityInputs?: StoryAffinityInput[]; voiceSpeakers?: Array<StoryVoiceSpeaker | null>; onDialogueClick?: (dialogueIndex: number, text: string, speaker?: StoryVoiceSpeaker) => void; onDialogueLongPress?: (dialogueIndex: number, text: string, speaker: StoryVoiceSpeaker) => void }> = ({ content, onChoose, affinityInputs = [], voiceSpeakers, onDialogueClick, onDialogueLongPress }) => {
     const appearance = useStoryTheaterAppearance();
-    const dialoguePress = useLongPressGesture<HTMLButtonElement, StoryDialoguePressTarget>({
+    const dialoguePress = useLongPressGesture<HTMLAnchorElement, StoryDialoguePressTarget>({
         delay: 600,
         moveTolerance: 10,
         onLongPress: target => onDialogueLongPress?.(target.dialogueIndex, target.text, target.speaker),
@@ -423,15 +423,18 @@ const StoryOutput: React.FC<{ content: string; onChoose?: (text: string) => void
                                 const canRefreshVoice = (segment.speaker === 'char' || segment.speaker === 'user')
                                     && Boolean(onDialogueLongPress);
 
-                                return <button
+                                return <a
                                     key={segmentIndex}
-                                    type='button'
+                                    href='#'
+                                    role='button'
                                     data-story-speaker={segment.speaker}
                                     data-story-dialogue-index={segment.dialogueIndex}
                                     onClick={event => {
+                                        // Keep native inline-link tap semantics for Android WebView,
+                                        // but this is an action, never a navigation.
+                                        event.preventDefault();
                                         event.stopPropagation();
                                         if (dialoguePress.consumeSuppressedClick()) {
-                                            event.preventDefault();
                                             return;
                                         }
                                         onDialogueClick?.(segment.dialogueIndex as number, segment.text, segment.speaker);
@@ -466,21 +469,18 @@ const StoryOutput: React.FC<{ content: string; onChoose?: (text: string) => void
                                             speaker: segment.speaker as StoryVoiceSpeaker,
                                         });
                                     } : undefined}
-                                    className='inline cursor-pointer border-0 bg-transparent p-0 m-0 text-left align-baseline'
+                                    className='inline cursor-pointer bg-transparent p-0 m-0 text-left align-baseline no-underline'
                                     style={{
                                         ...(toneStyle || {}),
                                         font: 'inherit',
                                         lineHeight: 'inherit',
                                         letterSpacing: 'inherit',
                                         whiteSpace: 'inherit',
-                                        // The paragraph owns the 2em first-line indent. The native
-                                        // dialogue button must not inherit it or every wrapped line
-                                        // becomes indented and the spoken text collapses into a narrow column.
-                                        textIndent: 0,
+                                        textDecoration: 'none',
                                     }}
                                 >
                                     {renderedText}
-                                </button>;
+                                </a>;
                             })}
                         </p>
                     ))}
