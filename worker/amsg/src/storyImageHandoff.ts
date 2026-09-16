@@ -305,57 +305,6 @@ const mergeNovelAiReferences = (
   }).arguments;
 };
 
-const compactPromptFragment = (value: unknown): string =>
-  String(value || '').replace(/\s+/g, ' ').trim();
-
-const mergePromptFragments = (base: unknown, fragments: string[]): string => {
-  const source = typeof base === 'string' ? base.trim() : '';
-  const lower = source.toLocaleLowerCase();
-  const additions = fragments
-    .map(compactPromptFragment)
-    .filter(Boolean)
-    .filter(fragment => !lower.includes(fragment.toLocaleLowerCase()));
-  return [source, ...additions].filter(Boolean).join(', ');
-};
-
-const applyStoryNovelAiTextAnchors = (
-  rawArgs: Record<string, unknown>,
-  planner: StoryCloudImagePlannerSpec | undefined,
-): Record<string, unknown> => {
-  const args = cloneRecord(rawArgs);
-  const systemPrompt = String(planner?.systemPrompt || '');
-  if (!systemPrompt) return args;
-
-  // buildPlannerInstruction 会稳定写出“出场角色”块。这里不让最终出图再只靠规划器
-  // 自觉抄角色锚点：单角色必带；多角色只带本轮 prompt 中明确出现名字的角色，避免串人。
-  const actorBlock = systemPrompt.match(/出场角色：\n([\s\S]*?)\n\n最近剧情：/)?.[1] || '';
-  const actorAnchors = actorBlock.split(/\n+/).map(line => {
-    const splitAt = line.indexOf('：');
-    if (splitAt <= 0) return null;
-    const name = line.slice(0, splitAt).replace(/（[^）]*）/g, '').trim();
-    const anchor = compactPromptFragment(line.slice(splitAt + 1));
-    if (!name || !anchor || anchor === '根据正文与角色设定保持外貌一致') return null;
-    return { name, anchor };
-  }).filter((value): value is { name: string; anchor: string } => Boolean(value));
-
-  const promptKeys = ['prompt', 'positive_prompt', 'positivePrompt', 'description', 'tags', 'input'];
-  const promptKey = promptKeys.find(key => typeof args[key] === 'string') || 'prompt';
-  const originalPrompt = typeof args[promptKey] === 'string' ? String(args[promptKey]) : '';
-  const matchedAnchors = actorAnchors.length === 1
-    ? actorAnchors.map(item => item.anchor)
-    : actorAnchors.filter(item => originalPrompt.includes(item.name)).map(item => item.anchor);
-  const stylePrompt = compactPromptFragment(systemPrompt.match(/\n额外画风：([^\n]+)/)?.[1]);
-  const mergedPrompt = mergePromptFragments(originalPrompt, [...matchedAnchors, stylePrompt]);
-  if (mergedPrompt) args[promptKey] = mergedPrompt;
-
-  const negativePrompt = compactPromptFragment(systemPrompt.match(/\n避免内容：([^\n]+)/)?.[1]);
-  const negativeKey = ['negative_prompt', 'negativePrompt', 'uc'].find(key => typeof args[key] === 'string');
-  if (negativeKey && negativePrompt) {
-    args[negativeKey] = mergePromptFragments(args[negativeKey], [negativePrompt]);
-  }
-  return args;
-};
-
 const findExistingJob = async (
   tool: StoryCloudImageToolHandoff,
   clientRequestId: string,
@@ -386,15 +335,12 @@ const prepareStoryImageHandoffFromPlan = (
 ): StoryCloudImageHandoffResult => {
   const tool = spec.tools.find(item => item.exposedName === plan.tool);
   if (!tool) return { state: 'failed', exposedTool: plan.tool, error: '配图规划器选择的生图工具已不可用' };
-  const anchoredArgs = tool.engineId === 'novelai'
-    ? applyStoryNovelAiTextAnchors(plan.arguments, spec.planner)
-    : plan.arguments;
   return {
     state: 'submitted',
     exposedTool: tool.exposedName,
     toolName: tool.toolName,
     clientRequestId: stableImageClientRequestId(storyClientRequestId),
-    arguments: mergeNovelAiReferences(tool, anchoredArgs),
+    arguments: mergeNovelAiReferences(tool, plan.arguments),
     uncertain: true,
   };
 };
