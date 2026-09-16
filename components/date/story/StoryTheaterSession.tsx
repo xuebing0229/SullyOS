@@ -473,6 +473,10 @@ const StoryOutput: React.FC<{ content: string; onChoose?: (text: string) => void
                                         lineHeight: 'inherit',
                                         letterSpacing: 'inherit',
                                         whiteSpace: 'inherit',
+                                        // The paragraph owns the 2em first-line indent. The native
+                                        // dialogue button must not inherit it or every wrapped line
+                                        // becomes indented and the spoken text collapses into a narrow column.
+                                        textIndent: 0,
                                     }}
                                 >
                                     {renderedText}
