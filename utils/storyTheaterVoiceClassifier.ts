@@ -18,11 +18,7 @@ interface StoryVoiceClassifierOptions {
 const compactStoryContext = (value: string): string => {
     const source = String(value || '').trim();
     if (source.length <= 24_000) return source;
-    return `${source.slice(0, 12_000)}
-
-[中间正文省略]
-
-${source.slice(-12_000)}`;
+    return `${source.slice(0, 12_000)}\n\n[中间正文省略]\n\n${source.slice(-12_000)}`;
 };
 
 const parseClassifierObject = (value: string): Record<string, unknown> => {
@@ -81,9 +77,10 @@ export const classifyStoryVoiceSpeakers = async ({
                         '你是文游对白说话人分类器，只做分类，不续写、不改写剧情。',
                         `当前主角色：${characterName}`,
                         `用户侧身份：${userName}`,
-                        '文游正文可能使用第二人称叙述：叙述层里的“你／你的”可以是用户侧身份的指代。若上下文明示“你说、你问、你低声道、你开口”等由这个“你”发言，该对白应判为 user；不要求正文一定重复写出用户侧姓名。',
+                        `第三人称正文里，出现“${characterName}说／问／开口／低声道”等明确归属时判 char；出现“${userName}说／问／开口／低声道”等明确归属时判 user。两边使用完全对称的姓名归属规则。`,
+                        '文游正文也可能使用第二人称叙述：叙述层里的“你／你的”可以是用户侧身份的指代。若上下文明示“你说、你问、你低声道、你开口”等由这个“你”发言，该对白应判为 user；不要求正文一定重复写出用户侧姓名。',
                         '判断说话人要看引号外的叙述归属、动作和上下文。对白内容本身出现“你”只是称呼对方，不能据此判成 user；例如“角色看着你说：‘别动。’”仍是 char。',
-                        `同理，出现“${characterName}说／问／开口”等明确归属时判 char；明确属于第三人、NPC、路人或其他角色时判 npc。`,
+                        '明确属于第三人、NPC、路人或其他角色时判 npc。',
                         '每句只能分类为 char / user / npc。',
                         'char 仅表示当前主角色本人；user 仅表示用户侧身份本人；其他角色、路人、群体、旁白引用、无法确定的对白全部归 npc。',
                         '安全优先：宁可判 npc，也不要把其他人物误判成 char 或 user。',
@@ -93,14 +90,7 @@ export const classifyStoryVoiceSpeakers = async ({
                 },
                 {
                     role: 'user',
-                    content: `【正文】
-${compactStoryContext(cleanContent)}
-
-【已经确定，不要改】
-${known || '无'}
-
-【待判断对白】
-${targets}`,
+                    content: `【正文】\n${compactStoryContext(cleanContent)}\n\n【已经确定，不要改】\n${known || '无'}\n\n【待判断对白】\n${targets}`,
                 },
             ],
         },
