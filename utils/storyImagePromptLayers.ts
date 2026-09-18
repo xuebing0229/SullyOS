@@ -151,6 +151,9 @@ export const composeStoryImagePromptArguments = (input: {
         resolveFieldKey(input.parameters, source, POSITIVE_PROMPT_KEYS)
         || 'prompt';
     const scenePrompt = compact(source[promptKey]);
+    if (!scenePrompt) {
+        throw new Error('剧情配图规划器没有返回场景/动作 prompt；已阻止只靠固定人物提示词盲生成');
+    }
     const characterPrompt = joinPromptFragments(fixedCharacter, characterDynamic);
     const userPrompt = joinPromptFragments(fixedUser, userDynamic);
 
