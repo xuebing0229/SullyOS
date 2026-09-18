@@ -129,6 +129,26 @@ describe('story image prompt layers', () => {
         expect(result.arguments.prompt).not.toContain('silver hair');
     });
 
+    it('refuses a new-format plan that lost its scene prompt', () => {
+        expect(() => composeStoryImagePromptArguments({
+            engineId: 'novelai',
+            toolName: 'novelai_generate_image',
+            parameters: params,
+            layers: {
+                character: 'black hair, green eyes only',
+                user: 'silver hair, heterochromia',
+                style: 'cinematic anime',
+            },
+            args: {
+                prompt: '',
+                story_include_character: true,
+                story_include_user: false,
+                story_character_dynamic_prompt: 'looking back',
+                story_user_dynamic_prompt: '',
+            },
+        })).toThrow('没有返回场景/动作 prompt');
+    });
+
     it('keeps legacy queued plans untouched when presence selectors are absent', () => {
         const args = { prompt: 'legacy final prompt', negative_prompt: 'legacy negative' };
         const result = composeStoryImagePromptArguments({
