@@ -150,7 +150,7 @@ const ChatInputArea: React.FC<ChatInputAreaProps> = ({
         isLongPressTriggered.current = false;
 
         // 2. Skip long-press for the default category (no options needed)
-        if (type === 'category' && item.id === 'default') return;
+        // 默认分类也允许长按，以便导出其中的原图。
         
         // 3. Store coordinates and start timer for valid long-press candidates
         if ('touches' in e) {
