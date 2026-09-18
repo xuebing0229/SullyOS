@@ -26,6 +26,11 @@ import { findApiPresetForConfig } from './apiPresetRouteIdentity';
 import { getApiPresetStorySystemCompatibility } from './apiPresetModels';
 import { applyStorySystemCompatibilityToBody } from './storySystemCompatibility';
 import { extractStoryImagePlannerJsonSelection } from './storyImagePlannerCompat';
+import {
+    augmentStoryImagePlanningParameters,
+    composeStoryImagePromptArguments,
+    type StoryImagePromptLayers,
+} from './storyImagePromptLayers';
 
 export interface StoryInlineImagePlan {
     tool: string;
@@ -106,24 +111,26 @@ const isBuiltinImageTool = (hit: ResolvedMcpTool): boolean =>
     && hit.server.id.startsWith('builtin_image_')
     && (hit.toolName === 'generate_image' || hit.toolName === 'novelai_generate_image');
 
-const withStoryReferenceActorSelector = (
+const withStoryPlanningSchema = (
     tool: OpenAIMcpTool,
     hit: ResolvedMcpTool,
     actors: CharacterProfile[],
 ): OpenAIMcpTool => {
-    if (hit.toolName !== 'novelai_generate_image') return tool;
-    const candidates = actors.filter(actor => actor.novelAiReference?.enabled);
-    if (candidates.length <= 1) return tool;
-    const parameters = (() => {
-        try { return structuredClone(tool.function.parameters || { type: 'object', properties: {} }); }
-        catch { return JSON.parse(JSON.stringify(tool.function.parameters || { type: 'object', properties: {} })); }
-    })();
-    if (!parameters.properties || typeof parameters.properties !== 'object') parameters.properties = {};
-    parameters.properties.story_reference_actor_id = {
-        type: 'string',
-        enum: candidates.map(actor => actor.id),
-        description: `剧情剧场客户端专用，不会发给生图服务。只有本次决定使用角色精密参考图时才需要选择：${candidates.map(actor => `${actor.id}=${actor.name}`).join('；')}。选择画面中最需要锁定外貌的那位；不使用角色参考图时可省略。`,
-    };
+    const parameters = augmentStoryImagePlanningParameters(
+        tool.function.parameters || { type: 'object', properties: {} },
+    );
+
+    if (hit.toolName === 'novelai_generate_image') {
+        const candidates = actors.filter(actor => actor.novelAiReference?.enabled);
+        if (candidates.length > 1) {
+            parameters.properties.story_reference_actor_id = {
+                type: 'string',
+                enum: candidates.map(actor => actor.id),
+                description: `剧情剧场客户端专用，不会发给生图服务。只有本次决定使用角色精密参考图时才需要选择：${candidates.map(actor => `${actor.id}=${actor.name}`).join('；')}。选择画面中最需要锁定外貌的那位；不使用角色参考图时可省略。`,
+            };
+        }
+    }
+
     return {
         ...tool,
         function: {
@@ -145,7 +152,7 @@ const resolveStoryImageTools = (
     }
     const tools = built.tools
         .filter(tool => resolve.has(tool.function.name))
-        .map(tool => withStoryReferenceActorSelector(tool, resolve.get(tool.function.name)!, actors));
+        .map(tool => withStoryPlanningSchema(tool, resolve.get(tool.function.name)!, actors));
     if (!tools.length) {
         throw new Error('当前主聊天生图策略没有可用的内置生图工具，请先检查生图引擎/预设和工具发现状态。');
     }
@@ -205,7 +212,7 @@ export const storyInlineImageVisibleText = (value: string): string => {
  * 这里把当前真实可用的工具 schema 原样压进 system 指令，因此仍保留：
  * - 多生图预设由 AI 按用途选择；
  * - 角色/用户/Vibe 参考图开关由 AI 自主判断；
- * - NovelAI 多角色时可明确挑要锁脸的角色。
+ * - 规划器只负责本轮可变画面；角色/用户固定提示词、画风与负面词由客户端确定性合并。
  */
 export const buildStoryInlineImagePlanInstruction = (input: {
     entry: StoryTheaterEntry;
@@ -225,13 +232,15 @@ export const buildStoryInlineImagePlanInstruction = (input: {
         parameters: tool.function.parameters || { type: 'object', properties: {} },
     })).join('\n');
 
-    return `【剧情自动配图隐藏协议】\n本轮正常剧情正文全部写完以后，再额外输出且只输出一个隐藏控制块。这个控制块不是给读者看的，不属于正文、幕后、小剧场、选项或任何剧情格式。不要为了配图改变剧情走向，也不要在正文中解释它。\n\n你刚刚写出的这一轮正文就是配图依据。请从其中挑最有表现力、最具体、最值得成为插图的一个瞬间，并从下列真实可用生图工具中选择且只选择一个。多预设时根据工具 description 的用途和本轮画面自行选择，不要固定使用第一项。工具 schema 里的 use_character_reference / use_user_reference / use_vibe_reference 等开关都由你按画面需要判断；有参考图不等于必须使用。\n\n剧情：${input.entry.title}\n前提：${compact(input.entry.premise) || '沿用当前正文'}\n当前用户侧身份：${input.userName}${input.userProfile.novelAiReference?.enabled ? '（有用户精密参考图可按需使用）' : ''}\n用户外观锚点：${compact(config?.userAnchor) || '按已有设定与正文保持一致'}\n角色外观锚点：\n${actorAnchors || '无'}\n额外画风：${compact(config?.stylePrompt) || '沿用所选生图预设'}\n避免内容：${compact(config?.negativePrompt) || '遵循所选工具自身负面规则'}\n目标画幅：${config?.width || 1216}×${config?.height || 832}\n\n可用工具（每行一项，parameters 必须严格遵守）：\n${toolSchemas}\n\n最终控制块严格使用下面格式，禁止 Markdown 代码块，禁止在闭合标签后继续输出任何文字：\n${INLINE_PLAN_OPEN}\n{"tool":"上面某个真实工具名","arguments":{"严格按该工具 parameters 填参数"}}\n${INLINE_PLAN_CLOSE}\n\n特别要求：arguments 里应直接给出可执行的最终生图参数；画面人物数量、身份、动作、服装、地点与情绪必须和你这一轮刚写出的正文一致；不要文字、对白框、水印、Logo 或 UI。`;
+    return `【剧情自动配图隐藏协议】\n本轮正常剧情正文全部写完以后，再额外输出且只输出一个隐藏控制块。这个控制块不是给读者看的，不属于正文、幕后、小剧场、选项或任何剧情格式。不要为了配图改变剧情走向，也不要在正文中解释它。\n\n你刚刚写出的这一轮正文就是配图依据。请从其中挑最有表现力、最具体、最值得成为插图的一个瞬间，并从下列真实可用生图工具中选择且只选择一个。多预设时根据工具 description 的用途和本轮画面自行选择，不要固定使用第一项。工具 schema 里的 story_include_character / story_include_user 必须严格表示最终选中画面里“主角色本人/用户本人是否真实入镜”；story_character_dynamic_prompt / story_user_dynamic_prompt 只写各自在本轮变化的动作、表情、姿势、位置和临时状态。use_character_reference / use_user_reference / use_vibe_reference 等开关仍由你按画面需要判断；有参考图不等于必须使用。\n\n剧情：${input.entry.title}\n前提：${compact(input.entry.premise) || '沿用当前正文'}\n当前用户侧身份：${input.userName}${input.userProfile.novelAiReference?.enabled ? '（有用户精密参考图可按需使用）' : ''}\n用户外观锚点：${compact(config?.userAnchor) || '按已有设定与正文保持一致'}\n角色外观锚点：\n${actorAnchors || '无'}\n固定画风（客户端自动合并，禁止复述进 prompt）：${compact(config?.stylePrompt) || '沿用所选生图预设'}\n固定负面词（客户端自动合并，禁止复述进 prompt）：${compact(config?.negativePrompt) || '遵循所选工具自身负面规则'}\n目标画幅：${config?.width || 1216}×${config?.height || 832}\n\n可用工具（每行一项，parameters 必须严格遵守）：\n${toolSchemas}\n\n最终控制块严格使用下面格式，禁止 Markdown 代码块，禁止在闭合标签后继续输出任何文字：\n${INLINE_PLAN_OPEN}\n{"tool":"上面某个真实工具名","arguments":{"严格按该工具 parameters 填参数"}}\n${INLINE_PLAN_CLOSE}\n\n特别要求：arguments 里的 prompt 只写本轮可变的场景、镜头、构图、光线、整体互动与环境，不要复述上面的角色固定提示词、用户固定提示词、画风或负面词；客户端会按 story_include_character / story_include_user 只取真实入镜者的固定层，并与各自 dynamic prompt 硬合并后再发给生图服务。画面人物数量、身份、动作、服装、地点与情绪必须和你这一轮刚写出的正文一致；不要文字、对白框、水印、Logo 或 UI。`;
 };
 
 export interface StoryCloudImageToolHandoff {
     exposedName: string;
     toolName: string;
     engineId: 'gpt-image' | 'novelai';
+    /** 剧情规划器实际看到的工具参数，用于 Worker 确定 prompt/negative 字段名并剥离客户端字段。 */
+    parameters?: Record<string, unknown>;
     controlBaseUrl: string;
     token: string;
     preset?: {
@@ -262,6 +271,8 @@ export interface StoryCloudImagePlannerSpec {
 export interface StoryCloudImageHandoffSpec {
     version: 1;
     tools: StoryCloudImageToolHandoff[];
+    /** 用户在文游生图设置里填写的固定层；Worker 只按本轮真实入镜者选择性合并。 */
+    promptLayers?: StoryImagePromptLayers;
     /** Local attachments shared across presets; removed before POST /story-jobs. */
     referenceSources?: Record<string, string>;
     /** 正文完成后由 Worker 独立执行的二段式配图规划器。 */
@@ -341,10 +352,12 @@ export const buildStoryCloudImageHandoffSpec = async (input: {
         const preset = hit.server.imagePresetId
             ? presets.find(item => item.id === hit.server.imagePresetId)
             : undefined;
+        const exposedTool = imageTools.tools.find(tool => tool.function.name === exposedName);
         const descriptor: StoryCloudImageToolHandoff = {
             exposedName,
             toolName: hit.toolName,
             engineId,
+            parameters: JSON.parse(JSON.stringify(exposedTool?.function.parameters || {})),
             controlBaseUrl,
             token: String(hit.server.token || ''),
             ...(preset ? {
@@ -436,9 +449,20 @@ export const buildStoryCloudImageHandoffSpec = async (input: {
         }
         : undefined;
 
+    const promptConfig = input.entry?.imageGeneration;
+    const promptLayers: StoryImagePromptLayers | undefined = input.entry
+        ? {
+            character: compact(promptConfig?.characterAnchors?.[input.actors[0]?.id]),
+            user: compact(promptConfig?.userAnchor),
+            style: compact(promptConfig?.stylePrompt),
+            negative: compact(promptConfig?.negativePrompt),
+        }
+        : undefined;
+
     return {
         version: 1,
         tools,
+        ...(promptLayers ? { promptLayers } : {}),
         ...(Object.keys(referenceSources).length ? { referenceSources } : {}),
         ...(planner ? { planner } : {}),
     };
@@ -557,7 +581,7 @@ const buildPlannerInstruction = (input: GenerateStoryImageInput, toolNames: stri
         return `${actor.name}${referenceState}：${compact(config?.characterAnchors?.[actor.id]) || '根据正文与角色设定保持外貌一致'}`;
     }).join('\n');
     const transcript = input.messages.slice(-8).map(message => `${message.role === 'user' ? input.userName : '剧场正文'}：${compact(message.content).slice(0, 1800)}`).join('\n\n');
-    return `你正在后台为剧情剧场生成一张本轮插图，不是在回复聊天。必须从本轮提供的生图工具中选择最合适的一项并调用，不要只输出文字，也不要同时调用多个生图工具。\n\n这里故意复用主聊天现有的生图决策链：当前可选工具是 ${toolNames.join('、')}。如果出现多个“生图预设”工具，必须结合每个工具描述里的“用途”和当前剧情画面自行选择；不要因为在剧情剧场就固定到某个模型/预设。工具 schema 若提供 use_character_reference / use_user_reference / use_vibe_reference 等开关，也由你根据本轮画面自主判断是否使用，不能因为参考图存在就强制带上。\n\n剧情：${input.entry.title}\n前提：${compact(input.entry.premise) || '沿用正文'}\n当前身份 ${input.userName}${input.userProfile.novelAiReference?.enabled ? '（用户也有精密参考图可按需选择）' : ''}：${compact(config?.userAnchor) || '根据正文保持一致'}\n出场角色：\n${actorAnchors}\n\n最近剧情：\n${transcript}\n\n画面要求：只画最新一轮最有表现力的具体瞬间；保持人物数量、身份、动作、服装、地点与情绪一致；构图完整、有叙事感；不要文字、对白框、水印、Logo 或 UI。${config?.stylePrompt ? `\n额外画风：${config.stylePrompt}` : ''}${config?.negativePrompt ? `\n避免内容：${config.negativePrompt}` : ''}\n目标画幅：${config?.width || 1216}×${config?.height || 832}。剧情剧场只补充这些场景要求，其余模型/预设/参考图策略遵循主聊天现有生图工具与 schema。请直接调用一个工具。`;
+    return `你正在后台为剧情剧场生成一张本轮插图，不是在回复聊天。必须从本轮提供的生图工具中选择最合适的一项并调用，不要只输出文字，也不要同时调用多个生图工具。\n\n这里故意复用主聊天现有的生图决策链：当前可选工具是 ${toolNames.join('、')}。如果出现多个“生图预设”工具，必须结合每个工具描述里的“用途”和当前剧情画面自行选择；不要因为在剧情剧场就固定到某个模型/预设。story_include_character / story_include_user 必须严格表示你选中的具体画面里主角色本人/用户本人是否真实入镜；两个 dynamic prompt 只写各自在这一帧的动作、表情、姿势、位置和临时状态。工具 schema 若提供 use_character_reference / use_user_reference / use_vibe_reference 等开关，也由你根据本轮画面自主判断是否使用，不能因为参考图存在就强制带上。\n\n剧情：${input.entry.title}\n前提：${compact(input.entry.premise) || '沿用正文'}\n当前身份 ${input.userName}${input.userProfile.novelAiReference?.enabled ? '（用户也有精密参考图可按需选择）' : ''}：${compact(config?.userAnchor) || '根据正文保持一致'}\n出场角色：\n${actorAnchors}\n\n最近剧情：\n${transcript}\n\n画面要求：只画最新一轮最有表现力的具体瞬间；保持人物数量、身份、动作、服装、地点与情绪一致；构图完整、有叙事感；不要文字、对白框、水印、Logo 或 UI。工具 arguments 里的 prompt 只负责本轮可变场景、镜头、构图、光线、整体互动与环境，禁止复述角色固定外貌、用户固定外貌、固定画风或固定负面词；这些固定层会由客户端根据实际入镜者确定性合并。${config?.stylePrompt ? `\n固定画风（客户端自动合并，禁止复述进 prompt）：${config.stylePrompt}` : ''}${config?.negativePrompt ? `\n固定负面词（客户端自动合并，禁止复述进 prompt）：${config.negativePrompt}` : ''}\n目标画幅：${config?.width || 1216}×${config?.height || 832}。剧情剧场只补充这些场景要求，其余模型/预设/参考图策略遵循主聊天现有生图工具与 schema。请直接调用一个工具。`;
 };
 
 export async function generateStoryTheaterImage(input: GenerateStoryImageInput): Promise<StoryTheaterImageGenerationResult> {
@@ -664,7 +688,24 @@ export async function generateStoryTheaterImage(input: GenerateStoryImageInput):
         await applyImageGenerationPresetById(selected.server.imagePresetId);
     }
 
-    const clientArgs = { ...rawArgs };
+    const selectedToolSchema = imageTools.tools.find(tool => tool.function.name === selectedName);
+    const promptConfig = input.entry.imageGeneration;
+    const engineId = selected.server.imagePresetEngineId === 'novelai' || selected.toolName === 'novelai_generate_image'
+        ? 'novelai'
+        : 'gpt-image';
+    const composed = composeStoryImagePromptArguments({
+        args: rawArgs,
+        parameters: selectedToolSchema?.function.parameters,
+        layers: {
+            character: compact(promptConfig?.characterAnchors?.[input.actors[0]?.id]),
+            user: compact(promptConfig?.userAnchor),
+            style: compact(promptConfig?.stylePrompt),
+            negative: compact(promptConfig?.negativePrompt),
+        },
+        engineId,
+        toolName: selected.toolName,
+    });
+    const clientArgs = composed.arguments;
     const requestedActorId = typeof clientArgs.story_reference_actor_id === 'string'
         ? clientArgs.story_reference_actor_id
         : '';

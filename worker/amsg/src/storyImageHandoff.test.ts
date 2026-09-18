@@ -121,6 +121,111 @@ describe('story cloud image handoff', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it('hard-merges fixed Story Theater prompt layers only for visible subjects', () => {
+    const layered = spec({
+      parameters: {
+        type: 'object',
+        properties: {
+          prompt: { type: 'string' },
+          negative_prompt: { type: 'string' },
+        },
+      },
+    });
+    layered.promptLayers = {
+      character: 'black hair, green eyes only',
+      user: 'silver hair, heterochromia',
+      style: 'cinematic anime',
+      negative: 'bad anatomy',
+    };
+
+    const result = prepareStoryImageHandoff(
+      layered,
+      'storyreq_layers',
+      planText('image_novelai', {
+        prompt: 'narrow prison cell, medium shot, tense confrontation',
+        negative_prompt: 'text',
+        story_include_character: true,
+        story_include_user: false,
+        story_character_dynamic_prompt: 'standing by the door, looking back',
+        story_user_dynamic_prompt: '',
+      }),
+    );
+
+    expect(result).toMatchObject({
+      state: 'submitted',
+      arguments: {
+        prompt: 'narrow prison cell, medium shot, tense confrontation, black hair, green eyes only, standing by the door, looking back, cinematic anime',
+        negative_prompt: 'text, bad anatomy',
+      },
+    });
+    expect(result.arguments?.prompt).not.toContain('silver hair, heterochromia');
+    expect(result.arguments).not.toHaveProperty('story_include_character');
+  });
+
+  it('keeps role and user in separate NovelAI character prompt segments when both are visible', () => {
+    const layered = spec({
+      parameters: {
+        type: 'object',
+        properties: { prompt: { type: 'string' } },
+      },
+    });
+    layered.promptLayers = {
+      character: 'black hair, green eyes only',
+      user: 'silver hair, heterochromia',
+      style: 'cinematic anime',
+    };
+
+    const result = prepareStoryImageHandoff(
+      layered,
+      'storyreq_two_people',
+      planText('image_novelai', {
+        prompt: 'narrow cell, two people facing each other, medium shot',
+        story_include_character: true,
+        story_include_user: true,
+        story_character_dynamic_prompt: 'left side, gripping the door',
+        story_user_dynamic_prompt: 'right side, leaning closer',
+        use_character_reference: true,
+        use_user_reference: true,
+        use_vibe_reference: false,
+      }),
+    );
+
+    expect(result.state).toBe('submitted');
+    expect(result.arguments?.prompt).toBe(
+      'narrow cell, two people facing each other, medium shot, cinematic anime'
+      + ' | black hair, green eyes only, left side, gripping the door'
+      + ' | silver hair, heterochromia, right side, leaning closer',
+    );
+    // Two separated NovelAI character segments intentionally disable generation-wide Precise Reference.
+    expect(result.arguments).not.toHaveProperty('reference_id');
+    expect(result.arguments).not.toHaveProperty('user_reference_id');
+  });
+
+  it('fails before image submission when a new planner result lost the scene prompt', () => {
+    const layered = spec({
+      parameters: {
+        type: 'object',
+        properties: { prompt: { type: 'string' } },
+      },
+    });
+    layered.promptLayers = { character: 'black hair, green eyes only' };
+
+    const result = prepareStoryImageHandoff(
+      layered,
+      'storyreq_missing_scene',
+      planText('image_novelai', {
+        prompt: '',
+        story_include_character: true,
+        story_include_user: false,
+        story_character_dynamic_prompt: 'looking back',
+        story_user_dynamic_prompt: '',
+      }),
+    );
+
+    expect(result.state).toBe('failed');
+    expect(result.error).toContain('没有返回场景/动作 prompt');
+  });
+
   it('skips automatic image handoff when the story completion omitted its inline plan', () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch');
     const result = prepareStoryImageHandoff(

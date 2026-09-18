@@ -15,6 +15,10 @@ import {
   type NovelAiReferencePolicy,
 } from '../../../utils/novelAiReferencePolicy';
 import { normalizeToolCallsForCompat } from '../../../utils/toolCallCompat';
+import {
+  composeStoryImagePromptArguments,
+  type StoryImagePromptLayers,
+} from '../../../utils/storyImagePromptLayers';
 import { applyStorySystemCompatibility } from './storyEgress';
 
 export interface StoryCloudImageReferenceFragments {
@@ -27,6 +31,7 @@ export interface StoryCloudImageToolHandoff {
   exposedName: string;
   toolName: string;
   engineId: 'gpt-image' | 'novelai';
+  parameters?: Record<string, unknown>;
   controlBaseUrl: string;
   token: string;
   preset?: {
@@ -53,6 +58,7 @@ export interface StoryCloudImagePlannerSpec {
 export interface StoryCloudImageHandoffSpec {
   version: 1;
   tools: StoryCloudImageToolHandoff[];
+  promptLayers?: StoryImagePromptLayers;
   planner?: StoryCloudImagePlannerSpec;
 }
 
@@ -119,6 +125,7 @@ export const normalizeStoryImageHandoffSpec = (value: unknown): StoryCloudImageH
     const vibe = referencePolicy?.allowVibeReference === false
       ? undefined
       : normalizeFragment(referencesRaw?.vibe);
+    const parameters = isRecord(rawTool.parameters) ? cloneRecord(rawTool.parameters) : undefined;
     const presetRaw = isRecord(rawTool.preset) ? rawTool.preset : undefined;
     const preset = presetRaw && isRecord(presetRaw.remoteConfig)
       ? {
@@ -131,6 +138,7 @@ export const normalizeStoryImageHandoffSpec = (value: unknown): StoryCloudImageH
       exposedName,
       toolName,
       engineId,
+      ...(parameters ? { parameters } : {}),
       controlBaseUrl,
       token: normalizeApiCredential(rawTool.token),
       ...(preset ? { preset } : {}),
@@ -149,6 +157,16 @@ export const normalizeStoryImageHandoffSpec = (value: unknown): StoryCloudImageH
       } : {}),
     });
   }
+  const promptLayersRaw = isRecord(value.promptLayers) ? value.promptLayers : undefined;
+  const promptLayers: StoryImagePromptLayers | undefined = promptLayersRaw
+    ? {
+        character: typeof promptLayersRaw.character === 'string' ? promptLayersRaw.character : undefined,
+        user: typeof promptLayersRaw.user === 'string' ? promptLayersRaw.user : undefined,
+        style: typeof promptLayersRaw.style === 'string' ? promptLayersRaw.style : undefined,
+        negative: typeof promptLayersRaw.negative === 'string' ? promptLayersRaw.negative : undefined,
+      }
+    : undefined;
+
   const plannerRaw = isRecord(value.planner) ? value.planner : undefined;
   const plannerTools: StoryCloudImagePlannerSpec['tools'] = [];
   if (plannerRaw && Array.isArray(plannerRaw.tools)) {
@@ -188,7 +206,14 @@ export const normalizeStoryImageHandoffSpec = (value: unknown): StoryCloudImageH
       }
     : undefined;
 
-  return tools.length ? { version: 1, tools, ...(planner ? { planner } : {}) } : undefined;
+  return tools.length
+    ? {
+        version: 1,
+        tools,
+        ...(promptLayers ? { promptLayers } : {}),
+        ...(planner ? { planner } : {}),
+      }
+    : undefined;
 };
 
 const parseInlinePlan = (content: string): { tool: string; arguments: Record<string, unknown> } | null => {
@@ -268,6 +293,10 @@ const stripReferenceSelectorsForNonNovelAi = (
 ): Record<string, unknown> => {
   const args = cloneRecord(rawArgs);
   delete args.story_reference_actor_id;
+  delete args.story_include_character;
+  delete args.story_include_user;
+  delete args.story_character_dynamic_prompt;
+  delete args.story_user_dynamic_prompt;
   delete args.story_use_character_reference;
   delete args.story_use_user_reference;
   delete args.story_use_vibe_reference;
@@ -335,12 +364,31 @@ const prepareStoryImageHandoffFromPlan = (
 ): StoryCloudImageHandoffResult => {
   const tool = spec.tools.find(item => item.exposedName === plan.tool);
   if (!tool) return { state: 'failed', exposedTool: plan.tool, error: '配图规划器选择的生图工具已不可用' };
+
+  let composed;
+  try {
+    composed = composeStoryImagePromptArguments({
+      args: plan.arguments,
+      parameters: tool.parameters,
+      layers: spec.promptLayers,
+      engineId: tool.engineId,
+      toolName: tool.toolName,
+    });
+  } catch (error) {
+    return {
+      state: 'failed',
+      exposedTool: tool.exposedName,
+      toolName: tool.toolName,
+      error: String((error as Error)?.message || error).slice(0, 500),
+    };
+  }
+
   return {
     state: 'submitted',
     exposedTool: tool.exposedName,
     toolName: tool.toolName,
     clientRequestId: stableImageClientRequestId(storyClientRequestId),
-    arguments: mergeNovelAiReferences(tool, plan.arguments),
+    arguments: mergeNovelAiReferences(tool, composed.arguments),
     uncertain: true,
   };
 };
@@ -397,6 +445,8 @@ const parsePlannerText = (
       'prompt', 'positive_prompt', 'negative_prompt', 'width', 'height', 'size', 'model',
       'steps', 'scale', 'cfg_scale', 'sampler', 'seed', 'use_character_reference',
       'use_user_reference', 'use_vibe_reference', 'story_reference_actor_id',
+      'story_include_character', 'story_include_user',
+      'story_character_dynamic_prompt', 'story_user_dynamic_prompt',
     ]);
     return Object.keys(parsed).some(key => likelyKeys.has(key))
       ? { tool: soleTool, arguments: cloneRecord(parsed) }
