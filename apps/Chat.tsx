@@ -1,5 +1,4 @@
 import EmojiExportDialog from '../components/chat/EmojiExportDialog';
-import EmojiExportDialog from '../components/chat/EmojiExportDialog';
 import React, { useState, useEffect, useRef, useLayoutEffect, useMemo, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { useOS } from '../context/OSContext';
