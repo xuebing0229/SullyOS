@@ -71,14 +71,14 @@ function buildRulesBlock(charName: string, userLabel: string, includeEntities: b
 **日期标注（date，必填）**：每条消息前缀都带了 \`[YYYY-MM-DD HH:MM]\` 时间戳。每条记忆必须根据**该事件实际发生的那一天**填 date 字段（"YYYY-MM-DD"），而不是套用整批的某一天。同一批对话跨多天时，跨日的记忆要分别标各自的日期。`;
 }
 
-function buildConversationText(messages: Message[], charName: string, userLabel: string): string {
+function buildConversationText(messages: Message[], charName: string, userLabel: string, linkDates = false): string {
     // 每行带 [YYYY-MM-DD HH:MM] 时间戳前缀。
     // 没有这个 LLM 完全看不到日期，多日 batch 提取出来的记忆全部会被压到一个时间点
     // （见 parseMemoryNodesFromBuffer 的 midTime 兜底），跨日时间线就乱了。
     const pad2 = (n: number) => String(n).padStart(2, '0');
     return messages
-        .map(m => {
-            const body = formatMessageForPrompt(m, charName, userLabel).slice(0, 600);
+        .map((m, index) => {
+            const body = (linkDates ? `[M${index}] ` : '') + formatMessageForPrompt(m, charName, userLabel).slice(0, 600);
             const ts = m.timestamp;
             if (!ts || ts <= 0) return body;
             const d = new Date(ts);
@@ -95,7 +95,7 @@ const VALID_ROOMS: MemoryRoom[] = [
 
 /** 从消息缓冲区直接解析记忆节点（不依赖 TopicBox） */
 function parseMemoryNodesFromBuffer(
-    parsed: any[], charId: string, messages: Message[], _batchLabel: string, includeEntities: boolean,
+    parsed: any[], charId: string, messages: Message[], _batchLabel: string, includeEntities: boolean, linkDates = false,
 ): MemoryNode[] {
     if (parsed.length === 0) return [];
 
@@ -184,6 +184,17 @@ function parseMemoryNodesFromBuffer(
                 origin: 'extraction',
             };
             if (includeEntities) memory.entities = parseEntities(item.entities);
+            // No anchor guesses from event dates or the extraction batch. Only a valid original message reference.
+            if (linkDates && relativeTimeEnabled() && hasRelativeTime(memory.content)
+                && typeof item.relativeTimeSource === 'string' && /^M\d+$/.test(item.relativeTimeSource)) {
+                const source = messages[Number(item.relativeTimeSource.slice(1))];
+                if (source && Number.isFinite(source.timestamp) && source.timestamp > 0
+                    && hasMatchingRelativeSource(memory.content, formatMessageForPrompt(source, '', '').slice(0, 600))) {
+                    memory.relativeTimeAnchor = {
+                        dateKey: getLocalDateKey(new Date(source.timestamp)), source: 'message', messageId: source.id,
+                    };
+                }
+            }
             return memory;
         });
 }
@@ -486,7 +497,7 @@ pinDays 仅在需要置顶时才写，大多数记忆不需要。
         const fmt = (d: Date) => `${d.getMonth() + 1}/${d.getDate()}`;
         const batchLabel = fmt(d1) === fmt(d2) ? fmt(d1) : `${fmt(d1)}-${fmt(d2)}`;
 
-        const memories = parseMemoryNodesFromBuffer(parsed, charId, messages, batchLabel, includeEntities);
+        const memories = parseMemoryNodesFromBuffer(parsed, charId, messages, batchLabel, includeEntities, linkDates);
 
         // 解析跨时间关联（→ EventBox 绑定信号）+ eventName/eventTags 提示
         const { crossTimeLinks, eventBoxHints } = parseRelatedToAndHints(
