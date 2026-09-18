@@ -402,8 +402,9 @@ export async function extractMemoriesFromBuffer(
     if (messages.length === 0) return { memories: [], crossTimeLinks: [], eventBoxHints: [], unpinIds: [], corrections: [] };
 
     const includeEntities = readRecallRuntimeSnapshot().featureFlagsSnapshot.recallRouter;
+    const linkDates = relativeTimeEnabled();
     const userLabel = userName || '用户';
-    const conversationText = buildConversationText(messages, charName, userLabel);
+    const conversationText = buildConversationText(messages, charName, userLabel, linkDates);
 
     const contextBlock = charContext
         ? `\n## 你的人设（供参考，帮助你理解对话中的关系和角色定位）\n${charContext}\n`
@@ -431,7 +432,7 @@ export async function extractMemoriesFromBuffer(
 
     const systemPrompt = `你是 ${charName}。根据给定的对话内容，以你的第一人称视角（"我"）提取值得记住的记忆。${contextBlock}${relatedBlock}${pinnedBlock}
 
-${buildRulesBlock(charName, userLabel, includeEntities)}${relatedToRule}${unpinRule}
+${buildRulesBlock(charName, userLabel, includeEntities)}${relatedToRule}${unpinRule}${linkDates ? `\n\n## 相对时间来源\ncontent 保留原消息的相对时间措辞，不要自行添加日期括号。含“昨天、前天、几天前、上周、上个月、去年”等措辞时，额外输出 relativeTimeSource 字段，值为说出该措辞的原消息编号（例如 "M0"）。系统将以该消息的发送日补注，不使用 date 事件日。不同说话日期的相对时间应拆成不同记忆。没有可靠来源或无法使用同一个参照日时，省略该字段，禁止猜测。` : ''}
 
 ## 输出格式
 
