@@ -11,7 +11,6 @@ import { safeFetchJson } from '../safeApi';
 import { MemoryNodeDB, EventBoxDB, MemoryVectorDB } from './db';
 import { expandAndFormat } from './formatter';
 import { exportMemoryPalace, importMemoryPalace } from './export';
-import { resolveLinkedArchives } from './linkedArchive';
 
 vi.mock('../safeApi', () => ({ safeFetchJson: vi.fn() }));
 const fetchJson = vi.mocked(safeFetchJson);
