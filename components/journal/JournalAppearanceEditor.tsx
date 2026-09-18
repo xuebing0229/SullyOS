@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { FileOrImageImport } from '../share/FileOrImageImport';
 import {
     ArrowCounterClockwise,
     Check,
@@ -7,7 +8,6 @@ import {
     DownloadSimple,
     Eye,
     GearSix,
-    UploadSimple,
     X,
 } from '@phosphor-icons/react';
 import { useOS } from '../../context/OSContext';
@@ -110,7 +110,6 @@ const JournalAppearanceButton: React.FC<JournalAppearanceButtonProps> = ({
     const { theme, updateTheme, addToast } = useOS();
     const [open, setOpen] = useState(false);
     const [copied, setCopied] = useState(false);
-    const cssImportRef = useRef<HTMLInputElement>(null);
     const appearanceButtonRef = useRef<HTMLButtonElement>(null);
     const [savedStyleBlocksButton, setSavedStyleBlocksButton] = useState(false);
     const [draft, setDraft] = useState<JournalAppearance>(() =>
