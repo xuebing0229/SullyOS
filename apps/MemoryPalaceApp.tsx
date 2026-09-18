@@ -3097,6 +3097,17 @@ export default function MemoryPalaceApp() {
                 {/* 费用警告 */}
                 {isGlobal && (<>
 
+                <div style={{ padding: 16, marginBottom: 16, borderRadius: 12, background: '#f5f3ff' }}>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 10, fontWeight: 600 }}>
+                        <input type="checkbox" checked={memoryPalaceConfig.relativeTimeAnnotations === true}
+                            onChange={e => updateMemoryPalaceConfig({ relativeTimeAnnotations: e.target.checked })} />
+                        相对时间补注
+                    </label>
+                    <p style={{ fontSize: 12, lineHeight: 1.7, margin: '8px 0 0', color: '#6b7280' }}>
+                        开启后，角色召回与记忆正文会把“昨天、前天、上周”等补成带具体日期的时间锚点；原文不被改写，关闭即可隐藏补注，也不会重新向量化。
+                    </p>
+                </div>
+
                 <div style={{
                     padding: 14, borderRadius: 14, marginBottom: 16,
                     background: '#fef2f2', border: '2px solid #fca5a5',
