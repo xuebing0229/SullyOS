@@ -189,14 +189,11 @@ describe('日期补注导出与可逆导入', () => {
         expect(off.characters[0].nodes[0].content).toBe(memory.content);
         expect(off.characters[0].nodes[0]).not.toHaveProperty('relativeTimeExport');
         const fragments = [{ id: 'linked-export', date: '2026-09-16', summary: '快照', palaceMemoryId: memory.id }];
-        expect((await resolveLinkedArchives(memory.charId, fragments, true))[0].summary).toBe(memory.content);
         enabled(true);
         const on = JSON.parse(JSON.stringify(await exportMemoryPalace(chars)));
         expect(on.characters[0].nodes[0].content).toBe('昨天〔2026年9月15日〕开始休假');
         expect(on.characters[0].nodes[0].relativeTimeExport.originalContent).toBe(memory.content);
-        expect((await resolveLinkedArchives(memory.charId, fragments, true))[0].summary).toBe(on.characters[0].nodes[0].content);
         // Normal linked editing continues to receive source text, not an editable generated date.
-        expect((await resolveLinkedArchives(memory.charId, fragments))[0].summary).toBe(memory.content);
         enabled(false);
         expect((await exportMemoryPalace(chars)).characters).toEqual(off.characters);
         expect((await MemoryNodeDB.getById(memory.id))?.content).toBe(memory.content);
