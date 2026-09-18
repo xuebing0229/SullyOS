@@ -210,6 +210,12 @@ export const normalizeStoryTheater = (entry: StoryTheaterEntry): StoryTheaterEnt
         openingMode: entry.openingMode === 'assistant' ? 'assistant' : 'user',
         storyTtsEnabled: entry.storyTtsEnabled === true,
         storyTtsProvider: 'minimax',
+        ...(String(entry.storyVoiceDirectorApiPresetId || '').trim()
+            ? { storyVoiceDirectorApiPresetId: String(entry.storyVoiceDirectorApiPresetId).trim() }
+            : { storyVoiceDirectorApiPresetId: undefined }),
+        ...(String(entry.storyVoiceDirectorModel || '').trim()
+            ? { storyVoiceDirectorModel: String(entry.storyVoiceDirectorModel).trim() }
+            : { storyVoiceDirectorModel: undefined }),
         mask: entry.writesToCharacterMemory ? { type: 'user' } : entry.mask?.type === 'character' && entry.mask.id
             ? { type: 'character', id: entry.mask.id }
             : entry.mask?.type === 'custom' && entry.mask.id

@@ -2216,6 +2216,13 @@ export interface StoryTheaterEntry {
     storyTtsEnabled?: boolean;
     /** 文游独立 TTS 路由。当前只开放 MiniMax，保留字段以便以后扩展服务商。 */
     storyTtsProvider?: 'minimax';
+    /**
+     * 文游“情绪导演”副 API。只有正文模型没给 char/user 对白提供合法 emotion 时才会批量补判；
+     * 未选择预设即关闭，不会产生额外文本模型请求。
+     */
+    storyVoiceDirectorApiPresetId?: string;
+    /** 同一副 API 预设含多个模型时，情绪导演单独使用的快速/便宜模型。 */
+    storyVoiceDirectorModel?: string;
     /** 本剧情中用户执笔的身份；缺省时使用真实用户档案。 */
     mask?: StoryTheaterMaskSelection;
     characterIds: string[];

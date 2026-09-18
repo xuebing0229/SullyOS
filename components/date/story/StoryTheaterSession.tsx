@@ -106,6 +106,10 @@ import {
     type StoryVoiceSpeaker,
 } from '../../../utils/storyTheaterVoice';
 import { classifyStoryVoiceSpeakers } from '../../../utils/storyTheaterVoiceClassifier';
+import {
+    directMissingStoryVoiceActing,
+    resolveStoryVoiceDirectorApiConfig,
+} from '../../../utils/storyTheaterVoiceDirector';
 import { canSynthesizeSpeech } from '../../../utils/ttsRouter';
 import { deletePersistedVoiceAsset, ensureVoiceAsset, storyVoiceAssetKey } from '../../../utils/voiceAsset';
 import { createUserVoiceTarget } from '../../../utils/userVoice';
@@ -1974,6 +1978,28 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                         } catch (voiceClassifyError) {
                             // 正文永远优先保存。补判失败只让无法确认的对白保持静音，绝不误套 char 声线。
                             console.warn('[StoryTheater] generated dialogue speaker repair failed', voiceClassifyError);
+                        }
+                    }
+
+                    const voiceDirectorApi = resolveStoryVoiceDirectorApiConfig(entry, apiConfig, apiPresets);
+                    const needsVoiceDirector = storyVoiceSpeakers.some((speaker, index) =>
+                        (speaker === 'char' || speaker === 'user')
+                        && !storyVoiceActing[index]?.emotion
+                    );
+                    if (voiceDirectorApi && needsVoiceDirector) {
+                        try {
+                            storyVoiceActing = await directMissingStoryVoiceActing({
+                                apiConfig: voiceDirectorApi,
+                                content,
+                                previousContext: history.slice(-4).map(message => `${message.role}: ${message.content}`).join('\n\n'),
+                                characterName: actors[0]?.name || '当前主角色',
+                                userName: promptIdentityName,
+                                speakers: storyVoiceSpeakers,
+                                currentActing: storyVoiceActing,
+                            });
+                        } catch (voiceDirectorError) {
+                            // 情绪导演只是语音增强。失败不能影响正文落库，也不能阻断已有可播放对白。
+                            console.warn('[StoryTheater] voice acting director fallback failed', voiceDirectorError);
                         }
                     }
                 }

@@ -15,8 +15,16 @@ describe('story theater voice settings', () => {
     delete legacy.storyTtsProvider;
     expect(normalizeStoryTheater(legacy).storyTtsEnabled).toBe(false);
     expect(normalizeStoryTheater(legacy).storyTtsProvider).toBe('minimax');
-    const enabled = normalizeStoryTheater({ ...base, storyTtsEnabled: true, storyTtsProvider: 'minimax' });
+    const enabled = normalizeStoryTheater({
+      ...base,
+      storyTtsEnabled: true,
+      storyTtsProvider: 'minimax',
+      storyVoiceDirectorApiPresetId: 'cheap-fast',
+      storyVoiceDirectorModel: 'flash-mini',
+    });
     expect(enabled.storyTtsEnabled).toBe(true);
     expect(enabled.storyTtsProvider).toBe('minimax');
+    expect(enabled.storyVoiceDirectorApiPresetId).toBe('cheap-fast');
+    expect(enabled.storyVoiceDirectorModel).toBe('flash-mini');
   });
 });

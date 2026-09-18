@@ -104,6 +104,11 @@ const StoryImageSettingsButton: React.FC<Props> = ({ entry, onChange, triggerLab
     const plannerDisplayModel = selectedPlannerPreset
         ? (draft.plannerModel || selectedPlannerPreset.config.model)
         : apiConfig.model;
+    const selectedVoiceDirectorPreset = apiPresets.find(preset => preset.id === entry.storyVoiceDirectorApiPresetId);
+    const selectedVoiceDirectorModels = selectedVoiceDirectorPreset ? getApiPresetModelEntries(selectedVoiceDirectorPreset) : [];
+    const voiceDirectorDisplayModel = selectedVoiceDirectorPreset
+        ? (entry.storyVoiceDirectorModel || selectedVoiceDirectorPreset.config.model)
+        : '';
 
     const applyTextPreset = (preset: StoryImageTextPreset) => {
         const savedAnchorValues = Object.values(preset.characterAnchors || {}).filter(value => typeof value === 'string' && value.trim().length > 0);
@@ -193,7 +198,7 @@ const StoryImageSettingsButton: React.FC<Props> = ({ entry, onChange, triggerLab
         setOpen(false);
     };
 
-    const updateStoryVoice = async (patch: Pick<StoryTheaterEntry, 'storyTtsEnabled'> | Pick<StoryTheaterEntry, 'storyTtsProvider'>) => {
+    const updateStoryVoice = async (patch: Partial<Pick<StoryTheaterEntry, 'storyTtsEnabled' | 'storyTtsProvider' | 'storyVoiceDirectorApiPresetId' | 'storyVoiceDirectorModel'>>) => {
         try {
             await onChange({ ...entry, ...patch, updatedAt: Date.now() });
         } catch {
@@ -237,6 +242,37 @@ const StoryImageSettingsButton: React.FC<Props> = ({ entry, onChange, triggerLab
                 <span className='w-8 h-8 shrink-0 rounded-xl bg-violet-50 text-violet-600 grid place-items-center'><SpeakerHigh size={17} /></span>
                 <span className='min-w-0 flex-1'><strong className='block text-[10px]'>语音服务</strong><span className='block mt-0.5 text-[9px] text-slate-400'>当前文游独立路由</span></span>
                 <select value={entry.storyTtsProvider || 'minimax'} onChange={event => void updateStoryVoice({ storyTtsProvider: event.target.value as 'minimax' })} className='bg-transparent text-[10px] font-bold text-slate-600 outline-none'><option value='minimax'>MiniMax</option></select>
+            </div>
+            <div className='border-t border-slate-100 px-4 py-3'>
+                <div className='flex items-start gap-3'>
+                    <span className='w-8 h-8 shrink-0 rounded-xl bg-amber-50 text-amber-600 grid place-items-center'><SpeakerHigh size={17} /></span>
+                    <span className='min-w-0 flex-1'><strong className='block text-[10px]'>情绪导演副 API</strong><span className='block mt-0.5 text-[9px] leading-4 text-slate-400'>只在正文模型没有给 char / User 对白提供 emotion 时触发；同一楼缺失对白一次批量补判。关闭时绝不额外请求。</span></span>
+                </div>
+                <select
+                    value={entry.storyVoiceDirectorApiPresetId || ''}
+                    onChange={event => {
+                        const presetId = event.target.value;
+                        const preset = apiPresets.find(item => item.id === presetId);
+                        void updateStoryVoice({
+                            storyVoiceDirectorApiPresetId: presetId || undefined,
+                            storyVoiceDirectorModel: preset ? preset.config.model : undefined,
+                        });
+                    }}
+                    className='mt-3 w-full rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-[10px] outline-none'
+                >
+                    <option value=''>关闭（只用正文模型自带演绎）</option>
+                    {apiPresets.map(preset => <option key={preset.id} value={preset.id}>{preset.name}</option>)}
+                </select>
+                {selectedVoiceDirectorPreset && <select
+                    value={voiceDirectorDisplayModel}
+                    onChange={event => void updateStoryVoice({ storyVoiceDirectorModel: event.target.value })}
+                    className='mt-2 w-full rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-[10px] outline-none'
+                >
+                    {selectedVoiceDirectorModels.length > 0
+                        ? selectedVoiceDirectorModels.map(item => <option key={item.model} value={item.model}>{item.model}</option>)
+                        : <option value={selectedVoiceDirectorPreset.config.model}>{selectedVoiceDirectorPreset.config.model}</option>}
+                </select>}
+                {selectedVoiceDirectorPreset && <div className='mt-2 rounded-xl bg-amber-50 px-3 py-2 text-[9px] leading-4 text-amber-700'>当前副导演：{selectedVoiceDirectorPreset.name} · {voiceDirectorDisplayModel}</div>}
             </div>
             <div className='border-t border-slate-100 px-4 py-3 flex items-center gap-3'>
                 <span className='min-w-0 flex-1'><strong className='block text-[10px]'>角色声线 · {actors[0]?.name || '未选择主角色'}</strong><span className='block mt-0.5 truncate text-[9px] text-slate-400'>{actors[0] ? `自动复用角色设置 · ${voiceProfileLabel(actors[0].voiceProfile)}` : '选择主角色后自动复用该角色已保存的声线'}</span></span><span className='shrink-0 text-[9px] font-bold text-violet-500'>自动复用</span>
