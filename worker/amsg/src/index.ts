@@ -159,6 +159,8 @@ import {
   type InstantTickNamespace,
 } from './instantChat';
 import { buildScheduleChangeResult } from '../../../utils/amsgScheduleResult';
+import { TICK_STALL_MS } from '../../../utils/amsgTickReport';
+import { buildTickReport, readOverdueTasks, recordTickOutcome, type TickReportDb } from './tickReport';
 import type { ActiveMsg2TaskRecord } from '../../../types';
 import { createHybridPushTransport, isFcmConfigured, type NativeFcmEnv } from './nativeFcm';
 import { handleNativePollRequest } from './nativePoll';
@@ -3203,6 +3205,22 @@ export default {
       return jsonWithCors(result.status, result.body);
     }
 
+    // 定时任务细账：需要共享密钥，返回逐条状态与失败原文。
+    if (pathname.endsWith('/tick-report')) {
+      if (method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS_HEADERS });
+      if (method !== 'GET') return jsonWithCors(405, { success: false, error: { code: 'METHOD_NOT_ALLOWED', message: '/tick-report 只接受 GET' } });
+      const token = env.AMSG_SERVER_TOKEN?.trim() ?? '';
+      const clientToken = request.headers.get('X-Client-Token') ?? '';
+      if (token && (!clientToken || !(await constantTimeEqual(clientToken, token)))) return jsonWithCors(401, { success: false, error: { code: 'INVALID_CLIENT_TOKEN', message: '共享密钥无效或缺失' } });
+      try {
+        const report = await buildTickReport(env.DB as unknown as TickReportDb, { masterKey: env.AMSG_MASTER_KEY?.trim(), serializeKeyOf: amsgSerializeKey });
+        return jsonWithCors(200, { success: true, data: report });
+      } catch (error) {
+        const cause = summarizeErrorCause(error, 'request');
+        return jsonWithCors(500, { success: false, error: { code: 'TICK_REPORT_FAILED', message: cause.message ? `${cause.name}: ${cause.message}` : cause.name } });
+      }
+    }
+
     // 即时对话：一个请求把「传云端状态 + 建任务」串完，回 202 之后立刻起一跳。
     // 排在配置门之后，所以走到这里 D1 和密钥必然都在。
     if (pathname.endsWith('/instant-chat')) {
@@ -3230,7 +3248,8 @@ export default {
     // 整轮出错时上游把原因放在返回值里（同一份也会经 onError 记一行）。这里不再重复
     // 打印，但要把它咽掉——CF 不看 scheduled 的返回值，往外抛只会变成一条没上下文的堆栈。
     try {
-      await upstream.scheduled(event, env);
+      const outcome = await upstream.scheduled(event, env);
+      await recordTickOutcome(env.DB as unknown as TickReportDb, outcome);
     } finally {
       // Story Jobs 的模型请求由 DO alarm 独立持有；cron 只捡“还没开始”的 queued 行。
       // 即使主动消息原 scheduled 这一分钟自己报错，也不能把 Story 的独立任务一起饿死。
