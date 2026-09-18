@@ -1647,6 +1647,8 @@ export interface WorldCharBeat {
 
 /** 一轮演绎（"观测"或离线 tick 触发，推进半天剧情时间；IndexedDB world_episodes 表）。 */
 export interface WorldEpisode {
+    /** Read-time observation ordinal; does not replace round used by historical message references. */
+    observationNumber?: number;
     id: string;
     worldId: string;
     /** 第几轮（= 演绎完成后的 storyClock） */
