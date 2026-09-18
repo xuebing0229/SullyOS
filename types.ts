@@ -651,6 +651,7 @@ export interface HotNewsSnapshot {
 }
 
 export interface MemoryPalaceBackupConfig {
+  relativeTimeAnnotations?: boolean;
   embedding: {
     baseUrl: string;
     apiKey: string;
