@@ -94,6 +94,8 @@ interface ChatModalsProps {
     messageFavorited?: boolean;
     onDeleteEmoji: () => void;
     onDeleteCategory: () => void;
+    onRenameCategory: () => void;
+    onDownloadCategory: () => void;
     // Category Visibility
     allCharacters?: CharacterProfile[];
     onSaveCategoryVisibility?: (categoryId: string, allowedCharacterIds: string[] | undefined) => void;
