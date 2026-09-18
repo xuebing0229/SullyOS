@@ -3248,9 +3248,8 @@ export default {
     // 整轮出错时上游把原因放在返回值里（同一份也会经 onError 记一行）。这里不再重复
     // 打印，但要把它咽掉——CF 不看 scheduled 的返回值，往外抛只会变成一条没上下文的堆栈。
     try {
-      await upstream.scheduled(event, env);
-      const tickReport = await buildTickReport(env.DB as unknown as TickReportDb);
-      await recordTickOutcome(env.DB as unknown as TickReportDb, tickReport);
+      const outcome = await upstream.scheduled(event, env);
+      await recordTickOutcome(env.DB as unknown as TickReportDb, outcome);
     } finally {
       // Story Jobs 的模型请求由 DO alarm 独立持有；cron 只捡“还没开始”的 queued 行。
       // 即使主动消息原 scheduled 这一分钟自己报错，也不能把 Story 的独立任务一起饿死。
