@@ -3,16 +3,17 @@ import Modal from '../os/Modal';
 import ConfirmDialog from '../os/ConfirmDialog';
 import { ActiveMsg2GlobalConfig, RealtimeConfig } from '../../types';
 import {
-  ActiveMsgClient, ActiveMsg2PushStatus, fetchWorkerDiagnostics, readAmsgFailKind,
+  ActiveMsgClient, ActiveMsg2PushStatus, fetchWorkerDiagnostics, fetchWorkerTickReport, readAmsgFailKind,
   type AmsgCronTriggerState,
 } from '../../utils/activeMsgClient';
 import {
-  AmsgDiagnosticLevel, AmsgDiagnosticsProbe,
+  AmsgDiagnosticLevel, AmsgDiagnosticsProbe, type AmsgTickReportResult,
   buildAmsgDiagnosticRows, summarizeAmsgDiagnostics,
   INSTANT_CHAT_BLOCKER_HINTS, resolveInstantChatBlocker,
   type InstantChatGateInput,
 } from '../../utils/amsgDiagnostics';
 import { ActiveMsgStore, maskActiveMsgUserId } from '../../utils/activeMsgStore';
+import { formatTaskTime } from '../../utils/amsg2Tasks';
 import { cancelAllRemoteAmsgTasks, isWorkerUrlCleared, wipeAmsgCloudData } from '../../utils/amsgStateSync';
 import {
   buildCloudflareDashboardUrl,
