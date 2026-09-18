@@ -365,13 +365,23 @@ const prepareStoryImageHandoffFromPlan = (
   const tool = spec.tools.find(item => item.exposedName === plan.tool);
   if (!tool) return { state: 'failed', exposedTool: plan.tool, error: '配图规划器选择的生图工具已不可用' };
 
-  const composed = composeStoryImagePromptArguments({
-    args: plan.arguments,
-    parameters: tool.parameters,
-    layers: spec.promptLayers,
-    engineId: tool.engineId,
-    toolName: tool.toolName,
-  });
+  let composed;
+  try {
+    composed = composeStoryImagePromptArguments({
+      args: plan.arguments,
+      parameters: tool.parameters,
+      layers: spec.promptLayers,
+      engineId: tool.engineId,
+      toolName: tool.toolName,
+    });
+  } catch (error) {
+    return {
+      state: 'failed',
+      exposedTool: tool.exposedName,
+      toolName: tool.toolName,
+      error: String((error as Error)?.message || error).slice(0, 500),
+    };
+  }
 
   return {
     state: 'submitted',
