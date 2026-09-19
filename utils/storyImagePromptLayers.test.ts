@@ -23,6 +23,7 @@ describe('story image prompt layers', () => {
             'story_user_dynamic_prompt',
         ]));
         expect(params.properties.prompt.description).toContain('客户端会在执行前');
+        expect(params.properties).not.toHaveProperty('character_prompts');
     });
 
     it('role-only image includes role fixed prompt but excludes user fixed prompt', () => {
@@ -95,12 +96,13 @@ describe('story image prompt layers', () => {
                 story_include_user: true,
                 story_character_dynamic_prompt: 'left side, gripping the door',
                 story_user_dynamic_prompt: 'right side, leaning closer',
+                character_prompts: ['planner must not own this'],
             },
         });
 
         expect(result.arguments.prompt).toBe(
             'narrow cell, medium shot, two people facing each other, cinematic anime, '
-            + 'exactly two people, two distinct people, single scene, asymmetric composition',
+            + 'exactly two people, two distinct people, single scene',
         );
         expect(result.arguments.character_prompts).toEqual([
             'black hair, green eyes only, left side, gripping the door',
