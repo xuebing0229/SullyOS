@@ -307,6 +307,12 @@ describe('Live2D 模型导入解析', () => {
     const vtube = JSON.stringify({
       FileReferences: { Model: 'Skylar.model3.json', IdleAnimation: '循环动画.motion3.json' },
       SavedModelPosition: { Position: { x: 40, y: -30 }, Scale: { x: 1.25, y: 1.25 } },
+      ArtMeshDetails: {
+        ArtMeshMultiplyAndScreenColors: [
+          { ID: 'ArtMeshHair', Value: '8040ffff|102030ff' },
+          { ID: 'IgnoredBrokenColor', Value: 'not-a-vts-color' },
+        ],
+      },
       Hotkeys: [
         { Name: 'A爱心眼', Action: 'ToggleExpression', File: 'A爱心眼.exp3.json', IsActive: true, Triggers: { Trigger1: 'F3' } },
         { Name: '', Action: 'RemoveAllExpressions', File: '', IsActive: true, Triggers: { Trigger1: 'Alt', Trigger2: 'Q' } },
@@ -332,6 +338,11 @@ describe('Live2D 模型导入解析', () => {
     expect(result.actions.find(action => action.name === 'Mystery')?.permission).toBe('ai');
     expect(result.actions.find(action => action.kind === 'motion')).toMatchObject({ group: 'Idle', source: 'vtube', permission: 'manual' });
     expect(result.framing).toEqual({ scale: 1.25, offsetX: 0.2, offsetY: 0.15 });
+    expect(result.artMeshColors).toEqual([{
+      id: 'ArtMeshHair',
+      multiply: [128 / 255, 64 / 255, 1, 1],
+      screen: [16 / 255, 32 / 255, 48 / 255, 1],
+    }]);
   });
 
   it('AI 调度只能命中白名单，显式请求被禁动作也会被忽略', () => {
