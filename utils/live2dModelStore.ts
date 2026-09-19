@@ -8,6 +8,7 @@ export type Live2DAvatarConfig = Extract<NonNullable<CharacterProfile['videoAvat
 export type Live2DAction = Live2DAvatarConfig['actions'][number];
 export type Live2DActionPermission = Live2DAction['permission'];
 export type Live2DActionParameterValue = NonNullable<Live2DAction['parameterValues']>[number];
+export type Live2DArtMeshColor = NonNullable<Live2DAvatarConfig['artMeshColors']>[number];
 
 export interface Live2DMissingFileDetail {
   /** Reference exactly as written in model3/vtube JSON. */
@@ -148,6 +149,13 @@ type VTubeJson = {
     Position?: { x?: number; y?: number };
     Scale?: { x?: number; y?: number };
   };
+  ArtMeshDetails?: {
+    ArtMeshMultiplyAndScreenColors?: Array<{
+      ID?: string;
+      /** VTS stores multiply|screen as RRGGBBAA hex strings. */
+      Value?: string;
+    }>;
+  };
   Hotkeys?: Array<{
     Name?: string;
     Action?: string;
@@ -156,6 +164,35 @@ type VTubeJson = {
     IsActive?: boolean;
     Triggers?: { Trigger1?: string; Trigger2?: string; Trigger3?: string };
   }>;
+};
+
+const parseVTubeHexColor = (value: string): [number, number, number, number] | null => {
+  const hex = value.trim().replace(/^#/, '');
+  if (!/^[0-9a-f]{6}(?:[0-9a-f]{2})?$/i.test(hex)) return null;
+  const rgba = hex.length === 6 ? `${hex}ff` : hex;
+  return [
+    Number.parseInt(rgba.slice(0, 2), 16) / 255,
+    Number.parseInt(rgba.slice(2, 4), 16) / 255,
+    Number.parseInt(rgba.slice(4, 6), 16) / 255,
+    Number.parseInt(rgba.slice(6, 8), 16) / 255,
+  ];
+};
+
+const parseVTubeArtMeshColors = (vtube?: VTubeJson): Live2DArtMeshColor[] => {
+  const colors = new Map<string, Live2DArtMeshColor>();
+  for (const item of vtube?.ArtMeshDetails?.ArtMeshMultiplyAndScreenColors || []) {
+    const id = item.ID?.trim();
+    const value = item.Value?.trim();
+    if (!id || !value) continue;
+    const [multiplyText, screenText] = value.split('|');
+    if (!multiplyText || !screenText) continue;
+    const multiply = parseVTubeHexColor(multiplyText);
+    const screen = parseVTubeHexColor(screenText);
+    if (!multiply || !screen) continue;
+    // Keep VTS' last value when an older settings file contains duplicate IDs.
+    colors.set(id, { id, multiply, screen });
+  }
+  return [...colors.values()];
 };
 
 type PackageEntry = { path: string; blob: Blob };
@@ -169,6 +206,7 @@ type ParsedPackage = {
   actions: Live2DAction[];
   lipSyncParameterIds: string[];
   texturePaths: string[];
+  artMeshColors: Live2DArtMeshColor[];
   framing?: Live2DAvatarConfig['framing'];
 };
 
@@ -1001,6 +1039,7 @@ const parsePackage = async (entries: PackageEntry[]): Promise<ParsedPackage> => 
     actions,
     lipSyncParameterIds: lipSyncParameterIds.length ? [...new Set(lipSyncParameterIds)] : ['ParamMouthOpenY'],
     texturePaths: [...new Set(refs.Textures.map(texture => resolveModelReference(modelPath, texture)))],
+    artMeshColors: parseVTubeArtMeshColors(vtube),
     ...(vtube?.SavedModelPosition ? {
       framing: {
         scale: clamp(finiteOr(vtube.SavedModelPosition.Scale?.x, 1), 0.5, 6),
@@ -1056,6 +1095,7 @@ const createConfig = async (
     actionPolicyVersion: 2,
     framing: inspected.framing || { scale: 1, offsetX: 0, offsetY: 0 },
     lipSyncParameterIds: inspected.lipSyncParameterIds,
+    ...(inspected.artMeshColors.length ? { artMeshColors: inspected.artMeshColors } : {}),
     actions: inspected.actions,
   };
 };
