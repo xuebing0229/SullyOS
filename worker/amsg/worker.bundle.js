@@ -16178,13 +16178,14 @@ var buildWorkerConfig = (env) => {
     // 门牌整理最长占住这个角色 120 秒，而它恰恰是在一轮对话刚结束时起跑的：用户下一句话
     // 的即时对话任务排在它后面，人就干等着「正在输入…」。同种后台任务之间仍按角色串行
     // ——同一角色两份整理并发落地，就是拿两份旧快照互相盖。
-    serializeBy: (task) => {
-      const charId = typeof task.metadata?.charId === "string" ? task.metadata.charId : null;
-      if (!charId) return null;
-      const kind = readTaskKind(task.metadata);
-      return kind ? `${charId}#${kind}` : charId;
-    }
+    serializeBy: amsgSerializeKey
   };
+};
+var amsgSerializeKey = (task) => {
+  const charId = typeof task.metadata?.charId === "string" ? task.metadata.charId : null;
+  if (!charId) return null;
+  const kind = readTaskKind(task.metadata);
+  return kind ? `${charId}#${kind}` : charId;
 };
 var REQUIRED_ENV = [
   {
@@ -16249,7 +16250,6 @@ var jsonWithCors = (status, body) => new Response(JSON.stringify(body), {
   status,
   headers: { "Content-Type": "application/json; charset=utf-8", ...CORS_HEADERS }
 });
-var TICK_STALL_MINUTES = 5;
 var classifySchemaProbeError = (error) => {
   const message = error instanceof Error ? error.message : String(error ?? "");
   const name = error instanceof Error ? error.name : "";
@@ -16311,6 +16311,13 @@ var inspectStorage = async (env, probe) => {
            FROM scheduled_messages WHERE status = 'pending'`
     ).bind(nowIso, nowIso).first();
     const pushRow = present.has("push_subscriptions") ? await db.prepare("SELECT COUNT(*) AS n, MAX(updated_at) AS updatedAt FROM push_subscriptions").first() : null;
+    const overdue = stats?.overdue ? await readOverdueTasks(db, {
+      masterKey: env.AMSG_MASTER_KEY?.trim() || void 0,
+      serializeKeyOf: amsgSerializeKey
+    }).catch((error) => {
+      console.warn("[amsg:debug] \u8FC7\u671F\u4EFB\u52A1\u7684\u7EC6\u8D26\u8BFB\u4E0D\u4E86\uFF0C\u5B9A\u65F6\u4EFB\u52A1\u4E00\u9879\u9000\u56DE\u53EA\u770B\u665A\u4E86\u591A\u4E45", error);
+      return null;
+    }) : null;
     return {
       reachable: true,
       schemaReady,
@@ -16324,7 +16331,11 @@ var inspectStorage = async (env, probe) => {
       pushDelivery: await inspectPushDelivery(db, pushRow?.updatedAt ?? null),
       pendingTasks: stats?.pending ?? 0,
       overdueTasks: stats?.overdue ?? 0,
-      oldestOverdueMinutes: stats?.oldest ? Math.floor((Date.now() - Date.parse(stats.oldest)) / 6e4) : null
+      oldestOverdueMinutes: stats?.oldest ? Math.floor((Date.now() - Date.parse(stats.oldest)) / 6e4) : null,
+      // 过期任务里真卡住的、在失败重试的各几条，以及合起来的结论。null = 这次没判出来。
+      stuckTasks: overdue ? overdue.tasks.filter((task) => task.stuck).length : null,
+      retryingTasks: overdue ? overdue.tasks.filter((task) => task.lastError !== null).length : null,
+      overdueVerdict: overdue?.verdict ?? null
     };
   } catch (error) {
     return { reachable: false, error: error?.name || "QueryFailed" };
@@ -16333,8 +16344,9 @@ var inspectStorage = async (env, probe) => {
 var judgeTick = (storage) => {
   if (!storage.reachable || !("pendingTasks" in storage)) return "unknown";
   if (!storage.pendingTasks) return "idle";
+  if (storage.overdueVerdict) return storage.overdueVerdict;
   const overdueMinutes = storage.oldestOverdueMinutes;
-  if (overdueMinutes === null || overdueMinutes < TICK_STALL_MINUTES) return "healthy";
+  if (overdueMinutes === null || overdueMinutes * 6e4 < TICK_STALL_MS) return "healthy";
   return "stalled";
 };
 var INSTANT_TICK_UUID_KEY = "taskUuid";
