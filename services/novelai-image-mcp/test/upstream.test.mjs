@@ -103,6 +103,60 @@ test("custom model mapping and payload overrides are applied", () => {
   assert.equal(result.payload.parameters.custom_flag, true);
 });
 
+test("native character prompts populate V4 character captions instead of base prompt text", () => {
+  const result = buildUpstreamRequest({
+    prompt: "2boys, prison corridor, medium shot",
+    characterPrompts: [
+      "black hair, green eyes only, left side",
+      "silver hair, heterochromia, right side"
+    ],
+    undesiredContent: "duplicate characters, mirrored duplicate",
+    config: { ...baseConfig, upstreamProfile: "official" }
+  });
+
+  assert.equal(result.payload.input, "2boys, prison corridor, medium shot");
+  assert.equal(
+    result.payload.parameters.v4_prompt.caption.base_caption,
+    "2boys, prison corridor, medium shot"
+  );
+  assert.deepEqual(
+    result.payload.parameters.v4_prompt.caption.char_captions,
+    [
+      {
+        char_caption: "black hair, green eyes only, left side",
+        centers: [{ x: 0.5, y: 0.5 }]
+      },
+      {
+        char_caption: "silver hair, heterochromia, right side",
+        centers: [{ x: 0.5, y: 0.5 }]
+      }
+    ]
+  );
+  assert.equal(result.payload.parameters.v4_prompt.use_coords, false);
+  assert.equal(result.payload.parameters.v4_prompt.use_order, true);
+  assert.equal(
+    result.payload.parameters.v4_negative_prompt.caption.char_captions.length,
+    2
+  );
+  assert.match(result.negativePrompt, /duplicate characters/);
+  assert.equal(result.payload.parameters.v4_prompt.caption.base_caption.includes("|"), false);
+});
+
+test("english-only policy also validates native character prompts", () => {
+  assert.throws(
+    () => buildUpstreamRequest({
+      prompt: "two people",
+      characterPrompts: ["一个男孩", "silver hair"],
+      config: {
+        ...baseConfig,
+        upstreamProfile: "official",
+        promptLanguagePolicy: "english-only"
+      }
+    }),
+    /English-only/
+  );
+});
+
 test("NovelAI-style JSON base64 is parsed", async () => {
   const response = new Response(
     JSON.stringify({
