@@ -79,7 +79,7 @@ describe('story image prompt layers', () => {
         expect(result.arguments.use_character_reference).toBe(false);
     });
 
-    it('NovelAI two-person image scopes fixed and dynamic prompts into separate character segments', () => {
+    it('NovelAI two-person image uses native character prompts instead of pipe-separated base text', () => {
         const result = composeStoryImagePromptArguments({
             engineId: 'novelai',
             toolName: 'novelai_generate_image',
@@ -99,10 +99,16 @@ describe('story image prompt layers', () => {
         });
 
         expect(result.arguments.prompt).toBe(
-            'narrow cell, medium shot, two people facing each other, cinematic anime'
-            + ' | black hair, green eyes only, left side, gripping the door'
-            + ' | silver hair, heterochromia, right side, leaning closer',
+            'narrow cell, medium shot, two people facing each other, cinematic anime, '
+            + 'exactly two people, two distinct people, single scene, asymmetric composition',
         );
+        expect(result.arguments.character_prompts).toEqual([
+            'black hair, green eyes only, left side, gripping the door',
+            'silver hair, heterochromia, right side, leaning closer',
+        ]);
+        expect(result.arguments.prompt).not.toContain(' | ');
+        expect(result.arguments.negative_prompt).toContain('duplicate characters');
+        expect(result.arguments.negative_prompt).toContain('mirrored duplicate');
     });
 
     it('pure scene keeps style and excludes both identity prompts', () => {
