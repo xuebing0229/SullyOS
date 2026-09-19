@@ -59,9 +59,18 @@ export const augmentStoryImagePlanningParameters = (
     const output = clone(parameters || { type: 'object', properties: {} });
     if (!output.properties || typeof output.properties !== 'object') output.properties = {};
 
-    // Story Theater owns the final identity channels. Even when the underlying
-    // NovelAI MCP exposes character_prompts, the planner must not fill it directly.
-    delete output.properties.character_prompts;
+    // Story Theater owns the final identity channels. Keep character_prompts in
+    // the schema only as a capability signal for execution; the planner is told not
+    // to own it, and composeStoryImagePromptArguments always discards planner values.
+    if (output.properties.character_prompts
+        && typeof output.properties.character_prompts === 'object'
+        && !Array.isArray(output.properties.character_prompts)) {
+        output.properties.character_prompts = {
+            ...output.properties.character_prompts,
+            readOnly: true,
+            description: '剧情剧场执行层专用能力标记：不要填写此字段。客户端会根据实际入镜的角色/用户固定提示词自动生成 NovelAI 原生 character_prompts。',
+        };
+    }
 
     output.properties.story_include_character = {
         type: 'boolean',
@@ -165,18 +174,37 @@ export const composeStoryImagePromptArguments = (input: {
     const userPrompt = joinPromptFragments(fixedUser, userDynamic);
 
     if (input.engineId === 'novelai' && includeCharacter && includeUser) {
-        // NovelAI V4+ has a real multi-character channel. Do not emulate it with
-        // pipe-separated text inside base_caption: that can be interpreted as a
-        // repeated/mirrored composition instead of two isolated identities.
+        const nativeCharacterPromptsSupported = Boolean(
+            input.parameters?.properties
+            && typeof input.parameters.properties === 'object'
+            && Object.prototype.hasOwnProperty.call(input.parameters.properties, 'character_prompts'),
+        );
+
         source[promptKey] = joinPromptFragments(
             scenePrompt,
             fixedStyle,
             'exactly two people, two distinct people, single scene',
         );
-        source.character_prompts = [
-            characterPrompt || 'person',
-            userPrompt || 'person',
-        ];
+
+        if (nativeCharacterPromptsSupported) {
+            // Correct V4+ path: identities go to v4_prompt.caption.char_captions.
+            source.character_prompts = [
+                characterPrompt || 'person',
+                userPrompt || 'person',
+            ];
+        } else {
+            // A deployed MCP can lag behind the App. Never send an unknown strict
+            // field to the old server, and never fall back to the old pipe trick
+            // that caused duplicated/mirrored people. Keep a single base prompt
+            // with explicit identity labels until tool discovery sees the new field.
+            source[promptKey] = joinPromptFragments(
+                source[promptKey],
+                characterPrompt ? `first person: ${characterPrompt}` : 'first person',
+                userPrompt ? `second person: ${userPrompt}` : 'second person',
+            );
+            source.use_character_reference = false;
+            source.use_user_reference = false;
+        }
     } else if (input.engineId === 'gpt-image' && includeCharacter && includeUser) {
         source[promptKey] = joinPromptFragments(
             scenePrompt,
