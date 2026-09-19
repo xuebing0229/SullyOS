@@ -537,6 +537,23 @@ describe('story cloud image handoff', () => {
     expect(fallbackBody.tools).toBeUndefined();
   });
 
+  it('does not retry text compatibility after a planner input safety rejection', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response(JSON.stringify({
+      error: { code: 1026, message: 'input new_sensitive (1026)' },
+    }), { status: 400, headers: { 'Content-Type': 'application/json' } }));
+
+    const result = await runStoryImageHandoff(
+      plannerSpec(),
+      'storyreq_sensitive',
+      '最新正文。',
+    );
+
+    expect(result.state).toBe('failed');
+    expect(result.error).toContain('配图规划器输入被上游内容审核拦截');
+    expect(result.error).toContain('input new_sensitive (1026)');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it('does not hide auth failures behind a second planner attempt', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response(JSON.stringify({
       error: { message: 'Invalid token' },
