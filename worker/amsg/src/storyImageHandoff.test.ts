@@ -537,6 +537,45 @@ describe('story cloud image handoff', () => {
     expect(fallbackBody.tools).toBeUndefined();
   });
 
+  it('strips duplicated legacy history and fixed negative prompt before cloud planning', async () => {
+    const legacy = plannerSpec();
+    legacy.planner = {
+      ...legacy.planner!,
+      systemPrompt: [
+        '你负责剧情配图规划。',
+        '',
+        '最近剧情：',
+        '旧历史一：这里不该再次送进云端规划器。',
+        '',
+        '画面要求：只画最新一轮。',
+        '固定画风（客户端自动合并，禁止复述进 prompt）：cinematic anime',
+        '固定负面词（客户端自动合并，禁止复述进 prompt）：bad anatomy, text',
+      ].join('\n'),
+    };
+
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        choices: [{ message: { content: 'image_novelai({"prompt":"fresh scene"})' } }],
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        job: { id: 'remote_sanitized_context', status: 'running' },
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+
+    const result = await runStoryImageHandoff(
+      legacy,
+      'storyreq_sanitized_context',
+      '最新正文唯一依据。',
+    );
+
+    expect(result.state).toBe('submitted');
+    const plannerBody = JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body));
+    const serializedMessages = JSON.stringify(plannerBody.messages);
+    expect(serializedMessages).toContain('最新正文唯一依据');
+    expect(serializedMessages).toContain('cinematic anime');
+    expect(serializedMessages).not.toContain('旧历史一：这里不该再次送进云端规划器');
+    expect(serializedMessages).not.toContain('bad anatomy, text');
+  });
+
   it('does not retry text compatibility after a planner input safety rejection', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response(JSON.stringify({
       error: { code: 1026, message: 'input new_sensitive (1026)' },
