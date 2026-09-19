@@ -2829,6 +2829,15 @@ export interface CharacterProfile {
       }>;
       /** 衣橱中最后一次由用户手动选择的服装动作。 */
       activeWardrobeActionId?: string;
+      /**
+       * VTube Studio 模型级 ArtMesh 默认调色。它属于整个模型，而不是某个衣橱/造型动作，
+       * 因此切换表情、捏脸或服装造型时都应持续生效。
+       */
+      artMeshColors?: Array<{
+          id: string;
+          multiply: [number, number, number, number];
+          screen: [number, number, number, number];
+      }>;
   };
   /** Inactive whole-model outfits. Switching swaps one entry with videoAvatar; only matching formats are shown. */
   videoAvatarWardrobe?: Array<NonNullable<CharacterProfile['videoAvatar']>>;
