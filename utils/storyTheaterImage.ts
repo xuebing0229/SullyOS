@@ -444,7 +444,12 @@ export const buildStoryCloudImageHandoffSpec = async (input: {
                 userProfile: input.userProfile,
                 userName: input.userName || input.userProfile.name || '用户',
                 messages: input.messages || [],
-            }, toolNames),
+            }, toolNames, {
+                // 云端 Worker 会在真正调用规划器时追加“刚完成的最新一轮正文”。
+                // 这里不再重复塞最近 8 层，也不把最终由客户端硬合并的负面词送进规划器审核。
+                includeRecentHistory: false,
+                includeNegativePrompt: false,
+            }),
             tools: imageTools.tools.map(tool => JSON.parse(JSON.stringify(tool))) as OpenAIMcpTool[],
         }
         : undefined;
@@ -574,14 +579,25 @@ const buildPlannerRepairBody = (
     return body;
 };
 
-const buildPlannerInstruction = (input: GenerateStoryImageInput, toolNames: string[]): string => {
+const buildPlannerInstruction = (
+    input: GenerateStoryImageInput,
+    toolNames: string[],
+    options: {
+        includeRecentHistory?: boolean;
+        includeNegativePrompt?: boolean;
+    } = {},
+): string => {
     const config = input.entry.imageGeneration;
     const actorAnchors = input.actors.map(actor => {
         const referenceState = actor.novelAiReference?.enabled ? '（有角色精密参考图可供 AI 按需选择）' : '';
         return `${actor.name}${referenceState}：${compact(config?.characterAnchors?.[actor.id]) || '根据正文与角色设定保持外貌一致'}`;
     }).join('\n');
-    const transcript = input.messages.slice(-8).map(message => `${message.role === 'user' ? input.userName : '剧场正文'}：${compact(message.content).slice(0, 1800)}`).join('\n\n');
-    return `你正在后台为剧情剧场生成一张本轮插图，不是在回复聊天。必须从本轮提供的生图工具中选择最合适的一项并调用，不要只输出文字，也不要同时调用多个生图工具。\n\n这里故意复用主聊天现有的生图决策链：当前可选工具是 ${toolNames.join('、')}。如果出现多个“生图预设”工具，必须结合每个工具描述里的“用途”和当前剧情画面自行选择；不要因为在剧情剧场就固定到某个模型/预设。story_include_character / story_include_user 必须严格表示你选中的具体画面里主角色本人/用户本人是否真实入镜；两个 dynamic prompt 只写各自在这一帧的动作、表情、姿势、位置和临时状态。工具 schema 若提供 use_character_reference / use_user_reference / use_vibe_reference 等开关，也由你根据本轮画面自主判断是否使用，不能因为参考图存在就强制带上。\n\n剧情：${input.entry.title}\n前提：${compact(input.entry.premise) || '沿用正文'}\n当前身份 ${input.userName}${input.userProfile.novelAiReference?.enabled ? '（用户也有精密参考图可按需选择）' : ''}：${compact(config?.userAnchor) || '根据正文保持一致'}\n出场角色：\n${actorAnchors}\n\n最近剧情：\n${transcript}\n\n画面要求：只画最新一轮最有表现力的具体瞬间；保持人物数量、身份、动作、服装、地点与情绪一致；构图完整、有叙事感；不要文字、对白框、水印、Logo 或 UI。工具 arguments 里的 prompt 只负责本轮可变场景、镜头、构图、光线、整体互动与环境，禁止复述角色固定外貌、用户固定外貌、固定画风或固定负面词；这些固定层会由客户端根据实际入镜者确定性合并。${config?.stylePrompt ? `\n固定画风（客户端自动合并，禁止复述进 prompt）：${config.stylePrompt}` : ''}${config?.negativePrompt ? `\n固定负面词（客户端自动合并，禁止复述进 prompt）：${config.negativePrompt}` : ''}\n目标画幅：${config?.width || 1216}×${config?.height || 832}。剧情剧场只补充这些场景要求，其余模型/预设/参考图策略遵循主聊天现有生图工具与 schema。请直接调用一个工具。`;
+    const transcript = options.includeRecentHistory === false
+        ? '（由 Worker 在实际调用时附加刚完成的最新一轮正文）'
+        : input.messages.slice(-8)
+            .map(message => `${message.role === 'user' ? input.userName : '剧场正文'}：${compact(message.content).slice(0, 1800)}`)
+            .join('\n\n');
+    return `你正在后台为剧情剧场生成一张本轮插图，不是在回复聊天。必须从本轮提供的生图工具中选择最合适的一项并调用，不要只输出文字，也不要同时调用多个生图工具。\n\n这里故意复用主聊天现有的生图决策链：当前可选工具是 ${toolNames.join('、')}。如果出现多个“生图预设”工具，必须结合每个工具描述里的“用途”和当前剧情画面自行选择；不要因为在剧情剧场就固定到某个模型/预设。story_include_character / story_include_user 必须严格表示你选中的具体画面里主角色本人/用户本人是否真实入镜；两个 dynamic prompt 只写各自在这一帧的动作、表情、姿势、位置和临时状态。工具 schema 若提供 use_character_reference / use_user_reference / use_vibe_reference 等开关，也由你根据本轮画面自主判断是否使用，不能因为参考图存在就强制带上。\n\n剧情：${input.entry.title}\n前提：${compact(input.entry.premise) || '沿用正文'}\n当前身份 ${input.userName}${input.userProfile.novelAiReference?.enabled ? '（用户也有精密参考图可按需选择）' : ''}：${compact(config?.userAnchor) || '根据正文保持一致'}\n出场角色：\n${actorAnchors}\n\n最近剧情：\n${transcript}\n\n画面要求：只画最新一轮最有表现力的具体瞬间；保持人物数量、身份、动作、服装、地点与情绪一致；构图完整、有叙事感；不要文字、对白框、水印、Logo 或 UI。工具 arguments 里的 prompt 只负责本轮可变场景、镜头、构图、光线、整体互动与环境，禁止复述角色固定外貌、用户固定外貌、固定画风或固定负面词；这些固定层会由客户端根据实际入镜者确定性合并。${config?.stylePrompt ? `\n固定画风（客户端自动合并，禁止复述进 prompt）：${config.stylePrompt}` : ''}${options.includeNegativePrompt === false ? '' : (config?.negativePrompt ? `\n固定负面词（客户端自动合并，禁止复述进 prompt）：${config.negativePrompt}` : '')}\n目标画幅：${config?.width || 1216}×${config?.height || 832}。剧情剧场只补充这些场景要求，其余模型/预设/参考图策略遵循主聊天现有生图工具与 schema。请直接调用一个工具。`;
 };
 
 export async function generateStoryTheaterImage(input: GenerateStoryImageInput): Promise<StoryTheaterImageGenerationResult> {
