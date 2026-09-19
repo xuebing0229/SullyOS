@@ -59,6 +59,10 @@ export const augmentStoryImagePlanningParameters = (
     const output = clone(parameters || { type: 'object', properties: {} });
     if (!output.properties || typeof output.properties !== 'object') output.properties = {};
 
+    // Story Theater owns the final identity channels. Even when the underlying
+    // NovelAI MCP exposes character_prompts, the planner must not fill it directly.
+    delete output.properties.character_prompts;
+
     output.properties.story_include_character = {
         type: 'boolean',
         description: '剧情剧场客户端专用，不会发给生图服务。本轮最终画面里主角色本人是否真实入镜。只根据选中的具体画面判断；不入镜必须填 false。',
@@ -140,6 +144,9 @@ export const composeStoryImagePromptArguments = (input: {
     delete source.story_include_user;
     delete source.story_character_dynamic_prompt;
     delete source.story_user_dynamic_prompt;
+    // Never trust a planner-supplied native identity channel in Story Theater.
+    // The client reconstructs it only from the two fixed prompt boxes + dynamics.
+    delete source.character_prompts;
 
     const layers = input.layers || {};
     const fixedCharacter = compact(layers.character);
@@ -164,7 +171,7 @@ export const composeStoryImagePromptArguments = (input: {
         source[promptKey] = joinPromptFragments(
             scenePrompt,
             fixedStyle,
-            'exactly two people, two distinct people, single scene, asymmetric composition',
+            'exactly two people, two distinct people, single scene',
         );
         source.character_prompts = [
             characterPrompt || 'person',
