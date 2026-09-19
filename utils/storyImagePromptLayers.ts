@@ -193,7 +193,11 @@ export const composeStoryImagePromptArguments = (input: {
         );
     }
 
-    const negativeKey = resolveFieldKey(input.parameters, source, NEGATIVE_PROMPT_KEYS);
+    const negativeKey =
+        resolveFieldKey(input.parameters, source, NEGATIVE_PROMPT_KEYS)
+        || (input.engineId === 'novelai' && input.toolName === 'novelai_generate_image'
+            ? 'undesired_content'
+            : undefined);
     const novelAiTwoPersonNegative = input.engineId === 'novelai' && includeCharacter && includeUser
         ? 'duplicate characters, cloned characters, mirrored duplicate, multiple views'
         : '';
