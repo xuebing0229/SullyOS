@@ -166,7 +166,10 @@ describe('story cloud image handoff', () => {
     const layered = spec({
       parameters: {
         type: 'object',
-        properties: { prompt: { type: 'string' } },
+        properties: {
+          prompt: { type: 'string' },
+          character_prompts: { type: 'array', items: { type: 'string' } },
+        },
       },
     });
     layered.promptLayers = {
@@ -202,6 +205,43 @@ describe('story cloud image handoff', () => {
     ]);
     expect(result.arguments?.prompt).not.toContain(' | ');
     // Native multi-character prompts intentionally disable generation-wide Precise Reference.
+    expect(result.arguments).not.toHaveProperty('reference_id');
+    expect(result.arguments).not.toHaveProperty('user_reference_id');
+  });
+
+  it('uses a non-pipe compatibility prompt when the deployed NovelAI MCP schema is still old', () => {
+    const layered = spec({
+      parameters: {
+        type: 'object',
+        properties: { prompt: { type: 'string' } },
+      },
+    });
+    layered.promptLayers = {
+      character: 'black hair, green eyes only',
+      user: 'silver hair, heterochromia',
+      style: 'cinematic anime',
+    };
+
+    const result = prepareStoryImageHandoff(
+      layered,
+      'storyreq_old_mcp',
+      planText('image_novelai', {
+        prompt: 'narrow cell, medium shot',
+        story_include_character: true,
+        story_include_user: true,
+        story_character_dynamic_prompt: 'left side',
+        story_user_dynamic_prompt: 'right side',
+        use_character_reference: true,
+        use_user_reference: true,
+        use_vibe_reference: false,
+      }),
+    );
+
+    expect(result.state).toBe('submitted');
+    expect(result.arguments).not.toHaveProperty('character_prompts');
+    expect(result.arguments?.prompt).toContain('first person: black hair, green eyes only, left side');
+    expect(result.arguments?.prompt).toContain('second person: silver hair, heterochromia, right side');
+    expect(result.arguments?.prompt).not.toContain(' | ');
     expect(result.arguments).not.toHaveProperty('reference_id');
     expect(result.arguments).not.toHaveProperty('user_reference_id');
   });
