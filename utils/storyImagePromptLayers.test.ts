@@ -13,6 +13,19 @@ const params = augmentStoryImagePlanningParameters({
     required: ['prompt'],
 });
 
+const nativeNovelParams = augmentStoryImagePlanningParameters({
+    type: 'object',
+    properties: {
+        prompt: { type: 'string' },
+        negative_prompt: { type: 'string' },
+        character_prompts: {
+            type: 'array',
+            items: { type: 'string' },
+        },
+    },
+    required: ['prompt'],
+});
+
 describe('story image prompt layers', () => {
     it('requires explicit character/user presence and dynamic fields in the planning schema', () => {
         expect(params.required).toEqual(expect.arrayContaining([
@@ -23,7 +36,8 @@ describe('story image prompt layers', () => {
             'story_user_dynamic_prompt',
         ]));
         expect(params.properties.prompt.description).toContain('客户端会在执行前');
-        expect(params.properties).not.toHaveProperty('character_prompts');
+        expect(nativeNovelParams.properties.character_prompts.readOnly).toBe(true);
+        expect(String(nativeNovelParams.properties.character_prompts.description)).toContain('不要填写此字段');
     });
 
     it('role-only image includes role fixed prompt but excludes user fixed prompt', () => {
@@ -84,7 +98,7 @@ describe('story image prompt layers', () => {
         const result = composeStoryImagePromptArguments({
             engineId: 'novelai',
             toolName: 'novelai_generate_image',
-            parameters: params,
+            parameters: nativeNovelParams,
             layers: {
                 character: 'black hair, green eyes only',
                 user: 'silver hair, heterochromia',
@@ -110,6 +124,34 @@ describe('story image prompt layers', () => {
         ]);
         expect(result.arguments.prompt).not.toContain(' | ');
         expect(result.arguments.negative_prompt).toContain('duplicate characters');
+        expect(result.arguments.negative_prompt).toContain('mirrored duplicate');
+    });
+
+    it('NovelAI two-person image avoids pipe syntax when the deployed MCP has no native field yet', () => {
+        const result = composeStoryImagePromptArguments({
+            engineId: 'novelai',
+            toolName: 'novelai_generate_image',
+            parameters: params,
+            layers: {
+                character: 'black hair, green eyes only',
+                user: 'silver hair, heterochromia',
+                style: 'cinematic anime',
+            },
+            args: {
+                prompt: 'narrow cell, medium shot',
+                story_include_character: true,
+                story_include_user: true,
+                story_character_dynamic_prompt: 'left side',
+                story_user_dynamic_prompt: 'right side',
+            },
+        });
+
+        expect(result.arguments).not.toHaveProperty('character_prompts');
+        expect(result.arguments.prompt).toContain('first person: black hair, green eyes only, left side');
+        expect(result.arguments.prompt).toContain('second person: silver hair, heterochromia, right side');
+        expect(result.arguments.prompt).not.toContain(' | ');
+        expect(result.arguments.use_character_reference).toBe(false);
+        expect(result.arguments.use_user_reference).toBe(false);
         expect(result.arguments.negative_prompt).toContain('mirrored duplicate');
     });
 
