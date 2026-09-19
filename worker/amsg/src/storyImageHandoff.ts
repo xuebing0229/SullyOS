@@ -263,6 +263,19 @@ const fetchJson = async (
 const remoteError = (body: any, status: number): string =>
   String(body?.error?.message || body?.error || body?.message || `HTTP ${status}`).slice(0, 500);
 
+const isPlannerInputSafetyRejection = (body: any): boolean => {
+  const code = String(body?.error?.code ?? body?.code ?? '').trim();
+  if (code === '1026') return true;
+  try {
+    return JSON.stringify(body || {}).toLowerCase().includes('new_sensitive');
+  } catch {
+    return false;
+  }
+};
+
+const plannerInputSafetyError = (body: any, status: number): Error =>
+  new Error(`配图规划器输入被上游内容审核拦截：${remoteError(body, status)}`);
+
 const applyPreset = async (tool: StoryCloudImageToolHandoff): Promise<void> => {
   if (!tool.preset) return;
   const configUrl = `${tool.controlBaseUrl}/config`;
@@ -621,6 +634,9 @@ const runSeparatePlanner = async (
       throw new Error(`配图规划器纠错重试失败：${String((error as Error)?.message || error).slice(0, 500)}`);
     }
     if (!repair.response.ok) {
+      if (isPlannerInputSafetyRejection(repair.body)) {
+        throw plannerInputSafetyError(repair.body, repair.response.status);
+      }
       throw new Error(`配图规划器纠错重试失败：${remoteError(repair.body, repair.response.status)}`);
     }
     const repaired = extractPlannerSelection(repair.body, allowedNames, textResolve);
@@ -635,6 +651,11 @@ const runSeparatePlanner = async (
   }
 
   const nativeError = remoteError(native.body, native.response.status);
+  if (isPlannerInputSafetyRejection(native.body)) {
+    // 1026/new_sensitive 是输入内容审核，不是 tools/tool_choice 兼容问题。
+    // 原样改成文字协议再发一次只会重复触发审核，因此直接失败，避免无意义的第二次请求。
+    throw plannerInputSafetyError(native.body, native.response.status);
+  }
   if (![400, 404, 405, 415, 422].includes(native.response.status)) {
     // 不再把鉴权、限流、服务器故障等真实错误吞掉后伪装成“模型没调用工具”。
     throw new Error(`配图规划器请求失败：${nativeError}`);
@@ -660,6 +681,9 @@ const runSeparatePlanner = async (
     }),
   }, 90_000);
   if (!fallback.response.ok) {
+    if (isPlannerInputSafetyRejection(fallback.body)) {
+      throw plannerInputSafetyError(fallback.body, fallback.response.status);
+    }
     throw new Error(`配图规划器兼容重试失败：${remoteError(fallback.body, fallback.response.status)}`);
   }
   const selection = extractPlannerSelection(fallback.body, allowedNames, textResolve);
