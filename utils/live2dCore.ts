@@ -128,6 +128,93 @@ export const bridgeCubism6RenderOrders = (model: unknown): { offscreenCount: num
   return { offscreenCount };
 };
 
+type Live2DArtMeshColorOverride = {
+  id: string;
+  multiply: readonly [number, number, number, number];
+  screen: readonly [number, number, number, number];
+};
+
+export type Live2DArtMeshColorApplyResult = {
+  supported: boolean;
+  applied: number;
+  missingIds: string[];
+};
+
+const cubismIdToString = (value: unknown): string => {
+  if (typeof value === 'string') return value;
+  const resolved = (value as any)?.getString?.() ?? value;
+  if (typeof resolved === 'string') return resolved;
+  if (typeof resolved?.s === 'string') return resolved.s;
+  if (typeof (value as any)?.s === 'string') return (value as any).s;
+  return '';
+};
+
+/**
+ * Apply VTube Studio's model-wide ArtMesh multiply/screen colors without touching
+ * expression/wardrobe parameters. The installed adapter still uses the older
+ * Cubism color API; newer Cubism Framework builds moved the same functionality
+ * behind getOverrideMultiplyAndScreenColor(), so support both shapes.
+ */
+export const applyLive2DVTubeArtMeshColors = (
+  model: unknown,
+  colors: readonly Live2DArtMeshColorOverride[] | undefined,
+): Live2DArtMeshColorApplyResult => {
+  if (!colors?.length) return { supported: true, applied: 0, missingIds: [] };
+
+  const core = (model as any)?.internalModel?.coreModel;
+  const drawableCount = Number(core?.getDrawableCount?.() ?? core?._model?.drawables?.count ?? 0);
+  if (!core || !Number.isFinite(drawableCount) || drawableCount <= 0) {
+    return { supported: false, applied: 0, missingIds: colors.map(item => item.id) };
+  }
+
+  const modern = core.getOverrideMultiplyAndScreenColor?.();
+  const modernSupported = Boolean(
+    modern
+    && typeof modern.setDrawableMultiplyColorByRGBA === 'function'
+    && typeof modern.setDrawableScreenColorByRGBA === 'function'
+    && typeof modern.setDrawableMultiplyColorEnabled === 'function'
+    && typeof modern.setDrawableScreenColorEnabled === 'function'
+  );
+  const legacySupported = (
+    typeof core.setMultiplyColorByRGBA === 'function'
+    && typeof core.setScreenColorByRGBA === 'function'
+    && typeof core.setOverrideFlagForDrawableMultiplyColors === 'function'
+    && typeof core.setOverrideFlagForDrawableScreenColors === 'function'
+  );
+  if (!modernSupported && !legacySupported) {
+    return { supported: false, applied: 0, missingIds: colors.map(item => item.id) };
+  }
+
+  const requested = new Map(colors.map(item => [item.id, item] as const));
+  const appliedIds = new Set<string>();
+  const rawIds = core?._model?.drawables?.ids as unknown[] | undefined;
+
+  for (let index = 0; index < drawableCount; index += 1) {
+    const id = cubismIdToString(core.getDrawableId?.(index)) || cubismIdToString(rawIds?.[index]);
+    const color = requested.get(id);
+    if (!color) continue;
+
+    if (modernSupported) {
+      modern.setDrawableMultiplyColorByRGBA(index, ...color.multiply);
+      modern.setDrawableScreenColorByRGBA(index, ...color.screen);
+      modern.setDrawableMultiplyColorEnabled(index, true);
+      modern.setDrawableScreenColorEnabled(index, true);
+    } else {
+      core.setMultiplyColorByRGBA(index, ...color.multiply);
+      core.setScreenColorByRGBA(index, ...color.screen);
+      core.setOverrideFlagForDrawableMultiplyColors(index, true);
+      core.setOverrideFlagForDrawableScreenColors(index, true);
+    }
+    appliedIds.add(id);
+  }
+
+  return {
+    supported: true,
+    applied: appliedIds.size,
+    missingIds: colors.map(item => item.id).filter(id => !appliedIds.has(id)),
+  };
+};
+
 type CubismMaskCompatibility = {
   highPrecisionMaskEnabled: boolean;
   mocVersion: number | null;
