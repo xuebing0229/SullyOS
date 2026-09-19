@@ -907,12 +907,6 @@ const Live2DAvatarCanvas: React.FC<Live2DAvatarCanvasProps> = ({
         }
         const cubismCoreCompatibility = bridgeCubism6RenderOrders(model);
         const cubismMaskCompatibility = enableCubism5HighPrecisionMasks(model);
-        const artMeshColorResult = applyLive2DVTubeArtMeshColors(model, configRef.current.artMeshColors);
-        if (configRef.current.artMeshColors?.length && (
-          !artMeshColorResult.supported || artMeshColorResult.missingIds.length
-        )) {
-          console.warn('[live2d] VTube Studio ArtMesh colors were only partially applied:', artMeshColorResult);
-        }
         if (disposed || !app) {
           model.destroy({ children: true, texture: true });
           return;
@@ -958,6 +952,19 @@ const Live2DAvatarCanvas: React.FC<Live2DAvatarCanvasProps> = ({
         const core = internal?.coreModel;
         if (!internal || !core || typeof internal.getIdSafe !== 'function') {
           throw new Error('无法取得 Live2D 参数控制器。');
+        }
+
+        // VTS model-wide ArtMesh recoloring is renderer state, not an expression.
+        // Apply it only after the model has been attached to the Pixi stage and the
+        // Cubism internal model/renderer are fully initialized. Some mobile WebGL
+        // paths finish renderer startup lazily on first stage attachment.
+        const artMeshColorResult = applyLive2DVTubeArtMeshColors(model, configRef.current.artMeshColors);
+        host.dataset.live2dVtsArtMeshColors = String(configRef.current.artMeshColors?.length || 0);
+        host.dataset.live2dVtsArtMeshColorsApplied = String(artMeshColorResult.applied);
+        if (configRef.current.artMeshColors?.length && (
+          !artMeshColorResult.supported || artMeshColorResult.missingIds.length
+        )) {
+          console.warn('[live2d] VTube Studio ArtMesh colors were only partially applied:', artMeshColorResult);
         }
         const idCache = new Map<string, unknown>();
         const current: Record<string, number> = {};
@@ -1499,6 +1506,7 @@ const Live2DAvatarCanvas: React.FC<Live2DAvatarCanvasProps> = ({
           assetId: config.assetId,
           offscreenCount: cubismCoreCompatibility.offscreenCount,
           ...cubismMaskCompatibility,
+          artMeshColors: artMeshColorResult,
           ...source.timings,
           cubismMs: Math.round(cubismMs),
           bootTotalMs: Math.round(window.performance.now() - bootStartedAt),
