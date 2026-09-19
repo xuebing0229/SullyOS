@@ -65,6 +65,34 @@ describe('NovelAI reference policy', () => {
         expect(result.selected).toEqual({ character: true, user: true, vibe: false });
     });
 
+    it('disables Precise references for native NovelAI character_prompts', () => {
+        const args = {
+            prompt: 'casino, medium shot, exactly two people',
+            character_prompts: [
+                'silver hair, heterochromia, left side',
+                'black hair, green eyes only, right side',
+            ],
+            use_character_reference: true,
+            use_user_reference: true,
+            use_vibe_reference: false,
+        };
+        expect(isNovelAiMultiCharacterPrompt(args)).toBe(true);
+
+        const result = resolveNovelAiReferenceArguments({
+            args,
+            references: {
+                character: { reference_id: 'actor_slot' },
+                user: { user_reference_id: 'user_slot' },
+            },
+        });
+
+        expect(result.arguments).toEqual({
+            prompt: args.prompt,
+            character_prompts: args.character_prompts,
+        });
+        expect(result.selected).toEqual({ character: false, user: false, vibe: false });
+    });
+
     it('disables Precise references for a real NovelAI multi-character prompt', () => {
         const prompt = '2boys, casino, full scene | boy, silver hair, heterochromia, left side | boy, black hair, green eyes only, right side';
         expect(isNovelAiMultiCharacterPrompt({ prompt })).toBe(true);
