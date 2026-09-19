@@ -158,12 +158,18 @@ export const composeStoryImagePromptArguments = (input: {
     const userPrompt = joinPromptFragments(fixedUser, userDynamic);
 
     if (input.engineId === 'novelai' && includeCharacter && includeUser) {
-        const basePrompt = joinPromptFragments(scenePrompt, fixedStyle);
-        source[promptKey] = [
-            basePrompt,
-            characterPrompt,
-            userPrompt,
-        ].filter(Boolean).join(' | ');
+        // NovelAI V4+ has a real multi-character channel. Do not emulate it with
+        // pipe-separated text inside base_caption: that can be interpreted as a
+        // repeated/mirrored composition instead of two isolated identities.
+        source[promptKey] = joinPromptFragments(
+            scenePrompt,
+            fixedStyle,
+            'exactly two people, two distinct people, single scene, asymmetric composition',
+        );
+        source.character_prompts = [
+            characterPrompt || 'person',
+            userPrompt || 'person',
+        ];
     } else if (input.engineId === 'gpt-image' && includeCharacter && includeUser) {
         source[promptKey] = joinPromptFragments(
             scenePrompt,
@@ -181,12 +187,16 @@ export const composeStoryImagePromptArguments = (input: {
     }
 
     const negativeKey = resolveFieldKey(input.parameters, source, NEGATIVE_PROMPT_KEYS);
-    if (fixedNegative) {
+    const novelAiTwoPersonNegative = input.engineId === 'novelai' && includeCharacter && includeUser
+        ? 'duplicate characters, cloned characters, mirrored duplicate, multiple views'
+        : '';
+    const mergedNegative = joinPromptFragments(fixedNegative, novelAiTwoPersonNegative);
+    if (mergedNegative) {
         if (negativeKey) {
-            source[negativeKey] = joinPromptFragments(source[negativeKey], fixedNegative);
+            source[negativeKey] = joinPromptFragments(source[negativeKey], mergedNegative);
         } else {
-            // 部分引擎没有独立负面字段；仍保留用户固定层，但以明确 avoid 约束并入正向提示。
-            source[promptKey] = joinPromptFragments(source[promptKey], `avoid: ${fixedNegative}`);
+            // 部分引擎没有独立负面字段；仍保留固定层，但以明确 avoid 约束并入正向提示。
+            source[promptKey] = joinPromptFragments(source[promptKey], `avoid: ${mergedNegative}`);
         }
     }
 
