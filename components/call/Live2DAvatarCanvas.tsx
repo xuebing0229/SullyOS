@@ -12,6 +12,7 @@ import {
   splitLive2DLipSyncParameters,
 } from '../../utils/live2dLipSync';
 import {
+  applyLive2DVTubeArtMeshColors,
   bridgeCubism6RenderOrders,
   enableCubism5HighPrecisionMasks,
   ensureLive2DCubismCore,
@@ -906,6 +907,12 @@ const Live2DAvatarCanvas: React.FC<Live2DAvatarCanvasProps> = ({
         }
         const cubismCoreCompatibility = bridgeCubism6RenderOrders(model);
         const cubismMaskCompatibility = enableCubism5HighPrecisionMasks(model);
+        const artMeshColorResult = applyLive2DVTubeArtMeshColors(model, configRef.current.artMeshColors);
+        if (configRef.current.artMeshColors?.length && (
+          !artMeshColorResult.supported || artMeshColorResult.missingIds.length
+        )) {
+          console.warn('[live2d] VTube Studio ArtMesh colors were only partially applied:', artMeshColorResult);
+        }
         if (disposed || !app) {
           model.destroy({ children: true, texture: true });
           return;
