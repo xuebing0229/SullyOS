@@ -568,6 +568,18 @@ ${plannerTools.map(tool => JSON.stringify(tool)).join('\n')}
   return body;
 };
 
+const sanitizePlannerSystemPrompt = (value: string): string => String(value || '')
+  // 旧 APK 会把最近 8 层正文提前塞进 systemPrompt；Worker 随后又会追加最新正文。
+  // 云端规划只需要后一份，避免重复剧情扩大输入审核触发面。
+  .replace(
+    /\n\n最近剧情：\n[\s\S]*?\n\n画面要求：/g,
+    '\n\n最近剧情：\n（仅使用下方 Worker 附加的最新一轮正文）\n\n画面要求：',
+  )
+  // 固定负面词最终由 composeStoryImagePromptArguments 硬合并，无需交给规划模型审核。
+  .replace(/\n固定负面词（客户端自动合并，禁止复述进 prompt）：[^\n]*/g, '')
+  // 兼容 9/18 之前仍使用“避免内容”字段的旧客户端。
+  .replace(/\n避免内容：[^\n]*/g, '');
+
 const runSeparatePlanner = async (
   planner: StoryCloudImagePlannerSpec,
   allowedTools: StoryCloudImageToolHandoff[],
@@ -578,7 +590,8 @@ const runSeparatePlanner = async (
   if (!plannerTools.length) throw new Error('配图规划器没有可用生图工具');
   const textResolve = buildPlannerTextResolve(plannerTools, allowedTools);
   const latestStory = String(storyContent || '').slice(-24_000);
-  const systemPrompt = `${planner.systemPrompt}\n\n【刚完成的最新一轮正文——以这一段作为画面最高优先级】\n${latestStory}`;
+  const plannerSystemPrompt = sanitizePlannerSystemPrompt(planner.systemPrompt);
+  const systemPrompt = `${plannerSystemPrompt}\n\n【刚完成的最新一轮正文——以这一段作为画面最高优先级】\n${latestStory}`;
   const url = `${cleanBaseUrl(planner.baseUrl)}/chat/completions`;
   const nativeBody = {
     model: planner.model,
