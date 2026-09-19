@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
-import { bridgeCubism6RenderOrders, enableCubism5HighPrecisionMasks } from './live2dCore';
+import {
+  applyLive2DVTubeArtMeshColors,
+  bridgeCubism6RenderOrders,
+  enableCubism5HighPrecisionMasks,
+} from './live2dCore';
 
 const createModel = (
   drawables: { count: number; renderOrders?: Int32Array },
@@ -46,6 +50,87 @@ describe('bridgeCubism6RenderOrders', () => {
       'This Cubism 5.3 model uses 1 offscreen object(s)',
     );
     expect(drawables.renderOrders).toBeUndefined();
+  });
+});
+
+describe('applyLive2DVTubeArtMeshColors', () => {
+  const hairColor = {
+    id: 'ArtMeshHair',
+    multiply: [0.5, 0.25, 1, 1] as [number, number, number, number],
+    screen: [0.1, 0.2, 0.3, 1] as [number, number, number, number],
+  };
+
+  it('uses the legacy Cubism color API shipped by the current Pixi adapter', () => {
+    const ids = ['ArtMeshFace', 'ArtMeshHair'];
+    const setMultiplyColorByRGBA = vi.fn();
+    const setScreenColorByRGBA = vi.fn();
+    const setOverrideFlagForDrawableMultiplyColors = vi.fn();
+    const setOverrideFlagForDrawableScreenColors = vi.fn();
+    const model = {
+      internalModel: {
+        coreModel: {
+          _model: { drawables: { count: ids.length, ids } },
+          getDrawableCount: () => ids.length,
+          getDrawableId: (index: number) => ({ getString: () => ({ s: ids[index] }) }),
+          setMultiplyColorByRGBA,
+          setScreenColorByRGBA,
+          setOverrideFlagForDrawableMultiplyColors,
+          setOverrideFlagForDrawableScreenColors,
+        },
+      },
+    };
+
+    const result = applyLive2DVTubeArtMeshColors(model, [
+      hairColor,
+      { ...hairColor, id: 'MissingArtMesh' },
+    ]);
+
+    expect(result).toEqual({ supported: true, applied: 1, missingIds: ['MissingArtMesh'] });
+    expect(setMultiplyColorByRGBA).toHaveBeenCalledWith(1, ...hairColor.multiply);
+    expect(setScreenColorByRGBA).toHaveBeenCalledWith(1, ...hairColor.screen);
+    expect(setOverrideFlagForDrawableMultiplyColors).toHaveBeenCalledWith(1, true);
+    expect(setOverrideFlagForDrawableScreenColors).toHaveBeenCalledWith(1, true);
+  });
+
+  it('also supports the newer Cubism multiply/screen controller API', () => {
+    const setDrawableMultiplyColorByRGBA = vi.fn();
+    const setDrawableScreenColorByRGBA = vi.fn();
+    const setDrawableMultiplyColorEnabled = vi.fn();
+    const setDrawableScreenColorEnabled = vi.fn();
+    const controller = {
+      setDrawableMultiplyColorByRGBA,
+      setDrawableScreenColorByRGBA,
+      setDrawableMultiplyColorEnabled,
+      setDrawableScreenColorEnabled,
+    };
+    const model = {
+      internalModel: {
+        coreModel: {
+          _model: { drawables: { count: 1, ids: ['ArtMeshHair'] } },
+          getDrawableCount: () => 1,
+          getDrawableId: () => ({ getString: () => 'ArtMeshHair' }),
+          getOverrideMultiplyAndScreenColor: () => controller,
+        },
+      },
+    };
+
+    expect(applyLive2DVTubeArtMeshColors(model, [hairColor])).toEqual({
+      supported: true,
+      applied: 1,
+      missingIds: [],
+    });
+    expect(setDrawableMultiplyColorByRGBA).toHaveBeenCalledWith(0, ...hairColor.multiply);
+    expect(setDrawableScreenColorByRGBA).toHaveBeenCalledWith(0, ...hairColor.screen);
+    expect(setDrawableMultiplyColorEnabled).toHaveBeenCalledWith(0, true);
+    expect(setDrawableScreenColorEnabled).toHaveBeenCalledWith(0, true);
+  });
+
+  it('keeps models without VTS color overrides untouched', () => {
+    expect(applyLive2DVTubeArtMeshColors({}, undefined)).toEqual({
+      supported: true,
+      applied: 0,
+      missingIds: [],
+    });
   });
 });
 
