@@ -59,6 +59,10 @@ export const augmentStoryImagePlanningParameters = (
     const output = clone(parameters || { type: 'object', properties: {} });
     if (!output.properties || typeof output.properties !== 'object') output.properties = {};
 
+    // Story Theater owns the final identity channels. Even when the underlying
+    // NovelAI MCP exposes character_prompts, the planner must not fill it directly.
+    delete output.properties.character_prompts;
+
     output.properties.story_include_character = {
         type: 'boolean',
         description: '剧情剧场客户端专用，不会发给生图服务。本轮最终画面里主角色本人是否真实入镜。只根据选中的具体画面判断；不入镜必须填 false。',
@@ -140,6 +144,9 @@ export const composeStoryImagePromptArguments = (input: {
     delete source.story_include_user;
     delete source.story_character_dynamic_prompt;
     delete source.story_user_dynamic_prompt;
+    // Never trust a planner-supplied native identity channel in Story Theater.
+    // The client reconstructs it only from the two fixed prompt boxes + dynamics.
+    delete source.character_prompts;
 
     const layers = input.layers || {};
     const fixedCharacter = compact(layers.character);
@@ -158,12 +165,18 @@ export const composeStoryImagePromptArguments = (input: {
     const userPrompt = joinPromptFragments(fixedUser, userDynamic);
 
     if (input.engineId === 'novelai' && includeCharacter && includeUser) {
-        const basePrompt = joinPromptFragments(scenePrompt, fixedStyle);
-        source[promptKey] = [
-            basePrompt,
-            characterPrompt,
-            userPrompt,
-        ].filter(Boolean).join(' | ');
+        // NovelAI V4+ has a real multi-character channel. Do not emulate it with
+        // pipe-separated text inside base_caption: that can be interpreted as a
+        // repeated/mirrored composition instead of two isolated identities.
+        source[promptKey] = joinPromptFragments(
+            scenePrompt,
+            fixedStyle,
+            'exactly two people, two distinct people, single scene',
+        );
+        source.character_prompts = [
+            characterPrompt || 'person',
+            userPrompt || 'person',
+        ];
     } else if (input.engineId === 'gpt-image' && includeCharacter && includeUser) {
         source[promptKey] = joinPromptFragments(
             scenePrompt,
@@ -180,13 +193,21 @@ export const composeStoryImagePromptArguments = (input: {
         );
     }
 
-    const negativeKey = resolveFieldKey(input.parameters, source, NEGATIVE_PROMPT_KEYS);
-    if (fixedNegative) {
+    const negativeKey =
+        resolveFieldKey(input.parameters, source, NEGATIVE_PROMPT_KEYS)
+        || (input.engineId === 'novelai' && input.toolName === 'novelai_generate_image'
+            ? 'undesired_content'
+            : undefined);
+    const novelAiTwoPersonNegative = input.engineId === 'novelai' && includeCharacter && includeUser
+        ? 'duplicate characters, cloned characters, mirrored duplicate, multiple views'
+        : '';
+    const mergedNegative = joinPromptFragments(fixedNegative, novelAiTwoPersonNegative);
+    if (mergedNegative) {
         if (negativeKey) {
-            source[negativeKey] = joinPromptFragments(source[negativeKey], fixedNegative);
+            source[negativeKey] = joinPromptFragments(source[negativeKey], mergedNegative);
         } else {
-            // 部分引擎没有独立负面字段；仍保留用户固定层，但以明确 avoid 约束并入正向提示。
-            source[promptKey] = joinPromptFragments(source[promptKey], `avoid: ${fixedNegative}`);
+            // 部分引擎没有独立负面字段；仍保留固定层，但以明确 avoid 约束并入正向提示。
+            source[promptKey] = joinPromptFragments(source[promptKey], `avoid: ${mergedNegative}`);
         }
     }
 

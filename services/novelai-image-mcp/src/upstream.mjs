@@ -81,6 +81,7 @@ export function assertPromptPolicy(prompt, policy) {
 
 export function buildUpstreamRequest({
   prompt,
+  characterPrompts = [],
   undesiredContent = "",
   model = "full",
   size = "portrait",
@@ -93,7 +94,16 @@ export function buildUpstreamRequest({
   vibeTransfer = null,
   config
 }) {
-  assertPromptPolicy(prompt, config.promptLanguagePolicy);
+  const normalizedCharacterPrompts = Array.isArray(characterPrompts)
+    ? characterPrompts
+        .map((value) => typeof value === "string" ? value.trim() : "")
+        .filter(Boolean)
+        .slice(0, 6)
+    : [];
+  assertPromptPolicy(
+    joinPromptParts(prompt, ...normalizedCharacterPrompts),
+    config.promptLanguagePolicy
+  );
 
   const dimensions = SIZE_PRESETS[size];
   if (!dimensions) throw new Error(`Unsupported size preset: ${size}`);
@@ -109,6 +119,11 @@ export function buildUpstreamRequest({
     UC_PRESETS[ucPreset],
     undesiredContent
   );
+  const charCaptions = normalizedCharacterPrompts.map((charCaption) => ({
+    char_caption: charCaption,
+    // With use_coords=false NovelAI follows prompt order; centers remain neutral.
+    centers: [{ x: 0.5, y: 0.5 }]
+  }));
 
   let parameters = {
     params_version: config.upstreamParamsVersion,
@@ -132,7 +147,7 @@ export function buildUpstreamRequest({
     v4_prompt: {
       caption: {
         base_caption: prompt,
-        char_captions: []
+        char_captions: charCaptions
       },
       use_coords: false,
       use_order: true
@@ -140,7 +155,10 @@ export function buildUpstreamRequest({
     v4_negative_prompt: {
       caption: {
         base_caption: negativePrompt,
-        char_captions: []
+        char_captions: charCaptions.map(({ centers }) => ({
+          char_caption: "",
+          centers
+        }))
       },
       legacy_uc: false,
       use_coords: false,

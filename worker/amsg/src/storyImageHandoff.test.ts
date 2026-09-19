@@ -162,7 +162,7 @@ describe('story cloud image handoff', () => {
     expect(result.arguments).not.toHaveProperty('story_include_character');
   });
 
-  it('keeps role and user in separate NovelAI character prompt segments when both are visible', () => {
+  it('keeps role and user in native NovelAI character prompts when both are visible', () => {
     const layered = spec({
       parameters: {
         type: 'object',
@@ -184,6 +184,7 @@ describe('story cloud image handoff', () => {
         story_include_user: true,
         story_character_dynamic_prompt: 'left side, gripping the door',
         story_user_dynamic_prompt: 'right side, leaning closer',
+        character_prompts: ['planner supplied wrong identity'],
         use_character_reference: true,
         use_user_reference: true,
         use_vibe_reference: false,
@@ -192,11 +193,15 @@ describe('story cloud image handoff', () => {
 
     expect(result.state).toBe('submitted');
     expect(result.arguments?.prompt).toBe(
-      'narrow cell, two people facing each other, medium shot, cinematic anime'
-      + ' | black hair, green eyes only, left side, gripping the door'
-      + ' | silver hair, heterochromia, right side, leaning closer',
+      'narrow cell, two people facing each other, medium shot, cinematic anime, '
+      + 'exactly two people, two distinct people, single scene',
     );
-    // Two separated NovelAI character segments intentionally disable generation-wide Precise Reference.
+    expect(result.arguments?.character_prompts).toEqual([
+      'black hair, green eyes only, left side, gripping the door',
+      'silver hair, heterochromia, right side, leaning closer',
+    ]);
+    expect(result.arguments?.prompt).not.toContain(' | ');
+    // Native multi-character prompts intentionally disable generation-wide Precise Reference.
     expect(result.arguments).not.toHaveProperty('reference_id');
     expect(result.arguments).not.toHaveProperty('user_reference_id');
   });

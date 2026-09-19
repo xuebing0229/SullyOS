@@ -33,7 +33,7 @@ describe('imageToolPostAction', () => {
         expect(gpt.properties).not.toHaveProperty('use_character_reference');
         expect(gpt.properties).not.toHaveProperty('use_user_reference');
     });
-    it('teaches NovelAI planners to isolate multi-character traits in pipe-separated prompts', () => {
+    it('teaches NovelAI planners to use native multi-character prompts instead of pipe text', () => {
         const source = {
             type: 'object',
             properties: {
@@ -43,8 +43,9 @@ describe('imageToolPostAction', () => {
         const novel = augmentImageToolSchema(source, 'novelai_generate_image');
         const description = String(novel.properties.prompt.description || '');
         expect(description).toContain('最终提示词。');
-        expect(description).toContain('基础场景 | 角色1 | 角色2');
-        expect(description).toContain('严禁把一个角色的眼睛/头发等身份特征复制到另一个角色段');
+        expect(description).toContain('原生 character_prompts');
+        expect(description).toContain('不要用“基础场景 | 角色1 | 角色2”');
+        expect(description).toContain('可能诱发重复/镜像人物');
         expect(String(novel.properties.use_character_reference.description)).toContain('多人画面');
         expect(String(novel.properties.use_user_reference.description)).toContain('多人画面');
     });
@@ -56,6 +57,6 @@ describe('imageToolPostAction', () => {
         );
         expect(novel.properties).not.toHaveProperty('use_character_reference');
         expect(novel.properties).not.toHaveProperty('use_user_reference');
-        expect(String(novel.properties.prompt.description)).toContain('基础场景 | 角色1 | 角色2');
+        expect(String(novel.properties.prompt.description)).toContain('原生 character_prompts');
     });
 });

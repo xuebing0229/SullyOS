@@ -31,7 +31,7 @@ const cloneSchema = (schema: any): any => {
 };
 
 const NOVEL_AI_MULTI_CHARACTER_PROMPT_GUIDANCE =
-    'NovelAI V4+ 多人物画面需要隔离人物特征：当画面中有两个或以上需要区分外观的人物（包括用户）时，prompt 必须使用多角色提示词语法“基础场景 | 角色1 | 角色2 ...”。基础段只写人数、场景、构图、画风和共享动作，不要放任何角色独占的发色、眼色、异瞳、年龄或服装特征；每个角色段只写该角色自己的外观、服装、动作与位置，并按画面从上到下、从左到右排列。严禁把一个角色的眼睛/头发等身份特征复制到另一个角色段。单人画面不要为了凑格式使用多角色分段。';
+    'NovelAI V4+ 多人物画面应使用原生 character_prompts（如果当前工具 schema 提供该字段）隔离人物特征：prompt/base 只写人数、场景、构图、画风和共享互动；character_prompts 按画面从上到下、从左到右分别写每个人自己的外观、服装、动作与位置。不要用“基础场景 | 角色1 | 角色2”这种竖线文本模拟多角色提示词，它仍会落进 base prompt，可能诱发重复/镜像人物。严禁把一个角色的眼睛、头发等身份特征复制到另一个角色 prompt。单人画面保持普通 prompt。';
 
 export const augmentImageToolSchema = (
     schema: any,
@@ -67,12 +67,12 @@ export const augmentImageToolSchema = (
         output.properties.use_character_reference = {
             type: 'boolean',
             default: true,
-            description: '本次是否使用当前角色已开启的精密参考图。单人画面可按需使用；多人画面若 prompt 使用“基础场景 | 角色1 | 角色2 ...”多角色分段，必须设为 false，避免 Precise Reference 把身份特征扩散到其他人物。',
+            description: '本次是否使用当前角色已开启的精密参考图。单人画面可按需使用；多人画面使用原生 character_prompts 时应设为 false，避免 Precise Reference 把身份特征扩散到其他人物。',
         };
         output.properties.use_user_reference = {
             type: 'boolean',
             default: true,
-            description: '本次是否使用用户已开启的精密参考图。单人画面可按需使用；多人画面若 prompt 使用“基础场景 | 角色1 | 角色2 ...”多角色分段，必须设为 false，避免 Precise Reference 把身份特征扩散到其他人物。',
+            description: '本次是否使用用户已开启的精密参考图。单人画面可按需使用；多人画面使用原生 character_prompts 时应设为 false，避免 Precise Reference 把身份特征扩散到其他人物。',
         };
     }
     return output;

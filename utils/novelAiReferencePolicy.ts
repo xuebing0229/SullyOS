@@ -88,10 +88,9 @@ const copyFragment = (
 };
 
 /**
- * Count NovelAI V4+ multi-character separators while ignoring Prompt Randomizer
- * blocks such as ||red|blue|green|| and escaped pipes. A real two-character
- * prompt is `base | character A | character B`, therefore it has at least two
- * separators outside randomizer blocks.
+ * Legacy pipe detection is retained only for already queued/older clients.
+ * New Story Theater requests use NovelAI's native character_prompts array,
+ * which maps to V4+ v4_prompt.caption.char_captions in the image MCP.
  */
 export const countNovelAiCharacterPromptSeparators = (value: unknown): number => {
     if (typeof value !== 'string' || !value.includes('|')) return 0;
@@ -116,7 +115,13 @@ export const countNovelAiCharacterPromptSeparators = (value: unknown): number =>
 
 export const isNovelAiMultiCharacterPrompt = (
     args?: Record<string, any> | null,
-): boolean => countNovelAiCharacterPromptSeparators(args?.prompt) >= 2;
+): boolean => {
+    const nativePrompts = Array.isArray(args?.character_prompts)
+        ? args.character_prompts.filter((value: unknown) => typeof value === 'string' && Boolean(value.trim()))
+        : [];
+    return nativePrompts.length >= 2
+        || countNovelAiCharacterPromptSeparators(args?.prompt) >= 2;
+};
 
 /**
  * Remove every NovelAI managed reference field and every client-only selector.

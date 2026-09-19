@@ -157,6 +157,11 @@ async function materialize(generated, tenantContext) {
 const NOVELAI_TOOL_NAME = "novelai_generate_image";
 const novelAiInputShape = {
   prompt: z.string().min(1).max(5000),
+  character_prompts: z.array(
+    z.string().min(1).max(2500)
+  ).max(6).optional().default([]).describe(
+    "NovelAI V4+ native per-character prompts. Keep scene/style in prompt and put each distinct visible character in a separate item, ordered top-to-bottom then left-to-right."
+  ),
   undesired_content: z.string().max(3000).optional().default(""),
   model: z.enum(["full", "curated"]).optional().default("full"),
   size: z.enum(["portrait", "landscape", "square"]).optional().default("portrait"),
@@ -247,7 +252,8 @@ async function executeNovelAiGeneration(rawArgs, tenantContext, { runtimeOverrid
   }
 
   const request = buildUpstreamRequest({
-    prompt: args.prompt, undesiredContent: args.undesired_content, model: args.model,
+    prompt: args.prompt, characterPrompts: args.character_prompts,
+    undesiredContent: args.undesired_content, model: args.model,
     size: args.size, seed: args.seed, steps: args.steps, guidance: args.guidance,
     ucPreset: args.uc_preset, qualityTags: args.quality_tags, preciseReference, vibeTransfer, config
   });
@@ -263,6 +269,7 @@ async function executeNovelAiGeneration(rawArgs, tenantContext, { runtimeOverrid
     correlationId: generated.requestId, profile: runtime.profile,
     upstreamHost: new URL(runtime.baseUrl).host, modelPreset: args.model,
     upstreamModel: request.modelId, size: args.size, seed: generated.seed,
+    characterPromptCount: args.character_prompts.length,
     delivery: forcePersist ? "background-proxy" : generated.imageUrl ? "direct" : "proxy",
     referenceUsed: Boolean(preciseReference || vibeTransfer),
     referenceCount: (preciseReference?.length || 0) + (vibeTransfer ? 1 : 0),
