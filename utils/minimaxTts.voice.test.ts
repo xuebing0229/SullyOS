@@ -22,6 +22,10 @@ describe('cleanTextForTts', () => {
   it('uses <语音> content (with attribute) when present', () => {
     expect(cleanTextForTts('显示文字<语音 emotion="happy">spoken (chuckle)</语音>')).toBe('spoken (chuckle)');
   });
+  it('never reads call-source markers or stray square-bracket stage cues aloud', () => {
+    expect(cleanTextForTts('<语音>[通话] 喂——[slight laugh]说吧。[whispers]别闹。</语音>'))
+      .toBe('喂——(chuckle)说吧。别闹。');
+  });
 });
 
 describe('parseVoiceOutput', () => {
