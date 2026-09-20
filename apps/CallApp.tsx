@@ -6,12 +6,12 @@ import { extractContent, safeFetchJson } from '../utils/safeApi';
 import { minimaxFetch } from '../utils/minimaxEndpoint';
 import { resolveMiniMaxApiKey } from '../utils/minimaxApiKey';
 import { getCachedTts, saveCachedTts } from '../utils/ttsCache';
-import { buildMiniMaxTtsCacheKey, buildMiniMaxTtsPayload, cleanTextForTts, convertHexAudioToBlob, fetchRemoteAudioBlob, getMiniMaxParamVersion, prepareMiniMaxSpeechText, VALID_EMOTIONS, stripEmotionTags, VOICE_ACTING_GUIDE } from '../utils/minimaxTts';
+import { buildMiniMaxTtsCacheKey, buildMiniMaxTtsPayload, cleanTextForTts, convertHexAudioToBlob, fetchRemoteAudioBlob, getMiniMaxParamVersion, normalizeMiniMaxSquareVoiceCues, prepareMiniMaxSpeechText, VALID_EMOTIONS, stripEmotionTags, VOICE_ACTING_GUIDE } from '../utils/minimaxTts';
 import { normalizeVoiceTags } from '../utils/sanitize';
 import { FISH_VOICE_ACTING_GUIDE, stripFishMarkupForDisplay } from '../utils/fishAudioTts';
 import { resolveTtsProvider, getElevenLabsModel, getTtsProvider, getVoicePromptOverride } from '../utils/ttsProvider';
 import { getElevenLabsVoiceActingGuide, stripElevenLabsMarkupForDisplay } from '../utils/elevenLabsTts';
-import { canSynthesizeSpeech, stripTtsMarkupForDisplay, synthesizeSpeechDetailed as synthesizeSpeechRoutedDetailed } from '../utils/ttsRouter';
+import { canSynthesizeSpeech, cleanTextForTtsProvider, stripTtsMarkupForDisplay, synthesizeSpeechDetailed as synthesizeSpeechRoutedDetailed } from '../utils/ttsRouter';
 import { CANTONESE_VOICE_SUPPORT_NOTE, VOICE_LANGUAGE_OPTIONS, voiceLanguageAnalyticsValue, voiceLanguagePromptLabel } from '../utils/voiceLanguage';
 import { startStt, isSttSupported, type SttSession } from '../utils/speechToText';
 import { ContextBuilder } from '../utils/context';
@@ -227,12 +227,17 @@ const extractLeadingEmotion = (raw: string): string | undefined => {
   const m = (raw || '').match(LEADING_EMOTION_RE);
   return m ? m[1].toLowerCase() : undefined;
 };
+const CALL_SOURCE_MARKER_RE = /[\[［【]\s*(?:通话|聊天|约会)\s*[\]］】]\s*/gi;
+const stripCallSourceMarkers = (raw: string): string => String(raw || '').replace(CALL_SOURCE_MARKER_RE, '');
+
 const sanitizeAssistantOutput = (raw: string) => {
   if (!raw) return '';
-  // Strip ALL [emotion]/【emotion】 tags (any position) so they're never shown or read.
-  return stripCallTextFormatting(stripEmotionTags(raw)
-    .replace(/^\s*(?:\[\s*通话\s*\]\s*)+/gim, '')
-    .replace(/^\s*(?:\[\s*(?:聊天|约会)\s*\]\s*)+/gim, '')
+  // 来源标签属于历史运输协议，不论模型把它放在正文还是 <语音> 里面，都不能显示或朗读。
+  // MiniMax 偶尔会收到 [slight laugh] 这类漂移写法；转成可执行的官方 sound tag，
+  // 不支持的纯英文方括号舞台词则删除，避免真的念出“slight laugh”。
+  let text = stripCallSourceMarkers(raw);
+  if (getTtsProvider() === 'minimax') text = normalizeMiniMaxSquareVoiceCues(text);
+  return stripCallTextFormatting(stripEmotionTags(text)
     .replace(/^\s*\[?\d{1,2}:\d{2}(?::\d{2})?\]?\s*/gm, '')
     .replace(/^\s*\[?\d{4}[\/-]\d{1,2}[\/-]\d{1,2}(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?\]?\s*/gm, '')
     .replace(/^\s*时间戳[:：].*$/gim, ''));
@@ -1254,7 +1259,7 @@ const CallApp: React.FC = () => {
   const canSpeakVoice = (): boolean => isSpeakerOn && hasConfiguredVoice();
 
   const normalizeCallVoiceArchiveText = (rawText: string) => {
-    const parsed = extractVoiceTag(rawText);
+    const parsed = extractVoiceTag(stripCallSourceMarkers(rawText));
     const originalText = stripCallTextFormatting(parsed.display).trim()
       || stripTtsMarkupForDisplay(parsed.voiceText, apiConfig)
       || stripCallTextFormatting(rawText).trim();
@@ -1299,13 +1304,19 @@ const CallApp: React.FC = () => {
   // MiniMax：缓存命中 → 单发合成 → 失败再分段兜底；Fish / ElevenLabs：共享 router 直接合成。
   // 抛错或返回空 url 都表示没有可播放音频，由调用方降级为纯文字。
   const synthesizeCallAudioUrl = async (rawText: string, emotion?: string): Promise<{ url: string; traceIds: string[] }> => {
+    const callSourceText = stripCallSourceMarkers(rawText);
+
     if (activeTtsProvider !== 'minimax') {
       if (!selectedChar) throw new Error('未选择角色');
-      const { url, blob } = await synthesizeSpeechRoutedDetailed(rawText, selectedChar, apiConfig, {
+      // 非 MiniMax 也先走各自的文本清洗器；以前这里把展示文本原样送进 TTS，
+      // 一旦混入 <语音> / 来源标签，就可能被当作普通台词念出来。
+      const routedText = cleanTextForTtsProvider(callSourceText, apiConfig);
+      if (!routedText.trim()) throw new Error('可朗读文本为空');
+      const { url, blob } = await synthesizeSpeechRoutedDetailed(routedText, selectedChar, apiConfig, {
         languageBoost: voiceLang || undefined,
         emotion,
       });
-      if (url) archiveGeneratedCallVoice(rawText, url, blob);
+      if (url) archiveGeneratedCallVoice(callSourceText, url, blob);
       return { url: url || '', traceIds: [] };
     }
     const minimaxApiKey = resolveMiniMaxApiKey(apiConfig);
@@ -1313,7 +1324,7 @@ const CallApp: React.FC = () => {
     const groupId = resolveGroupId();
     const voiceProfile = selectedChar?.voiceProfile;
     const paramVersion = getMiniMaxParamVersion(voiceProfile);
-    const speechText = prepareMiniMaxSpeechText(cleanTextForTts(rawText), voiceProfile);
+    const speechText = prepareMiniMaxSpeechText(cleanTextForTts(callSourceText), voiceProfile);
     const model = voiceProfile?.model?.trim() || 'speech-2.8-hd';
     if (!speechText.trim()) throw new Error('可朗读文本为空');
 
@@ -1431,7 +1442,7 @@ const CallApp: React.FC = () => {
       trace_ids: traceIds,
       playback_url_type: finalUrl.startsWith('blob:') ? 'blob' : 'remote',
     });
-    if (finalUrl) archiveGeneratedCallVoice(rawText, finalUrl);
+    if (finalUrl) archiveGeneratedCallVoice(callSourceText, finalUrl);
     return { url: finalUrl, traceIds };
   };
   const callAudioPrefetchKey = (rawText: string, emotion?: string) => `${emotion || ''}\u0000${rawText}`;
