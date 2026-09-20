@@ -101,6 +101,69 @@ const EMOTION_TAG_RE = /[\[【]\s*(?:happy|sad|angry|fearful|disgusted|surprised
 export const stripEmotionTags = (text: string): string => (text || '').replace(EMOTION_TAG_RE, '');
 
 /**
+ * MiniMax 不认识 [slight laugh] / [whispers] 这类方括号舞台词，会把它们按普通文字念出来。
+ * 通话模型偶尔会漂回这种写法，所以在进入 MiniMax 前做兼容：
+ * - 能无损映射到官方 sound tag 的，转成 (chuckle)/(sighs)…；
+ * - [通话]/[聊天]/[约会] 这类来源标记直接删除；
+ * - 其他纯英文方括号指令视为舞台词删除，避免被原样朗读；
+ * - 非舞台用途的中文/数字方括号内容保留，避免误删普通正文。
+ */
+const MINIMAX_SQUARE_CUE_ALIASES: Record<string, string> = {
+  'slight laugh': 'chuckle',
+  'soft laugh': 'chuckle',
+  'light laugh': 'chuckle',
+  chuckle: 'chuckle',
+  chuckles: 'chuckle',
+  chuckling: 'chuckle',
+  laugh: 'laughs',
+  laughs: 'laughs',
+  laughter: 'laughs',
+  sigh: 'sighs',
+  sighs: 'sighs',
+  cough: 'coughs',
+  coughs: 'coughs',
+  'clear throat': 'clear-throat',
+  'clear-throat': 'clear-throat',
+  groan: 'groans',
+  groans: 'groans',
+  breath: 'breath',
+  breathing: 'breath',
+  pant: 'pant',
+  pants: 'pant',
+  panting: 'pant',
+  inhale: 'inhale',
+  inhales: 'inhale',
+  exhale: 'exhale',
+  exhales: 'exhale',
+  gasp: 'gasps',
+  gasps: 'gasps',
+  sniff: 'sniffs',
+  sniffs: 'sniffs',
+  snort: 'snorts',
+  snorts: 'snorts',
+  'lip smacking': 'lip-smacking',
+  'lip-smacking': 'lip-smacking',
+  hum: 'humming',
+  humming: 'humming',
+  hiss: 'hissing',
+  hissing: 'hissing',
+  emm: 'emm',
+};
+
+export const normalizeMiniMaxSquareVoiceCues = (text: string): string => (
+  String(text || '').replace(/[\[［【]\s*([^\]］】\r\n]{1,48}?)\s*[\]］】]/g, (full, rawInner: string) => {
+    const inner = rawInner.trim();
+    if (!inner) return '';
+    if (/^(?:通话|聊天|约会)$/i.test(inner)) return '';
+    const key = inner.toLowerCase().replace(/_/g, ' ').replace(/\s+/g, ' ');
+    const mapped = MINIMAX_SQUARE_CUE_ALIASES[key];
+    if (mapped && VALID_INTERJECTION_TAGS.has(mapped)) return `(${mapped})`;
+    if (/^[a-z][a-z\s_-]{0,47}$/i.test(inner)) return '';
+    return full;
+  })
+);
+
+/**
  * 把「只给 TTS 用」的演出标记从要显示给用户的文本里清掉。
  * <#秒#> 停顿标记和 (sighs)/(chuckle) 这类动作词是写给语音合成的，
  * 不应该原样出现在聊天气泡 / 转文字面板里（否则用户看到一堆 <#0.4#>）。
@@ -131,7 +194,7 @@ export const cleanVoiceMarkupForDisplay = (text?: string | null): string => {
  * LLM 现在被要求直接写官方英文 sound tag，所以这里不再翻译中文提示词。
  */
 const stripParensPreservingTags = (text: string): string => {
-  return stripEmotionTags(text)
+  return normalizeMiniMaxSquareVoiceCues(stripEmotionTags(text))
     // 中文括号舞台指示：一律删除
     .replace(/（[^）]{0,48}）/g, '')
     // 西文括号：仅保留白名单 sound tag，其余删除
