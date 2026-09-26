@@ -1,4 +1,4 @@
-import type { APIConfig, ApiPreset, CharacterProfile, Message, StoryTheaterEntry, StoryTheaterImageFrame, UserProfile } from '../types';
+import type { APIConfig, ApiPreset, CharacterProfile, Message, StoryTheaterEntry, StoryTheaterImageFrame, StoryTheaterPresetDocument, UserProfile } from '../types';
 import { resolveApiExecutionPlan, executeOpenAiChatPlan } from './apiFailover';
 import { storyTheaterThreadId } from './storyTheater';
 import { callMcpTool, getMcpUseNativeTools } from './mcpClient';
@@ -49,6 +49,8 @@ interface GenerateStoryImageInput {
     userProfile: UserProfile;
     userName: string;
     messages: Message[];
+    /** 当前文游正文实际使用的完整预设文档；配图规划器原样继承，不由客户端主观拆分。 */
+    storyPresetDocument?: StoryTheaterPresetDocument;
     /**
      * 主剧情模型已经在同一次 completion 尾部给出的生图计划。
      * 存在且工具名仍有效时直接执行，不再额外调用“快速规划模型”。
@@ -305,6 +307,8 @@ export const buildStoryCloudImageHandoffSpec = async (input: {
     plannerApiConfig?: APIConfig;
     plannerSystemCompatibility?: boolean;
     messages?: Message[];
+    /** 当前文游正文实际使用的完整预设文档；云端规划器必须完整继承。 */
+    storyPresetDocument?: StoryTheaterPresetDocument;
 }): Promise<StoryCloudImageHandoffSpec | undefined> => {
     if (!input.actors.length) return undefined;
     const imageTools = resolveStoryImageTools(input.actors);
@@ -444,6 +448,7 @@ export const buildStoryCloudImageHandoffSpec = async (input: {
                 userProfile: input.userProfile,
                 userName: input.userName || input.userProfile.name || '用户',
                 messages: input.messages || [],
+                storyPresetDocument: input.storyPresetDocument,
             }, toolNames, {
                 // 云端 Worker 会在真正调用规划器时追加“刚完成的最新一轮正文”。
                 // 这里不再重复塞最近 8 层，也不把最终由客户端硬合并的负面词送进规划器审核。
@@ -561,6 +566,20 @@ const extractPlannerSelection = (
         : null;
 };
 
+export const serializeStoryImagePlannerPreset = (
+    document?: StoryTheaterPresetDocument,
+): string => document ? JSON.stringify(document) : '';
+
+const isStoryImagePlannerInputSafetyError = (error: unknown): boolean => {
+    const message = String((error as any)?.message || error || '').toLowerCase();
+    return message.includes('new_sensitive') || /(^|\D)1026(\D|$)/.test(message);
+};
+
+const storyImagePlannerSafetyError = (error: unknown): Error => {
+    const message = String((error as any)?.message || error || 'input new_sensitive (1026)');
+    return new Error(`配图规划器输入被上游内容审核拦截：${message.replace(/^API Error\s*\d+\s*:\s*/i, '')}`);
+};
+
 const buildPlannerRepairBody = (
     nativeBody: Record<string, any>,
 ): Record<string, any> => {
@@ -597,7 +616,8 @@ const buildPlannerInstruction = (
         : input.messages.slice(-8)
             .map(message => `${message.role === 'user' ? input.userName : '剧场正文'}：${compact(message.content).slice(0, 1800)}`)
             .join('\n\n');
-    return `你正在后台为剧情剧场生成一张本轮插图，不是在回复聊天。必须从本轮提供的生图工具中选择最合适的一项并调用，不要只输出文字，也不要同时调用多个生图工具。\n\n这里故意复用主聊天现有的生图决策链：当前可选工具是 ${toolNames.join('、')}。如果出现多个“生图预设”工具，必须结合每个工具描述里的“用途”和当前剧情画面自行选择；不要因为在剧情剧场就固定到某个模型/预设。story_include_character / story_include_user 必须严格表示你选中的具体画面里主角色本人/用户本人是否真实入镜；两个 dynamic prompt 只写各自在这一帧的动作、表情、姿势、位置和临时状态。工具 schema 若提供 use_character_reference / use_user_reference / use_vibe_reference 等开关，也由你根据本轮画面自主判断是否使用，不能因为参考图存在就强制带上。\n\n剧情：${input.entry.title}\n前提：${compact(input.entry.premise) || '沿用正文'}\n当前身份 ${input.userName}${input.userProfile.novelAiReference?.enabled ? '（用户也有精密参考图可按需选择）' : ''}：${compact(config?.userAnchor) || '根据正文保持一致'}\n出场角色：\n${actorAnchors}\n\n最近剧情：\n${transcript}\n\n画面要求：只画最新一轮最有表现力的具体瞬间；保持人物数量、身份、动作、服装、地点与情绪一致；构图完整、有叙事感；不要文字、对白框、水印、Logo 或 UI。工具 arguments 里的 prompt 只负责本轮可变场景、镜头、构图、光线、整体互动与环境，禁止复述角色固定外貌、用户固定外貌、固定画风或固定负面词；这些固定层会由客户端根据实际入镜者确定性合并。${config?.stylePrompt ? `\n固定画风（客户端自动合并，禁止复述进 prompt）：${config.stylePrompt}` : ''}${options.includeNegativePrompt === false ? '' : (config?.negativePrompt ? `\n固定负面词（客户端自动合并，禁止复述进 prompt）：${config.negativePrompt}` : '')}\n目标画幅：${config?.width || 1216}×${config?.height || 832}。剧情剧场只补充这些场景要求，其余模型/预设/参考图策略遵循主聊天现有生图工具与 schema。请直接调用一个工具。`;
+    const fullStoryPreset = serializeStoryImagePlannerPreset(input.storyPresetDocument);
+    return `你正在后台为剧情剧场生成一张本轮插图，不是在回复聊天。必须从本轮提供的生图工具中选择最合适的一项并调用，不要只输出文字，也不要同时调用多个生图工具。\n\n这里故意复用主聊天现有的生图决策链：当前可选工具是 ${toolNames.join('、')}。如果出现多个“生图预设”工具，必须结合每个工具描述里的“用途”和当前剧情画面自行选择；不要因为在剧情剧场就固定到某个模型/预设。story_include_character / story_include_user 必须严格表示你选中的具体画面里主角色本人/用户本人是否真实入镜；两个 dynamic prompt 只写各自在这一帧的动作、表情、姿势、位置和临时状态。工具 schema 若提供 use_character_reference / use_user_reference / use_vibe_reference 等开关，也由你根据本轮画面自主判断是否使用，不能因为参考图存在就强制带上。\n\n剧情：${input.entry.title}\n前提：${compact(input.entry.premise) || '沿用正文'}\n当前身份 ${input.userName}${input.userProfile.novelAiReference?.enabled ? '（用户也有精密参考图可按需选择）' : ''}：${compact(config?.userAnchor) || '根据正文保持一致'}\n出场角色：\n${actorAnchors}\n\n最近剧情：\n${transcript}\n\n画面要求：只画最新一轮最有表现力的具体瞬间；保持人物数量、身份、动作、服装、地点与情绪一致；构图完整、有叙事感；不要文字、对白框、水印、Logo 或 UI。工具 arguments 里的 prompt 只负责本轮可变场景、镜头、构图、光线、整体互动与环境，禁止复述角色固定外貌、用户固定外貌、固定画风或固定负面词；这些固定层会由客户端根据实际入镜者确定性合并。${config?.stylePrompt ? `\n固定画风（客户端自动合并，禁止复述进 prompt）：${config.stylePrompt}` : ''}${options.includeNegativePrompt === false ? '' : (config?.negativePrompt ? `\n固定负面词（客户端自动合并，禁止复述进 prompt）：${config.negativePrompt}` : '')}\n目标画幅：${config?.width || 1216}×${config?.height || 832}。${fullStoryPreset ? `\n\n【当前文游正文完整预设】\n下面是当前文游正文实际使用的完整预设文档，原样提供给你作为剧情理解与行为约束。不要自行删减、摘要或重解释其中的预设；enabled、marker、section、assistantPrefill 与 generation 等字段均保持原始状态：\n${fullStoryPreset}` : ''}\n\n剧情剧场只补充这些场景要求，其余模型/预设/参考图策略遵循主聊天现有生图工具与 schema。请直接调用一个工具。`;
 };
 
 export async function generateStoryTheaterImage(input: GenerateStoryImageInput): Promise<StoryTheaterImageGenerationResult> {
@@ -648,14 +668,21 @@ export async function generateStoryTheaterImage(input: GenerateStoryImageInput):
             stream: false,
         };
 
-        const runPlanner = async (body: Record<string, any>) => executeOpenAiChatPlan({
-            // 旧兼容兜底：只有主剧情模型没产出合法 inline plan 时才会走到这里。
-            // 兼容转换只发生在这个剧情规划请求里；同一预设用于主聊天时完全不读该开关。
-            plan: resolveApiExecutionPlan('chat', plannerApiConfig, false),
-            body: applyStorySystemCompatibilityToBody(body, input.plannerSystemCompatibility === true),
-            meta: { appName: '剧情剧场', purpose: '剧情自动配图规划' },
-            directMaxRetries: 1,
-        });
+        const runPlanner = async (body: Record<string, any>) => {
+            try {
+                return await executeOpenAiChatPlan({
+                    // 旧兼容兜底：只有主剧情模型没产出合法 inline plan 时才会走到这里。
+                    // 兼容转换只发生在这个剧情规划请求里；同一预设用于主聊天时完全不读该开关。
+                    plan: resolveApiExecutionPlan('chat', plannerApiConfig, false),
+                    body: applyStorySystemCompatibilityToBody(body, input.plannerSystemCompatibility === true),
+                    meta: { appName: '剧情剧场', purpose: '剧情自动配图规划' },
+                    directMaxRetries: 1,
+                });
+            } catch (error) {
+                if (isStoryImagePlannerInputSafetyError(error)) throw storyImagePlannerSafetyError(error);
+                throw error;
+            }
+        };
 
         let response;
         let plannerUsedTextFallback = !getMcpUseNativeTools();
@@ -665,6 +692,10 @@ export async function generateStoryTheaterImage(input: GenerateStoryImageInput):
             try {
                 response = await runPlanner(nativeBody);
             } catch (error) {
+                if (isStoryImagePlannerInputSafetyError(error)
+                    || String((error as any)?.message || '').includes('配图规划器输入被上游内容审核拦截')) {
+                    throw error;
+                }
                 if (!shouldRetryMcpWithoutTools(error)) throw error;
                 plannerUsedTextFallback = true;
                 response = await runPlanner(buildMcpRejectedToolsFallbackBody(nativeBody));
