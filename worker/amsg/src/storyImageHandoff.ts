@@ -200,7 +200,8 @@ export const normalizeStoryImageHandoffSpec = (value: unknown): StoryCloudImageH
         baseUrl: plannerBaseUrl,
         apiKey: normalizeApiCredential(plannerRaw.apiKey),
         model: plannerModel,
-        systemPrompt: plannerSystemPrompt.slice(0, 80_000),
+        // 完整文游正文预设属于规划语境，不能静默截断；总请求大小由 story job 的 2 MB 上限统一兜底。
+        systemPrompt: plannerSystemPrompt,
         ...(plannerRaw.systemCompatibility === true ? { systemCompatibility: true } : {}),
         tools: plannerTools,
       }
