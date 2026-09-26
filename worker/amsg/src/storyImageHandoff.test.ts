@@ -81,6 +81,19 @@ describe('story cloud image handoff', () => {
     expect(normalized?.planner?.model).toBe('gemini-compatible-planner');
   });
 
+  it('does not truncate the full Story Theater preset carried in planner context', () => {
+    const longPreset = 'preset-body-'.repeat(8_000);
+    const value = plannerSpec();
+    value.planner = {
+      ...value.planner!,
+      systemPrompt: `planner-instruction\n【当前文游正文完整预设】\n${longPreset}`,
+    };
+
+    const normalized = normalizeStoryImageHandoffSpec(value);
+    expect(normalized?.planner?.systemPrompt).toContain(longPreset);
+    expect(normalized?.planner?.systemPrompt.length).toBe(value.planner.systemPrompt.length);
+  });
+
   it('normalizes planner authorization again at request time for older encrypted jobs', async () => {
     const dirty = plannerSpec();
     dirty.planner = {
