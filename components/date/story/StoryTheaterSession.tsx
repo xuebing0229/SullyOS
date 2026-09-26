@@ -884,6 +884,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 userProfile,
                 userName: promptIdentityName,
                 messages: rows,
+                storyPresetDocument: effectivePreset.document,
                 targetMessageId: message.id,
             });
             if (imageResult.frame) {
@@ -900,7 +901,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             await releaseNativeStoryKeepAlive(imageKeepAliveLease);
             setRegeneratingImageId(null);
         }
-    }, [actors, addToast, apiConfig, apiPresets, entry, loadMessages, promptIdentityName, regeneratingImageId, threadId, userProfile]);
+    }, [actors, addToast, apiConfig, apiPresets, effectivePreset.document, entry, loadMessages, promptIdentityName, regeneratingImageId, threadId, userProfile]);
     useEffect(() => {
         setContextTokens(0);
         setContextTokensExact(false);
@@ -1905,6 +1906,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                     plannerApiConfig: resolveStoryImagePlannerApiConfig(entry, apiConfig, apiPresets),
                 plannerSystemCompatibility: resolveStoryImagePlannerSystemCompatibility(entry, apiConfig, apiPresets),
                     messages: visibleHistory,
+                    storyPresetDocument: effectivePreset.document,
                 })
                 : undefined;
             usedNativeBackground = isNativeStoryBackgroundRuntime();
@@ -2085,6 +2087,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                             userProfile,
                             userName: promptIdentityName,
                             messages: imageRows,
+                            storyPresetDocument: effectivePreset.document,
                             targetMessageId: assistantMessageId,
                         });
                     }
