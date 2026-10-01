@@ -1454,7 +1454,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 cleanText: content,
                 dialogueSpeakers: parsedVoiceSpeakers,
                 dialogueActing: parsedVoiceActing,
-            } = parseStoryVoiceMessage(rawAssistantContent);
+            } = parseStoryVoiceMessage(rawAssistantContent, storyTtsProvider);
             storyVoiceSpeakersRef.current = [...parsedVoiceSpeakers];
             storyVoiceActingRef.current = [...parsedVoiceActing];
 
@@ -1980,7 +1980,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             let storyVoiceSpeakers = [...storyVoiceSpeakersRef.current];
             let storyVoiceActing = [...storyVoiceActingRef.current];
             if (entry.storyTtsEnabled === true) {
-                const dialogueCount = parseStoryVoiceMessage(rawContent).dialogueSpeakers.length;
+                const dialogueCount = parseStoryVoiceMessage(rawContent, storyTtsProvider).dialogueSpeakers.length;
                 if (dialogueCount > 0) {
                     storyVoiceSpeakers = Array.from({ length: dialogueCount }, (_, index) => storyVoiceSpeakers[index] ?? null);
                     storyVoiceActing = Array.from({ length: dialogueCount }, (_, index) => storyVoiceActing[index] ?? null);
@@ -2160,7 +2160,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 || '',
             ).trim();
             const committedPartialRaw = (partialStreamText || streamingTextRef.current || returnedPartial).trim();
-            const parsedPartialVoice = parseStoryVoiceMessage(committedPartialRaw);
+            const parsedPartialVoice = parseStoryVoiceMessage(committedPartialRaw, storyTtsProvider);
             const committedPartial = parsedPartialVoice.cleanText.trim();
             if (committedPartial) {
                 try {
