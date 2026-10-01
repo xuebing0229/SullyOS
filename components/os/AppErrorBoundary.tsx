@@ -1,5 +1,5 @@
 import React, { Component, ErrorInfo } from 'react';
-import { isChunkLoadError, tryAutoReloadForChunkError } from '../../utils/chunkLoadRecovery';
+import { isChunkLoadError, reloadWithCacheBust, tryAutoReloadForChunkError } from '../../utils/chunkLoadRecovery';
 import { trackEvent } from '../../utils/analytics';
 import { INSTALLED_APPS, HIDDEN_APP_NAMES } from '../../constants';
 import { AppID } from '../../types';
@@ -166,7 +166,7 @@ class AppErrorBoundary extends Component<AppErrorBoundaryProps, AppErrorBoundary
 
     private handleReload = () => {
         trackEvent('点刷新重试（资源加载失败）');
-        window.location.reload();
+        reloadWithCacheBust();
     };
 
     render() {
