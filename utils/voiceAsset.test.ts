@@ -33,8 +33,10 @@ beforeEach(() => {
 });
 
 describe('shared persistent voice assets', () => {
-  it('builds story keys from story, message and dialogue identity instead of text', () => {
+  it('builds stable provider-aware story keys without breaking legacy MiniMax caches', () => {
     expect(storyVoiceAssetKey('story-a', 42, 3)).toBe('voice_story_story-a_42_3');
+    expect(storyVoiceAssetKey('story-a', 42, 3, 'minimax')).toBe('voice_story_story-a_42_3');
+    expect(storyVoiceAssetKey('story-a', 42, 3, 'elevenlabs')).toBe('voice_story_story-a_42_3_elevenlabs');
   });
 
   it('replays a matching persisted asset without calling TTS again', async () => {
