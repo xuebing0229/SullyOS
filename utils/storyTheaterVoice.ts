@@ -1,6 +1,6 @@
 // Story keeps one structural STV protocol, but the acting syntax follows the selected TTS provider.
 import { VOICE_ACTING_GUIDE, VALID_EMOTIONS, cleanVoiceMarkupForDisplay, parseVoiceOutput } from './minimaxTts';
-import { getElevenLabsVoiceActingGuide } from './elevenLabsTts';
+import { getElevenLabsVoiceActingGuide, stripElevenLabsMarkupForDisplay } from './elevenLabsTts';
 
 export type StoryVoiceSpeaker = 'char' | 'user';
 export type StoryVoiceTaggedSpeaker = StoryVoiceSpeaker | 'npc';
@@ -85,10 +85,15 @@ const STANDARD_VOICE_WRAPPER_PATTERN = /<\/?[语語]音\b[^>]*>/gi;
 const parseTaggedDialoguePayload = (
     value: string,
     speaker: StoryVoiceTaggedSpeaker,
+    provider: 'minimax' | 'elevenlabs',
 ): { text: string; acting: StoryVoiceActing | null } => {
     const parsedVoice = parseVoiceOutput(value);
     const canSpeak = speaker === 'char' || speaker === 'user';
-    const speech = parsedVoice.hasVoiceTag ? String(parsedVoice.speech || '').trim() : '';
+    // MiniMax needs its square-cue compatibility normalization; ElevenLabs v4 must
+    // keep raw Audio Tags such as [pause] / [whispers] for the provider adapter.
+    const speech = parsedVoice.hasVoiceTag
+        ? String(provider === 'elevenlabs' ? parsedVoice.rawSpeech : parsedVoice.speech || '').trim()
+        : '';
     const acting = canSpeak && speech
         ? {
             speech,
@@ -96,13 +101,12 @@ const parseTaggedDialoguePayload = (
         }
         : null;
 
-    // Malformed/interrupted <语音> wrappers are transport syntax too: never leak
-    // them into Story text. cleanVoiceMarkupForDisplay also removes <#x#> and
-    // whitelisted sound tags while preserving the actual words.
     const visibleSource = parsedVoice.hasVoiceTag && speech
         ? speech
         : String(value || '').replace(STANDARD_VOICE_WRAPPER_PATTERN, '');
-    const visibleText = cleanVoiceMarkupForDisplay(visibleSource);
+    const visibleText = provider === 'elevenlabs'
+        ? stripElevenLabsMarkupForDisplay(visibleSource)
+        : cleanVoiceMarkupForDisplay(visibleSource);
     return {
         text: normalizeTaggedDialogueText(visibleText),
         acting,
@@ -110,7 +114,10 @@ const parseTaggedDialoguePayload = (
 };
 
 /** Remove hidden speaker tags while retaining their positions in the clean text. */
-export const parseStoryVoiceMarkup = (value: string): ParsedStoryVoiceMarkup => {
+export const parseStoryVoiceMarkup = (
+    value: string,
+    provider: 'minimax' | 'elevenlabs' = 'minimax',
+): ParsedStoryVoiceMarkup => {
     const source = String(value || '');
     const spans: StoryVoiceSpan[] = [];
     let cleanText = '';
@@ -122,7 +129,7 @@ export const parseStoryVoiceMarkup = (value: string): ParsedStoryVoiceMarkup => 
         cleanText += stripStoryVoiceMarkup(source.slice(cursor, match.index));
 
         const speaker = String(match[1] || match[2]).toLowerCase() as StoryVoiceTaggedSpeaker;
-        const payload = parseTaggedDialoguePayload(match[3], speaker);
+        const payload = parseTaggedDialoguePayload(match[3], speaker, provider);
         const text = payload.text;
         const start = cleanText.length;
         cleanText += text;
@@ -154,11 +161,14 @@ const resolveDialogueSpan = (
  * Only 「……」 consumes a dialogue slot. Other quotation marks remain ordinary prose,
  * so quoted names/references can never shift TTS dialogue indexes.
  */
-export const parseStoryVoiceMessage = (value: string): ParsedStoryVoiceMessage => {
+export const parseStoryVoiceMessage = (
+    value: string,
+    provider: 'minimax' | 'elevenlabs' = 'minimax',
+): ParsedStoryVoiceMessage => {
     const source = String(value || '');
-    const parsedMessage = parseStoryVoiceMarkup(source);
+    const parsedMessage = parseStoryVoiceMarkup(source, provider);
     const storySource = STORY_TEXT_PATTERN.exec(source)?.[1] ?? source;
-    const parsedStory = parseStoryVoiceMarkup(storySource);
+    const parsedStory = parseStoryVoiceMarkup(storySource, provider);
     const dialogueSpeakers: StoryVoiceDialogueSpeaker[] = [];
     const dialogueActing: Array<StoryVoiceActing | null> = [];
 
