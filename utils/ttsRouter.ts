@@ -14,6 +14,7 @@ import { resolveTtsProvider } from './ttsProvider';
 import {
   cleanTextForTtsElevenLabs,
   normalizeElevenLabsVoiceId,
+  resolveElevenLabsModel,
   resolveElevenLabsApiKey,
   stripElevenLabsMarkupForDisplay,
   synthesizeSpeechElevenLabsDetailed,
