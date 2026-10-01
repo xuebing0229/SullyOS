@@ -186,7 +186,7 @@ export const buildElevenLabsRequestBody = (
   };
 };
 
-const isNativeconst isNative = (): boolean => {
+const isNative = (): boolean => {
   try { return Capacitor.isNativePlatform(); } catch { return false; }
 };
 
