@@ -6,6 +6,7 @@ import {
     VOICE_ACTING_GUIDE,
     cleanVoiceMarkupForDisplay,
 } from './minimaxTts';
+import { getElevenLabsVoiceActingGuide, stripElevenLabsMarkupForDisplay } from './elevenLabsTts';
 import { extractContent } from './safeApi';
 import {
     extractStoryVoiceDialogues,
@@ -36,9 +37,19 @@ const stripOuterDialogueQuotes = (value: string): string => {
     return text.startsWith('「') && text.endsWith('」') ? text.slice(1, -1) : text;
 };
 
-const sameVisibleWords = (candidate: string, source: string): boolean => {
-    const left = stripOuterDialogueQuotes(cleanVoiceMarkupForDisplay(candidate)).replace(/\s+/g, '');
-    const right = stripOuterDialogueQuotes(cleanVoiceMarkupForDisplay(source)).replace(/\s+/g, '');
+const visibleVoiceWords = (value: string, provider: 'minimax' | 'elevenlabs'): string => (
+    provider === 'elevenlabs'
+        ? stripElevenLabsMarkupForDisplay(value)
+        : cleanVoiceMarkupForDisplay(value)
+);
+
+const sameVisibleWords = (
+    candidate: string,
+    source: string,
+    provider: 'minimax' | 'elevenlabs',
+): boolean => {
+    const left = stripOuterDialogueQuotes(visibleVoiceWords(candidate, provider)).replace(/\s+/g, '');
+    const right = stripOuterDialogueQuotes(visibleVoiceWords(source, provider)).replace(/\s+/g, '');
     return Boolean(left) && left === right;
 };
 
@@ -55,6 +66,7 @@ export const mergeStoryVoiceDirectorResponse = (
     dialogues: string[],
     speakers: StoryVoiceDialogueSpeaker[],
     currentActing: Array<StoryVoiceActing | null>,
+    provider: 'minimax' | 'elevenlabs' = 'minimax',
 ): Array<StoryVoiceActing | null> => {
     const next = Array.from({ length: dialogues.length }, (_, index) => currentActing[index] ?? null);
     const data = parseJsonObject(rawResponse);
@@ -69,7 +81,7 @@ export const mergeStoryVoiceDirectorResponse = (
         const emotion = String(raw?.emotion || '').trim().toLowerCase();
         if (!VALID_EMOTIONS.has(emotion)) continue;
         const candidate = String(raw?.speech || '').trim();
-        const speech = candidate && sameVisibleWords(candidate, dialogues[index])
+        const speech = candidate && sameVisibleWords(candidate, dialogues[index], provider)
             ? candidate
             : (next[index]?.speech || dialogues[index]);
         next[index] = { speech, emotion };
@@ -85,6 +97,7 @@ interface DirectMissingStoryVoiceActingInput {
     userName: string;
     speakers: StoryVoiceDialogueSpeaker[];
     currentActing: Array<StoryVoiceActing | null>;
+    ttsProvider?: 'minimax' | 'elevenlabs';
 }
 
 export const directMissingStoryVoiceActing = async (
@@ -107,18 +120,28 @@ export const directMissingStoryVoiceActing = async (
     });
     if (!missing.length) return input.currentActing;
 
+    const provider: 'minimax' | 'elevenlabs' = input.ttsProvider === 'elevenlabs' ? 'elevenlabs' : 'minimax';
     const emotionValues = Array.from(VALID_EMOTIONS).join(', ');
     const interjectionValues = Array.from(VALID_INTERJECTION_TAGS).join(', ');
+    const providerTask = provider === 'elevenlabs'
+        ? '任务：结合当前正文和上一小段上下文，为每句对白选择一个标准 emotion，并在需要时给 speech 加少量 ElevenLabs v4 Audio Tags，例如 [sighs]、[whispers]、[laughs]、[pause]。不要加入 <#秒数#>。'
+        : '任务：结合当前正文和上一小段上下文，为每句对白选择一个标准 emotion，并在需要时给 speech 加少量停顿 <#秒数#> / 合法 sound tag。';
+    const tagRule = provider === 'elevenlabs'
+        ? 'Audio Tags 只能用常见、明确的英文方括号标签；不要自造中文标签。'
+        : `sound tag 只能从这些值里选：${interjectionValues}`;
+    const actingGuide = provider === 'elevenlabs'
+        ? getElevenLabsVoiceActingGuide(input.apiConfig.elevenLabsModel)
+        : VOICE_ACTING_GUIDE;
     const prompt = [
         '你是文游 TTS 的“情绪导演”。只处理下面列出的缺失演绎对白，不续写剧情。',
-        '任务：结合当前正文和上一小段上下文，为每句对白选择一个标准 emotion，并在需要时给 speech 加少量停顿 <#秒数#> / 合法 sound tag。',
+        providerTask,
         '硬规则：绝对不能增删、替换或改写任何实际要说的文字；只能插入演绎标记。不要改变人物意图。',
         `emotion 只能是：${emotionValues}`,
-        `sound tag 只能从这些值里选：${interjectionValues}`,
+        tagRule,
         '输出必须是严格 JSON，不要 Markdown、不要解释：{"items":[{"index":0,"emotion":"sad","speech":"原对白，只插演绎标记"}]}',
         '每个输入 index 都必须返回一次；emotion 必填。speech 可以沿用 existingSpeech，也可以在原对白上插入演绎标记。',
         '',
-        VOICE_ACTING_GUIDE,
+        actingGuide,
         '',
         '【上一小段上下文】',
         String(input.previousContext || '').slice(-6000) || '（无）',
@@ -144,5 +167,5 @@ export const directMissingStoryVoiceActing = async (
     });
     const raw = extractContent(result.value).trim();
     if (!raw) throw new Error('情绪导演返回为空');
-    return mergeStoryVoiceDirectorResponse(raw, dialogues, input.speakers, input.currentActing);
+    return mergeStoryVoiceDirectorResponse(raw, dialogues, input.speakers, input.currentActing, provider);
 };
