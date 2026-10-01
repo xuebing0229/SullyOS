@@ -14,43 +14,43 @@ import { normalizeVoiceTags } from './sanitize';
 import { getProxyWorkerUrl } from './proxyWorker';
 import { isStaticWebDeployment } from './staticWebDeployment';
 
-export const DEFAULT_ELEVENLABS_MODEL = 'eleven_flash_v2_5';
+export const DEFAULT_ELEVENLABS_MODEL = 'eleven_v4';
 export const ELEVENLABS_OUTPUT_FORMAT = 'mp3_44100_128';
 
 export const ELEVENLABS_MODEL_OPTIONS = [
-  { value: 'eleven_flash_v2_5', label: 'Flash v2.5 —— 低延迟，通话推荐' },
-  { value: 'eleven_v3', label: 'Eleven v3 —— 情绪最丰富，支持 Audio Tags' },
-  { value: 'eleven_multilingual_v2', label: 'Multilingual v2 —— 长文本稳定、音质优先' },
+  { value: 'eleven_v4', label: 'Eleven v4 —— 最高质量，角色演绎推荐' },
+  { value: 'eleven_v4_turbo', label: 'Eleven v4 Turbo —— 低延迟，实时互动推荐' },
 ] as const;
+
+const ELEVENLABS_V4_MODELS = new Set(['eleven_v4', 'eleven_v4_turbo']);
 
 export const normalizeElevenLabsModel = (raw?: string | null): string => {
   const value = (raw || '').trim();
-  return value || DEFAULT_ELEVENLABS_MODEL;
+  return ELEVENLABS_V4_MODELS.has(value) ? value : DEFAULT_ELEVENLABS_MODEL;
 };
 
-export const isElevenLabsV3Model = (raw?: string | null): boolean =>
-  normalizeElevenLabsModel(raw) === 'eleven_v3';
+export const isElevenLabsV4Model = (raw?: string | null): boolean =>
+  ELEVENLABS_V4_MODELS.has(normalizeElevenLabsModel(raw));
 
-export const ELEVENLABS_V3_VOICE_ACTING_GUIDE = `### ElevenLabs v3 语音表演规则
+export const isElevenLabsV4TurboModel = (raw?: string | null): boolean =>
+  normalizeElevenLabsModel(raw) === 'eleven_v4_turbo';
+
+/** 仅供兼容旧调用判断；旧 v3 配置在真正请求时会自动迁移到 v4。 */
+export const isElevenLabsV3Model = (raw?: string | null): boolean =>
+  (raw || '').trim() === 'eleven_v3';
+
+export const ELEVENLABS_V4_VOICE_ACTING_GUIDE = `### ElevenLabs v4 语音表演规则
 
 你写的是马上会被角色亲口说出来的台词，不是小说旁白。句子要口语化、有呼吸、有长短变化；不要写“她轻声说道”之类会被念出来的叙述。
 
-Eleven v3 支持方括号 Audio Tags。只在情绪真正变化的位置少量使用：\`[laughs]\`、\`[chuckles]\`、\`[whispers]\`、\`[sighs]\`、\`[excited]\`、\`[curious]\`、\`[sarcastic]\`、\`[crying]\`、\`[hesitates]\`、\`[softly]\`、\`[pause]\`。标签用半角英文方括号，通常一段 0–2 个；不要每句开头都塞标签，不要自造中文标签。
+Eleven v4 支持方括号 Audio Tags，而且比 v3 更擅长理解上下文和演绎。只在情绪真正变化的位置少量使用：\`[laughs]\`、\`[chuckles]\`、\`[whispers]\`、\`[sighs]\`、\`[excited]\`、\`[curious]\`、\`[sarcastic]\`、\`[crying]\`、\`[hesitates]\`、\`[softly]\`、\`[pause]\`。标签用半角英文方括号，通常一段 0–2 个；不要每句开头都塞标签，不要自造中文标签。
 
 停顿优先靠逗号、句号、省略号、破折号和自然换行；确实需要明显沉默才用 \`[pause]\`。标签是演出指令，不要在标签外再复述动作。`;
 
-export const ELEVENLABS_STANDARD_VOICE_ACTING_GUIDE = `### ElevenLabs 语音表演规则
+export const getElevenLabsVoiceActingGuide = (_model?: string | null): string =>
+  ELEVENLABS_V4_VOICE_ACTING_GUIDE;
 
-你写的是马上会被角色亲口说出来的台词，不是小说旁白。只写会说出口的话，保持口语化、自然、有长短句变化；不要写“她轻声说道”一类叙述。
-
-当前模型不是 Eleven v3，**不要输出方括号 Audio Tags、圆括号动作词或 SSML**，否则它们可能被原样念出来。情绪和停顿只靠措辞、语气词、逗号、句号、省略号、破折号与自然换行表达。强情绪也要克制，避免播音腔和每句同一种节奏。`;
-
-export const getElevenLabsVoiceActingGuide = (model?: string | null): string =>
-  isElevenLabsV3Model(model)
-    ? ELEVENLABS_V3_VOICE_ACTING_GUIDE
-    : ELEVENLABS_STANDARD_VOICE_ACTING_GUIDE;
-
-const V3_CUE_ALIASES: Record<string, string> = {
+const ELEVENLABS_CUE_ALIASES: Record<string, string> = {
   laugh: 'laughs', laughing: 'laughs', laughs: 'laughs', giggle: 'chuckles', giggles: 'chuckles',
   chuckle: 'chuckles', chuckling: 'chuckles', chuckles: 'chuckles',
   whisper: 'whispers', whispering: 'whispers', whispers: 'whispers',
@@ -64,9 +64,9 @@ const V3_CUE_ALIASES: Record<string, string> = {
   angry: 'angry', sad: 'sad', nervous: 'nervously', nervously: 'nervously',
 };
 
-const normalizeV3Cue = (raw: string): string => {
+const normalizeElevenLabsCue = (raw: string): string => {
   const key = (raw || '').trim().toLowerCase().replace(/\s+/g, ' ');
-  return V3_CUE_ALIASES[key] || '';
+  return ELEVENLABS_CUE_ALIASES[key] || '';
 };
 
 /** 支持粘贴纯 ID，也支持从常见 ElevenLabs 页面链接提取 voiceId。 */
@@ -101,11 +101,10 @@ const extractVoiceBody = (raw: string): string => {
 };
 
 /**
- * ElevenLabs 专属文本清洗：v3 保留一小组官方 Audio Tags；其余模型剥掉演出标签，
- * 防止把 [laughs] / (sighs) 当正文念出来。
+ * ElevenLabs v4 专属文本清洗：保留已知 Audio Tags，隐藏 SullyOS 自己的控制词。
  */
 export const cleanTextForTtsElevenLabs = (raw: string, model?: string | null): string => {
-  const isV3 = isElevenLabsV3Model(model);
+  const supportsAudioTags = isElevenLabsV4Model(model);
   let text = extractVoiceBody(raw)
     .replace(/\[\[.*?\]\]/g, '')
     .replace(/%%BILINGUAL%%[\s\S]*/i, '')
@@ -113,17 +112,17 @@ export const cleanTextForTtsElevenLabs = (raw: string, model?: string | null): s
     .replace(/<#\s*[\d.]+\s*#>/g, '')
     .replace(/（[^）]{0,80}）/g, '')
     .replace(/\(([^)]{1,60})\)/g, (_match, inner: string) => {
-      const cue = normalizeV3Cue(inner);
-      return isV3 && cue ? `[${cue}]` : '';
+      const cue = normalizeElevenLabsCue(inner);
+      return supportsAudioTags && cue ? `[${cue}]` : '';
     })
     .replace(/\[([^\[\]]{1,60})\]/g, (_match, inner: string) => {
-      const cue = normalizeV3Cue(inner);
+      const cue = normalizeElevenLabsCue(inner);
       if (!cue) return /[A-Za-z]/.test(inner) || /[\u4e00-\u9fff]/.test(inner) ? '' : _match;
-      return isV3 ? `[${cue}]` : '';
+      return supportsAudioTags ? `[${cue}]` : '';
     });
 
   text = text
-    .replace(/\n{2,}/g, isV3 ? ' [pause] ' : '……')
+    .replace(/\n{2,}/g, supportsAudioTags ? ' [pause] ' : '……')
     .replace(/\n+/g, ' ')
     .replace(/\s+/g, ' ')
     .replace(/\s+([，。！？、；：,.!?…])/g, '$1')
@@ -131,12 +130,12 @@ export const cleanTextForTtsElevenLabs = (raw: string, model?: string | null): s
   return text;
 };
 
-export const stripElevenLabsMarkupForDisplay = (text?: string | null): string => {
+export const stripElevenLabsMarkupForDisplayexport const stripElevenLabsMarkupForDisplay = (text?: string | null): string => {
   if (!text) return '';
   return text
     .replace(/<#\s*[\d.]+\s*#>/g, '')
-    .replace(/\[([^\[\]]{1,60})\]/g, (match, inner: string) => normalizeV3Cue(inner) ? '' : match)
-    .replace(/\(([^)]{1,60})\)/g, (match, inner: string) => normalizeV3Cue(inner) ? '' : match)
+    .replace(/\[([^\[\]]{1,60})\]/g, (match, inner: string) => normalizeElevenLabsCue(inner) ? '' : match)
+    .replace(/\(([^)]{1,60})\)/g, (match, inner: string) => normalizeElevenLabsCue(inner) ? '' : match)
     .replace(/[ \t]{2,}/g, ' ')
     .replace(/[ \t]+([，。！？、；：,.!?…])/g, '$1')
     .replace(/[ \t]*\n[ \t]*/g, '\n')
@@ -148,7 +147,7 @@ const clamp = (value: unknown, fallback: number, min: number, max: number): numb
   return Number.isFinite(numeric) ? Math.max(min, Math.min(max, numeric)) : fallback;
 };
 
-const EMOTION_TO_V3_CUE: Record<string, string> = {
+const EMOTION_TO_ELEVENLABS_CUE: Record<string, string> = {
   happy: 'excited', sad: 'sad', angry: 'angry', fearful: 'nervously',
   disgusted: 'sarcastic', surprised: 'curious', calm: 'softly', fluent: 'softly',
 };
@@ -160,46 +159,34 @@ export interface ElevenLabsRequestBody {
   voice_settings: {
     stability: number;
     similarity_boost: number;
-    style: number;
-    speed: number;
-    use_speaker_boost: boolean;
   };
 }
 
 export const buildElevenLabsRequestBody = (
   text: string,
-  char: CharacterProfile,
+  _char: CharacterProfile,
   apiConfig: APIConfig,
   options?: { languageBoost?: string; emotion?: string },
 ): ElevenLabsRequestBody => {
   const model = resolveElevenLabsModel(apiConfig);
-  const rawStability = clamp(apiConfig.elevenLabsStability, 0.5, 0, 1);
-  // Eleven v3 官方只定义 Creative / Natural / Robust 三档稳定度。
-  const stability = isElevenLabsV3Model(model)
-    ? [0, 0.5, 1].reduce((nearest, candidate) =>
-        Math.abs(candidate - rawStability) < Math.abs(nearest - rawStability) ? candidate : nearest, 0.5)
-    : rawStability;
   const languageCode = (options?.languageBoost || '').trim().toLowerCase();
   let spoken = cleanTextForTtsElevenLabs(text, model);
-  const emotionCue = options?.emotion ? EMOTION_TO_V3_CUE[options.emotion.toLowerCase()] : '';
-  if (isElevenLabsV3Model(model) && emotionCue && !/\[[^\]]+\]/.test(spoken)) {
+  const emotionCue = options?.emotion ? EMOTION_TO_ELEVENLABS_CUE[options.emotion.toLowerCase()] : '';
+  if (emotionCue && !/\[[^\]]+\]/.test(spoken)) {
     spoken = `[${emotionCue}] ${spoken}`;
   }
   return {
     text: spoken,
     model_id: model,
-    ...(/^[a-z]{2}$/.test(languageCode) ? { language_code: languageCode } : {}),
+    ...(/^[a-z]{2,3}$/.test(languageCode) ? { language_code: languageCode } : {}),
     voice_settings: {
-      stability,
+      stability: clamp(apiConfig.elevenLabsStability, 0.5, 0, 1),
       similarity_boost: clamp(apiConfig.elevenLabsSimilarityBoost, 0.8, 0, 1),
-      style: clamp(apiConfig.elevenLabsStyle, 0, 0, 1),
-      speed: clamp(char.voiceProfile?.elevenLabsSpeed ?? char.voiceProfile?.speed, 1, 0.7, 1.2),
-      use_speaker_boost: apiConfig.elevenLabsUseSpeakerBoost === true,
     },
   };
 };
 
-const isNative = (): boolean => {
+const isNativeconst isNative = (): boolean => {
   try { return Capacitor.isNativePlatform(); } catch { return false; }
 };
 
@@ -208,11 +195,83 @@ const useStaticWorker = (): boolean => {
   return isStaticWebDeployment(window.location.protocol, window.location.hostname);
 };
 
-const base64ToBlob = (base64: string, mime = 'audio/mpeg'): Blob => {
+const base64ToBytes = (base64: string): Uint8Array => {
   const binary = atob(base64);
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
-  return new Blob([bytes], { type: mime });
+  return bytes;
+};
+
+const base64ToBlob = (base64: string, mime = 'audio/mpeg'): Blob =>
+  new Blob([base64ToBytes(base64)], { type: mime });
+
+const elevenLabsFetchTurboAudio = async (
+  voiceId: string,
+  apiKey: string,
+  payload: ElevenLabsRequestBody,
+): Promise<Blob> => {
+  if (typeof WebSocket === 'undefined') throw new Error('当前环境不支持 ElevenLabs v4 Turbo WebSocket');
+
+  const params = new URLSearchParams({
+    model_id: 'eleven_v4_turbo',
+    output_format: ELEVENLABS_OUTPUT_FORMAT,
+  });
+  if (payload.language_code) params.set('language_code', payload.language_code);
+
+  return await new Promise<Blob>((resolve, reject) => {
+    const ws = new WebSocket(`wss://api.elevenlabs.io/v1/text-to-dialogue/stream-input?${params.toString()}`);
+    const chunks: Uint8Array[] = [];
+    let settled = false;
+    const timeoutId = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      try { ws.close(); } catch { /* ignore */ }
+      reject(new Error('ElevenLabs v4 Turbo 合成超时'));
+    }, 45_000);
+
+    const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeoutId);
+      try { ws.close(); } catch { /* ignore */ }
+      if (error) return reject(error);
+      const blob = new Blob(chunks, { type: 'audio/mpeg' });
+      if (!blob.size) return reject(new Error('ElevenLabs v4 Turbo 返回了空音频'));
+      resolve(blob);
+    };
+
+    ws.onopen = () => {
+      ws.send(JSON.stringify({
+        voices: [voiceId],
+        xi_api_key: apiKey,
+        voice_settings: payload.voice_settings,
+      }));
+      ws.send(JSON.stringify({
+        inputs: [{ text: payload.text, voice_id: voiceId, new_turn: true }],
+      }));
+      ws.send(JSON.stringify({ close_socket: true }));
+    };
+
+    ws.onmessage = (event) => {
+      let message: any;
+      try { message = JSON.parse(String(event.data || '')); } catch { return; }
+      if (message?.error) {
+        const detail = typeof message.error === 'string' ? message.error : JSON.stringify(message.error);
+        finish(new Error(`ElevenLabs v4 Turbo 合成失败：${detail.slice(0, 240)}`));
+        return;
+      }
+      if (typeof message?.audio === 'string' && message.audio) chunks.push(base64ToBytes(message.audio));
+      if (message?.is_final === true) finish();
+    };
+
+    ws.onerror = () => finish(new Error('ElevenLabs v4 Turbo WebSocket 连接失败'));
+    ws.onclose = () => {
+      if (!settled) {
+        if (chunks.length) finish();
+        else finish(new Error('ElevenLabs v4 Turbo 连接已关闭，但没有返回音频'));
+      }
+    };
+  });
 };
 
 const friendlyElevenLabsError = (status: number, detail: string): string => {
@@ -230,6 +289,9 @@ const elevenLabsFetchAudio = async (
   apiKey: string,
   payload: ElevenLabsRequestBody,
 ): Promise<Blob> => {
+  if (isElevenLabsV4TurboModel(payload.model_id)) {
+    return elevenLabsFetchTurboAudio(voiceId, apiKey, payload);
+  }
   const query = `voice_id=${encodeURIComponent(voiceId)}&output_format=${encodeURIComponent(ELEVENLABS_OUTPUT_FORMAT)}`;
   if (isNative()) {
     const response = await CapacitorHttp.request({
