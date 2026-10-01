@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { isChunkLoadError, tryAutoReloadForChunkError } from './chunkLoadRecovery';
+import { isChunkLoadError, reloadWithCacheBust, tryAutoReloadForChunkError } from './chunkLoadRecovery';
 
 // 锁住 "Importing a module script failed." 自愈链路:
 // iOS Safari standalone PWA 下动态 import 失败会被缓存进模块表, 本页内重试必失败,
@@ -39,33 +39,50 @@ describe('tryAutoReloadForChunkError', () => {
 
     const stubEnv = () => {
         const store = new Map<string, string>();
-        const reload = vi.fn();
+        const replace = vi.fn();
         vi.stubGlobal('sessionStorage', {
             getItem: (k: string) => (store.has(k) ? store.get(k)! : null),
             setItem: (k: string, v: string) => { store.set(k, String(v)); },
         });
-        vi.stubGlobal('window', { location: { reload } });
-        return { reload };
+        vi.stubGlobal('window', {
+            location: {
+                href: 'https://localhost/chat?foo=1',
+                replace,
+            },
+        });
+        return { replace };
     };
 
-    it('首次触发: 记录时间戳并整页刷新', () => {
-        const { reload } = stubEnv();
+    it('首次触发: 记录时间戳并用 cache-bust URL 整页刷新', () => {
+        const { replace } = stubEnv();
         expect(tryAutoReloadForChunkError()).toBe(true);
-        expect(reload).toHaveBeenCalledTimes(1);
+        expect(replace).toHaveBeenCalledTimes(1);
+        const url = new URL(String(replace.mock.calls[0][0]));
+        expect(url.origin).toBe('https://localhost');
+        expect(url.pathname).toBe('/chat');
+        expect(url.searchParams.get('foo')).toBe('1');
+        expect(url.searchParams.get('__sully_reload')).toMatch(/^\d+$/);
+    });
+
+    it('手动恢复同样绕过旧文档缓存', () => {
+        const { replace } = stubEnv();
+        reloadWithCacheBust();
+        expect(replace).toHaveBeenCalledTimes(1);
+        expect(new URL(String(replace.mock.calls[0][0])).searchParams.has('__sully_reload')).toBe(true);
     });
 
     it('冷却期内再触发: 不再自动刷新 (防循环), 留给手动按钮', () => {
-        const { reload } = stubEnv();
+        const { replace } = stubEnv();
         expect(tryAutoReloadForChunkError()).toBe(true);
         expect(tryAutoReloadForChunkError()).toBe(false);
-        expect(reload).toHaveBeenCalledTimes(1);
+        expect(replace).toHaveBeenCalledTimes(1);
     });
 
     it('sessionStorage 不可用时不自动刷新 (没法防循环)', () => {
-        const reload = vi.fn();
-        vi.stubGlobal('window', { location: { reload } });
+        const replace = vi.fn();
+        vi.stubGlobal('window', { location: { href: 'https://localhost/', replace } });
         // 不 stub sessionStorage → 访问抛 ReferenceError → 内部 catch → 不自刷
         expect(tryAutoReloadForChunkError()).toBe(false);
-        expect(reload).not.toHaveBeenCalled();
+        expect(replace).not.toHaveBeenCalled();
     });
 });
