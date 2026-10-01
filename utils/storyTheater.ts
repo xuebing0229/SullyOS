@@ -209,7 +209,7 @@ export const normalizeStoryTheater = (entry: StoryTheaterEntry): StoryTheaterEnt
         premise: String(entry.premise || ''),
         openingMode: entry.openingMode === 'assistant' ? 'assistant' : 'user',
         storyTtsEnabled: entry.storyTtsEnabled === true,
-        storyTtsProvider: 'minimax',
+        storyTtsProvider: entry.storyTtsProvider === 'elevenlabs' ? 'elevenlabs' : 'minimax',
         ...(String(entry.storyVoiceDirectorApiPresetId || '').trim()
             ? { storyVoiceDirectorApiPresetId: String(entry.storyVoiceDirectorApiPresetId).trim() }
             : { storyVoiceDirectorApiPresetId: undefined }),
