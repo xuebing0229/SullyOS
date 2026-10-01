@@ -32,4 +32,18 @@ describe('story voice acting director', () => {
     );
     expect(result[0]).toEqual({ speech: '「等等。」', emotion: 'fearful' });
   });
+
+  it('accepts ElevenLabs Audio Tags without treating them as rewritten dialogue', () => {
+    const result = mergeStoryVoiceDirectorResponse(
+      '{"items":[{"index":0,"emotion":"sad","speech":"「我知道。[sighs]只是有点累。」"}]}',
+      ['「我知道。只是有点累。」'],
+      ['char'],
+      [null],
+      'elevenlabs',
+    );
+    expect(result[0]).toEqual({
+      speech: '「我知道。[sighs]只是有点累。」',
+      emotion: 'sad',
+    });
+  });
 });
