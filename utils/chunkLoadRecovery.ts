@@ -69,3 +69,31 @@ export const reloadWithCacheBust = (): void => {
     url.searchParams.set('__sully_reload', String(Date.now()));
     window.location.replace(url.toString());
 };
+
+const INSTALLED_BUNDLE_VERSION_KEY = 'sullyos_installed_bundle_version_v1';
+
+/**
+ * Android APK 更新会保留 WebView HTTP 缓存。首次运行这一版时先用版本参数重新请求
+ * 本地 index.html，再启动 React；以后同一版本不会重复刷新。
+ *
+ * 返回 true = 已发起导航，调用方本轮不要继续挂载应用。
+ */
+export const refreshDocumentForInstalledAppVersion = (version: string): boolean => {
+    const normalized = String(version || '').trim();
+    if (!normalized || /dev$/i.test(normalized)) return false;
+
+    try {
+        const previous = localStorage.getItem(INSTALLED_BUNDLE_VERSION_KEY);
+        if (previous === normalized) return false;
+
+        localStorage.setItem(INSTALLED_BUNDLE_VERSION_KEY, normalized);
+        const url = new URL(window.location.href);
+        if (url.searchParams.get('__appv') === normalized) return false;
+        url.searchParams.set('__appv', normalized);
+        window.location.replace(url.toString());
+        return true;
+    } catch {
+        // 存储被禁用时不要阻断启动；后续 chunk 错误恢复仍会兜底。
+        return false;
+    }
+};
