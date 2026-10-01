@@ -20,6 +20,7 @@ import {
     DEFAULT_ELEVENLABS_MODEL,
     ELEVENLABS_MODEL_OPTIONS,
     getElevenLabsVoiceActingGuide,
+    normalizeElevenLabsModel,
     normalizeElevenLabsVoiceId,
     synthesizeSpeechElevenLabsDetailed,
 } from '../utils/elevenLabsTts';
@@ -533,7 +534,7 @@ const Settings: React.FC = () => {
   const [localFishKey, setLocalFishKey] = useState(apiConfig.fishAudioApiKey || '');
   const [localFishModel, setLocalFishModel] = useState(apiConfig.fishAudioModel || 's2.1-pro');
   const [localElevenLabsKey, setLocalElevenLabsKey] = useState(apiConfig.elevenLabsApiKey || '');
-  const [localElevenLabsModel, setLocalElevenLabsModel] = useState(apiConfig.elevenLabsModel || DEFAULT_ELEVENLABS_MODEL);
+  const [localElevenLabsModel, setLocalElevenLabsModel] = useState(normalizeElevenLabsModel(apiConfig.elevenLabsModel));
   const [localElevenLabsStability, setLocalElevenLabsStability] = useState(apiConfig.elevenLabsStability ?? 0.5);
   const [localElevenLabsSimilarityBoost, setLocalElevenLabsSimilarityBoost] = useState(apiConfig.elevenLabsSimilarityBoost ?? 0.8);
   const [localElevenLabsStyle, setLocalElevenLabsStyle] = useState(apiConfig.elevenLabsStyle ?? 0);
@@ -973,7 +974,7 @@ const Settings: React.FC = () => {
       setLocalFishKey(apiConfig.fishAudioApiKey || '');
       setLocalFishModel(apiConfig.fishAudioModel || 's2.1-pro');
       setLocalElevenLabsKey(apiConfig.elevenLabsApiKey || '');
-      setLocalElevenLabsModel(apiConfig.elevenLabsModel || DEFAULT_ELEVENLABS_MODEL);
+      setLocalElevenLabsModel(normalizeElevenLabsModel(apiConfig.elevenLabsModel));
       setLocalElevenLabsStability(apiConfig.elevenLabsStability ?? 0.5);
       setLocalElevenLabsSimilarityBoost(apiConfig.elevenLabsSimilarityBoost ?? 0.8);
       setLocalElevenLabsStyle(apiConfig.elevenLabsStyle ?? 0);
@@ -1504,9 +1505,7 @@ const Settings: React.FC = () => {
     };
 
     try {
-      const sample = localElevenLabsModel === 'eleven_v3'
-        ? '[sighs] 好吧……我承认，我刚刚确实有一点点担心你。'
-        : '好吧……我承认，我刚刚确实有一点点担心你。';
+      const sample = '[sighs] 好吧……我承认，我刚刚确实有一点点担心你。';
       const testChar = {
         id: '__eleven_test__',
         name: 'ElevenLabs 测试',
@@ -1520,8 +1519,6 @@ const Settings: React.FC = () => {
         elevenLabsModel: localElevenLabsModel,
         elevenLabsStability: localElevenLabsStability,
         elevenLabsSimilarityBoost: localElevenLabsSimilarityBoost,
-        elevenLabsStyle: localElevenLabsStyle,
-        elevenLabsUseSpeakerBoost: localElevenLabsUseSpeakerBoost,
       } as APIConfig);
       previewUrl = url;
       const audio = new Audio(url);
@@ -3222,7 +3219,7 @@ const Settings: React.FC = () => {
                         ))}
                     </select>
                     <p className="text-[11px] text-slate-400 mt-1 pl-1">
-                        Flash v2.5 更适合实时聊天；v3 支持更丰富的方括号 Audio Tags。切换模型时内置语音提示规则也会同步切换。
+                        v4 质量优先；v4 Turbo 走 Text-to-Dialogue WebSocket，适合低延迟互动。两者都支持更强的 Audio Tags；旧 v3 / Flash / Multilingual 配置会自动迁移到 v4。
                     </p>
 
                     <details className="mt-3 rounded-xl border border-slate-200/60 bg-white/35 px-3 py-2">
@@ -3231,7 +3228,6 @@ const Settings: React.FC = () => {
                             {([
                                 ['稳定度', localElevenLabsStability, setLocalElevenLabsStability],
                                 ['相似度', localElevenLabsSimilarityBoost, setLocalElevenLabsSimilarityBoost],
-                                ['风格强度', localElevenLabsStyle, setLocalElevenLabsStyle],
                             ] as const).map(([label, value, setter]) => (
                                 <label key={label} className="text-[11px] text-slate-500">
                                     <span className="flex justify-between mb-1"><span>{label}</span><span className="font-mono">{value.toFixed(2)}</span></span>
@@ -3246,15 +3242,9 @@ const Settings: React.FC = () => {
                                     />
                                 </label>
                             ))}
-                            <label className="flex items-center justify-between gap-3 text-[11px] text-slate-500 sm:col-span-2">
-                                <span>Speaker Boost（更贴近原音色，可能增加少量延迟）</span>
-                                <input
-                                    type="checkbox"
-                                    checked={localElevenLabsUseSpeakerBoost}
-                                    onChange={(e) => setLocalElevenLabsUseSpeakerBoost(e.target.checked)}
-                                    className="w-4 h-4 accent-primary"
-                                />
-                            </label>
+                            <p className="text-[10px] leading-relaxed text-slate-400 sm:col-span-2">
+                                Eleven v4 仅支持 Stability 与 Similarity；旧版 Style、Speed、Speaker Boost 已停止发送。
+                            </p>
                         </div>
                     </details>
 
