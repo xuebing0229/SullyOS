@@ -26,14 +26,14 @@ describe('Cantonese voice language', () => {
     expect(voiceLanguageAnalyticsValue('用户自己填的语种')).toBe('custom');
   });
 
-  it('allows MiniMax, Fish S2 and Eleven v3', () => {
+  it('allows MiniMax, Fish S2 and both Eleven v4 variants', () => {
     expect(() => assertTtsLanguageSupported(character(), config({ ttsProvider: 'minimax' }), 'yue')).not.toThrow();
     expect(() => assertTtsLanguageSupported(character('s2.1-pro'), config({ ttsProvider: 'fishaudio' }), 'yue')).not.toThrow();
-    expect(() => assertTtsLanguageSupported(character(), config({ ttsProvider: 'elevenlabs', elevenLabsModel: 'eleven_v3' }), 'yue')).not.toThrow();
+    expect(() => assertTtsLanguageSupported(character(), config({ ttsProvider: 'elevenlabs', elevenLabsModel: 'eleven_v4' }), 'yue')).not.toThrow();
+    expect(() => assertTtsLanguageSupported(character(), config({ ttsProvider: 'elevenlabs', elevenLabsModel: 'eleven_v4_turbo' }), 'yue')).not.toThrow();
   });
 
-  it('rejects models whose official language list does not include Cantonese', () => {
+  it('still rejects Fish s1, whose official language list does not include Cantonese', () => {
     expect(() => assertTtsLanguageSupported(character('s1'), config({ ttsProvider: 'fishaudio' }), 'yue')).toThrow('S2');
-    expect(() => assertTtsLanguageSupported(character(), config({ ttsProvider: 'elevenlabs', elevenLabsModel: 'eleven_flash_v2_5' }), 'yue')).toThrow('Eleven v3');
   });
 });
