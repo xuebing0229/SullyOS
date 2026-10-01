@@ -54,6 +54,18 @@ export const tryAutoReloadForChunkError = (): boolean => {
         allowed = false;
     }
     if (!allowed) return false;
-    window.location.reload();
+    reloadWithCacheBust();
     return true;
+};
+
+/**
+ * APK / PWA 更新后不能只 reload 同一个 URL：Android WebView 可能继续命中旧 index.html，
+ * 于是新包里已经不存在的旧 hash chunk 会再次 404，形成“刷新—再崩”的假闪退。
+ * 给文档 URL 加一次性查询参数，只绕过 HTTP/WebView 文档缓存，不碰 localStorage /
+ * IndexedDB / CacheStorage，因此不会清聊天数据或用户设置。
+ */
+export const reloadWithCacheBust = (): void => {
+    const url = new URL(window.location.href);
+    url.searchParams.set('__sully_reload', String(Date.now()));
+    window.location.replace(url.toString());
 };
