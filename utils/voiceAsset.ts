@@ -48,7 +48,13 @@ export const storyVoiceAssetKey = (
   storyId: string,
   messageId: number,
   dialogueIndex: number,
-): string => `voice_story_${storyId}_${messageId}_${dialogueIndex}`;
+  provider: 'minimax' | 'elevenlabs' = 'minimax',
+): string => {
+  const base = `voice_story_${storyId}_${messageId}_${dialogueIndex}`;
+  // Preserve every existing MiniMax cache key; ElevenLabs gets an isolated suffix
+  // so changing Story provider can never replay audio synthesized by the other engine.
+  return provider === 'elevenlabs' ? `${base}_elevenlabs` : base;
+};
 
 export const loadPersistedVoiceAsset = async (key: string): Promise<StoredVoiceAsset | null> => {
   const value = await DB.getAssetRaw(key) as StoredVoiceAsset | null;
