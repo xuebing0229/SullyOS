@@ -17,7 +17,6 @@ import { consumeProxyWorkerSettingsFocus, getProxyWorkerUrl, setProxyWorkerUrl, 
 import { VOICE_ACTING_GUIDE } from '../utils/minimaxTts';
 import { FISH_VOICE_ACTING_GUIDE } from '../utils/fishAudioTts';
 import {
-    DEFAULT_ELEVENLABS_MODEL,
     ELEVENLABS_MODEL_OPTIONS,
     getElevenLabsVoiceActingGuide,
     normalizeElevenLabsModel,
