@@ -653,7 +653,7 @@ const defaultApiConfig: APIConfig = {
   ttsProvider: 'minimax',
   fishAudioModel: 's2.1-pro',
   elevenLabsApiKey: '',
-  elevenLabsModel: 'eleven_flash_v2_5',
+  elevenLabsModel: 'eleven_v4',
   elevenLabsStability: 0.5,
   elevenLabsSimilarityBoost: 0.8,
   elevenLabsStyle: 0,
@@ -2252,7 +2252,7 @@ recordApiCall({ requestId: (config as any)?.__sullyApiCallId, url: urlStr, body:
   useEffect(() => {
     setTtsProvider(apiConfig.ttsProvider);
   }, [apiConfig.ttsProvider]);
-  // ElevenLabs 的 v3 与 Flash/Multilingual 使用不同的提示词标记；prompt 构建器靠单例读当前模型。
+  // ElevenLabs v4 / v4 Turbo 共用 Audio Tags 规则；prompt 构建器靠单例读当前模型。
   useEffect(() => {
     setElevenLabsModel(apiConfig.elevenLabsModel);
   }, [apiConfig.elevenLabsModel]);
