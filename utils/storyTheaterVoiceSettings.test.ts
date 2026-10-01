@@ -26,5 +26,19 @@ describe('story theater voice settings', () => {
     expect(enabled.storyTtsProvider).toBe('minimax');
     expect(enabled.storyVoiceDirectorApiPresetId).toBe('cheap-fast');
     expect(enabled.storyVoiceDirectorModel).toBe('flash-mini');
+
+    const elevenLabs = normalizeStoryTheater({
+      ...draft,
+      storyTtsEnabled: true,
+      storyTtsProvider: 'elevenlabs',
+    });
+    expect(elevenLabs.storyTtsEnabled).toBe(true);
+    expect(elevenLabs.storyTtsProvider).toBe('elevenlabs');
+
+    const invalidProvider = normalizeStoryTheater({
+      ...draft,
+      storyTtsProvider: 'fishaudio' as any,
+    });
+    expect(invalidProvider.storyTtsProvider).toBe('minimax');
   });
 });
