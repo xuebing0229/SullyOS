@@ -2215,8 +2215,8 @@ export interface StoryTheaterEntry {
     openingMode?: 'user' | 'assistant';
     /** 文游对白点读总开关；缺省/旧数据按关闭处理，避免升级后意外产生 TTS 请求。 */
     storyTtsEnabled?: boolean;
-    /** 文游独立 TTS 路由。当前只开放 MiniMax，保留字段以便以后扩展服务商。 */
-    storyTtsProvider?: 'minimax';
+    /** 文游独立 TTS 路由。声线仍复用角色 / 个人档案，各服务商参数读取全局 TTS 设置。 */
+    storyTtsProvider?: 'minimax' | 'elevenlabs';
     /**
      * 文游“情绪导演”副 API。只有正文模型没给 char/user 对白提供合法 emotion 时才会批量补判；
      * 未选择预设即关闭，不会产生额外文本模型请求。
