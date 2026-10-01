@@ -1543,7 +1543,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             }
             await releaseNativeStoryKeepAlive(keepAliveLease);
         }
-    }, [apiConfig, entry.omitSamplingParams]);
+    }, [apiConfig, entry.omitSamplingParams, storyTtsProvider]);
 
     const saveCentralAndMirrors = useCallback(async (role: 'user' | 'assistant', content: string, centralMetadata: Record<string, unknown> = {}): Promise<number> => {
         const now = Date.now();
