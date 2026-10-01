@@ -22,13 +22,13 @@ export function getTtsProvider(): TtsProvider {
   return currentProvider;
 }
 
-const DEFAULT_ELEVENLABS_MODEL = 'eleven_flash_v2_5';
+const DEFAULT_ELEVENLABS_MODEL = 'eleven_v4';
 let currentElevenLabsModel = DEFAULT_ELEVENLABS_MODEL;
 
-/** 同步当前 ElevenLabs 模型，供拿不到 apiConfig 的 prompt 构建器做模型感知。 */
+/** 同步当前 ElevenLabs 模型；旧模型值自动迁移到 v4。 */
 export function setElevenLabsModel(model: string | undefined | null): void {
-  currentElevenLabsModel = typeof model === 'string' && model.trim()
-    ? model.trim()
+  currentElevenLabsModel = model?.trim() === 'eleven_v4_turbo'
+    ? 'eleven_v4_turbo'
     : DEFAULT_ELEVENLABS_MODEL;
 }
 
