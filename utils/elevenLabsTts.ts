@@ -247,7 +247,7 @@ const elevenLabsFetchTurboAudio = async (
         voice_settings: payload.voice_settings,
       }));
       ws.send(JSON.stringify({
-        inputs: [{ text: payload.text, voice_id: voiceId, new_turn: true }],
+        inputs: [{ text: payload.text, voice_id: voiceId, new_turn: false }],
       }));
       ws.send(JSON.stringify({ close_socket: true }));
     };
