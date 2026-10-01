@@ -72,6 +72,20 @@ describe('story theater speaker + acting markup', () => {
         ]);
     });
 
+    it('preserves ElevenLabs v4 Audio Tags in hidden acting data while keeping them out of visible story text', () => {
+        const raw = '<story_text>'
+            + '[[STV:char]]<语音 emotion="sad">「我知道。[pause][sighs]只是……有点难受。」</语音>[[/STV]]'
+            + '</story_text>';
+        const parsed = parseStoryVoiceMessage(raw, 'elevenlabs');
+
+        expect(parsed.cleanText).toBe('<story_text>「我知道。只是……有点难受。」</story_text>');
+        expect(parsed.dialogueSpeakers).toEqual(['char']);
+        expect(parsed.dialogueActing).toEqual([{
+            speech: '「我知道。[pause][sighs]只是……有点难受。」',
+            emotion: 'sad',
+        }]);
+    });
+
     it('removes unsupported or malformed STV markers without making them voiceable', () => {
         const raw = '[[STV:npc]]「欢迎。」[[/STV]] [[STV:char]]残缺标签';
         const parsed = parseStoryVoiceMarkup(raw);
