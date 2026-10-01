@@ -109,4 +109,13 @@ describe('story theater speaker + acting markup', () => {
         expect(reminder).toContain('云');
         expect(reminder).toContain('我');
     });
+
+    it('switches Story acting instructions to ElevenLabs v4 Audio Tags', () => {
+        const reminder = buildStoryVoiceSpeakerFormatReminder(true, '云', '我', 'elevenlabs', 'eleven_v4');
+        expect(reminder).toContain('ElevenLabs v4');
+        expect(reminder).toContain('[sighs]');
+        expect(reminder).toContain('[pause]');
+        expect(reminder).toContain('不要使用 <#秒数#>');
+        expect(reminder).not.toContain('让它听起来像活人在说话');
+    });
 });
