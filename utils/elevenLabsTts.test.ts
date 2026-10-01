@@ -4,6 +4,7 @@ import {
   buildElevenLabsRequestBody,
   cleanTextForTtsElevenLabs,
   getElevenLabsVoiceActingGuide,
+  normalizeElevenLabsModel,
   normalizeElevenLabsVoiceId,
   stripElevenLabsMarkupForDisplay,
 } from './elevenLabsTts';
@@ -34,15 +35,17 @@ describe('ElevenLabs voice id', () => {
   });
 });
 
-describe('ElevenLabs text cleanup', () => {
-  it('keeps supported v3 tags and converts known parenthesized cues', () => {
-    expect(cleanTextForTtsElevenLabs('<语音>[laughs] 你好 (sigh)</语音>', 'eleven_v3'))
+describe('ElevenLabs v4 migration and text cleanup', () => {
+  it('keeps v4 tags and converts known parenthesized cues', () => {
+    expect(cleanTextForTtsElevenLabs('<语音>[laughs] 你好 (sigh)</语音>', 'eleven_v4'))
       .toBe('[laughs] 你好 [sighs]');
   });
 
-  it('removes performance tags for non-v3 models so they are not spoken aloud', () => {
-    const output = cleanTextForTtsElevenLabs('[laughs] 你好 (sighs)（看向窗外）', 'eleven_flash_v2_5');
-    expect(output).toBe('你好');
+  it('migrates old saved model ids to v4 while preserving v4 Turbo', () => {
+    expect(normalizeElevenLabsModel('eleven_v3')).toBe('eleven_v4');
+    expect(normalizeElevenLabsModel('eleven_flash_v2_5')).toBe('eleven_v4');
+    expect(normalizeElevenLabsModel('eleven_multilingual_v2')).toBe('eleven_v4');
+    expect(normalizeElevenLabsModel('eleven_v4_turbo')).toBe('eleven_v4_turbo');
   });
 
   it('removes cues only from display text and preserves ordinary brackets', () => {
@@ -50,58 +53,51 @@ describe('ElevenLabs text cleanup', () => {
   });
 });
 
-describe('ElevenLabs request body', () => {
-  it('uses global voice settings, role speed and ISO language code', () => {
+describe('ElevenLabs v4 request body', () => {
+  it('only sends Stability + Similarity and keeps language selection', () => {
     const config: APIConfig = {
       baseUrl: '',
       apiKey: '',
       model: '',
-      elevenLabsModel: 'eleven_flash_v2_5',
+      elevenLabsModel: 'eleven_v4',
       elevenLabsStability: 0.35,
       elevenLabsSimilarityBoost: 1.5,
-      elevenLabsStyle: -1,
+      elevenLabsStyle: 0.9,
       elevenLabsUseSpeakerBoost: true,
     };
     const body = buildElevenLabsRequestBody('你好', character, config, { languageBoost: 'JA' });
-    expect(body).toMatchObject({
+    expect(body).toEqual({
       text: '你好',
-      model_id: 'eleven_flash_v2_5',
+      model_id: 'eleven_v4',
       language_code: 'ja',
       voice_settings: {
         stability: 0.35,
         similarity_boost: 1,
-        style: 0,
-        speed: 0.85,
-        use_speaker_boost: true,
       },
     });
+    expect(body.voice_settings).not.toHaveProperty('style');
+    expect(body.voice_settings).not.toHaveProperty('speed');
+    expect(body.voice_settings).not.toHaveProperty('use_speaker_boost');
   });
 
-  it('falls back to the legacy shared speed when no ElevenLabs speed was saved yet', () => {
-    const legacyCharacter = {
-      ...character,
-      voiceProfile: { ...character.voiceProfile, elevenLabsSpeed: undefined, speed: 1.1 },
-    } as CharacterProfile;
-    const body = buildElevenLabsRequestBody('你好', legacyCharacter, {} as APIConfig);
-    expect(body.voice_settings.speed).toBe(1.1);
-  });
-
-  it('snaps v3 stability to supported tiers and adds an emotion cue once', () => {
+  it('supports v4 Cantonese codes and adds an emotion cue once', () => {
     const config = {
       baseUrl: '', apiKey: '', model: '',
-      elevenLabsModel: 'eleven_v3',
+      elevenLabsModel: 'eleven_v4_turbo',
       elevenLabsStability: 0.76,
     } as APIConfig;
-    const body = buildElevenLabsRequestBody('真的？', character, config, { emotion: 'surprised' });
-    expect(body.voice_settings.stability).toBe(1);
+    const body = buildElevenLabsRequestBody('真的？', character, config, { languageBoost: 'yue', emotion: 'surprised' });
+    expect(body.model_id).toBe('eleven_v4_turbo');
+    expect(body.language_code).toBe('yue');
+    expect(body.voice_settings.stability).toBe(0.76);
     expect(body.text).toBe('[curious] 真的？');
   });
 });
 
 describe('ElevenLabs prompt and provider routing', () => {
-  it('uses audio-tag guidance only for v3 and recognizes the provider', () => {
-    expect(getElevenLabsVoiceActingGuide('eleven_v3')).toContain('Audio Tags');
-    expect(getElevenLabsVoiceActingGuide('eleven_flash_v2_5')).toContain('不要输出方括号');
+  it('uses v4 Audio Tags guidance and recognizes the provider', () => {
+    expect(getElevenLabsVoiceActingGuide('eleven_v4')).toContain('Audio Tags');
+    expect(getElevenLabsVoiceActingGuide('eleven_v4_turbo')).toContain('ElevenLabs v4');
     expect(normalizeTtsProvider('elevenlabs')).toBe('elevenlabs');
   });
 });
