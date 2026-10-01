@@ -130,7 +130,7 @@ export const cleanTextForTtsElevenLabs = (raw: string, model?: string | null): s
   return text;
 };
 
-export const stripElevenLabsMarkupForDisplayexport const stripElevenLabsMarkupForDisplay = (text?: string | null): string => {
+export const stripElevenLabsMarkupForDisplay = (text?: string | null): string => {
   if (!text) return '';
   return text
     .replace(/<#\s*[\d.]+\s*#>/g, '')
