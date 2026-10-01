@@ -298,11 +298,12 @@ export interface APIConfig {
   fishAudioModel?: string;
   // ElevenLabs BYOK 配置。Voice ID 存在角色 voiceProfile.elevenLabsVoiceId，避免角色串音色。
   elevenLabsApiKey?: string;
-  // 缺省使用低延迟 eleven_flash_v2_5；也支持 eleven_v3 / eleven_multilingual_v2。
+  // 缺省使用 eleven_v4；支持 eleven_v4 / eleven_v4_turbo。旧模型值运行时自动迁移到 v4。
   elevenLabsModel?: string;
-  // ElevenLabs Voice Settings（请求级覆盖，不修改 ElevenLabs 控制台里的音色默认值）。
+  // Eleven v4 请求级设置：仅 Stability + Similarity。
   elevenLabsStability?: number;
   elevenLabsSimilarityBoost?: number;
+  // 旧版备份兼容字段：v4 不再发送 Style / Speaker Boost。
   elevenLabsStyle?: number;
   elevenLabsUseSpeakerBoost?: boolean;
   // 用户自定义「语音表演指南」——注入到角色 system prompt、教模型怎么写出有情绪的语音台词。
@@ -2990,7 +2991,7 @@ export interface CharacterProfile {
       fishModel?: string;
       // ElevenLabs 角色音色 ID。与 MiniMax voiceId / Fish reference_id 各存各的。
       elevenLabsVoiceId?: string;
-      // ElevenLabs 独立语速；旧存档缺省时回退到 speed，避免升级后语速突变。
+      // 旧版备份兼容字段：Eleven v4 已取消 Speed，运行时不再发送。
       elevenLabsSpeed?: number;
       voiceName?: string;
       source?: 'system' | 'voice_cloning' | 'voice_generation' | 'custom';
