@@ -11,9 +11,15 @@ import { installWakeListener } from './utils/proactivePushConfig';
 import { initAnalytics } from './utils/analytics';
 import { installStoryPollingVisibilityGuard } from './utils/storyPollingVisibilityGuard';
 import { Capacitor } from '@capacitor/core';
-import { isChunkLoadError, tryAutoReloadForChunkError } from './utils/chunkLoadRecovery';
+import { isChunkLoadError, refreshDocumentForInstalledAppVersion, tryAutoReloadForChunkError } from './utils/chunkLoadRecovery';
+import { APP_RELEASE_VERSION } from './utils/buildInfo';
 
-// 动态 chunk 也可能在 React ErrorBoundary 之外失败（例如顶层 import() / preload）。
+const refreshingAfterAndroidUpdate = Capacitor.isNativePlatform()
+  && Capacitor.getPlatform() === 'android'
+  && refreshDocumentForInstalledAppVersion(APP_RELEASE_VERSION);
+
+if (!refreshingAfterAndroidUpdate) {
+  // 动态 chunk 也可能在 React ErrorBoundary 之外失败（例如顶层 import() / preload）。
 // 更新 APK 后若 WebView 还拿着旧 index.html，这类失败必须先绕过文档缓存再重载。
 if (typeof window !== 'undefined') {
   const recoverChunkFailure = (error: unknown) => {
@@ -77,3 +83,4 @@ root.render(
     <App />
   </React.StrictMode>
 );
+}
