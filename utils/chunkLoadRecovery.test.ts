@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { isChunkLoadError, reloadWithCacheBust, tryAutoReloadForChunkError } from './chunkLoadRecovery';
+import { isChunkLoadError, refreshDocumentForInstalledAppVersion, reloadWithCacheBust, tryAutoReloadForChunkError } from './chunkLoadRecovery';
 
 // 锁住 "Importing a module script failed." 自愈链路:
 // iOS Safari standalone PWA 下动态 import 失败会被缓存进模块表, 本页内重试必失败,
@@ -29,6 +29,42 @@ describe('isChunkLoadError', () => {
         expect(isChunkLoadError(null)).toBe(false);
         expect(isChunkLoadError(undefined)).toBe(false);
         expect(isChunkLoadError(42)).toBe(false);
+    });
+});
+
+describe('refreshDocumentForInstalledAppVersion', () => {
+    afterEach(() => {
+        vi.unstubAllGlobals();
+    });
+
+    it('Android 新安装版本只强制刷新一次，同版本不会循环', () => {
+        const store = new Map<string, string>();
+        const replace = vi.fn();
+        vi.stubGlobal('localStorage', {
+            getItem: (k: string) => (store.has(k) ? store.get(k)! : null),
+            setItem: (k: string, v: string) => { store.set(k, String(v)); },
+        });
+        vi.stubGlobal('window', {
+            location: {
+                href: 'https://localhost/',
+                replace,
+            },
+        });
+
+        expect(refreshDocumentForInstalledAppVersion('2.3.340')).toBe(true);
+        expect(replace).toHaveBeenCalledTimes(1);
+        expect(new URL(String(replace.mock.calls[0][0])).searchParams.get('__appv')).toBe('2.3.340');
+
+        expect(refreshDocumentForInstalledAppVersion('2.3.340')).toBe(false);
+        expect(replace).toHaveBeenCalledTimes(1);
+    });
+
+    it('开发构建不做版本刷新', () => {
+        const replace = vi.fn();
+        vi.stubGlobal('localStorage', { getItem: vi.fn(), setItem: vi.fn() });
+        vi.stubGlobal('window', { location: { href: 'https://localhost/', replace } });
+        expect(refreshDocumentForInstalledAppVersion('0.0.0-dev')).toBe(false);
+        expect(replace).not.toHaveBeenCalled();
     });
 });
 
