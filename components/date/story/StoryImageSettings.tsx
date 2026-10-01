@@ -5,6 +5,7 @@ import { useOS } from '../../../context/OSContext';
 import type { CharacterProfile, StoryTheaterEntry, StoryTheaterImageConfig } from '../../../types';
 import { getBuiltinImageMcpServers, loadBuiltinImageSettings } from '../../../utils/builtinImageMcp';
 import { getApiPresetModelEntries } from '../../../utils/apiPresetModels';
+import { normalizeElevenLabsModel } from '../../../utils/elevenLabsTts';
 
 interface Props {
     entry: StoryTheaterEntry;
@@ -65,8 +66,15 @@ const persistImageTextPresets = (presets: StoryImageTextPreset[]) => {
     localStorage.setItem(STORY_IMAGE_TEXT_PRESETS_KEY, JSON.stringify(presets));
 };
 
-const voiceProfileLabel = (profile?: CharacterProfile['voiceProfile']): string => {
+const voiceProfileLabel = (
+    profile: CharacterProfile['voiceProfile'] | undefined,
+    provider: 'minimax' | 'elevenlabs',
+): string => {
     if (!profile) return '尚未配置';
+    if (provider === 'elevenlabs') {
+        const voiceId = String(profile.elevenLabsVoiceId || '').trim();
+        return voiceId || '尚未配置 ElevenLabs Voice ID';
+    }
     if (profile.voiceName?.trim()) return profile.voiceName.trim();
     if (profile.voiceId?.trim()) return profile.voiceId.trim();
     const mixed = profile.timberWeights?.filter(item => item.voice_id?.trim()) || [];
@@ -109,6 +117,11 @@ const StoryImageSettingsButton: React.FC<Props> = ({ entry, onChange, triggerLab
     const voiceDirectorDisplayModel = selectedVoiceDirectorPreset
         ? (entry.storyVoiceDirectorModel || selectedVoiceDirectorPreset.config.model)
         : '';
+    const storyTtsProvider: 'minimax' | 'elevenlabs' = entry.storyTtsProvider === 'elevenlabs' ? 'elevenlabs' : 'minimax';
+    const storyElevenLabsModel = normalizeElevenLabsModel(apiConfig.elevenLabsModel);
+    const storyProviderDetail = storyTtsProvider === 'elevenlabs'
+        ? `全局模型 · ${storyElevenLabsModel === 'eleven_v4_turbo' ? 'Eleven v4 Turbo' : 'Eleven v4'}`
+        : '复用全局 MiniMax 配置';
 
     const applyTextPreset = (preset: StoryImageTextPreset) => {
         const savedAnchorValues = Object.values(preset.characterAnchors || {}).filter(value => typeof value === 'string' && value.trim().length > 0);
@@ -240,8 +253,8 @@ const StoryImageSettingsButton: React.FC<Props> = ({ entry, onChange, triggerLab
             </div>
             <div className='border-t border-slate-100 px-4 py-3 flex items-center gap-3'>
                 <span className='w-8 h-8 shrink-0 rounded-xl bg-violet-50 text-violet-600 grid place-items-center'><SpeakerHigh size={17} /></span>
-                <span className='min-w-0 flex-1'><strong className='block text-[10px]'>语音服务</strong><span className='block mt-0.5 text-[9px] text-slate-400'>当前文游独立路由</span></span>
-                <select value={entry.storyTtsProvider || 'minimax'} onChange={event => void updateStoryVoice({ storyTtsProvider: event.target.value as 'minimax' })} className='bg-transparent text-[10px] font-bold text-slate-600 outline-none'><option value='minimax'>MiniMax</option></select>
+                <span className='min-w-0 flex-1'><strong className='block text-[10px]'>语音服务</strong><span className='block mt-0.5 text-[9px] text-slate-400'>当前文游独立路由 · {storyProviderDetail}</span></span>
+                <select value={storyTtsProvider} onChange={event => void updateStoryVoice({ storyTtsProvider: event.target.value as 'minimax' | 'elevenlabs' })} className='bg-transparent text-[10px] font-bold text-slate-600 outline-none'><option value='minimax'>MiniMax</option><option value='elevenlabs'>ElevenLabs</option></select>
             </div>
             <div className='border-t border-slate-100 px-4 py-3'>
                 <div className='flex items-start gap-3'>
@@ -275,12 +288,12 @@ const StoryImageSettingsButton: React.FC<Props> = ({ entry, onChange, triggerLab
                 {selectedVoiceDirectorPreset && <div className='mt-2 rounded-xl bg-amber-50 px-3 py-2 text-[9px] leading-4 text-amber-700'>当前副导演：{selectedVoiceDirectorPreset.name} · {voiceDirectorDisplayModel}</div>}
             </div>
             <div className='border-t border-slate-100 px-4 py-3 flex items-center gap-3'>
-                <span className='min-w-0 flex-1'><strong className='block text-[10px]'>角色声线 · {actors[0]?.name || '未选择主角色'}</strong><span className='block mt-0.5 truncate text-[9px] text-slate-400'>{actors[0] ? `自动复用角色设置 · ${voiceProfileLabel(actors[0].voiceProfile)}` : '选择主角色后自动复用该角色已保存的声线'}</span></span><span className='shrink-0 text-[9px] font-bold text-violet-500'>自动复用</span>
+                <span className='min-w-0 flex-1'><strong className='block text-[10px]'>角色声线 · {actors[0]?.name || '未选择主角色'}</strong><span className='block mt-0.5 truncate text-[9px] text-slate-400'>{actors[0] ? `自动复用角色设置 · ${voiceProfileLabel(actors[0].voiceProfile, storyTtsProvider)}` : '选择主角色后自动复用该角色已保存的声线'}</span></span><span className='shrink-0 text-[9px] font-bold text-violet-500'>自动复用</span>
             </div>
             <div className='border-t border-slate-100 px-4 py-3 flex items-center gap-3'>
-                <span className='min-w-0 flex-1'><strong className='block text-[10px]'>User 声线 · 我的声线</strong><span className='block mt-0.5 truncate text-[9px] text-slate-400'>自动复用个人档案 · {voiceProfileLabel(userProfile.voiceProfile)}</span></span><span className='shrink-0 text-[9px] font-bold text-violet-500'>自动复用</span>
+                <span className='min-w-0 flex-1'><strong className='block text-[10px]'>User 声线 · 我的声线</strong><span className='block mt-0.5 truncate text-[9px] text-slate-400'>自动复用个人档案 · {voiceProfileLabel(userProfile.voiceProfile, storyTtsProvider)}</span></span><span className='shrink-0 text-[9px] font-bold text-violet-500'>自动复用</span>
             </div>
-            <p className='border-t border-slate-100 px-4 py-3 text-[9px] leading-4 text-slate-400'>文游不另存 voice_id、语速等声线参数。关闭只禁止点读与刷新，不删除已生成音频。MiniMax Key 继续读取全局设置。</p>
+            <p className='border-t border-slate-100 px-4 py-3 text-[9px] leading-4 text-slate-400'>文游不另存声线参数。MiniMax 读取角色 voice_id / 我的声线与全局 Key；ElevenLabs 读取角色 / 个人档案里的 Voice ID，并复用全局 ElevenLabs Key、v4 模型与 Stability / Similarity。切换服务只影响之后生成或刷新的语音，另一服务的缓存不会串用。</p>
         </div>}
         {open && createPortal(<div
             className='story-theme fixed inset-0 z-[95] flex items-end justify-center bg-slate-950/35'
