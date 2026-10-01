@@ -1,5 +1,6 @@
-// Story intentionally reuses the shared acting guide so char/user TTS stay behaviorally aligned.
+// Story keeps one structural STV protocol, but the acting syntax follows the selected TTS provider.
 import { VOICE_ACTING_GUIDE, VALID_EMOTIONS, cleanVoiceMarkupForDisplay, parseVoiceOutput } from './minimaxTts';
+import { getElevenLabsVoiceActingGuide } from './elevenLabsTts';
 
 export type StoryVoiceSpeaker = 'char' | 'user';
 export type StoryVoiceTaggedSpeaker = StoryVoiceSpeaker | 'npc';
@@ -197,9 +198,22 @@ export const buildStoryVoiceSpeakerFormatReminder = (
     enabled: boolean,
     characterName = '当前主角色',
     userName = '用户',
+    provider: 'minimax' | 'elevenlabs' = 'minimax',
+    elevenLabsModel?: string | null,
 ): string => {
     if (!enabled) return '';
     const emotions = Array.from(VALID_EMOTIONS).join(' / ');
+    const isElevenLabs = provider === 'elevenlabs';
+    const actingRule = isElevenLabs
+        ? '- <语音> 内的字就是实际要念的对白；演绎使用 ElevenLabs v4 Audio Tags，例如 [sighs]、[whispers]、[laughs]、[pause]。不要使用 <#秒数#>；v4 不读取 MiniMax 停顿标签。'
+        : '- <语音> 内的字就是实际要念的对白；允许按下方共享演绎规范加入 <#秒数#> 和合法 sound tag，但不要为了“演”而改变事件事实、人物意图或对白语义。';
+    const hiddenRule = isElevenLabs
+        ? '- <语音>、emotion 与 Audio Tags 都是隐藏的 TTS 演绎数据，正文显示时系统会自动去掉；不要在正文里解释这些标记。'
+        : '- <语音>、emotion、<#秒数#>、sound tag 都是隐藏的 TTS 演绎数据，正文显示时系统会自动去掉；不要在正文里解释这些标记。';
+    const example = isElevenLabs
+        ? '- 示例：[[STV:char]]<语音 emotion="sad">「我知道。[sighs]只是……有点难受。」</语音>[[/STV]] / [[STV:user]]<语音 emotion="calm">「那就先走吧。」</语音>[[/STV]] / [[STV:npc]]「请出示证件。」[[/STV]]。'
+        : '- 示例：[[STV:char]]<语音 emotion="sad">「我知道。<#0.5#>(sighs)只是……有点难受。」</语音>[[/STV]] / [[STV:user]]<语音 emotion="calm">「那就先走吧。」</语音>[[/STV]] / [[STV:npc]]「请出示证件。」[[/STV]]。';
+    const providerGuide = isElevenLabs ? getElevenLabsVoiceActingGuide(elevenLabsModel) : VOICE_ACTING_GUIDE;
     return [
         '### 文游对白与语音隐藏标记（仅作用于 <story_text> 主正文）',
         '- 人物真实说出口的对白一律使用「……」。只有「……」会被视为对白。',
@@ -208,13 +222,13 @@ export const buildStoryVoiceSpeakerFormatReminder = (
         `- ${characterName} 说出口的对白必须写成：[[STV:char]]<语音 emotion="calm">「……」</语音>[[/STV]]。`,
         `- ${userName} 说出口的对白必须写成：[[STV:user]]<语音 emotion="calm">「……」</语音>[[/STV]]。`,
         `- emotion 必须根据当前情境、动作、心理状态、前后文和关系氛围逐句判断，只能从这些标准值中选择：${emotions}。不要因为同一说话人就固定一种 emotion。`,
-        '- <语音> 内的字就是实际要念的对白；允许按下方共享演绎规范加入 <#秒数#> 和合法 sound tag，但不要为了“演”而改变事件事实、人物意图或对白语义。',
-        '- <语音>、emotion、<#秒数#>、sound tag 都是隐藏的 TTS 演绎数据，正文显示时系统会自动去掉；不要在正文里解释这些标记。',
+        actingRule,
+        hiddenRule,
         '- NPC、路人和其他人物说出口的对白：[[STV:npc]]「……」[[/STV]]；他们正常显示为对白，但目前不配音，不要给 NPC 添加 <语音>。',
         '- 旁白、动作、环境描写、心理活动不要添加 STV 或 <语音>；普通引用与专名也绝不能添加 STV。',
         '- STV 必须成对出现，不要把标记放到 <story_text> 之外。',
-        '- 示例：[[STV:char]]<语音 emotion="sad">「我知道。<#0.5#>(sighs)只是……有点难受。」</语音>[[/STV]] / [[STV:user]]<语音 emotion="calm">「那就先走吧。」</语音>[[/STV]] / [[STV:npc]]「请出示证件。」[[/STV]]。',
+        example,
         '',
-        VOICE_ACTING_GUIDE,
+        providerGuide,
     ].join('\n');
 };
