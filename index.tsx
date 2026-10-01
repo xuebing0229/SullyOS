@@ -11,6 +11,23 @@ import { installWakeListener } from './utils/proactivePushConfig';
 import { initAnalytics } from './utils/analytics';
 import { installStoryPollingVisibilityGuard } from './utils/storyPollingVisibilityGuard';
 import { Capacitor } from '@capacitor/core';
+import { isChunkLoadError, tryAutoReloadForChunkError } from './utils/chunkLoadRecovery';
+
+// 动态 chunk 也可能在 React ErrorBoundary 之外失败（例如顶层 import() / preload）。
+// 更新 APK 后若 WebView 还拿着旧 index.html，这类失败必须先绕过文档缓存再重载。
+if (typeof window !== 'undefined') {
+  const recoverChunkFailure = (error: unknown) => {
+    if (!isChunkLoadError(error)) return;
+    void tryAutoReloadForChunkError();
+  };
+  window.addEventListener('unhandledrejection', event => {
+    if (!isChunkLoadError(event.reason)) return;
+    if (tryAutoReloadForChunkError()) event.preventDefault();
+  });
+  window.addEventListener('error', event => {
+    recoverChunkFailure(event.error || event.message);
+  });
+}
 
 // Android WebView 退到后台后不再自己轮询 story-jobs；原生 monitor 继续盯任务，
 // 回前台时 JS 立即接回同一个 job，避免后台冻结被误判成网络/SYSTEM ERROR。
