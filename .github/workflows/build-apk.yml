@@ -25,7 +25,8 @@ permissions:
 
 concurrency:
   group: android-release
-  cancel-in-progress: false
+  # 连续推送修复时只构建最新 master，避免半成品 Release 抢先成为 App 内“最新版本”。
+  cancel-in-progress: true
 
 jobs:
   build:
