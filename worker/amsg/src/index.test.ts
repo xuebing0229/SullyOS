@@ -3342,7 +3342,9 @@ describe('/debug — 只读诊断', () => {
     expect(data.schema).toBeNull();
   });
 
-  it('任务到点很久还挂着 pending → cron 那侧有问题', async () => {
+  // 这个假库只答得上计数，逐条细账那条查询会失败——下面两条测的正是那时的退路：
+  // 只看最老那条晚了多久。逐条判定（重试中不算卡住之类）在 tickReport.test.ts 里用真 SQLite 测。
+  it('细账读不了时退回老判据：任务到点很久还挂着 pending → cron 那侧有问题', async () => {
     const data = await debug(fakeDb({
       tables: ALL_TABLES,
       pending: [{ next_send_at: minutesAgo(47) }],
@@ -3351,7 +3353,7 @@ describe('/debug — 只读诊断', () => {
     expect(data.storage.oldestOverdueMinutes).toBeGreaterThanOrEqual(47);
   });
 
-  it('刚到点一两分钟不算挂——cron 一分钟一跳，得留重试余量', async () => {
+  it('细账读不了时退回老判据：刚到点一两分钟不算挂——cron 一分钟一跳，得留重试余量', async () => {
     const data = await debug(fakeDb({
       tables: ALL_TABLES,
       pending: [{ next_send_at: minutesAgo(1) }],

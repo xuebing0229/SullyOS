@@ -3,16 +3,17 @@ import Modal from '../os/Modal';
 import ConfirmDialog from '../os/ConfirmDialog';
 import { ActiveMsg2GlobalConfig, RealtimeConfig } from '../../types';
 import {
-  ActiveMsgClient, ActiveMsg2PushStatus, fetchWorkerDiagnostics, readAmsgFailKind,
+  ActiveMsgClient, ActiveMsg2PushStatus, fetchWorkerDiagnostics, fetchWorkerTickReport, readAmsgFailKind,
   type AmsgCronTriggerState,
 } from '../../utils/activeMsgClient';
 import {
-  AmsgDiagnosticLevel, AmsgDiagnosticsProbe,
+  AmsgDiagnosticLevel, AmsgDiagnosticsProbe, type AmsgTickReportResult,
   buildAmsgDiagnosticRows, summarizeAmsgDiagnostics,
   INSTANT_CHAT_BLOCKER_HINTS, resolveInstantChatBlocker,
   type InstantChatGateInput,
 } from '../../utils/amsgDiagnostics';
 import { ActiveMsgStore, maskActiveMsgUserId } from '../../utils/activeMsgStore';
+import { formatTaskTime } from '../../utils/amsg2Tasks';
 import { cancelAllRemoteAmsgTasks, isWorkerUrlCleared, wipeAmsgCloudData } from '../../utils/amsgStateSync';
 import {
   buildCloudflareDashboardUrl,
@@ -213,6 +214,8 @@ const ActiveMsgGlobalSettingsModal: React.FC<ActiveMsgGlobalSettingsModalProps> 
   // 有没有停」都算好了，但入口一直只有手拼 URL——而这几样恰恰是「界面上一切正常、
   // 就是一条都不发」的全部原因。存原始探测结果，红绿灯在渲染时算（推送状态一变就跟着走）。
   const [diagnosticsProbe, setDiagnosticsProbe] = useState<AmsgDiagnosticsProbe | null>(null);
+  // 定时任务的逐条细账（GET /tick-report）。/debug 只知道「几条到点没发」，为什么没发要看这份。
+  const [tickReportResult, setTickReportResult] = useState<AmsgTickReportResult | null>(null);
   const [diagnosing, setDiagnosing] = useState(false);
   // 体检摆在最上面，但默认收着：装好之后它天天是「都正常」，摊开占掉半屏。
   // 标题那一行已经把结论说了，要看是哪一项才需要点开。
@@ -282,7 +285,10 @@ const ActiveMsgGlobalSettingsModal: React.FC<ActiveMsgGlobalSettingsModalProps> 
   const runDiagnostics = async () => {
     setDiagnosing(true);
     try {
-      setDiagnosticsProbe(await fetchWorkerDiagnostics());
+      // 两个端点互不依赖，并排拉；细账那边失败不抛，不会拖垮体检本身。
+      const [probe, tickReport] = await Promise.all([fetchWorkerDiagnostics(), fetchWorkerTickReport()]);
+      setDiagnosticsProbe(probe);
+      setTickReportResult(tickReport);
     } finally {
       setDiagnosing(false);
     }
@@ -351,6 +357,7 @@ const ActiveMsgGlobalSettingsModal: React.FC<ActiveMsgGlobalSettingsModalProps> 
     } else {
       setInstantChatSupported(false);
       setDiagnosticsProbe(null);
+      setTickReportResult(null);
       setWorkerVersion(null);
       setCronState(null);
     }
@@ -903,6 +910,11 @@ const ActiveMsgGlobalSettingsModal: React.FC<ActiveMsgGlobalSettingsModalProps> 
     ? buildAmsgDiagnosticRows({
       probe: diagnosticsProbe,
       localPushSubscribed: Boolean(pushStatus?.hasSubscription),
+      // 跟任务卡片同一种写法：cron 一分钟一跳，秒位没有意义。
+      formatTime: (atMs) => formatTaskTime(atMs),
+      tickReport: tickReportResult,
+      // 用户自己暂停了后台任务的话，任务攒着是意料之中，那一行不能报成触发器坏了。
+      cronPaused: cronState?.kind === 'known' && !cronState.enabled,
     })
     : [];
   const diagnosticLevel = diagnosticRows.length ? summarizeAmsgDiagnostics(diagnosticRows) : 'unknown';
@@ -988,6 +1000,25 @@ const ActiveMsgGlobalSettingsModal: React.FC<ActiveMsgGlobalSettingsModalProps> 
                         <p className="mt-1 pl-3.5 text-[11px] leading-relaxed text-slate-500 whitespace-pre-line">
                           {row.detail}
                         </p>
+                      )}
+                      {/* 逐条细目（比如每条到点没发的任务现在算哪种情况）。报错原文默认收着：
+                          多半很长，摊开会把整块体检撑满，但排查时又必须看得到原话。 */}
+                      {row.level === 'ok' || !row.items?.length ? null : (
+                        <div className="mt-1.5 pl-3.5 space-y-1.5">
+                          {row.items.map((item, index) => (
+                            <div key={index} className="border-l-2 border-slate-100 pl-2 text-[11px] leading-relaxed text-slate-500">
+                              <p className="whitespace-pre-line">{item.text}</p>
+                              {item.raw ? (
+                                <details className="mt-0.5">
+                                  <summary className="cursor-pointer text-[10px] font-bold text-slate-400">原文</summary>
+                                  <pre className="mt-1 whitespace-pre-wrap break-all font-mono text-[10px] leading-relaxed text-slate-500 bg-slate-50 rounded-lg p-2 select-text">
+                                    {item.raw}
+                                  </pre>
+                                </details>
+                              ) : null}
+                            </div>
+                          ))}
+                        </div>
                       )}
                     </div>
                   );

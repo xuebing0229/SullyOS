@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { FileOrImageImport } from '../share/FileOrImageImport';
 import {
     ArrowCounterClockwise,
     Check,

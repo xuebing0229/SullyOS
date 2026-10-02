@@ -25,8 +25,9 @@ import {
 } from './amsg2Tasks';
 import { AMSG_CHAT_PRESENCE_KEY, AmsgChatPresence } from './amsgChatPresence';
 import {
-  AmsgDiagnosticsProbe, AmsgFailKind, describeAmsgFetchFailure, parseAmsgDebugReport,
+  AmsgDiagnosticsProbe, AmsgFailKind, type AmsgTickReportResult, describeAmsgFetchFailure, parseAmsgDebugReport,
 } from './amsgDiagnostics';
+import { parseAmsgTickReport } from './amsgTickReport';
 // 「这个角色欠着一条即时对话回复吗」的两个原始信号（待收记录 + 发送在飞）。
 // amsgInstantChat 反过来也 import 这个文件，两边都只在函数体里用对方，模块求值期
 // 谁都不碰谁，所以这个环是安全的；换成在这里另读一遍 localStorage 才是真麻烦
@@ -327,6 +328,43 @@ export const fetchWorkerDiagnostics = async (): Promise<AmsgDiagnosticsProbe> =>
   } catch (error: any) {
     // fetchWithAuthRaw 抛出来的已经是人话了（见 amsgDiagnostics 的 describeAmsgFetchFailure）。
     return { reachable: false, reason: error?.message || '连不上 Worker。' };
+  }
+};
+
+/**
+ * 拉一次定时任务细账（`GET /tick-report`，形状见 amsgTickReport.ts）。
+ *
+ * 体检「定时任务」那一行靠它把「到点没发」拆成逐条的原因。跟 /debug 并排拉，所以
+ * 失败也不抛：那一行照旧按 /debug 的两个数给笼统结论，这里的原因挂在下面，
+ * 让人知道为什么没有逐条的。
+ */
+export const fetchWorkerTickReport = async (): Promise<AmsgTickReportResult> => {
+  let config: ActiveMsg2GlobalConfig;
+  try {
+    config = await ensureWorkerReady();
+  } catch (error: any) {
+    return { ok: false, reason: error?.message || '还没填 Worker 地址。' };
+  }
+
+  try {
+    // 超时的理由同 fetchWorkerDiagnostics：两边是一起等的，这边干等会拖住整块体检。
+    const signal = typeof AbortSignal?.timeout === 'function' ? AbortSignal.timeout(8000) : undefined;
+    const { status, body } = await fetchWithAuthRaw('tick-report', config, { method: 'GET', signal }, '体检');
+    const report = status === 200 ? parseAmsgTickReport(body) : null;
+    if (report) return { ok: true, report };
+
+    if (status === 401 || status === 403) {
+      return { ok: false, reason: `Worker 拒绝了读定时任务细账的请求（HTTP ${status}），多半是共享密钥两边对不上。` };
+    }
+    // 端点在、但查的时候自己出了错（读库失败之类）：这跟「代码太旧」是两回事，原话带上。
+    if (status >= 500) {
+      const message = typeof body?.error?.message === 'string' ? body.error.message : '';
+      return { ok: false, reason: `Worker 查定时任务细账时出错了（HTTP ${status}）${message ? `：${message}` : '。'}` };
+    }
+    // 404，或者 200 但形状对不上：这台 Worker 上还没有这个端点。
+    return { ok: false, reason: '没拿到每条任务的细账（Worker 上的代码可能还不是最新，点上面的「更新 Worker」）。' };
+  } catch (error: any) {
+    return { ok: false, reason: error?.message || '连不上 Worker。' };
   }
 };
 

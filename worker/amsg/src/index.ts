@@ -31,6 +31,7 @@ import {
   decryptFromStorage,
   deriveUserEncryptionKey,
   measurePushPayload,
+  summarizeErrorCause,
 } from '@rei-standard/amsg-server/cloudflare';
 import { stripReasoningTags } from '@rei-standard/amsg-shared';
 import { AMSG_BUNDLE_VERSION } from '../../../utils/amsgBundleVersion';
@@ -149,6 +150,7 @@ import {
 import {
   applyInstantNotificationPolicy,
   buildInstantTimelyBlock,
+  constantTimeEqual,
   handleInstantChat,
   instantNotificationTag,
   INSTANT_TOTAL_TIMEOUT_MS,
@@ -157,6 +159,8 @@ import {
   type InstantTickNamespace,
 } from './instantChat';
 import { buildScheduleChangeResult } from '../../../utils/amsgScheduleResult';
+import { TICK_STALL_MS } from '../../../utils/amsgTickReport';
+import { buildTickReport, readOverdueTasks, recordTickOutcome, type TickReportDb } from './tickReport';
 import type { ActiveMsg2TaskRecord } from '../../../types';
 import { createHybridPushTransport, isFcmConfigured, type NativeFcmEnv } from './nativeFcm';
 import { handleNativePollRequest } from './nativePoll';
@@ -2522,13 +2526,20 @@ export const buildWorkerConfig = (env: Env) => {
     // 门牌整理最长占住这个角色 120 秒，而它恰恰是在一轮对话刚结束时起跑的：用户下一句话
     // 的即时对话任务排在它后面，人就干等着「正在输入…」。同种后台任务之间仍按角色串行
     // ——同一角色两份整理并发落地，就是拿两份旧快照互相盖。
-    serializeBy: (task: { metadata?: Record<string, unknown> | null }) => {
-      const charId = typeof task.metadata?.charId === 'string' ? task.metadata.charId : null;
-      if (!charId) return null;
-      const kind = readTaskKind(task.metadata);
-      return kind ? `${charId}#${kind}` : charId;
-    },
+    serializeBy: amsgSerializeKey,
   };
+};
+
+/**
+ * 分组串行的键（见 buildWorkerConfig 里 serializeBy 那段）。单拎出来是因为定时任务细账
+ * 也要用同一个函数认「这两条是不是同一组」：各写一份的话，哪天分组规则改了一边，
+ * 细账就会把正常排队的任务报成卡住。
+ */
+export const amsgSerializeKey = (task: { metadata?: Record<string, unknown> | null }): string | null => {
+  const charId = typeof task.metadata?.charId === 'string' ? task.metadata.charId : null;
+  if (!charId) return null;
+  const kind = readTaskKind(task.metadata);
+  return kind ? `${charId}#${kind}` : charId;
 };
 
 /** 环境自检的结论。missing 为空就能正常干活，warnings 是「能跑但有一块是哑的」。 */
@@ -2646,9 +2657,6 @@ const jsonWithCors = (status: number, body: unknown): Response =>
 
 // cron 触发时 CF 传进来的事件，只往上游转手，没必要为它引 workers-types。
 type CfScheduledEvent = { scheduledTime: number; cron: string };
-
-/** 到点多久还没被处理就算 cron 那侧出了问题。cron 每分钟一跳，留足重试余量。 */
-const TICK_STALL_MINUTES = 5;
 
 /**
  * 把上游的 schema 自查结果拆成「缺表 / 缺列」两摞。
@@ -2772,9 +2780,10 @@ export const inspectPushDelivery = async (
 /**
  * 只读地看一眼库里的状况：表齐不齐、列全不全、有没有到点却没人处理的任务。
  *
- * 全程不写库，也不读任何一条任务的内容——只数数、比对 schema，以及从失败记录里
- * 认一个状态码。数出来的东西（待发条数、最老的一条过期了多久）不指向任何角色、
- * 时间点或正文。
+ * 全程不写库。回出去的只有数数、schema 比对，和从失败记录里认出的一个状态码——
+ * 数出来的东西（待发条数、最老的一条过期了多久、卡住几条）不指向任何角色、时间点
+ * 或正文。判「是不是同一个角色在排队」时会在内部解开过期任务的内容，但角色名、
+ * 报错原文都不出这个端点。
  */
 const inspectStorage = async (
   env: Env,
@@ -2825,6 +2834,21 @@ const inspectStorage = async (
         .first<{ n: number; updatedAt: number | null }>()
       : null;
 
+    // 过期的那几条各自算哪种情况（在等重试、正在发、排队、真卡住）。只数数，
+    // 报错原文和角色名一概不出这个端点——细账走要共享密钥的 /tick-report。
+    //
+    // 读不成（老库还没有 retry_after 这些列）时是 null，定时任务那一项退回只看
+    // 「最老那条晚了多久」。表结构漂移恰恰是这个端点要查的东西，不能因为它把整份体检带挂。
+    const overdue = stats?.overdue
+      ? await readOverdueTasks(db as unknown as TickReportDb, {
+        masterKey: env.AMSG_MASTER_KEY?.trim() || undefined,
+        serializeKeyOf: amsgSerializeKey,
+      }).catch((error) => {
+        console.warn('[amsg:debug] 过期任务的细账读不了，定时任务一项退回只看晚了多久', error);
+        return null;
+      })
+      : null;
+
     return {
       reachable: true as const,
       schemaReady,
@@ -2841,6 +2865,10 @@ const inspectStorage = async (
       oldestOverdueMinutes: stats?.oldest
         ? Math.floor((Date.now() - Date.parse(stats.oldest)) / 60000)
         : null,
+      // 过期任务里真卡住的、在失败重试的各几条，以及合起来的结论。null = 这次没判出来。
+      stuckTasks: overdue ? overdue.tasks.filter((task) => task.stuck).length : null,
+      retryingTasks: overdue ? overdue.tasks.filter((task) => task.lastError !== null).length : null,
+      overdueVerdict: overdue?.verdict ?? null,
     };
   } catch (error) {
     // 报错类型而不是原文：原文可能带 SQL 片段，而这个端点是不设防的。
@@ -2849,18 +2877,27 @@ const inspectStorage = async (
 };
 
 /**
- * cron 到底在不在跑。
+ * 定时任务有没有在被正常处理。
  *
- * 不写心跳，靠「有没有到点了还没被处理的任务」反推——心跳要往用户库里建表、每分钟
- * 写一次，而这个判断纯读、零副作用，问的还正好是用户真正关心的那件事（任务有没有
- * 被按时处理），比「tick 有没有触发」更贴。代价是手上没有待发任务时无从判断，那种
- * 情况下 cron 停没停也确实不影响什么。
+ * 不写心跳，靠到点了还没发出去的任务反推——心跳要每分钟写一次库，而这个判断纯读、
+ * 零副作用，问的还正好是用户真正关心的那件事（任务有没有被按时处理），比「tick 有没有
+ * 触发」更贴。代价是手上没有待发任务时无从判断，那种情况下 cron 停没停也确实不影响什么。
+ *
+ * 「晚了多久」不能直接当「卡了多久」：重试期间任务的到点时刻不会往后挪，一条正在
+ * 正常重试的任务晚个二三十分钟很平常。所以逐条判出来的结论优先（见 utils/amsgTickReport）：
+ *
+ * - `stalled`：有任务真卡住了（一直没人领，或者领了又没了下文）。
+ * - `failing`：没卡住，但有任务在失败重试，或者这次开跑晚得不正常。
+ * - `healthy`：都在正常处理。
+ *
+ * 逐条判不了（老库缺列）时才退回只看最老那条晚了多久。
  */
 const judgeTick = (storage: Awaited<ReturnType<typeof inspectStorage>>) => {
   if (!storage.reachable || !('pendingTasks' in storage)) return 'unknown';
   if (!storage.pendingTasks) return 'idle';
+  if (storage.overdueVerdict) return storage.overdueVerdict;
   const overdueMinutes = storage.oldestOverdueMinutes;
-  if (overdueMinutes === null || overdueMinutes < TICK_STALL_MINUTES) return 'healthy';
+  if (overdueMinutes === null || overdueMinutes * 60_000 < TICK_STALL_MS) return 'healthy';
   return 'stalled';
 };
 
@@ -3013,6 +3050,7 @@ const readServerVersion = async (request: Request, env: Env) => {
  * 在上游 worker 外面包一层配置自检。多出来的四个行为：
  *   GET  /config-check  配置齐不齐（只读 env，前端「连接并验证」用的就是它）
  *   GET  /debug         上面那些再加库和 cron 的状况，给隔着屏幕帮人排障用
+ *   GET  /tick-report   定时任务细账：过期任务各自卡在哪、报错原文、整轮报错（见 ./tickReport，要共享密钥）
  *   POST /instant-chat  即时对话：一个请求受理一轮聊天（见 ./instantChat）
  *   POST /self-update   自己去取最新代码覆盖自己（见 ./selfUpdate，要共享密钥 + CF_API_TOKEN）
  *   GET/POST /cron-trigger  查看 / 暂停 / 恢复自己的 cron trigger（见 ./cronTrigger，认证同上）
@@ -3167,6 +3205,22 @@ export default {
       return jsonWithCors(result.status, result.body);
     }
 
+    // 定时任务细账：需要共享密钥，返回逐条状态与失败原文。
+    if (pathname.endsWith('/tick-report')) {
+      if (method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS_HEADERS });
+      if (method !== 'GET') return jsonWithCors(405, { success: false, error: { code: 'METHOD_NOT_ALLOWED', message: '/tick-report 只接受 GET' } });
+      const token = env.AMSG_SERVER_TOKEN?.trim() ?? '';
+      const clientToken = request.headers.get('X-Client-Token') ?? '';
+      if (token && (!clientToken || !(await constantTimeEqual(clientToken, token)))) return jsonWithCors(401, { success: false, error: { code: 'INVALID_CLIENT_TOKEN', message: '共享密钥无效或缺失' } });
+      try {
+        const report = await buildTickReport(env.DB as unknown as TickReportDb, { masterKey: env.AMSG_MASTER_KEY?.trim(), serializeKeyOf: amsgSerializeKey });
+        return jsonWithCors(200, { success: true, data: report });
+      } catch (error) {
+        const cause = summarizeErrorCause(error, 'request');
+        return jsonWithCors(500, { success: false, error: { code: 'TICK_REPORT_FAILED', message: cause.message ? `${cause.name}: ${cause.message}` : cause.name } });
+      }
+    }
+
     // 即时对话：一个请求把「传云端状态 + 建任务」串完，回 202 之后立刻起一跳。
     // 排在配置门之后，所以走到这里 D1 和密钥必然都在。
     if (pathname.endsWith('/instant-chat')) {
@@ -3194,7 +3248,8 @@ export default {
     // 整轮出错时上游把原因放在返回值里（同一份也会经 onError 记一行）。这里不再重复
     // 打印，但要把它咽掉——CF 不看 scheduled 的返回值，往外抛只会变成一条没上下文的堆栈。
     try {
-      await upstream.scheduled(event, env);
+      const outcome = await upstream.scheduled(event, env);
+      await recordTickOutcome(env.DB as unknown as TickReportDb, outcome);
     } finally {
       // Story Jobs 的模型请求由 DO alarm 独立持有；cron 只捡“还没开始”的 queued 行。
       // 即使主动消息原 scheduled 这一分钟自己报错，也不能把 Story 的独立任务一起饿死。

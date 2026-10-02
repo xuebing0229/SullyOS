@@ -578,6 +578,16 @@ const ActiveMsg2SettingsModal: React.FC<ActiveMsg2SettingsModalProps> = ({
                         {remoteErrorText ? (
                           <div className="text-amber-600 mt-1 text-[11px]">⚠ {remoteErrorText}</div>
                         ) : null}
+                        {/* 上面那行只留得下原因的关键半句，状态码和上游原话的其余部分都截掉了。
+                            原文收在这里，排查或者截图问人时点开就能看到全文。stale 是个机器词，没有原文可看。 */}
+                        {remoteErrorText && remoteInfo?.lastError?.reason && remoteInfo.lastError.reason !== 'stale' ? (
+                          <details className="mt-0.5">
+                            <summary className="cursor-pointer text-[10px] font-bold text-slate-400">原文</summary>
+                            <pre className="mt-1 whitespace-pre-wrap break-all font-mono text-[10px] leading-relaxed text-slate-500 bg-slate-50 rounded-lg p-2 select-text">
+                              {remoteInfo.lastError.reason}
+                            </pre>
+                          </details>
+                        ) : null}
                         {t.lastError ? (
                           <div className="text-red-500 mt-1 text-[11px]">{t.lastError}</div>
                         ) : null}

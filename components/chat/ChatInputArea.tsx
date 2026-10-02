@@ -1,3 +1,4 @@
+import EmojiExportDialog from './EmojiExportDialog';
 import React, { useRef, useState, useEffect } from 'react';
 import { ShareNetwork, Trash, Plus, Smiley, PaperPlaneTilt, Money, BookOpenText, GearSix, Image, Lock, ArrowsClockwise, ChatCircleDots, CalendarBlank, ForkKnife, Coffee, Code, Brain, PencilSimple, BellSimpleRinging, Alarm, Sparkle, CaretDown, FadersHorizontal, LinkSimple, Palette, Star, Briefcase } from '@phosphor-icons/react';
 import { CharacterProfile, ChatTheme, EmojiCategory, Emoji } from '../../types';
@@ -94,6 +95,7 @@ const ChatInputArea: React.FC<ChatInputAreaProps> = ({
     const [isBubbleSectionOpen, setIsBubbleSectionOpen] = useState(false);
     const [pendingDeleteThemeId, setPendingDeleteThemeId] = useState<string | null>(null);
     const [emojiSelectionMode, setEmojiSelectionMode] = useState(false);
+    const [exportEmojis, setExportEmojis] = useState<Emoji[] | null>(null);
     const [selectedEmojis, setSelectedEmojis] = useState<any[]>([]);
     // 分组太多时横向拖不动：提供「展开全部分组」网格总览
     const [showCategoryOverview, setShowCategoryOverview] = useState(false);
@@ -148,7 +150,7 @@ const ChatInputArea: React.FC<ChatInputAreaProps> = ({
         isLongPressTriggered.current = false;
 
         // 2. Skip long-press for the default category (no options needed)
-        if (type === 'category' && item.id === 'default') return;
+        // 默认分类也允许长按，以便导出其中的原图。
         
         // 3. Store coordinates and start timer for valid long-press candidates
         if ('touches' in e) {
@@ -409,6 +411,7 @@ const ChatInputArea: React.FC<ChatInputAreaProps> = ({
 
     return (
         <>
+        {exportEmojis && <EmojiExportDialog emojis={exportEmojis} onClose={() => setExportEmojis(null)} />}
         {emojiSelectionMode && (
             <div className={`fixed inset-0 z-[-1] ${isPixelStyle ? 'bg-[#eadfce]/70 backdrop-blur-[2px]' : isDiscordStyle ? 'bg-slate-950/70 backdrop-blur-[2px]' : 'bg-white/60 backdrop-blur-[2px]'}`} />
         )}
@@ -631,6 +634,7 @@ const ChatInputArea: React.FC<ChatInputAreaProps> = ({
                                     ) : (
                                         <button onClick={() => onPanelAction('emoji-import')} className={emojiImportTileClass}>+</button>
                                     )}
+                                    {emojiSelectionMode && <button onClick={() => setExportEmojis([...selectedEmojis])} disabled={!selectedEmojis.length} aria-label="下载选中的表情" className={`${emojiImportTileClass} text-xs disabled:opacity-40`}>下载原图</button>}
                                     {visibleEmojis.map((e) => {
                                         const isSelected = selectedEmojiUrls.has(e.url);
                                         return (

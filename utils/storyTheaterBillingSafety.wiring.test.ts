@@ -271,7 +271,13 @@ describe('story theater billing safety wiring', () => {
         expect(cloudStoryBridgeSource).toContain("timestamp: pending.createdAt");
         expect(cloudStoryBridgeSource).toContain("apiPresetId: successfulRoute.presetId");
         expect(amsgWorkerSource).toContain("await kickQueuedStoryJobs(env)");
-        expect(amsgWorkerSource).toContain("try {\n      await upstream.scheduled(event, env);\n    } finally {");
+        // AMSG2 新诊断需要读取 scheduled() 的 outcome；Story Jobs 仍必须放在 finally，保证主动消息失败时也能捡 queued。
+        expect(amsgWorkerSource).toContain("const outcome = await upstream.scheduled(event, env);");
+        expect(amsgWorkerSource).toContain("await recordTickOutcome(env.DB as unknown as TickReportDb, outcome);");
+        expect(amsgWorkerSource.indexOf("const outcome = await upstream.scheduled(event, env);"))
+            .toBeLessThan(amsgWorkerSource.indexOf("} finally {", amsgWorkerSource.indexOf("const outcome = await upstream.scheduled(event, env);")));
+        expect(amsgWorkerSource.indexOf("} finally {", amsgWorkerSource.indexOf("const outcome = await upstream.scheduled(event, env);")))
+            .toBeLessThan(amsgWorkerSource.indexOf("await kickQueuedStoryJobs(env)"));
         expect(amsgWorkerSource).toContain("await failRunningStoryJob(this.env, story.userId, story.jobId, error)");
         expect(amsgWorkerSource).toContain("running 绝不自动重跑");
         expect(interceptorSource).toContain('recentSuccessfulFetches.set(requestComparisonKey');
