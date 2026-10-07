@@ -4,6 +4,7 @@ import { normalizeUserImpression } from './impression';
 import { isScheduleFeatureOn } from './scheduleFeature';
 import { buildScheduleInjection as buildScheduleInjectionText } from './scheduleInjection';
 import { TIME_FRAMING_CONVERSATIONAL } from './timeFramingNote';
+import { stripEmotionReasoningMarkup } from './emotionText';
 import { resolveCharTimeZone, nowInTimeZone, tzAwarenessNote, interactionGapNote } from './timezone';
 import {
     formatWorldbookSection,
@@ -291,8 +292,9 @@ export const ContextBuilder = {
         // 总开关关闭时完全跳过，防止残留 buff 继续污染 prompt
         // deferVolatile：buff 每轮情绪评估后都可能变 → 移交 buildVolatileCoreState。
         if (!layout?.deferVolatile && isScheduleFeatureOn(char) && char.emotionConfig?.enabled && char.buffInjection) {
-            context += `${char.buffInjection}\n\n`;
-            console.log(`🎭 [Context] Buff injected for ${char.name}:\n`, char.buffInjection);
+            const safeBuffInjection = stripEmotionReasoningMarkup(char.buffInjection);
+            if (safeBuffInjection) context += `${safeBuffInjection}\n\n`;
+            console.log(`🎭 [Context] Buff injected for ${char.name}:\n`, safeBuffInjection);
             console.log(`🎭 [Context] Active buffs:`, JSON.stringify(char.activeBuffs || [], null, 2));
         }
 
@@ -398,8 +400,9 @@ export const ContextBuilder = {
         }
 
         if (isScheduleFeatureOn(char) && char.emotionConfig?.enabled && char.buffInjection) {
-            context += `${char.buffInjection}\n\n`;
-            console.log(`🎭 [Context] Buff injected for ${char.name}:\n`, char.buffInjection);
+            const safeBuffInjection = stripEmotionReasoningMarkup(char.buffInjection);
+            if (safeBuffInjection) context += `${safeBuffInjection}\n\n`;
+            console.log(`🎭 [Context] Buff injected for ${char.name}:\n`, safeBuffInjection);
             console.log(`🎭 [Context] Active buffs:`, JSON.stringify(char.activeBuffs || [], null, 2));
         }
 
