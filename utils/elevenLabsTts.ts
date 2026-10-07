@@ -69,18 +69,6 @@ const normalizeElevenLabsCue = (raw: string): string => {
   return ELEVENLABS_CUE_ALIASES[key] || '';
 };
 
-const normalizeElevenLabsAudioTag = (raw: string): string => {
-  const aliased = normalizeElevenLabsCue(raw);
-  if (aliased) return aliased;
-
-  const value = (raw || '').trim().replace(/\s+/g, ' ');
-  if (!value || value.length > 120) return '';
-  // v4 支持自然语言 Audio Tags：允许简短英文短语/描述，但不把中文方括号正文误认成标签。
-  if (!/[A-Za-z]/.test(value) || /[\u4e00-\u9fff]/.test(value)) return '';
-  if (!/^[A-Za-z0-9][A-Za-z0-9\s,.'’!?-]*$/.test(value)) return '';
-  return value;
-};
-
 /** 支持粘贴纯 ID，也支持从常见 ElevenLabs 页面链接提取 voiceId。 */
 export const normalizeElevenLabsVoiceId = (raw?: string | null): string => {
   const value = (raw || '').trim();
@@ -113,7 +101,7 @@ const extractVoiceBody = (raw: string): string => {
 };
 
 /**
- * ElevenLabs v4 专属文本清洗：保留合法英文自然语言 Audio Tags，隐藏 SullyOS 自己的控制词。
+ * ElevenLabs v4 专属文本清洗：单层 [...] Audio Tags 原样透传，隐藏 SullyOS 自己的控制词。
  */
 export const cleanTextForTtsElevenLabs = (raw: string, model?: string | null): string => {
   const supportsAudioTags = isElevenLabsV4Model(model);
@@ -127,11 +115,7 @@ export const cleanTextForTtsElevenLabs = (raw: string, model?: string | null): s
       const cue = normalizeElevenLabsCue(inner);
       return supportsAudioTags && cue ? `[${cue}]` : '';
     })
-    .replace(/\[([^\[\]]{1,120})\]/g, (_match, inner: string) => {
-      const cue = normalizeElevenLabsAudioTag(inner);
-      if (!cue) return /[A-Za-z]/.test(inner) || /[\u4e00-\u9fff]/.test(inner) ? '' : _match;
-      return supportsAudioTags ? `[${cue}]` : '';
-    });
+    .replace(/\[[^\[\]]*\]/g, (match: string) => supportsAudioTags ? match : '');
 
   text = text
     .replace(/\n{2,}/g, supportsAudioTags ? ' [pause] ' : '……')
@@ -146,7 +130,7 @@ export const stripElevenLabsMarkupForDisplay = (text?: string | null): string =>
   if (!text) return '';
   return text
     .replace(/<#\s*[\d.]+\s*#>/g, '')
-    .replace(/\[([^\[\]]{1,120})\]/g, (match, inner: string) => normalizeElevenLabsAudioTag(inner) ? '' : match)
+    .replace(/\[[^\[\]]*\]/g, '')
     .replace(/\(([^)]{1,60})\)/g, (match, inner: string) => normalizeElevenLabsCue(inner) ? '' : match)
     .replace(/[ \t]{2,}/g, ' ')
     .replace(/[ \t]+([，。！？、；：,.!?…])/g, '$1')
