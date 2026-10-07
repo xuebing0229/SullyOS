@@ -29,6 +29,7 @@ import {
     reconcileEmotionBuffs,
     EMOTION_BUFF_MAX_COUNT,
 } from './emotionApply';
+import { stripEmotionReasoningMarkup } from './emotionText';
 
 const makeChar = (extra: any = {}): any => ({
     id: 'char-1',
@@ -51,6 +52,18 @@ beforeEach(() => {
     saveCharacter.mockClear();
     getAllCharacters.mockReset();
     getAllCharacters.mockResolvedValue([]);
+});
+
+describe('stripEmotionReasoningMarkup — 情绪字段防思考标签穿帮', () => {
+    it('剥掉截图中的 </think><think> 变体但保留正文', () => {
+        expect(stripEmotionReasoningMarkup('热度在往上</think> <think>蹭。'))
+            .toBe('热度在往上蹭。');
+    });
+
+    it('兼容 reasoning / analysis / 全角标签', () => {
+        expect(stripEmotionReasoningMarkup('前＜analysis＞中＜／analysis＞后 <reasoning>呀</reasoning>'))
+            .toBe('前中后 呀');
+    });
 });
 
 describe('情绪评估提示词 — 新情绪不被旧快照锚死', () => {
@@ -300,6 +313,27 @@ describe('applyEmotionEvalRaw — 落库语义', () => {
         expect(saved.activeBuffs[0].label).toBe('焦虑');
         expect(saved.activeBuffs[0].intensity).toBe(4); // 评估提示词使用的 1–5 级强度原样保留
         expect(saved.buffInjection).toContain('当前情绪底色');
+    });
+
+    it('情绪 JSON 字符串里混入 think 标签时，落库/返回前统一清掉', async () => {
+        const raw = JSON.stringify({
+            changed: true,
+            buffs: [{
+                id: 'buff_touch',
+                name: 'touch',
+                label: '<think>贴</think>在一起的实感',
+                intensity: 4,
+                description: '皮肤贴着皮肤的感觉，热度在往上</think> <think>蹭。',
+            }],
+            injection: '靠近</think><think>一点',
+            innerState: '想再</think> <think>贴近一点',
+        });
+        const inner = await applyEmotionEvalRaw(raw, makeChar());
+        expect(inner).toBe('想再贴近一点');
+        const saved = saveCharacter.mock.calls[0][0];
+        expect(saved.activeBuffs[0].label).toBe('贴在一起的实感');
+        expect(saved.activeBuffs[0].description).toBe('皮肤贴着皮肤的感觉，热度在往上蹭。');
+        expect(saved.buffInjection).toBe('靠近一点');
     });
 
     it('漏写 changed 的完整结果仍保存新情绪', async () => {
