@@ -49,6 +49,9 @@ describe('sanitizeForNotification', () => {
     expect(sanitizeForNotification('抖音BGM有节奏感，那就听着\n[聊chat] 播客那是别人的习惯')).toBe(
       '抖音BGM有节奏感，那就听着\n播客那是别人的习惯',
     );
+    expect(sanitizeForNotification('[聊chat天] 你刚才说句搭别人只是挑起我情绪的一种玩法。')).toBe(
+      '你刚才说句搭别人只是挑起我情绪的一种玩法。',
+    );
     expect(sanitizeForNotification('前文 [chat] 后文 [通call] 收尾 [约date] 好')).toBe(
       '前文\n后文\n收尾\n好',
     );
@@ -226,6 +229,12 @@ describe('bubble vs notification differences', () => {
     expect(sanitizeIntoSegments(raw).map(segment => segment.sanitized)).toEqual([
       '得了吧',
       '刚才还叫宝宝',
+    ]);
+
+    const sandwiched = '[聊chat天] 告诉我，阿竹。';
+    expect(sanitizeForBubble(sandwiched)).toBe('告诉我，阿竹。');
+    expect(sanitizeIntoSegments(sandwiched).map(segment => segment.sanitized)).toEqual([
+      '告诉我，阿竹。',
     ]);
   });
 
