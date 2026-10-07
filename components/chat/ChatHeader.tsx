@@ -4,6 +4,7 @@ import { createPortal } from 'react-dom';
 import { CaretLeft, Lightning } from '@phosphor-icons/react';
 import { CharacterProfile, CharacterBuff } from '../../types';
 import TokenImg from '../os/TokenImg';
+import { stripEmotionReasoningMarkup } from '../../utils/emotionText';
 
 interface TokenBreakdown {
     prompt: number;
@@ -285,7 +286,7 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
                         <div className="flex items-center gap-2">
                             <span className="text-sm font-bold" style={{ color: openBuff.color || '#db2777' }}>
                                 {openBuff.emoji ? `${openBuff.emoji} ` : ''}
-                                {openBuff.label}
+                                {stripEmotionReasoningMarkup(openBuff.label)}
                             </span>
                             <div className="text-xs font-bold tracking-wide" style={{ color: openBuff.color || '#db2777' }}>
                                 {INTENSITY_DOTS(openBuff.intensity)}{' '}
@@ -295,7 +296,7 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
                         <button onClick={() => setOpenBuffId(null)} className="text-slate-300 hover:text-slate-500 text-lg leading-none px-1">{'\u00d7'}</button>
                     </div>
                     {openBuff.description ? (
-                        <p className="text-sm text-slate-600 leading-relaxed">{openBuff.description}</p>
+                        <p className="text-sm text-slate-600 leading-relaxed">{stripEmotionReasoningMarkup(openBuff.description)}</p>
                     ) : (
                         <p className="text-xs text-slate-400 italic">暂无详情</p>
                     )}
