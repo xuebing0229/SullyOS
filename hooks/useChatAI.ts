@@ -69,6 +69,7 @@ import { shouldSendThinkingParams } from '../utils/thinkingGate';
 import { buildClaudeProxyCompatibilityBody, shouldRetryClaudeProxyCompatibility } from '../utils/claudeProxyCompat';
 import { routeMiniAppToolCall } from '../utils/miniAppToolRoute';
 import { applyEmotionEvalRaw, extractAssistantText } from '../utils/emotionApply';
+import { stripEmotionReasoningMarkup } from '../utils/emotionText';
 import { buildEmotionUserReferenceSection } from '../utils/emotionUserReference';
 import { buildEmotionEvalRequestMessages, EMOTION_EVAL_JSON_RESPONSE_FORMAT, EMOTION_EVAL_TEMPERATURE } from '../utils/emotionEvalCore';
 import { announceChatGen, CHAT_GEN_EVENTS } from '../utils/chatGenEvents';
@@ -120,7 +121,11 @@ function buildEmotionEvalPrompt(
 ): string {
     // 情绪评估只维护增量状态：短角色基线 + 上一轮结构化 buff + 最近一轮对话。
     // 对话本身不再拍平成 [用户]/[角色] 文本；真正的 user / assistant role 会在请求层保留。
-    const currentBuffs = char.activeBuffs || [];
+    const currentBuffs = (char.activeBuffs || []).map(buff => ({
+        ...buff,
+        ...(typeof buff.label === 'string' ? { label: stripEmotionReasoningMarkup(buff.label) } : {}),
+        ...(typeof buff.description === 'string' ? { description: stripEmotionReasoningMarkup(buff.description) } : {}),
+    }));
 
     const buffStr = currentBuffs.length > 0
         ? JSON.stringify(currentBuffs, null, 2)
