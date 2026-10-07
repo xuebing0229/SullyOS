@@ -2,6 +2,7 @@ import { DB } from './db';
 import type { CharacterProfile, CharacterBuff } from '../types';
 import { landAmbientEventFromEval } from './roomAmbient';
 import { CHAT_GEN_EVENTS } from './chatGenEvents';
+import { stripEmotionReasoningMarkup } from './emotionText';
 
 // 情绪评估失败的用户可见信号（OSContext 监听弹 toast）。本函数是本地 / instant(worker)
 // 两条路径的共用落点，在这里派发能覆盖「worker 推回的 raw 解析全灭」这类云端失败。
@@ -21,7 +22,8 @@ const announceEmotionFailed = (charData: CharacterProfile, reason: string): void
 export const lastInnerStateKey = (charId: string) => `sully_last_innerstate_${charId}`;
 export function getLastInnerState(charId: string): string {
     try {
-        return (typeof localStorage !== 'undefined' && localStorage.getItem(lastInnerStateKey(charId))) || '';
+        const stored = (typeof localStorage !== 'undefined' && localStorage.getItem(lastInnerStateKey(charId))) || '';
+        return stripEmotionReasoningMarkup(stored);
     } catch { return ''; }
 }
 
@@ -62,8 +64,8 @@ const sanitizeBuffs = (buffs?: CharacterBuff[]): CharacterBuff[] => {
     if (!Array.isArray(buffs)) return [];
     return buffs
         .map((buff, index) => {
-            let label = typeof buff?.label === 'string' ? buff.label.trim() : '';
-            let name = typeof buff?.name === 'string' ? buff.name.trim() : '';
+            let label = typeof buff?.label === 'string' ? stripEmotionReasoningMarkup(buff.label) : '';
+            let name = typeof buff?.name === 'string' ? stripEmotionReasoningMarkup(buff.name) : '';
             // 模型偶尔漏 name (内部英文 id) 或漏 label (中文标签) — 缺一半不该整条丢弃,
             // 用另一半兜底: name 缺就从 id/序号派生, label 缺就用 name 顶上.
             if (!label && !name) return null;
@@ -87,7 +89,10 @@ const sanitizeBuffs = (buffs?: CharacterBuff[]): CharacterBuff[] => {
             };
             if (typeof buff?.emoji === 'string') out.emoji = buff.emoji;
             if (typeof buff?.color === 'string') out.color = buff.color;
-            if (typeof buff?.description === 'string') out.description = buff.description;
+            if (typeof buff?.description === 'string') {
+                const description = stripEmotionReasoningMarkup(buff.description);
+                if (description) out.description = description;
+            }
             return out;
         })
         .filter((buff): buff is CharacterBuff => !!buff);
@@ -605,7 +610,7 @@ export async function applyEmotionEvalRaw(
         }
 
         const innerStateOut = (typeof result.innerState === 'string' && result.innerState.trim())
-            ? replaceInternalUserLabel(result.innerState.trim(), userName)
+            ? replaceInternalUserLabel(stripEmotionReasoningMarkup(result.innerState), userName)
             : null;
 
         if (options?.shouldApply && !options.shouldApply()) {
@@ -663,8 +668,8 @@ export async function applyEmotionEvalRaw(
             )
             : previousBuffs.slice(0, EMOTION_BUFF_MAX_COUNT);
         const buffInjection = hasInjection
-            ? replaceInternalUserLabel(result.injection!, userName)
-            : (latestChar.buffInjection || '');
+            ? replaceInternalUserLabel(stripEmotionReasoningMarkup(result.injection!), userName)
+            : stripEmotionReasoningMarkup(latestChar.buffInjection || '');
         const updated: CharacterProfile = {
             ...latestChar,
             activeBuffs: sanitizedBuffs,
