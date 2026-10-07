@@ -31,7 +31,7 @@ const stripLiteralBackslashN = (t: string): string => t.replace(/\\n/g, '\n');
  * 方括号内容。
  */
 export const stripLeakedSourceTags = (t: string): string => t.replace(
-  /\s*\[\s*(?:聊\s*(?:天|chat)|chat|通\s*(?:话|call)|call|约\s*(?:会|date)|date)\s*\]\s*/giu,
+  /\s*\[\s*(?:聊\s*(?:天|chat(?:\s*天)?)|chat|通\s*(?:话|call)|call|约\s*(?:会|date)|date)\s*\]\s*/giu,
   '\n',
 );
 
