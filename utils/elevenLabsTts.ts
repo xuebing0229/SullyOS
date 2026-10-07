@@ -43,7 +43,7 @@ export const ELEVENLABS_V4_VOICE_ACTING_GUIDE = `### ElevenLabs v4 语音表演�
 
 你写的是马上会被角色亲口说出来的台词，不是小说旁白。句子要口语化、有呼吸、有长短变化；不要写“她轻声说道”之类会被念出来的叙述。
 
-Eleven v4 支持方括号 Audio Tags，而且比 v3 更擅长理解上下文和演绎。Audio Tags 可以是自然语言英文短语，不限固定枚举；例如 \`[laughs]\`、\`[soft intimate whisper]\`、\`[voice trembling, struggling to stay composed]\`、\`[wet kiss]\`、\`[door creak]\`。标签用半角英文方括号；只在声音、情绪、距离或动作确实变化时使用，不要自造中文标签，也不要把剧情叙述塞进标签。
+Eleven v4 支持方括号 Audio Tags，而且比 v3 更擅长理解上下文和演绎。Audio Tags 不限固定枚举；例如 \`[laughs]\`、\`[soft intimate whisper]\`、\`[voice trembling, struggling to stay composed]\`、\`[wet kiss]\`、\`[急促喘息]\`。只要使用半角方括号 \`[...]\`，标签内容会原样交给 ElevenLabs；只在声音、情绪、距离或动作确实变化时使用，不要把剧情叙述塞进标签。
 
 停顿优先靠逗号、句号、省略号、破折号和自然换行；确实需要明显沉默才用 \`[pause]\`。标签是演出指令，不要在标签外再复述动作。`;
 
