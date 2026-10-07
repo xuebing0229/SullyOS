@@ -41,6 +41,15 @@ describe('ElevenLabs v4 migration and text cleanup', () => {
       .toBe('[laughs] 你好 [sighs]');
   });
 
+  it('preserves free-form v4 Audio Tags instead of dropping them', () => {
+    expect(cleanTextForTtsElevenLabs(
+      '<语音>[wet squeeze] 阿竹……[deep wet squelch]是不是……[breathless]已经被我美得晕头转向了？</语音>',
+      'eleven_v4',
+    )).toBe('[wet squeeze] 阿竹……[deep wet squelch]是不是……[breathless]已经被我美得晕头转向了？');
+    expect(cleanTextForTtsElevenLabs('[short pause] 好。[long pause] 再说。', 'eleven_v4'))
+      .toBe('[short pause] 好。[long pause] 再说。');
+  });
+
   it('migrates old saved model ids to v4 while preserving v4 Turbo', () => {
     expect(normalizeElevenLabsModel('eleven_v3')).toBe('eleven_v4');
     expect(normalizeElevenLabsModel('eleven_flash_v2_5')).toBe('eleven_v4');
@@ -48,8 +57,10 @@ describe('ElevenLabs v4 migration and text cleanup', () => {
     expect(normalizeElevenLabsModel('eleven_v4_turbo')).toBe('eleven_v4_turbo');
   });
 
-  it('removes cues only from display text and preserves ordinary brackets', () => {
+  it('removes known and free-form Audio Tags from display while preserving ordinary brackets', () => {
     expect(stripElevenLabsMarkupForDisplay('[whispers] 小声说 [第2章]')).toBe('小声说 [第2章]');
+    expect(stripElevenLabsMarkupForDisplay('[wet squeeze] 阿竹……[deep wet squelch]是不是……[breathless]已经晕了？'))
+      .toBe('阿竹……是不是……已经晕了？');
   });
 });
 
