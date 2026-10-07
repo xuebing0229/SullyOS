@@ -43,7 +43,7 @@ export const ELEVENLABS_V4_VOICE_ACTING_GUIDE = `### ElevenLabs v4 语音表演�
 
 你写的是马上会被角色亲口说出来的台词，不是小说旁白。句子要口语化、有呼吸、有长短变化；不要写“她轻声说道”之类会被念出来的叙述。
 
-Eleven v4 支持方括号 Audio Tags，而且比 v3 更擅长理解上下文和演绎。只在情绪真正变化的位置少量使用：\`[laughs]\`、\`[chuckles]\`、\`[whispers]\`、\`[sighs]\`、\`[excited]\`、\`[curious]\`、\`[sarcastic]\`、\`[crying]\`、\`[hesitates]\`、\`[softly]\`、\`[pause]\`。标签用半角英文方括号，通常一段 0–2 个；不要每句开头都塞标签，不要自造中文标签。
+Eleven v4 支持方括号 Audio Tags，而且比 v3 更擅长理解上下文和演绎。Audio Tags 可以是自然语言英文短语，不限固定枚举；例如 \`[laughs]\`、\`[soft intimate whisper]\`、\`[voice trembling, struggling to stay composed]\`、\`[wet kiss]\`、\`[door creak]\`。标签用半角英文方括号；只在声音、情绪、距离或动作确实变化时使用，不要自造中文标签，也不要把剧情叙述塞进标签。
 
 停顿优先靠逗号、句号、省略号、破折号和自然换行；确实需要明显沉默才用 \`[pause]\`。标签是演出指令，不要在标签外再复述动作。`;
 
@@ -58,7 +58,7 @@ const ELEVENLABS_CUE_ALIASES: Record<string, string> = {
   excited: 'excited', happy: 'excited', playful: 'mischievously', mischievous: 'mischievously',
   mischievously: 'mischievously', curious: 'curious', sarcastic: 'sarcastic',
   crying: 'crying', sobbing: 'crying', snort: 'snorts', snorts: 'snorts',
-  pause: 'pause', 'short pause': 'pause', 'long pause': 'pause', break: 'pause',
+  pause: 'pause', 'short pause': 'short pause', 'long pause': 'long pause', break: 'pause',
   hesitate: 'hesitates', hesitates: 'hesitates', hesitant: 'hesitates',
   softly: 'softly', soft: 'softly', calm: 'softly', breathy: 'softly',
   angry: 'angry', sad: 'sad', nervous: 'nervously', nervously: 'nervously',
@@ -67,6 +67,18 @@ const ELEVENLABS_CUE_ALIASES: Record<string, string> = {
 const normalizeElevenLabsCue = (raw: string): string => {
   const key = (raw || '').trim().toLowerCase().replace(/\s+/g, ' ');
   return ELEVENLABS_CUE_ALIASES[key] || '';
+};
+
+const normalizeElevenLabsAudioTag = (raw: string): string => {
+  const aliased = normalizeElevenLabsCue(raw);
+  if (aliased) return aliased;
+
+  const value = (raw || '').trim().replace(/\s+/g, ' ');
+  if (!value || value.length > 120) return '';
+  // v4 支持自然语言 Audio Tags：允许简短英文短语/描述，但不把中文方括号正文误认成标签。
+  if (!/[A-Za-z]/.test(value) || /[\u4e00-\u9fff]/.test(value)) return '';
+  if (!/^[A-Za-z0-9][A-Za-z0-9\s,.'’!?-]*$/.test(value)) return '';
+  return value;
 };
 
 /** 支持粘贴纯 ID，也支持从常见 ElevenLabs 页面链接提取 voiceId。 */
@@ -101,7 +113,7 @@ const extractVoiceBody = (raw: string): string => {
 };
 
 /**
- * ElevenLabs v4 专属文本清洗：保留已知 Audio Tags，隐藏 SullyOS 自己的控制词。
+ * ElevenLabs v4 专属文本清洗：保留合法英文自然语言 Audio Tags，隐藏 SullyOS 自己的控制词。
  */
 export const cleanTextForTtsElevenLabs = (raw: string, model?: string | null): string => {
   const supportsAudioTags = isElevenLabsV4Model(model);
@@ -115,8 +127,8 @@ export const cleanTextForTtsElevenLabs = (raw: string, model?: string | null): s
       const cue = normalizeElevenLabsCue(inner);
       return supportsAudioTags && cue ? `[${cue}]` : '';
     })
-    .replace(/\[([^\[\]]{1,60})\]/g, (_match, inner: string) => {
-      const cue = normalizeElevenLabsCue(inner);
+    .replace(/\[([^\[\]]{1,120})\]/g, (_match, inner: string) => {
+      const cue = normalizeElevenLabsAudioTag(inner);
       if (!cue) return /[A-Za-z]/.test(inner) || /[\u4e00-\u9fff]/.test(inner) ? '' : _match;
       return supportsAudioTags ? `[${cue}]` : '';
     });
@@ -134,7 +146,7 @@ export const stripElevenLabsMarkupForDisplay = (text?: string | null): string =>
   if (!text) return '';
   return text
     .replace(/<#\s*[\d.]+\s*#>/g, '')
-    .replace(/\[([^\[\]]{1,60})\]/g, (match, inner: string) => normalizeElevenLabsCue(inner) ? '' : match)
+    .replace(/\[([^\[\]]{1,120})\]/g, (match, inner: string) => normalizeElevenLabsAudioTag(inner) ? '' : match)
     .replace(/\(([^)]{1,60})\)/g, (match, inner: string) => normalizeElevenLabsCue(inner) ? '' : match)
     .replace(/[ \t]{2,}/g, ' ')
     .replace(/[ \t]+([，。！？、；：,.!?…])/g, '$1')
