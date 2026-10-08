@@ -112,6 +112,51 @@ describe('story theater speaker + acting markup', () => {
         expect(extractStoryVoiceDialogues(parsed.cleanText)).toEqual(['「先走。」', '「等等我。」']);
     });
 
+    it('recovers untagged quoted dialogue in a realistic breakfast scene for either TTS provider', () => {
+        const raw = '<story_text>祁连云端着两碗粥走到餐桌边，把其中一碗放在温鸣竹面前。\n'
+            + '"趁热喝。"他在温鸣竹对面坐下，拿起筷子夹了一块虾仁放进自己嘴里，"我待会儿九点要去学生会那边。你今天有什么安排?"\n'
+            + '"没安排。"温鸣竹低头喝了一口粥，"我就打算在宿舍躺一天。"\n'
+            + '"那你记得中午吃饭。"祁连云夹起一筷子榨菜丝，"冰箱里还有昨天剩的红烧肉，你热一下就能吃。"</story_text>';
+        const expected = [
+            '「趁热喝。」', '「我待会儿九点要去学生会那边。你今天有什么安排?」',
+            '「没安排。」', '「我就打算在宿舍躺一天。」',
+            '「那你记得中午吃饭。」', '「冰箱里还有昨天剩的红烧肉，你热一下就能吃。」',
+        ];
+        for (const provider of ['minimax', 'elevenlabs'] as const) {
+            const parsed = parseStoryVoiceMessage(raw, provider);
+            expect(extractStoryVoiceDialogues(parsed.cleanText)).toEqual(expected);
+            expect(parsed.dialogueSpeakers).toEqual(Array(6).fill(null));
+            expect(parsed.dialogueActing).toEqual(Array(6).fill(null));
+            expect(parsed.cleanText).toContain('「趁热喝。」他在温鸣竹对面坐下');
+        }
+    });
+
+    it('preserves quoted titles, citations and backstage text without inventing spoken dialogue', () => {
+        const raw = '<story_text>标题叫“再见！”这句话出现在文章里。\n'
+            + '他把“回来！”这几个字写在纸上。\n'
+            + '“生命的意义？”这句话是文章的标题。\n'
+            + '所谓“再走一步。”的说法常见。\n'
+            + '他说：“确实如此。”</story_text><backstage>“这里不是对白！”</backstage>';
+        const parsed = parseStoryVoiceMessage(raw, 'elevenlabs');
+        expect(parsed.cleanText).toContain('标题叫“再见！”这句话出现在文章里。');
+        expect(parsed.cleanText).toContain('“生命的意义？”这句话是文章的标题。');
+        expect(parsed.cleanText).toContain('<backstage>“这里不是对白！”</backstage>');
+        expect(extractStoryVoiceDialogues(parsed.cleanText)).toEqual(['「确实如此。」']);
+        expect(parsed.dialogueSpeakers).toEqual([null]);
+    });
+
+    it('keeps marked ElevenLabs acting and recovered speech aligned by ordinal', () => {
+        const raw = '<story_text>[[STV:char]]<语音 emotion="sad">「等等。[pause]」</语音>[[/STV]]\n'
+            + '“好。”他低头点了点头。</story_text>';
+        const parsed = parseStoryVoiceMessage(raw, 'elevenlabs');
+        expect(parsed.cleanText).toBe('<story_text>「等等。」\n「好。」他低头点了点头。</story_text>');
+        expect(parsed.dialogueSpeakers).toEqual(['char', null]);
+        expect(parsed.dialogueActing).toEqual([
+            { speech: '「等等。[pause]」', emotion: 'sad' },
+            null,
+        ]);
+    });
+
     it('injects the existing shared acting guide only when Story TTS is enabled', () => {
         expect(buildStoryVoiceSpeakerFormatReminder(false)).toBe('');
         const reminder = buildStoryVoiceSpeakerFormatReminder(true, '云', '我');

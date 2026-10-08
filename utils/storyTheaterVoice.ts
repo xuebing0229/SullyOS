@@ -38,6 +38,43 @@ const STORY_TEXT_PATTERN = /<story_text\b[^>]*>([\s\S]*?)(?:<\/story_text\s*>|$)
 const STORY_DIALOGUE_PATTERN = /(「[^」\n]*」)/g;
 
 /**
+ * Recover clearly spoken lines when a model drifts into ordinary quotation marks.
+ * A quote alone is NOT sufficient: titles, citations and quoted thoughts must
+ * remain prose. Keep this a synchronous, length-preserving display repair so
+ * STV speaker positions and the saved TTS dialogue indexes stay aligned.
+ */
+const UNTAGGED_QUOTED_SPEECH_PATTERN = /(["“])([^"“”\r\n]{1,280})(["”])/g;
+
+const normalizeUntaggedDialogueLine = (line: string): string => (
+    line.replace(UNTAGGED_QUOTED_SPEECH_PATTERN, (raw, _opening: string, words: string, _closing: string, offset: number) => {
+        const before = line.slice(0, offset).trimEnd();
+        const after = line.slice(offset + raw.length).trimStart();
+        const spokenEnding = /(?:[。！？!?…]|\.\.{2,})$/.test(words.trim());
+        const speakingCue = /(?:说|问|答|喊|道|解释|提醒|嘟囔|开口|应声|回道|笑道|追问|低语|补充)(?:了|着|道)?[：:,，\s]*$/.test(before.slice(-18));
+        const dialogueBoundary = !before || /[，,：:；;。！？!?]\s*$/.test(before);
+        // These make a quote an object being discussed, not someone speaking.
+        const quotedReference =
+            /^(?:这[句段种篇]|那[句段种篇]|这些|那些|一句|一段|几个字|二字|的(?:说法|意思|词|字|标题)|是|被|这个词|那个词|一词|意味着|指的|代表)/.test(after)
+            || /(?:题为|名为|叫做|所谓|标题|原文|引文|引用|摘录|写着|写下|记载|标注|拼写|字样|关键词|读到|看到|那句|这句)\s*[：:]?$/.test(before.slice(-14));
+        if (quotedReference || (!spokenEnding && !speakingCue) || (!dialogueBoundary && !speakingCue)) {
+            return raw;
+        }
+        return '「' + words + '」';
+    })
+);
+
+const normalizeUntaggedStoryDialogue = (content: string): string => {
+    const normalizeBody = (body: string): string => body.split('\n').map(normalizeUntaggedDialogueLine).join('\n');
+    // Structured backstage, prompts and other metadata must never become dialogue.
+    if (!/<story_text\b/i.test(content)) return normalizeBody(content);
+    return content.replace(
+        /(<story_text\b[^>]*>)([\s\S]*?)(<\/story_text\s*>|$)/i,
+        (_whole, opening: string, body: string, closing: string) => opening + normalizeBody(body) + closing,
+    );
+};
+
+
+/**
  * Speaker metadata is transport-only. It must never be rendered, copied, exported,
  * archived, sent to image planning, or forwarded into later story prompts.
  */
@@ -158,8 +195,8 @@ const resolveDialogueSpan = (
 };
 
 /**
- * Only 「……」 consumes a dialogue slot. Other quotation marks remain ordinary prose,
- * so quoted names/references can never shift TTS dialogue indexes.
+ * 「……」 consumes a dialogue slot. Clear spoken sentences accidentally wrapped
+ * in "…" or “…” are recovered conservatively; quoted references stay prose.
  */
 export const parseStoryVoiceMessage = (
     value: string,
@@ -167,14 +204,16 @@ export const parseStoryVoiceMessage = (
 ): ParsedStoryVoiceMessage => {
     const source = String(value || '');
     const parsedMessage = parseStoryVoiceMarkup(source, provider);
+    const cleanText = normalizeUntaggedStoryDialogue(parsedMessage.cleanText);
     const storySource = STORY_TEXT_PATTERN.exec(source)?.[1] ?? source;
     const parsedStory = parseStoryVoiceMarkup(storySource, provider);
+    const normalizedStory = normalizeUntaggedStoryDialogue(parsedStory.cleanText);
     const dialogueSpeakers: StoryVoiceDialogueSpeaker[] = [];
     const dialogueActing: Array<StoryVoiceActing | null> = [];
 
     STORY_DIALOGUE_PATTERN.lastIndex = 0;
     let dialogue: RegExpExecArray | null;
-    while ((dialogue = STORY_DIALOGUE_PATTERN.exec(parsedStory.cleanText))) {
+    while ((dialogue = STORY_DIALOGUE_PATTERN.exec(normalizedStory))) {
         const start = dialogue.index;
         const end = start + dialogue[0].length;
         const span = resolveDialogueSpan(start, end, parsedStory.spans);
@@ -184,7 +223,7 @@ export const parseStoryVoiceMessage = (
     }
 
     return {
-        cleanText: parsedMessage.cleanText,
+        cleanText,
         dialogueSpeakers,
         dialogueActing,
     };
@@ -194,11 +233,12 @@ export const extractStoryVoiceDialogues = (value: string): string[] => {
     const source = String(value || '');
     const storySource = STORY_TEXT_PATTERN.exec(source)?.[1] ?? source;
     const parsedStory = parseStoryVoiceMarkup(storySource);
+    const normalizedStory = normalizeUntaggedStoryDialogue(parsedStory.cleanText);
     const dialogues: string[] = [];
 
     STORY_DIALOGUE_PATTERN.lastIndex = 0;
     let dialogue: RegExpExecArray | null;
-    while ((dialogue = STORY_DIALOGUE_PATTERN.exec(parsedStory.cleanText))) {
+    while ((dialogue = STORY_DIALOGUE_PATTERN.exec(normalizedStory))) {
         dialogues.push(dialogue[0]);
     }
     return dialogues;
@@ -228,7 +268,7 @@ export const buildStoryVoiceSpeakerFormatReminder = (
         '### 文游对白与语音隐藏标记（仅作用于 <story_text> 主正文）',
         '- 人物真实说出口的对白一律使用「……」。只有「……」会被视为对白。',
         '- “……”、『……』、‘……’、英文引号等都是普通正文标点，可用于专名、标题、引用、强调等；它们不是对白，不参与对白着色或语音。',
-        '- 每一句真实说出口的对白都必须有且只有一组 STV，说话人归属由 STV 决定，不依赖“说、问、开口”等发言动词。',
+        '- 每一句真实说出口的对白都必须有且只有一组 STV，说话人归属由 STV 决定，不依赖“说、问、开口”等发言动词。不要因为使用 ElevenLabs Audio Tags 就把真正的对白改写成英文或中文双引号。',
         `- ${characterName} 说出口的对白必须写成：[[STV:char]]<语音 emotion="calm">「……」</语音>[[/STV]]。`,
         `- ${userName} 说出口的对白必须写成：[[STV:user]]<语音 emotion="calm">「……」</语音>[[/STV]]。`,
         `- emotion 必须根据当前情境、动作、心理状态、前后文和关系氛围逐句判断，只能从这些标准值中选择：${emotions}。不要因为同一说话人就固定一种 emotion。`,
