@@ -10,6 +10,7 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import org.json.JSONObject;
+import org.json.JSONArray;
 
 @CapacitorPlugin(name = "SullyStoryBackground")
 public class SullyStoryBackgroundPlugin extends Plugin {
@@ -82,10 +83,12 @@ public class SullyStoryBackgroundPlugin extends Plugin {
             Thread submitThread = new Thread(() -> {
                 try {
                     JSONObject readySpec = new JSONObject(submitSpec);
-                    SullyStoryReferenceUploads.prepare(readySpec.optJSONObject("imageHandoff"));
+                    JSONArray syncedReferences = SullyStoryReferenceUploads.prepare(readySpec.optJSONObject("imageHandoff"));
                     int status = submitCloudStoryJob(workerUrl, userId, serverToken, readySpec.toString());
                     if (status >= 200 && status < 300) {
-                        call.resolve();
+                        JSObject confirmation = new JSObject();
+                        confirmation.put("syncedReferences", syncedReferences);
+                        call.resolve(confirmation);
                         return;
                     }
                     String message = "剧情云端任务提交失败（HTTP " + status + "）";

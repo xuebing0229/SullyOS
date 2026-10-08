@@ -2,7 +2,7 @@ import { loadApiPresetsForFailover, type ApiExecutionPlan } from './apiFailover'
 import { findApiPresetForConfig } from './apiPresetRouteIdentity';
 import { getApiPresetStorySystemCompatibility } from './apiPresetModels';
 import type { StoryCloudImageHandoffSpec } from './storyTheaterImage';
-import { prepareStoryReferenceUploads } from './storyImageReferenceUploads';
+import { prepareStoryReferenceUploads, rememberNativeStoryReferenceReceipts } from './storyImageReferenceUploads';
 import { ActiveMsgClient } from './activeMsgClient';
 import {
     finishNativeCloudStoryMonitor,
@@ -567,7 +567,8 @@ export const executeStoryCompletionInCloudBackground = async (
             await startNativeCloudStoryMonitor({
                 ...monitorOptions,
                 specJson: JSON.stringify(spec),
-            } as any);
+                onReferencesSynced: receipts => rememberNativeStoryReferenceReceipts(options.imageHandoff, receipts),
+            });
             nativeSubmissionOwnsPost = true;
         } catch (error) {
             // 原生提交失败/结果不确定时，下面仍可用完全相同的 jobId/clientRequestId 走浏览器 POST。

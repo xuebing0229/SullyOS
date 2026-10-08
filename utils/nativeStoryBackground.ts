@@ -4,6 +4,7 @@ import { LocalNotifications } from '@capacitor/local-notifications';
 
 import type { ApiExecutionPlan } from './apiFailover';
 import { recordApiCall } from './apiCallLog';
+import type { NativeStoryReferenceSyncReceipt } from './storyImageReferenceUploads';
 
 interface NativeStoryRoute {
   presetId: string;
@@ -143,7 +144,8 @@ interface SullyStoryBackgroundPlugin {
     workerUrl: string;
     userId: string;
     serverToken?: string;
-  }): Promise<void>;
+    specJson?: string;
+  }): Promise<{ syncedReferences?: NativeStoryReferenceSyncReceipt[] }>;
   finishCloudMonitor(options: {
     jobId: string;
     title: string;
@@ -266,6 +268,8 @@ export interface NativeCloudStoryMonitorOptions {
   workerUrl: string;
   userId: string;
   serverToken?: string;
+  specJson?: string;
+  onReferencesSynced?: (receipts: NativeStoryReferenceSyncReceipt[]) => Promise<void> | void;
 }
 
 const ensureStoryNotificationPermission = async (): Promise<{
@@ -292,11 +296,21 @@ export const startNativeCloudStoryMonitor = async (
 ): Promise<boolean> => {
   if (!isNativeStoryBackgroundRuntime()) return false;
 
+  const { onReferencesSynced, ...nativeOptions } = options;
+  const submit = async () => {
+    const response = await NativeStoryBackground.startCloudMonitor(nativeOptions);
+    if (onReferencesSynced && Array.isArray(response?.syncedReferences)) {
+      // Best-effort cache update: never make a completed cloud submission fail
+      // just because WebView local storage is unavailable.
+      try { await onReferencesSynced(response.syncedReferences); }
+      catch (error) { console.warn('[StoryTheater] reference receipt cache failed', error); }
+    }
+  };
   let immediateStartError: unknown = null;
   try {
     // Android 13+ 即使通知权限尚未授予，也允许启动 foreground service；
     // 权限只决定通知能否正常展示。因此先启动，不能让权限查询成为后台接管前置门槛。
-    await NativeStoryBackground.startCloudMonitor(options);
+    await submit();
   } catch (error) {
     immediateStartError = error;
   }
@@ -310,8 +324,12 @@ export const startNativeCloudStoryMonitor = async (
 
   // 如果刚刚弹过权限框，或第一次原生启动失败，重新发一次 start：
   // 已运行的 service 会更新同一 job/notification，不会创建第二条模型请求。
-  if (permission.prompted || immediateStartError) {
-    await NativeStoryBackground.startCloudMonitor(options);
+  if (immediateStartError) {
+    await submit();
+  } else if (permission.prompted) {
+    // Permission UI only needs to rearm the monitor, not re-POST the story
+    // (or re-verify every reference image using the same job spec).
+    await NativeStoryBackground.startCloudMonitor({ ...nativeOptions, specJson: undefined });
   }
   return true;
 };

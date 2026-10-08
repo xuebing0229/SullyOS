@@ -12,9 +12,10 @@ import org.json.JSONObject;
 public final class SullyStoryReferenceUploads {
     private SullyStoryReferenceUploads() { }
 
-    public static void prepare(JSONObject handoff) throws Exception {
+    public static JSONArray prepare(JSONObject handoff) throws Exception {
+        JSONArray confirmed = new JSONArray();
         JSONArray tools = handoff == null ? null : handoff.optJSONArray("tools");
-        if (tools == null) return;
+        if (tools == null) return confirmed;
         JSONObject sources = handoff.optJSONObject("referenceSources");
         handoff.remove("referenceSources");
         for (int i = 0; i < tools.length(); i++) {
@@ -30,6 +31,10 @@ public final class SullyStoryReferenceUploads {
                 String slot = upload.getString("slotId");
                 try {
                     sync(tool, upload, sources);
+                    confirmed.put(new JSONObject()
+                        .put("toolIndex", i)
+                        .put("slotId", slot)
+                        .put("sha256", upload.optString("sha256", "")));
                     errors.remove(slot);
                 } catch (Exception error) {
                     // Preserve the story. Worker will fail only a picture that actually selects this slot.
@@ -39,6 +44,7 @@ public final class SullyStoryReferenceUploads {
             }
             tool.put("referenceErrors", errors);
         }
+        return confirmed;
     }
 
     private static HttpURLConnection open(JSONObject tool, JSONObject upload, String method) throws Exception {

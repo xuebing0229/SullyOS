@@ -1,5 +1,7 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import { prepareStoryReferenceUploads, snapshotStoryReference } from './storyImageReferenceUploads';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { webcrypto } from 'node:crypto';
+import { isStoryReferenceSynced, rememberStoryReferenceSynced } from './storyReferenceSyncCache';
+import { prepareStoryReferenceUploads, rememberNativeStoryReferenceReceipts, snapshotStoryReference } from './storyImageReferenceUploads';
 import { normalizeStoryImageHandoffSpec, runStoryImageHandoff } from '../worker/amsg/src/storyImageHandoff';
 import type { StoryCloudImageHandoffSpec } from './storyTheaterImage';
 
@@ -17,7 +19,15 @@ const spec = (): StoryCloudImageHandoffSpec => ({ version: 1, referenceSources: 
     referenceUploads: [{ slotId: slot, sha256: sha }],
 }] });
 
-afterEach(() => vi.restoreAllMocks());
+beforeEach(() => {
+    localStorage.clear();
+    vi.stubGlobal('crypto', webcrypto);
+});
+afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    localStorage.clear();
+});
 
 describe('story reference upload handoff', () => {
     it('snapshots local image bytes without network before native handoff', async () => {
@@ -75,5 +85,67 @@ describe('story reference upload handoff', () => {
         const result = await runStoryImageHandoff(cloud, 'story_test_request', '<story_image_plan>{"tool":"image_novelai","arguments":{"prompt":"landscape","use_character_reference":false}}</story_image_plan>');
         expect(result.state).toBe('submitted');
         expect(fetcher).toHaveBeenCalledTimes(2);
+    });
+
+    it('remembers an uploaded reference and skips the entire HEAD/PUT sequence on later turns', async () => {
+        const fetcher = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) =>
+            new Response(null, { status: init?.method === 'HEAD' ? 404 : 204 }));
+        await prepareStoryReferenceUploads(spec());
+        expect(fetcher).toHaveBeenCalledTimes(2);
+        fetcher.mockClear();
+
+        await prepareStoryReferenceUploads(spec());
+        expect(fetcher).not.toHaveBeenCalled();
+        const cacheDump = JSON.stringify(localStorage);
+        expect(cacheDump).not.toContain('selected-tenant'); // credentials never persisted
+    });
+
+    it('isolates confirmations by the selected server, tenant and image SHA', async () => {
+        const fetcher = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) =>
+            new Response(null, { status: init?.method === 'HEAD' ? 404 : 204 }));
+        await prepareStoryReferenceUploads(spec());
+        fetcher.mockClear();
+
+        const changedImage = spec();
+        changedImage.tools[0].referenceUploads![0].sha256 = 'c'.repeat(64);
+        await prepareStoryReferenceUploads(changedImage);
+        expect(fetcher).toHaveBeenCalledTimes(2);
+        fetcher.mockClear();
+
+        const otherTenant = spec();
+        otherTenant.tools[0].token = 'different-tenant';
+        await prepareStoryReferenceUploads(otherTenant);
+        expect(fetcher).toHaveBeenCalledTimes(2);
+        fetcher.mockClear();
+
+        const otherServer = spec();
+        otherServer.tools[0].controlBaseUrl = 'https://another-image.example.test';
+        await prepareStoryReferenceUploads(otherServer);
+        expect(fetcher).toHaveBeenCalledTimes(2);
+    });
+
+    it('only commits native receipts for the correct tool index, slot and SHA', async () => {
+        const reference = spec();
+        const confirmed = { controlBaseUrl: reference.tools[0].controlBaseUrl, token: reference.tools[0].token, slotId: slot, sha256: sha };
+        await rememberNativeStoryReferenceReceipts(reference, [
+            { toolIndex: 0, slotId: slot, sha256: 'c'.repeat(64) },
+            { toolIndex: 19, slotId: slot, sha256: sha },
+        ]);
+        expect(await isStoryReferenceSynced(confirmed)).toBe(false);
+        await rememberNativeStoryReferenceReceipts(reference, [{ toolIndex: 0, slotId: slot, sha256: sha }]);
+        expect(await isStoryReferenceSynced(confirmed)).toBe(true);
+    });
+
+    it('revalidates old confirmations after the cache safety window', async () => {
+        const target = { controlBaseUrl: 'https://image.example.test', token: 'tenant', slotId: slot, sha256: sha };
+        await rememberStoryReferenceSynced(target);
+        expect(await isStoryReferenceSynced(target)).toBe(true);
+        vi.useFakeTimers();
+        try {
+            vi.setSystemTime(Date.now() + 31 * 24 * 60 * 60 * 1000);
+            expect(await isStoryReferenceSynced(target)).toBe(false);
+        } finally {
+            vi.useRealTimers();
+        }
     });
 });

@@ -22,6 +22,7 @@ import {
 import { persistMcpGeneratedImages } from './mcpImagePersistence';
 import { getActiveVibeReference } from './vibeReference';
 import { snapshotStoryReference, type StoryReferenceUpload } from './storyImageReferenceUploads';
+import { isStoryReferenceSynced } from './storyReferenceSyncCache';
 import { findApiPresetForConfig } from './apiPresetRouteIdentity';
 import { getApiPresetStorySystemCompatibility } from './apiPresetModels';
 import { applyStorySystemCompatibilityToBody } from './storySystemCompatibility';
@@ -410,7 +411,16 @@ export const buildStoryCloudImageHandoffSpec = async (input: {
                 for (const config of configs) {
                     if (!config) continue;
                     try {
-                        // Only read local bytes here. Slow HEAD/PUT belongs to the native submit thread.
+                        // Already confirmed on this exact server/tenant with these image bytes.
+                        // Do not even decode the blob to base64, let alone HEAD it every story turn.
+                        if (await isStoryReferenceSynced({
+                            controlBaseUrl,
+                            token: descriptor.token,
+                            slotId: config.slotId,
+                            sha256: config.imageSha256 || '',
+                        })) continue;
+                        // First upload / changed reference / expired confirmation needs a snapshot.
+                        // Network verification remains on the native submission thread.
                         const key = `${config.slotId}:${config.imageRef}`;
                         let snapshot = snapshots.get(key);
                         if (!snapshot) {

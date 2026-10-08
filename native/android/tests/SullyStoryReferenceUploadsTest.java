@@ -31,7 +31,11 @@ public class SullyStoryReferenceUploadsTest {
         JSONObject handoff = handoff();
         server.enqueue(new MockResponse().setResponseCode(404));
         server.enqueue(new MockResponse().setResponseCode(204));
-        SullyStoryReferenceUploads.prepare(handoff);
+        JSONArray receipts = SullyStoryReferenceUploads.prepare(handoff);
+        assertEquals(1, receipts.length());
+        assertEquals(0, receipts.getJSONObject(0).getInt("toolIndex"));
+        assertEquals("slot", receipts.getJSONObject(0).getString("slotId"));
+        assertEquals("new-image", receipts.getJSONObject(0).getString("sha256"));
         assertEquals("HEAD", server.takeRequest().getMethod());
         RecordedRequest upload = server.takeRequest();
         assertEquals("PUT", upload.getMethod());
@@ -61,9 +65,19 @@ public class SullyStoryReferenceUploadsTest {
         server.enqueue(new MockResponse().setResponseCode(404));
         server.enqueue(new MockResponse().setResponseCode(503));
         JSONObject handoff = handoff();
-        SullyStoryReferenceUploads.prepare(handoff);
+        JSONArray receipts = SullyStoryReferenceUploads.prepare(handoff);
+        assertEquals(0, receipts.length());
         assertTrue(tool(handoff).getJSONObject("referenceErrors").getString("slot").contains("503"));
         assertFalse(tool(handoff).has("referenceUploads"));
+    }
+
+    @Test public void alreadyConfirmedReferenceHasNoNetworkWork() throws Exception {
+        JSONObject handoff = handoff();
+        tool(handoff).remove("referenceUploads");
+        JSONArray receipts = SullyStoryReferenceUploads.prepare(handoff);
+        assertEquals(0, receipts.length());
+        assertEquals(0, server.getRequestCount());
+        assertFalse(handoff.has("referenceSources"));
     }
 
     private JSONObject handoff() throws Exception {
