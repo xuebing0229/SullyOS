@@ -83,11 +83,17 @@ public class SullyStoryBackgroundPlugin extends Plugin {
             Thread submitThread = new Thread(() -> {
                 try {
                     JSONObject readySpec = new JSONObject(submitSpec);
+                    long referenceStartedAt = android.os.SystemClock.elapsedRealtime();
                     JSONArray syncedReferences = SullyStoryReferenceUploads.prepare(readySpec.optJSONObject("imageHandoff"));
+                    long referencePreparationMs = android.os.SystemClock.elapsedRealtime() - referenceStartedAt;
+                    long postStartedAt = android.os.SystemClock.elapsedRealtime();
                     int status = submitCloudStoryJob(workerUrl, userId, serverToken, readySpec.toString());
+                    long submitPostMs = android.os.SystemClock.elapsedRealtime() - postStartedAt;
                     if (status >= 200 && status < 300) {
                         JSObject confirmation = new JSObject();
                         confirmation.put("syncedReferences", syncedReferences);
+                        confirmation.put("referencePreparationMs", referencePreparationMs);
+                        confirmation.put("submitPostMs", submitPostMs);
                         call.resolve(confirmation);
                         return;
                     }

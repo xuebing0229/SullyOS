@@ -661,10 +661,14 @@ const readStreamingResponse = async (
   row: StoryJobRow,
   response: Response,
   model: string,
+  onMilestone?: (kind: 'firstByte' | 'firstText') => void,
 ): Promise<{ response: Record<string, unknown>; content: string; reasoning: string; terminal: boolean }> => {
   if (!response.body?.getReader) {
     const raw = await response.text();
-    return normalizeJsonCompletion(JSON.parse(raw), model);
+    onMilestone?.('firstByte');
+    const normalized = normalizeJsonCompletion(JSON.parse(raw), model);
+    if (normalized.content) onMilestone?.('firstText');
+    return normalized;
   }
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
@@ -723,13 +727,16 @@ const readStreamingResponse = async (
     }
     let chunk: unknown;
     try { chunk = JSON.parse(payload); } catch { return; }
+    const previousLength = state.content.length;
     appendChunk(state, chunk);
+    if (state.content.length > previousLength) onMilestone?.('firstText');
     await maybePersist();
   };
 
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
+    onMilestone?.('firstByte');
     const text = decoder.decode(value, { stream: true });
     raw += text;
     pending += text;
@@ -845,6 +852,16 @@ export const runStoryJob = async (
 
     const route = spec.routes[index];
     const attemptStartedAt = now();
+    let upstreamRequestAt = 0;
+    let headersMs: number | null = null;
+    let firstByteMs: number | null = null;
+    let firstTextMs: number | null = null;
+    const markUpstream = (kind: 'firstByte' | 'firstText') => {
+      if (!upstreamRequestAt) return;
+      const elapsed = Math.max(0, now() - upstreamRequestAt);
+      if (kind === 'firstByte' && firstByteMs === null) firstByteMs = elapsed;
+      if (kind === 'firstText' && firstTextMs === null) firstTextMs = elapsed;
+    };
     let response: Response;
     let routeRequest: StoryRouteRequest | null = null;
     let explicitErrorText = '';
@@ -907,6 +924,10 @@ export const runStoryJob = async (
 
       try {
         const targetUrl = `${normalizeBaseUrl(route.baseUrl)}/chat/completions`;
+        upstreamRequestAt = now();
+        headersMs = null;
+        firstByteMs = null;
+        firstTextMs = null;
         const upstream = await fetchStoryUpstream(env, targetUrl, {
           method: 'POST',
           headers: {
@@ -916,6 +937,7 @@ export const runStoryJob = async (
           body: JSON.stringify(body),
           signal: controller.signal,
         });
+        headersMs = Math.max(0, now() - upstreamRequestAt);
         return {
           response: upstream,
           wasCancelled: () => cancelled,
@@ -980,7 +1002,8 @@ export const runStoryJob = async (
     }
 
     try {
-      const streamed = await readStreamingResponse(env, liveRow, response, route.model);
+      const streamed = await readStreamingResponse(env, liveRow, response, route.model, markUpstream);
+      const upstreamTotalMs = upstreamRequestAt ? Math.max(0, now() - upstreamRequestAt) : 0;
       if (routeRequest?.wasCancelled() || await isStoryJobCancelled(env, userId, jobId)) {
         routeRequest?.stopCancelWatch();
         return;
@@ -1023,6 +1046,7 @@ export const runStoryJob = async (
       // Worker 内完成，不能再依赖 WebView 从 await 后继续执行；否则用户一切后台，JS 冻结，
       // 配图就必然等到回前台才开始。
       let finalImageHandoff: Awaited<ReturnType<typeof runStoryImageHandoff>> | undefined;
+      const handoffStartedAt = now();
       if (spec.imageHandoff) {
         try {
           finalImageHandoff = await runStoryImageHandoff(
@@ -1043,9 +1067,21 @@ export const runStoryJob = async (
         return;
       }
 
-      const storedResponse = finalImageHandoff
-        ? { ...streamed.response, _sullyStoryImageHandoff: finalImageHandoff }
-        : streamed.response;
+      const timings: Record<string, number> = {
+        queueMs: Math.max(0, startedAt - row.created_at),
+        prepareMs: upstreamRequestAt ? Math.max(0, upstreamRequestAt - startedAt) : 0,
+        ...(headersMs !== null ? { headerMs: headersMs } : {}),
+        ...(firstByteMs !== null ? { firstByteMs } : {}),
+        ...(firstTextMs !== null ? { firstTextMs } : {}),
+        upstreamTotalMs,
+        ...(spec.imageHandoff ? { imageHandoffMs: Math.max(0, now() - handoffStartedAt) } : {}),
+      };
+      console.info('[StoryTiming][Worker] ' + JSON.stringify({ jobId, ...timings }));
+      const storedResponse = {
+        ...streamed.response,
+        ...(finalImageHandoff ? { _sullyStoryImageHandoff: finalImageHandoff } : {}),
+        _sullyStoryTiming: timings,
+      };
       const responseCipher = await sealJson(env, userId, jobId, 'response', storedResponse);
       const partialCipher = await sealJson(env, userId, jobId, 'partial', streamed.content);
       const usage = (streamed.response as any)?.usage || {};

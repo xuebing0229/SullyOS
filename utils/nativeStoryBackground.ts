@@ -145,7 +145,7 @@ interface SullyStoryBackgroundPlugin {
     userId: string;
     serverToken?: string;
     specJson?: string;
-  }): Promise<{ syncedReferences?: NativeStoryReferenceSyncReceipt[] }>;
+  }): Promise<{ syncedReferences?: NativeStoryReferenceSyncReceipt[]; referencePreparationMs?: number; submitPostMs?: number }>;
   finishCloudMonitor(options: {
     jobId: string;
     title: string;
@@ -270,6 +270,7 @@ export interface NativeCloudStoryMonitorOptions {
   serverToken?: string;
   specJson?: string;
   onReferencesSynced?: (receipts: NativeStoryReferenceSyncReceipt[]) => Promise<void> | void;
+  onSubmitTiming?: (label: string, ms: number) => void;
 }
 
 const ensureStoryNotificationPermission = async (): Promise<{
@@ -296,9 +297,11 @@ export const startNativeCloudStoryMonitor = async (
 ): Promise<boolean> => {
   if (!isNativeStoryBackgroundRuntime()) return false;
 
-  const { onReferencesSynced, ...nativeOptions } = options;
+  const { onReferencesSynced, onSubmitTiming, ...nativeOptions } = options;
   const submit = async () => {
     const response = await NativeStoryBackground.startCloudMonitor(nativeOptions);
+    if (typeof response?.referencePreparationMs === 'number') onSubmitTiming?.('Android 参考图网络检查/上传', response.referencePreparationMs);
+    if (typeof response?.submitPostMs === 'number') onSubmitTiming?.('Android→Worker 提交 HTTP', response.submitPostMs);
     if (onReferencesSynced && Array.isArray(response?.syncedReferences)) {
       // Best-effort cache update: never make a completed cloud submission fail
       // just because WebView local storage is unavailable.

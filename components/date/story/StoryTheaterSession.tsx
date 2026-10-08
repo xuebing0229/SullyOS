@@ -113,6 +113,7 @@ import {
 import { canSynthesizeSpeech } from '../../../utils/ttsRouter';
 import { deletePersistedVoiceAsset, ensureVoiceAsset, storyVoiceAssetKey } from '../../../utils/voiceAsset';
 import { createUserVoiceTarget } from '../../../utils/userVoice';
+import { createStoryTimingTrace, loadLastStoryTimingReport, type StoryTimingReport } from '../../../utils/storyTimingTrace';
 
 
 interface Props {
@@ -836,6 +837,8 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
         releaseStoryVoicePlayback();
     }, [entry.id, releaseStoryVoicePlayback]);
 
+    const [showTimingReport, setShowTimingReport] = useState(false);
+    const [timingReport, setTimingReport] = useState<StoryTimingReport | null>(loadLastStoryTimingReport);
     const scrollContainerRef = useRef<HTMLElement>(null);
     const scrollContentRef = useRef<HTMLDivElement>(null);
     const autoFollowStreamRef = useRef(true);
@@ -1300,6 +1303,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             imageHandoff?: StoryCloudImageHandoffSpec;
             onCloudCompleted?: (data: any) => void;
             beforeRelease?: () => Promise<void> | void;
+            onTiming?: (label: string, ms: number) => void;
         },
     ): Promise<string> => {
         const generationSettings = prepareStoryGenerationSettings(settings, entry.omitSamplingParams === true);
@@ -1319,6 +1323,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
         // 剧情后台优先复用项目里已经验证过的“后台生图 + 即时对话”架构：
         // Worker/DO 持有真正的 LLM 流，手机只轮询持久化 job。已有 pending 时即使此刻
         // config-check 临时断网也必须继续接同一个 job，绝不能回退本机再发第二次模型请求。
+        const transportPreparationStartedAt = performance.now();
         const pendingCloudJob = background ? getPendingCloudStoryJob(background.ownerKey) : null;
         const useCloudStoryTransport = Boolean(
             background
@@ -1339,6 +1344,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             }
         }
 
+        background?.onTiming?.('传输准备/能力检查', performance.now() - transportPreparationStartedAt);
         let completionSucceeded = false;
         const completionStartedAt = Date.now();
         let streamedChars = 0;
@@ -1370,6 +1376,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                     },
                     meta: background.meta,
                     imageHandoff: background.imageHandoff,
+                    onTiming: background.onTiming,
                     onPromptTokens,
                     onStreamText: wantsStreamPreview ? fullText => {
                         streamedChars = fullText.length;
@@ -1742,6 +1749,9 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
         setStreamingText('');
         setSending(true);
         setRerollingId(rerollTarget?.id || null);
+        const trace = createStoryTimingTrace(setTimingReport);
+        let sawFirstStoryText = false;
+        let turnSucceeded = false;
 
         let partialStreamText = '';
         let partialAffinityInputs: StoryAffinityInput[] = [];
@@ -1836,10 +1846,12 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 }));
             }
             if (!isReroll && !assistantOpening) await loadMessages();
+            trace.mark('读取记录与保存输入');
 
             // 归档不能只放在成功生成之后：一旦会话已经碰到上游上下文上限，正文永远生成
             // 不出来，后置归档也就永远没有机会执行。重试已有 user 楼层时先归档，窗口可自愈。
             const promptEntry = recoveringCloudPending ? entry : (await archiveIfNeeded() || entry);
+            trace.mark(recoveringCloudPending ? '接回已有任务（跳过归档）' : '事件盒归档检查（含必要归档）');
 
             const current = (await DB.getMessagesByCharId(threadId, true))
                 .filter(message => message.metadata?.source === 'story_theater')
@@ -1849,10 +1861,11 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             const [actorContext, maskMemoryContext, vectorRecall] = recoveringCloudPending
                 ? ['', '', '']
                 : await Promise.all([
-                    buildActorContexts(modelText),
-                    buildMaskMemoryContext(modelText),
-                    independentRecall(modelText, visibleHistory.slice(-8), promptEntry),
+                    trace.measure('角色记忆检索（含各角色）', () => buildActorContexts(modelText)),
+                    trace.measure('身份记忆检索', () => buildMaskMemoryContext(modelText)),
+                    trace.measure('独立剧情向量检索', () => independentRecall(modelText, visibleHistory.slice(-8), promptEntry)),
                 ]);
+            trace.mark('记忆检索合计（并行）');
             const summaries = promptEntry.archives.filter(archive => archive.summary).map((archive, index) => `事件盒 ${index + 1}：${archive.summary}`).join('\n\n');
             const scenario = [
                 `### 当前剧情\n标题：${entry.title}\n前提：${entry.premise || '沿用已经发生的正文自然继续。'}`,
@@ -1914,7 +1927,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             const prefill = compiled.assistantPrefill?.content || '';
             let cloudImageHandoffResult: StoryCloudImageHandoffResult | undefined;
             const cloudImageHandoff = entry.imageGeneration?.enabled
-                ? await buildStoryCloudImageHandoffSpec({
+                ? await trace.measure('配图参考准备（本地）', () => buildStoryCloudImageHandoffSpec({
                     actors,
                     userProfile,
                     entry,
@@ -1923,11 +1936,13 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 plannerSystemCompatibility: resolveStoryImagePlannerSystemCompatibility(entry, apiConfig, apiPresets),
                     messages: visibleHistory,
                     storyPresetDocument: effectivePreset.document,
-                })
+                }))
                 : undefined;
+            trace.mark('上下文组装 + 配图描述');
             usedNativeBackground = isNativeStoryBackgroundRuntime();
             storyVoiceSpeakersRef.current = [];
             storyVoiceActingRef.current = [];
+            trace.mark('准备向模型提交');
             const generated = await callCompletion(payload, compiled.settings, reported => {
                 promptTokenCount = reported;
                 promptTokenCountExact = true;
@@ -1937,6 +1952,10 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 setContextTokensExact(true);
             }, fullText => {
                 if (stopRequestedRef.current) return;
+                if (!sawFirstStoryText && fullText.length > 0) {
+                    sawFirstStoryText = true;
+                    trace.mark('等待首字显示（云端排队/推理/轮询）');
+                }
                 const visible = prefill && !fullText.startsWith(prefill) ? `${prefill}${fullText}` : fullText;
                 partialStreamText = visible;
                 streamingTextRef.current = visible;
@@ -1952,7 +1971,9 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                     isContinueTurn,
                 },
                 imageHandoff: cloudImageHandoff,
+                onTiming: (label, ms) => trace.detail(label, ms),
                 onCloudCompleted: data => {
+                    trace.worker(data?._sullyStoryTiming);
                     cloudImageHandoffResult = data?._sullyStoryImageHandoff as StoryCloudImageHandoffResult | undefined;
                 },
                 beforeRelease: entry.imageGeneration?.enabled && isNativeStoryBackgroundRuntime()
@@ -1966,6 +1987,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                     : undefined,
             });
             if (stopRequestedRef.current) return;
+            trace.mark(sawFirstStoryText ? '正文后续输出' : '等待完整正文（无流式首字）');
             nativeCompletionReceived = usedNativeBackground;
             const rawContent = prefill && !generated.startsWith(prefill) ? `${prefill}${generated}` : generated;
             const previousAssistantContent = [...history].reverse().find(message => message.role === 'assistant')?.content || '';
@@ -2023,6 +2045,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                     }
                 }
             }
+            trace.mark('对白/情绪后处理');
             const replyMetadata = {
                 theaterPromptTokens: promptTokenCount,
                 theaterPromptTokensExact: promptTokenCountExact,
@@ -2072,6 +2095,8 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             setAffinityDrafts({});
             setShowAffinityInput(false);
             await loadMessages();
+            trace.mark('正文落库并刷新界面');
+            turnSucceeded = true;
             streamingTextRef.current = '';
             setStreamingText('');
             partialStreamText = '';
@@ -2255,6 +2280,8 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 );
             }
         } finally {
+            trace.mark('收尾/配图接回');
+            trace.finish(stopRequestedRef.current ? '已取消' : turnSucceeded ? '已完成' : '失败或中断');
             await releaseNativeStoryKeepAlive(automaticImageKeepAliveLease);
             automaticImageKeepAliveLease = null;
             sendLock.current = false;
@@ -2555,6 +2582,27 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 </div>
             </div>
         </footer>
+        {showTimingReport && <div className='fixed inset-0 z-[90] flex items-end bg-slate-900/40' onClick={() => setShowTimingReport(false)}>
+            <div className='story-safe-sheet w-full max-h-[82dvh] overflow-y-auto rounded-t-3xl bg-stone-100 px-5 pt-4 pb-8' onClick={event => event.stopPropagation()}>
+                <div className='flex items-center justify-between'>
+                    <div><div className='text-[9px] tracking-[.16em] font-bold text-violet-500'>PERFORMANCE TRACE</div><h2 className='mt-1 text-base font-semibold'>剧情生成耗时</h2></div>
+                    <button type='button' onClick={() => setShowTimingReport(false)} className='w-9 h-9 grid place-items-center rounded-full bg-white text-slate-500'><X size={16} /></button>
+                </div>
+                {!timingReport ? <p className='my-5 text-xs text-slate-500'>生成一轮剧情后就会在这里显示各阶段耗时。</p> :
+                    <>
+                        <div className='mt-4 flex items-center justify-between rounded-2xl bg-white p-3 text-xs'><span className='text-slate-500'>{timingReport.status} · {new Date(timingReport.startedAt).toLocaleString()}</span><strong className='text-violet-700'>{(timingReport.totalMs / 1000).toFixed(1)} 秒</strong></div>
+                        <div className='mt-3 rounded-2xl bg-white px-4 py-3'>
+                            <h3 className='text-xs font-bold text-slate-700'>客户端顺序阶段</h3>
+                            {timingReport.stages.map((item, i) => <div key={i} className='flex justify-between gap-4 border-b border-slate-100 py-2 text-[11px]'><span className='text-slate-600'>{item.label}</span><strong className='shrink-0 text-slate-800'>{(item.ms / 1000).toFixed(2)} 秒</strong></div>)}
+                        </div>
+                        {timingReport.details.length > 0 && <div className='mt-3 rounded-2xl bg-white px-4 py-3'><h3 className='text-xs font-bold text-slate-700'>并行任务 / 网络细项</h3>{timingReport.details.map((item, i) => <div key={i} className='flex justify-between gap-4 border-b border-slate-100 py-2 text-[11px]'><span className='text-slate-600'>{item.label}</span><strong className='shrink-0 text-slate-800'>{(item.ms / 1000).toFixed(2)} 秒</strong></div>)}</div>}
+                        {timingReport.worker && Object.keys(timingReport.worker).length > 0 && <div className='mt-3 rounded-2xl bg-white px-4 py-3'><h3 className='text-xs font-bold text-slate-700'>Worker / 上游模型（服务端实测）</h3>{Object.entries(timingReport.worker).map(([label, ms]) => <div key={label} className='flex justify-between gap-4 border-b border-slate-100 py-2 text-[11px]'><span className='text-slate-600'>{({ queueMs:'Worker 任务排队', prepareMs:'Worker 解密及准备', headerMs:'发送请求→响应头', firstByteMs:'发送请求→首个数据字节', firstTextMs:'发送请求→首个正文内容', upstreamTotalMs:'发送请求→正文输出结束', imageHandoffMs:'后台配图规划/提交' } as Record<string,string>)[label] || label}</span><strong className='shrink-0 text-slate-800'>{(ms / 1000).toFixed(2)} 秒</strong></div>)}</div>}
+                        <p className='mt-3 text-[10px] leading-5 text-slate-500'>客户端阶段耗时可以相加；并行任务与服务端耗时是细分指标，不要重复相加。首字显示耗时包含云端排队、模型推理和手机轮询。本机仅保存时间数字，不保存正文或 API 密钥。</p>
+                        <button type='button' onClick={() => { const text = JSON.stringify(timingReport, null, 2); if (navigator.clipboard?.writeText) { void navigator.clipboard.writeText(text).then(() => addToast('耗时数据已复制，可以发给我分析', 'success')).catch(() => addToast('复制失败，请截屏耗时面板', 'error')); } else addToast('当前设备不支持复制，请截屏耗时面板', 'info'); }} className='mt-4 w-full h-10 rounded-2xl bg-violet-600 text-white text-xs font-bold'>复制耗时报告</button>
+                    </>
+                }
+            </div>
+        </div>}
         {showHeaderMenu && <div className='fixed inset-0 z-[68] flex items-end bg-slate-900/25' onClick={() => setShowHeaderMenu(false)}>
             <div className='story-safe-sheet w-full max-h-[86dvh] overflow-y-auto rounded-t-[28px] bg-stone-100 px-4 pt-3 shadow-2xl' onClick={event => event.stopPropagation()}>
                 <div className='mx-auto mb-3 h-1 w-9 rounded-full bg-slate-300' />
@@ -2589,6 +2637,11 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                         triggerLabel='剧情配图'
                         triggerClassName='h-11 w-full rounded-2xl border border-slate-200 bg-white px-3 flex items-center gap-2 text-[10px] font-bold text-slate-700'
                     />
+                    <button
+                        type='button'
+                        onClick={() => { setShowHeaderMenu(false); setShowTimingReport(true); }}
+                        className='h-11 rounded-2xl border border-violet-200 bg-violet-50 px-3 flex items-center gap-2 text-[10px] font-bold text-violet-700'
+                    ><Clock size={16} />生成耗时</button>
                     <button
                         type='button'
                         disabled={exporting || messages.length === 0}

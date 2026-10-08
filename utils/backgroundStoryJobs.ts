@@ -479,6 +479,7 @@ export interface ExecuteCloudStoryOptions {
     meta?: Record<string, any>;
     onPromptTokens?: (tokens: number) => void;
     onStreamText?: (fullText: string) => void;
+    onTiming?: (label: string, ms: number) => void;
     /** 已冻结的生图服务/预设/参考槽描述；随 story spec 一起加密存 Worker。 */
     imageHandoff?: StoryCloudImageHandoffSpec;
 }
@@ -486,7 +487,9 @@ export interface ExecuteCloudStoryOptions {
 export const executeStoryCompletionInCloudBackground = async (
     options: ExecuteCloudStoryOptions,
 ): Promise<any> => {
+    const timingStart = performance.now();
     const config = await resolveWorkerConfig();
+    options.onTiming?.('解析 Worker 地址与账号', performance.now() - timingStart);
     if (!config) throw new Error('主动消息 Worker 尚未配置，不能使用剧情云端后台任务');
 
     let pending = getPendingCloudStoryJob(options.ownerKey);
@@ -564,11 +567,14 @@ export const executeStoryCompletionInCloudBackground = async (
             // 新任务把完整 spec 一次性交给 Android。原生插件会先挂前台状态牌，再在自己的线程里
             // POST /story-jobs；WebView 随后哪怕立刻被冻结，模型请求也已经由原生层负责送达。
             // specJson 是原生桥的向后兼容扩展字段，旧 TS 类型无需参与运行时传递。
+            const submitStart = performance.now();
             await startNativeCloudStoryMonitor({
                 ...monitorOptions,
                 specJson: JSON.stringify(spec),
                 onReferencesSynced: receipts => rememberNativeStoryReferenceReceipts(options.imageHandoff, receipts),
+                onSubmitTiming: (label, ms) => options.onTiming?.(label, ms),
             });
+            options.onTiming?.('Android 本机→Worker 提交合计', performance.now() - submitStart);
             nativeSubmissionOwnsPost = true;
         } catch (error) {
             // 原生提交失败/结果不确定时，下面仍可用完全相同的 jobId/clientRequestId 走浏览器 POST。
@@ -604,11 +610,17 @@ export const executeStoryCompletionInCloudBackground = async (
         try {
             // Android consumes these local attachments on its submission thread. Browser-only
             // sessions perform the same preparation here; only small slot/error metadata goes to D1.
-            if (spec.imageHandoff) spec.imageHandoff = await prepareStoryReferenceUploads(spec.imageHandoff);
+            if (spec.imageHandoff) {
+                const imagePrepStart = performance.now();
+                spec.imageHandoff = await prepareStoryReferenceUploads(spec.imageHandoff);
+                options.onTiming?.('浏览器参考图检查与上传', performance.now() - imagePrepStart);
+            }
+            const submitStart = performance.now();
             const { response, body } = await fetchJson(config, '/story-jobs', {
                 method: 'POST',
                 body: JSON.stringify(spec),
             });
+            options.onTiming?.('浏览器→Worker 提交 HTTP', performance.now() - submitStart);
             if (!response.ok) {
                 const code = String(body?.error?.code || '');
                 const responseJob = body?.job || null;
@@ -702,6 +714,9 @@ export const executeStoryCompletionInCloudBackground = async (
         }
 
         if (job.status === 'succeeded') {
+            if (typeof job.createdAt === 'number' && typeof job.startedAt === 'number' && job.startedAt >= job.createdAt) {
+                options.onTiming?.('Worker 排队（任务创建→启动）', job.startedAt - job.createdAt);
+            }
             const successfulRoute = resolveSuccessfulRoute(job, options.plan);
             if (successfulRoute) {
                 recordCloudApiCall({
