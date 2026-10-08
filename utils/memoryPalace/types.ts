@@ -32,6 +32,12 @@ export const ROOM_CONFIGS: Record<MemoryRoom, RoomConfig> = {
     windowsill:  { capacity: null, decayRate: null,   description: '期盼、目标、憧憬' },
 };
 
+/** 检索读到旧档/远程异常房间时沿用提取入口的客厅兜底，不改写原始记录。 */
+export function resolveMemoryScoringRoom(room: unknown): MemoryRoom {
+    return typeof room === 'string' && Object.prototype.hasOwnProperty.call(ROOM_CONFIGS, room)
+        ? room as MemoryRoom : 'living_room';
+}
+
 export const ROOM_LABELS: Record<MemoryRoom, string> = {
     living_room: '客厅',
     bedroom:     '卧室',
@@ -64,6 +70,8 @@ export interface MemoryEntity {
 }
 
 export interface MemoryNode {
+    /** 可选补注的固定说话日期，不是 createdAt 事件日。原文始终不含系统补注。 */
+    relativeTimeAnchor?: { dateKey: string; source: 'message'; messageId?: number };
     id: string;
     charId: string;
     content: string;            // 记忆内容（提取记忆为第三人称叙事，消化衍生记忆为第一人称内心独白）

@@ -13,7 +13,7 @@ import { MagnifyingGlass, Gear, User as UserIcon } from '@phosphor-icons/react';
 import NeteaseLoginPanel from './NeteaseLoginPanel';
 import TokenImg from '../../components/os/TokenImg';
 import { isBlobRef } from '../../utils/blobRef';
-import { trackEvent } from '../../utils/analytics';
+
 
 interface Playlist {
   id: number;
@@ -138,7 +138,7 @@ const LocalAlbumCard: React.FC<LocalAlbumCardProps> = ({ songs, expanded, setExp
                 onClick={() => {
                   if (typeof window !== 'undefined' && window.confirm(`从专辑移除《${s.name}》？`)) {
                     onRemove(s.id);
-                    trackEvent('从本地专辑移除一首歌');
+                    
                   }
                 }}
                 className="text-[10px] px-1.5 py-0.5 rounded shrink-0 transition-colors"
@@ -291,7 +291,7 @@ const NeteaseProfilePage: React.FC<Props> = ({ onBack, onOpenPlayer, onOpenSearc
 
   // 签到
   const doSignIn = useCallback(async () => {
-    trackEvent('做一次网易云每日签到');
+    
     try {
       await musicApi.dailySignin(cfgRef.current, 1);
       setSignedIn(true);
@@ -312,7 +312,7 @@ const NeteaseProfilePage: React.FC<Props> = ({ onBack, onOpenPlayer, onOpenSearc
     try { await musicApi.logout(curCfg); } catch {}
     setCfg({ ...curCfg, cookie: '' });
     toastRef.current('已退出', 'success');
-    trackEvent('退出网易云登录');
+    
     await refreshProfile();
   }, [setCfg, refreshProfile]);
 
@@ -350,7 +350,7 @@ const NeteaseProfilePage: React.FC<Props> = ({ onBack, onOpenPlayer, onOpenSearc
             playing={playing}
             onPlay={(s, idx) => {
               playSong(s, { alsoSetQueue: true, replaceQueue: localAlbumSongs, startIdx: idx });
-              trackEvent('播放「我的」页列表里的一首歌', { source: 'local' });
+              
             }}
             onRemove={removeLocalSong}
           />
@@ -500,7 +500,7 @@ const NeteaseProfilePage: React.FC<Props> = ({ onBack, onOpenPlayer, onOpenSearc
                   if (!songs.length) { addToast('还没有每日推荐', 'info'); return; }
                   playSong(songs[0], { replaceQueue: songs, startIdx: 0 });
                   onOpenPlayer();
-                  trackEvent('播放每日推荐');
+                  
                 } catch (e: any) { addToast(`获取失败：${e.message}`, 'error'); }
               }}
               className="flex-1 py-2 rounded-xl text-[11px] transition-all text-white"
@@ -523,7 +523,7 @@ const NeteaseProfilePage: React.FC<Props> = ({ onBack, onOpenPlayer, onOpenSearc
                   if (!songs.length) { addToast('FM 暂无歌曲', 'info'); return; }
                   playSong(songs[0], { replaceQueue: songs, startIdx: 0 });
                   onOpenPlayer();
-                  trackEvent('播放私人 FM');
+                  
                 } catch (e: any) { addToast(`FM 失败：${e.message}`, 'error'); }
               }}
               className="flex-1 py-2 rounded-xl text-[11px] transition-all shizuku-glass"
@@ -619,7 +619,7 @@ const NeteaseProfilePage: React.FC<Props> = ({ onBack, onOpenPlayer, onOpenSearc
           ] as const).map(t => (
             <button
               key={t.k}
-              onClick={() => { setTab(t.k); trackEvent('切换我的云音乐标签', { tab: t.k }); }}
+              onClick={() => { setTab(t.k);  }}
               className="flex-1 py-1.5 rounded-full text-[11px] tracking-wider transition-all"
               style={{
                 background: tab === t.k ? `linear-gradient(135deg, ${C.primary}, ${C.accent})` : 'transparent',
@@ -650,7 +650,7 @@ const NeteaseProfilePage: React.FC<Props> = ({ onBack, onOpenPlayer, onOpenSearc
                 playing={playing}
                 onPlay={(s, idx) => {
                   playSong(s, { alsoSetQueue: true, replaceQueue: localAlbumSongs, startIdx: idx });
-                  trackEvent('播放「我的」页列表里的一首歌', { source: 'local' });
+                  
                 }}
                 onRemove={removeLocalSong}
               />
@@ -685,7 +685,7 @@ const NeteaseProfilePage: React.FC<Props> = ({ onBack, onOpenPlayer, onOpenSearc
                         onClick={() => {
                           playSong(s, { replaceQueue: plTracks[pl.id], startIdx: plTracks[pl.id].findIndex(x => x.id === s.id) });
                           onOpenPlayer();
-                          trackEvent('播放「我的」页列表里的一首歌', { source: 'playlist' });
+                          
                         }}
                         className="w-full text-left flex items-center gap-2 py-1.5 px-1">
                         <TokenImg value={s.albumPic} alt="" className="w-7 h-7 rounded-md object-cover" />
@@ -716,7 +716,7 @@ const NeteaseProfilePage: React.FC<Props> = ({ onBack, onOpenPlayer, onOpenSearc
                   const q = records.map(x => x.song);
                   playSong(r.song, { replaceQueue: q, startIdx: i });
                   onOpenPlayer();
-                  trackEvent('播放「我的」页列表里的一首歌', { source: 'record' });
+                  
                 }}
                 className="w-full flex items-center gap-3 p-2 rounded-2xl text-left transition-all"
                 style={{ background: 'rgba(255,255,255,0.06)' }}
@@ -746,7 +746,7 @@ const NeteaseProfilePage: React.FC<Props> = ({ onBack, onOpenPlayer, onOpenSearc
                 onClick={() => {
                   playSong(s, { replaceQueue: cloud, startIdx: i });
                   onOpenPlayer();
-                  trackEvent('播放「我的」页列表里的一首歌', { source: 'cloud' });
+                  
                 }}
                 className="w-full flex items-center gap-3 p-2 rounded-2xl text-left transition-all"
                 style={{ background: 'rgba(255,255,255,0.06)' }}

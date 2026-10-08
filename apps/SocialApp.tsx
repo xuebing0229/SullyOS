@@ -1,18 +1,19 @@
+import { ContextBuilder } from '../utils/context';
 import { loadCharacterContextMessages } from '../utils/chatContextRange';
 
 import React, { useState, useEffect, useRef } from 'react';
 import { useOS } from '../context/OSContext';
 import { DB } from '../utils/db';
 import { CharacterProfile, SocialPost, SocialComment, SubAccount, SocialAppProfile } from '../types';
-import { ContextBuilder } from '../utils/context';
+import { buildSparkCommentHistory, buildSparkGenerationContext, resolveSparkAuthor, selectSparkParticipants } from '../utils/socialGeneration';
 import { processImageToBlob } from '../utils/file';
 import { putImageBlob } from '../utils/blobRef';
 import Modal from '../components/os/Modal';
-import { safeResponseJson } from '../utils/safeApi';
+import { extractContent, safeResponseJson } from '../utils/safeApi';
 import { CharacterGroupFilterBar, filterCharactersByGroup, GROUP_FILTER_ALL } from '../components/character/CharacterGroupFilter';
 import { House, User, Package, Warning } from '@phosphor-icons/react';
 import { mergeSocialComments, prependUniqueSocialPosts, updateSocialPost } from '../utils/socialFeedMerge';
-import { trackEvent } from '../utils/analytics';
+
 import TokenImg from '../components/os/TokenImg';
 
 const TWEMOJI_BASE = 'https://cdnjs.cloudflare.com/ajax/libs/twemoji/14.0.2/72x72';
@@ -345,7 +346,7 @@ const SocialApp: React.FC = () => {
             ...prev,
             [charId]: [...(prev[charId] || []), newAcct]
         }));
-        trackEvent('给角色添加一个马甲');
+        
     };
 
     const updateSubAccount = (charId: string, acctId: string, field: keyof SubAccount, value: string) => {
@@ -389,7 +390,7 @@ const SocialApp: React.FC = () => {
                 const blob = await processImageToBlob(file);
                 const ref = await putImageBlob(blob);
                 setSocialProfile(prev => ({ ...prev, avatar: ref }));
-                trackEvent('更换 Spark 头像');
+                
             } catch (err: any) {
                 addToast(err.message, 'error');
             }
@@ -432,32 +433,33 @@ const SocialApp: React.FC = () => {
     };
 
     // --- AI Logic (Updated for Multi-Handle) ---
+    const buildGenerationContext = async (participants: CharacterProfile[]) => {
+        const recent = await Promise.all(participants.map(async char =>
+            [char.id, await loadCharacterContextMessages(char)] as const));
+        return buildSparkGenerationContext(participants.map(char => ({ ...char, mountedWorldbooks: [] })), userProfile, socialProfile, characterHandles, Object.fromEntries(recent));
+    };
+
+    const buildGenerationMessages = (members: CharacterProfile[], context: string, prompt: string) => {
+        const history = [{ role: 'user', content: prompt }];
+        return ContextBuilder.buildGroupWorldbookRequest({ members, user: userProfile, history,
+            render: (slots, turns) => [{ role: 'system', content: slots.before + context + slots.after }, ...turns],
+        });
+    };
+
     const handleRefresh = async () => {
+
         if (!apiConfig.apiKey) { addToast('请配置 API Key', 'error'); return; }
         if (refreshRequestRef.current) return;
         const controller = new AbortController();
         refreshRequestRef.current = controller;
         setIsRefreshing(true);
-        trackEvent('刷新 Spark 推荐流');
+        
         try {
             const shuffledChars = [...characters].sort(() => 0.5 - Math.random());
             const selectedChars = shuffledChars.slice(0, Math.min(3, characters.length));
             
-            // Build Character Map with Multiple Handles Info
-            let charContexts = "";
-            let identityMap = "### 角色身份表 (Identities)\n";
-
-            for (const char of selectedChars) {
-                const coreContext = ContextBuilder.buildCoreContext(char, userProfile, false);
-                const msgs = await loadCharacterContextMessages(char);
-                const recentStatus = msgs.length > 0 ? `(最近私聊状态: 刚和用户聊过 "${msgs[msgs.length-1].content.substring(0, 20)}...")` : '(最近无私聊，生活平淡)';
-                
-                const handles = characterHandles[char.id] || [];
-                const handleList = handles.map(h => `- 网名: "${h.handle}" (备注: ${h.note})`).join('\n');
-                
-                identityMap += `\n角色 [${char.name}] 可用账号:\n${handleList}\n`;
-                charContexts += `\n<<< 角色档案: ${char.name} >>>\n${coreContext}\n${recentStatus}\n<<< 档案结束 >>>\n`;
-            }
+            const context = await buildGenerationContext(selectedChars);
+            if (controller.signal.aborted) return;
 
             const prompt = `### 任务: 模拟社交APP "Spark" 的推荐流
 你需要生成 6-8 条新的社交媒体帖子。
@@ -472,16 +474,10 @@ const SocialApp: React.FC = () => {
 2. **路人/网友发帖 (70%)**: 
    - 模拟真实的互联网生态：吃瓜群众、技术宅、美妆博主、情感树洞。
 
-### 身份配置
-${identityMap}
-
 ### 🚫 绝对禁令
 1. **禁止扮演用户**: 用户的网名是 "${socialProfile.name}"。绝对禁止生成 \`authorName\` 等于或近似 "${socialProfile.name}" 的帖子（无论是角色帖还是路人帖）。如果你想用类似的名字，请改成完全不同的网名。
 2. **路人不得冒用身份**: 路人的 \`authorName\` 必须是全新的网名，绝对不能与上方【角色身份表】中列出的任何【网名】重合。
 3. **禁止上帝视角**。
-
-### 输入上下文
-${charContexts}
 
 ### 输出格式 (JSON Array)
 [
@@ -499,34 +495,24 @@ ${charContexts}
             const response = await fetch(`${apiConfig.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiConfig.apiKey}` },
-                body: JSON.stringify({ model: apiConfig.model, messages: [{ role: "user", content: prompt }], temperature: 0.95, max_tokens: 8000 }),
+                body: JSON.stringify({ model: apiConfig.model, messages: buildGenerationMessages(selectedChars, context, prompt), temperature: 0.8, max_tokens: 8000 }),
                 signal: controller.signal,
                 __sullyMeta: { appId: 'social', appName: 'Spark', purpose: '刷新推荐流' },
             } as RequestInit);
             if (!response.ok) throw new Error(await apiErrorMessage(response));
             const data = await safeResponseJson(response);
             if (controller.signal.aborted) return;
-            const json = safeParseJSON(data.choices[0].message.content);
+            const json = safeParseJSON(extractContent(data));
             if (!Array.isArray(json)) throw new Error('Parsed data is not an array');
             
             const newPosts: SocialPost[] = json
-                .filter((item: any) => {
-                    // Defense in depth: drop any AI-generated post that tries to impersonate the user.
-                    const name = (item?.authorName || '').toString().trim();
-                    return name && name !== socialProfile.name;
-                })
-                .map((item: any) => {
+                .flatMap((item: any) => {
+                const author = resolveSparkAuthor(item, selectedChars, characters, characterHandles, [socialProfile.name, userProfile.name]);
+                if (!author || typeof item.content !== 'string' || !item.content.trim()) return [];
+                item = { ...item, authorName: author.name };
                 let avatar = `https://api.dicebear.com/7.x/notionists/svg?seed=${item.authorName}`;
-                let matchedChar: CharacterProfile | undefined;
-                if (item.isCharacter) {
-                    // Try to find matching char by ID first, then by Handle match
-                    matchedChar = characters.find(char => char.id === item.charId) || characters.find(char => {
-                        const handles = characterHandles[char.id] || [];
-                        return handles.some(h => h.handle === item.authorName);
-                    });
-                    if (matchedChar) avatar = matchedChar.avatar;
-                }
-                // If AI flagged isCharacter but we couldn't match any char/handle, treat as stranger to avoid mis-attribution.
+                const matchedChar = author.character;
+                if (matchedChar) avatar = matchedChar.avatar;
                 const isCharacterPost = !!matchedChar;
                 if (!isCharacterPost) {
                     const seeds = ['micah', 'avataaars', 'bottts', 'notionists'];
@@ -535,11 +521,11 @@ ${charContexts}
                 // Normalize emoji content. AI usually returns real emoji chars; fall back to a ✨ char (not codepoint) for safety.
                 const rawEmojis = Array.isArray(item.emojis) && item.emojis.length > 0 ? item.emojis : ['✨'];
                 const images = rawEmojis.map((e: any) => codepointToEmoji(String(e ?? '✨')));
-                return {
+                return [{
                     id: `post-${Date.now()}-${Math.random()}`,
                     authorName: item.authorName || 'Unknown',
                     authorAvatar: avatar,
-                    title: item.title || '无标题',
+                    title: typeof item.title === 'string' ? item.title : '无标题',
                     content: item.content || '...',
                     images,
                     likes: item.likes || 0,
@@ -549,10 +535,11 @@ ${charContexts}
                     timestamp: Date.now(),
                     tags: ['Life', 'Vlog'],
                     bgStyle: getRandomStyle().bg,
-                    authorType: isCharacterPost ? 'character' : 'stranger',
+                    authorType: isCharacterPost ? 'character' as const : 'stranger' as const,
                     authorCharId: matchedChar?.id,
-                };
+                }];
             });
+            if (!newPosts.length) throw new Error('模型返回的作者身份不匹配，未添加帖子');
             prependPostsToFeed(newPosts);
             addToast('首页已刷新: 冲浪模式开启', 'success');
         } catch (e: any) {
@@ -566,6 +553,7 @@ ${charContexts}
     };
 
     const generateComments = async (post: SocialPost) => {
+
         if (!post || !apiConfig.apiKey) return;
         const livePost = feedRef.current.find(item => item.id === post.id) || post;
         if (livePost.comments.length > 0) return;
@@ -577,19 +565,9 @@ ${charContexts}
         setLoadingComments(true);
         try {
             const shuffledChars = [...characters].sort(() => 0.5 - Math.random());
-            const selectedChars = shuffledChars.slice(0, 2);
-            
-            let identityMap = "";
-            for (const char of selectedChars) {
-                const handles = characterHandles[char.id] || [];
-                const hList = handles.map(h => `"${h.handle}" (${h.note})`).join(', ');
-                identityMap += `- 角色 ${char.name} 可用身份: ${hList}\n`;
-            }
-
-            let contextPrompt = "";
-            for (const char of selectedChars) {
-                contextPrompt += `\n<<< 评论者角色: ${char.name} >>>\n${ContextBuilder.buildCoreContext(char, userProfile, false)}\n`;
-            }
+            const selectedChars = selectSparkParticipants(post, shuffledChars, characterHandles);
+            const context = await buildGenerationContext(selectedChars);
+            if (controller.signal.aborted) return;
             
             let authorType = "Stranger";
             if (post.authorType === 'user') authorType = "User";
@@ -620,50 +598,35 @@ ${post.content || '(楼主没写正文)'}
 请基于上面的【标题 + 正文】生成 4-6 条评论，评论要切实回应正文里提到的内容，不要只对着标题空泛地说。混合使用 **选定角色** 和 **随机路人**。
 角色评论时，请选择一个符合语境的马甲身份。
 
-### 角色身份库
-${identityMap}
-
 ### 禁令
 - **绝对禁止** 生成 \`author\` 等于或近似 "${socialProfile.name}" (用户) 的评论。
 - 路人评论的 \`author\` 必须是全新的网名，绝对不能与上方【角色身份库】中列出的任何马甲网名重合。
 
-### 输入上下文
-${contextPrompt}
-
 ### 输出格式 (JSON Array)
 [
-  { "author": "网名 (Handle) 或 路人昵称", "content": "评论内容..." }
+  { "author": "网名 (Handle) 或 路人昵称", "charId": "角色ID或null", "content": "评论内容..." }
 ]`;
             const response = await fetch(`${apiConfig.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiConfig.apiKey}` },
-                body: JSON.stringify({ model: apiConfig.model, messages: [{ role: "user", content: prompt }], temperature: 0.8 }),
+                body: JSON.stringify({ model: apiConfig.model, messages: buildGenerationMessages(selectedChars, context, prompt), temperature: 0.8 }),
                 signal: controller.signal,
                 __sullyMeta: { appId: 'social', appName: 'Spark', purpose: '生成帖子评论' },
             } as RequestInit);
             if (!response.ok) throw new Error(await apiErrorMessage(response));
             const data = await safeResponseJson(response);
             if (controller.signal.aborted) return;
-            const json = safeParseJSON(data.choices[0].message.content);
+            const json = safeParseJSON(extractContent(data));
             if (Array.isArray(json)) {
                 const comments: SocialComment[] = json
-                    .filter((c: any) => {
-                        const name = (c?.author || c?.authorName || '').toString().trim();
-                        // Drop any AI comment that tries to impersonate the user.
-                        return name && name !== socialProfile.name;
-                    })
-                    .map((c: any) => {
-                        const authorName = c.author || c.authorName || 'Unknown';
+                    .flatMap((c: any) => {
+                        const author = resolveSparkAuthor(c, selectedChars, characters, characterHandles, [socialProfile.name, userProfile.name]);
+                        if (!author || typeof c.content !== 'string' || !c.content.trim()) return [];
+                        const authorName = author.name;
                         let avatar = `https://api.dicebear.com/7.x/notionists/svg?seed=${authorName}`;
-
-                        // Check if char (match by handle)
-                        const char = characters.find(ch => {
-                            const handles = characterHandles[ch.id] || [];
-                            return handles.some(h => h.handle === authorName);
-                        });
-
+                        const char = author.character;
                         if (char) avatar = char.avatar;
-                        return {
+                        return [{
                             id: `cmt-${Math.random()}`,
                             authorName: authorName,
                             authorAvatar: avatar,
@@ -672,8 +635,9 @@ ${contextPrompt}
                             isCharacter: !!char,
                             authorType: char ? 'character' : 'stranger',
                             authorCharId: char?.id,
-                        } as SocialComment;
+                        } as SocialComment];
                     });
+                if (!comments.length) throw new Error('模型返回的评论身份不匹配，未添加评论');
                 updatePostInFeed(post.id, current => ({
                     ...current,
                     comments: mergeSocialComments(current.comments || [], comments),
@@ -690,6 +654,7 @@ ${contextPrompt}
     };
 
     const generateRepliesToUser = async (post: SocialPost, userContent: string) => {
+
         if (!apiConfig.apiKey) return;
         if (replyRequestRef.current) return;
         const controller = new AbortController();
@@ -697,13 +662,9 @@ ${contextPrompt}
         post = feedRef.current.find(item => item.id === post.id) || post;
         setIsReplyingToUser(true);
         try {
-            // Simplified handle map for replies
-            let identityMap = "";
-            characters.forEach(char => {
-                const handles = characterHandles[char.id] || [];
-                const hList = handles.map(h => `"${h.handle}"`).join(', ');
-                identityMap += `- ${char.name}: ${hList}\n`;
-            });
+            const selectedChars = selectSparkParticipants(post, [...characters].sort(() => 0.5 - Math.random()), characterHandles);
+            const context = await buildGenerationContext(selectedChars);
+            if (controller.signal.aborted) return;
 
             // Tell the model who actually wrote the post — if it's the user themselves, replies
             // need to make sense as people responding to the user's own note (not strangers).
@@ -724,45 +685,40 @@ ${contextPrompt}
 ${post.content || '(楼主没写正文)'}
 """
 **用户 "${socialProfile.name}" 刚在帖子下发的评论**: "${userContent}"
+**已有评论对话（最后一条可能就是上述新评论，不要重复回复旧内容）**:
+${buildSparkCommentHistory(post)}
 
 请基于楼主帖子的【标题 + 正文】+ 用户的评论上下文，生成 1-3 条对用户这条评论的回复，要扣题，不能脱离正文凭空发挥。
-${identityMap}
+优先由楼主或正在对话的角色回复；只能使用本次角色档案中的身份。
 
 ### 禁令
 - **绝对禁止** \`author\` 等于或近似 "${socialProfile.name}" (用户自己)。回复必须来自其他人。
 
 ### 输出格式 (JSON Array)
 [
-  { "author": "网名 (Handle)", "content": "回复内容..." }
+  { "author": "网名 (Handle)", "charId": "角色ID或null", "content": "回复内容..." }
 ]`;
             const response = await fetch(`${apiConfig.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiConfig.apiKey}` },
-                body: JSON.stringify({ model: apiConfig.model, messages: [{ role: "user", content: prompt }], temperature: 0.9 }),
+                body: JSON.stringify({ model: apiConfig.model, messages: buildGenerationMessages(selectedChars, context, prompt), temperature: 0.8 }),
                 signal: controller.signal,
                 __sullyMeta: { appId: 'social', appName: 'Spark', purpose: '回复用户评论' },
             } as RequestInit);
             if (!response.ok) throw new Error(await apiErrorMessage(response));
             const data = await safeResponseJson(response);
             if (controller.signal.aborted) return;
-            const json = safeParseJSON(data.choices[0].message.content);
+            const json = safeParseJSON(extractContent(data));
             if (Array.isArray(json)) {
                 const newReplies: SocialComment[] = json
-                    .filter((c: any) => {
-                        const name = (c?.author || c?.authorName || '').toString().trim();
-                        return name && name !== socialProfile.name;
-                    })
-                    .map((c: any) => {
-                        const authorName = c.author || c.authorName || 'Unknown';
+                    .flatMap((c: any) => {
+                        const author = resolveSparkAuthor(c, selectedChars, characters, characterHandles, [socialProfile.name, userProfile.name]);
+                        if (!author || typeof c.content !== 'string' || !c.content.trim()) return [];
+                        const authorName = author.name;
                         let avatar = `https://api.dicebear.com/7.x/notionists/svg?seed=${authorName}`;
-
-                        const char = characters.find(ch => {
-                            const handles = characterHandles[ch.id] || [];
-                            return handles.some(h => h.handle === authorName);
-                        });
-
+                        const char = author.character;
                         if (char) avatar = char.avatar;
-                        return {
+                        return [{
                             id: `cmt-reply-${Date.now()}-${Math.random()}`,
                             authorName: authorName,
                             authorAvatar: avatar,
@@ -771,8 +727,9 @@ ${identityMap}
                             isCharacter: !!char,
                             authorType: char ? 'character' : 'stranger',
                             authorCharId: char?.id,
-                        } as SocialComment;
+                        } as SocialComment];
                     });
+                if (!newReplies.length) throw new Error('模型返回的回复身份不匹配，未添加回复');
                 if (newReplies.length > 0) {
                     updatePostInFeed(post.id, current => ({
                         ...current,
@@ -797,7 +754,7 @@ ${identityMap}
             await DB.saveMessage({ charId: isGroup ? 'user' : targetId, groupId: isGroup ? targetId : undefined, role: 'user', type: 'social_card', content: '[分享帖子]', metadata: { post: selectedPost } });
             setShowShareModal(false);
             addToast('分享成功', 'success');
-            trackEvent('分享帖子到聊天');
+            
         } catch (e) { addToast('分享失败', 'error'); }
     };
 
@@ -828,7 +785,7 @@ ${identityMap}
         addToast('发布成功', 'success');
     };
 
-    const handleDeletePost = (postId: string) => { removePostFromFeed(postId); addToast('帖子已删除', 'success'); trackEvent('删除一条帖子'); };
+    const handleDeletePost = (postId: string) => { removePostFromFeed(postId); addToast('帖子已删除', 'success');  };
     const handleLike = (e: any, post: SocialPost) => {
         e.stopPropagation();
         updatePostInFeed(post.id, current => ({
@@ -836,7 +793,7 @@ ${identityMap}
             isLiked: !current.isLiked,
             likes: current.isLiked ? current.likes - 1 : current.likes + 1,
         }));
-        trackEvent('点赞一条帖子', { action: post.isLiked ? 'unlike' : 'like' });
+        
     };
     
     const handleSendComment = async () => { 
@@ -893,14 +850,14 @@ ${identityMap}
         ));
         setShowSettings(false);
         addToast('推荐流已清空', 'success');
-        trackEvent('清空 Spark 推荐流');
+        
     };
 
     // --- Renderers ---
 
     // 1. Feed Item (Glassmorphism)
     const renderFeedItem = (post: SocialPost) => (
-        <div key={post.id} onClick={() => handleOpenPost(post)} className="break-inside-avoid mb-3 bg-white/70 backdrop-blur-md rounded-2xl overflow-hidden shadow-sm hover:shadow-lg transition-all cursor-pointer active:scale-[0.98] border border-white/50 relative group">
+        <div key={post.id} onClick={() => handleOpenPost(post)} className="min-w-0 bg-white/70 backdrop-blur-md rounded-2xl overflow-hidden shadow-sm hover:shadow-lg transition-all cursor-pointer active:scale-[0.98] border border-white/50 relative group">
             <div className="aspect-[4/5] w-full flex items-center justify-center relative overflow-hidden" style={{ background: post.bgStyle }}>
                 {/* Decorative Overlay for "Premium" look */}
                 <div className="absolute inset-0 bg-white/5 backdrop-blur-[1px]"></div>
@@ -912,12 +869,12 @@ ${identityMap}
                 )}
             </div>
             <div className="p-3">
-                <div className="flex justify-between items-center">
-                    <div className="flex items-center gap-2 min-w-0">
+                <div className="flex justify-between items-center gap-2">
+                    <div className="flex flex-1 items-center gap-2 min-w-0">
                         <TokenImg value={post.authorAvatar} className="w-5 h-5 rounded-full object-cover shrink-0 ring-1 ring-white/50" />
                         <span className="text-[11px] text-slate-700 truncate font-medium">{post.authorName}</span>
                     </div>
-                    <div className="flex items-center gap-1 text-slate-400 group-hover:text-slate-600 transition-colors">
+                    <div className="flex shrink-0 items-center gap-1 text-slate-400 group-hover:text-slate-600 transition-colors">
                         <Icons.Heart filled={post.isLiked} className="w-4 h-4" onClick={(e) => handleLike(e, post)} />
                         <span className="text-[10px] font-medium">{post.likes}</span>
                     </div>
@@ -950,7 +907,7 @@ ${identityMap}
                             <TokenImg value={selectedPost.authorAvatar} className="w-8 h-8 rounded-full object-cover border border-white/50" />
                             <span className="text-sm font-bold text-slate-800">{selectedPost.authorName}</span>
                         </div>
-                        <button onClick={() => { setShowShareModal(true); trackEvent('打开分享帖子面板'); }} className="p-2 -m-2 active:opacity-60"><Icons.Share onClick={() => setShowShareModal(true)} className="w-6 h-6 text-slate-800 cursor-pointer hover:text-[#ff2442]" /></button>
+                        <button onClick={() => { setShowShareModal(true);  }} className="p-2 -m-2 active:opacity-60"><Icons.Share onClick={() => setShowShareModal(true)} className="w-6 h-6 text-slate-800 cursor-pointer hover:text-[#ff2442]" /></button>
                     </div>
 
                     {/* Scrollable Area */}
@@ -1021,7 +978,7 @@ ${identityMap}
                                     <span className="text-[10px] font-medium">{selectedPost.likes}</span>
                                 </div>
                                 <div className="flex flex-col items-center gap-0.5">
-                                    <Icons.Star filled={selectedPost.isCollected} onClick={() => { updatePostInFeed(selectedPost.id, current => ({ ...current, isCollected: !current.isCollected })); trackEvent('收藏一条帖子', { action: selectedPost.isCollected ? 'uncollect' : 'collect' }); }} className="w-6 h-6" />
+                                    <Icons.Star filled={selectedPost.isCollected} onClick={() => { updatePostInFeed(selectedPost.id, current => ({ ...current, isCollected: !current.isCollected }));  }} className="w-6 h-6" />
                                     <span className="text-[10px] font-medium">{selectedPost.isCollected ? '已收藏' : '收藏'}</span>
                                 </div>
                             </div>
@@ -1173,10 +1130,10 @@ ${identityMap}
                     <div className="h-11 flex items-center justify-between px-4">
                         <button onClick={closeApp} className="p-1"><Icons.Back onClick={closeApp} /></button>
                         <div className="flex gap-6 text-base font-bold text-slate-300">
-                            <button className={`${activeTab === 'home' ? 'text-slate-800 scale-110 border-b-2 border-[#ff2442] pb-1' : 'hover:text-slate-500'} transition-all`} onClick={() => { setActiveTab('home'); trackEvent('切换 Spark 主标签', { tab: 'home' }); }}>发现</button>
-                            <button className={`${activeTab === 'me' ? 'text-slate-800 scale-110 border-b-2 border-[#ff2442] pb-1' : 'hover:text-slate-500'} transition-all`} onClick={() => { setActiveTab('me'); trackEvent('切换 Spark 主标签', { tab: 'me' }); }}>我的</button>
+                            <button className={`${activeTab === 'home' ? 'text-slate-800 scale-110 border-b-2 border-[#ff2442] pb-1' : 'hover:text-slate-500'} transition-all`} onClick={() => { setActiveTab('home');  }}>发现</button>
+                            <button className={`${activeTab === 'me' ? 'text-slate-800 scale-110 border-b-2 border-[#ff2442] pb-1' : 'hover:text-slate-500'} transition-all`} onClick={() => { setActiveTab('me');  }}>我的</button>
                         </div>
-                        <button onClick={() => { setShowSettings(true); trackEvent('打开身份管理面板'); }} className="text-slate-800 font-bold text-sm">管理</button>
+                        <button onClick={() => { setShowSettings(true);  }} className="text-slate-800 font-bold text-sm">管理</button>
                     </div>
                 </div>
 
@@ -1197,7 +1154,8 @@ ${identityMap}
                                     </button>
                                 )}
                             </div>
-                            <div className="columns-2 gap-2 space-y-2 pb-24">
+                            {/* 完整卡片占一个网格单元，避免多栏分片与 backdrop-filter/裁切组合丢失作者栏。 */}
+                            <div className="grid grid-cols-2 items-start gap-x-2 gap-y-3 pb-24">
                                 {feed.map(post => renderFeedItem(post))}
                             </div>
                         </div>
@@ -1283,8 +1241,8 @@ ${identityMap}
 
                             {/* Sticky Tabs */}
                             <div className="sticky top-0 bg-white/90 backdrop-blur-md z-10 border-b border-slate-100 flex">
-                                <button onClick={() => { setProfileTab('notes'); trackEvent('切换个人主页子标签', { tab: 'notes' }); }} className={`flex-1 py-3 text-sm font-bold transition-colors ${profileTab === 'notes' ? 'text-slate-900 border-b-2 border-[#ff2442]' : 'text-slate-400'}`}>笔记</button>
-                                <button onClick={() => { setProfileTab('collects'); trackEvent('切换个人主页子标签', { tab: 'collects' }); }} className={`flex-1 py-3 text-sm font-bold transition-colors ${profileTab === 'collects' ? 'text-slate-900 border-b-2 border-[#ff2442]' : 'text-slate-400'}`}>收藏</button>
+                                <button onClick={() => { setProfileTab('notes');  }} className={`flex-1 py-3 text-sm font-bold transition-colors ${profileTab === 'notes' ? 'text-slate-900 border-b-2 border-[#ff2442]' : 'text-slate-400'}`}>笔记</button>
+                                <button onClick={() => { setProfileTab('collects');  }} className={`flex-1 py-3 text-sm font-bold transition-colors ${profileTab === 'collects' ? 'text-slate-900 border-b-2 border-[#ff2442]' : 'text-slate-400'}`}>收藏</button>
                             </div>
 
                             <div className="p-2 min-h-[300px] bg-slate-50/50 pb-24">
@@ -1315,11 +1273,11 @@ ${identityMap}
 
                 {/* Bottom Navigation - Floating Glass Island (Only shown when not creating) */}
                 <div className="absolute bottom-6 left-1/2 -translate-x-1/2 w-[90%] h-16 bg-white/80 backdrop-blur-2xl rounded-full shadow-[0_8px_32px_rgba(0,0,0,0.12)] border border-white/50 flex items-center justify-around z-40">
-                    <button onClick={() => { setActiveTab('home'); trackEvent('切换 Spark 主标签', { tab: 'home' }); }} className={`text-sm font-medium flex flex-col items-center justify-center gap-0.5 transition-all w-12 h-12 rounded-full ${activeTab === 'home' ? 'text-slate-900 bg-white shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}>
+                    <button onClick={() => { setActiveTab('home');  }} className={`text-sm font-medium flex flex-col items-center justify-center gap-0.5 transition-all w-12 h-12 rounded-full ${activeTab === 'home' ? 'text-slate-900 bg-white shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}>
                         <House size={24} weight={activeTab === 'home' ? 'fill' : 'regular'} />
                     </button>
-                    <button onClick={() => { setIsCreateOpen(true); trackEvent('打开发布笔记面板'); }} className="w-12 h-12 bg-[#ff2442] text-white rounded-full flex items-center justify-center shadow-lg shadow-red-200 active:scale-95 transition-transform text-2xl font-light -mt-6 border-4 border-white/50">+</button>
-                    <button onClick={() => { setActiveTab('me'); trackEvent('切换 Spark 主标签', { tab: 'me' }); }} className={`text-sm font-medium flex flex-col items-center justify-center gap-0.5 transition-all w-12 h-12 rounded-full ${activeTab === 'me' ? 'text-slate-900 bg-white shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}>
+                    <button onClick={() => { setIsCreateOpen(true);  }} className="w-12 h-12 bg-[#ff2442] text-white rounded-full flex items-center justify-center shadow-lg shadow-red-200 active:scale-95 transition-transform text-2xl font-light -mt-6 border-4 border-white/50">+</button>
+                    <button onClick={() => { setActiveTab('me');  }} className={`text-sm font-medium flex flex-col items-center justify-center gap-0.5 transition-all w-12 h-12 rounded-full ${activeTab === 'me' ? 'text-slate-900 bg-white shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}>
                         <User size={24} />
                     </button>
                 </div>

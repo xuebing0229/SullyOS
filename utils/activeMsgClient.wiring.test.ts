@@ -26,21 +26,21 @@ describe('③ 凭据变更重传接线', () => {
     const src = read('../apps/Settings.tsx');
     // 保存按钮和点预设切换共用 commitApiConfig 这一个出口。
     const fn = sliceBetween(src, 'const commitApiConfig', 'const applyPreset');
-    expect(fn).toContain('ActiveMsgClient.refreshApiCredentialsForPendingTasks(');
+    expect(fn).toContain('syncAmsgLlmCredentials(');
     // 传的是「这次要换过去的配置」叠在 apiConfig 上，而不是渲染时的旧快照。
-    const call = fn.match(/refreshApiCredentialsForPendingTasks\(\{ \.\.\.apiConfig, \.\.\.(\w+) \}\)/);
+    const call = fn.match(/syncAmsgLlmCredentials\(\{ \.\.\.apiConfig, \.\.\.(\w+) \}\)/);
     expect(call, '凭据重传要把新配置叠在 apiConfig 上一起传').not.toBeNull();
     expect(fn, '叠上去的得是这次切换现组的那份').toContain(`const commitApiConfig = (${call![1]}:`);
     // 两个入口递进去的都是现组的配置对象，不是旧的 localXxx 草稿
     expect(sliceBetween(src, 'const handleSaveApi', 'const handleTestVisionApi'))
-      .toMatch(/const nextConfig = buildCurrentApiPresetConfig\(\);[\s\S]*commitApiConfig\(nextConfig\)/);
+      .toMatch(/const nextConfig = \{ \.\.\.buildCurrentApiPresetConfig\(\), model: normalizeApiModel\(modelOverride \?\? localModel\) \};[\s\S]*commitApiConfig\(nextConfig\)/);
     const applyPreset = sliceBetween(src, 'const applyPreset', 'const openEditPreset');
     expect(applyPreset).toContain('const patch = configFromPreset(runtimePreset)');
     expect(applyPreset).toContain('syncAmsgLlmCredentials({ ...apiConfig, ...patch })');
     expect(applyPreset).toContain('ActiveMsgClient.refreshApiCredentialsForPendingTasks({ ...apiConfig, ...patch })');
   });
 
-  it('ActiveMsg2SettingsModal.handleSubmit：角色级 API 保存后刷同角色其余 pending AI 任务', () => {
+  it('ActiveMsg2SettingsModal.handleSubmit：面板保存后刷同角色其余 pending AI 任务', () => {
     const src = read('../components/chat/ActiveMsg2SettingsModal.tsx');
     const fn = sliceBetween(src, 'const handleSubmit', 'return (');
     expect(fn).toContain('ActiveMsgClient.refreshCharPendingAiTaskCredentials(');

@@ -8,7 +8,7 @@ import {
     MaskHappy, UserPlus, Lightning, CheckCircle,
 } from '@phosphor-icons/react';
 import { NPCAvatar, IconFight, IconParty, IconRomance, IconGossip, IconRivalry, IconAlliance } from '../../utils/styledIcons';
-import { trackEvent } from '../../utils/analytics';
+
 
 const EVENT_TYPES: { type: SimEventType; label: string; Icon: React.FC<{ size?: number }> }[] = [
     { type: 'fight', label: '吵架', Icon: IconFight },
@@ -67,7 +67,7 @@ const ActionPanel: React.FC<{
             worldStory: true,
         });
         // 只带搅局方式（EVENT_TYPES 里写死的六选一）；eventDesc 是用户自由输入，绝不采。
-        trackEvent('搅动世界（搅局）', { eventType });
+        
     };
 
     const handleAdd = () => {
@@ -76,7 +76,7 @@ const ActionPanel: React.FC<{
         }
         onAdd({ name: npcName.trim(), emoji: npcEmoji, personalities, familyId });
         // 只发事件名：名字/头像/性格/公寓都是用户自己填选的，一律不采。
-        trackEvent('往城市里拉一个小人');
+        
     };
 
     return (

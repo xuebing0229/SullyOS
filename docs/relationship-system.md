@@ -10,6 +10,8 @@
 
 ## 数据模型（`types.ts`）
 
+通讯录、完整聊天原文和话题盒都存在角色的 `phoneState` 中，随完整备份 / 文字备份的 `characters` 分片一起导出与恢复，与 `sendToChat` 开关无关。仅媒体备份不包含聊天文字。真实对话异步完成时，`applyRealConversationToPhoneState` 必须在 `updateCharacter` 的函数式回调里基于最新状态合并，避免覆盖生成期间新增的其他联系人和记录。回归见 `utils/phoneConversationBackup.test.ts`。
+
 - `PhoneContact`：联系人。`kind: 'real' | 'npc'`；`linkedCharId`（real 时绑定真实角色）；`affinity`（机主对 TA 的好感，**-100..100**，负=反感）；`status: 'friend'|'pending'|'blocked'|'deleted'`。
   - `note`：**机主/用户手写的备注**——当「已确立的事实」用，prompt 里要求严格遵守，**不被自动生成覆盖**（见下）。
   - `learned`：**机主相处中「逐渐了解到」的认识**——由对话里 `[[了解:…]]` 累积而来。**和 note 分开**：这是「印象/判断」，来源是对方在聊天里自己说的，**未必属实**（对方可能在编）。
@@ -95,6 +97,7 @@ A 发起 / NPC 推进的 prompt 里给了一份**具体动机清单**（好奇�
 
 - 脚本统一是「我:/对方:」逐行格式。一条消息可能跨多行（模型连发几条），**存库时每一行都补回说话人前缀**（`runRealConversation` 的 `lineify` / `runNpcConversation` 走 `serializeTurns(parseTranscript())`）。
 - 解析一律走 `parseTranscript()`：无前缀的续行**继承上一条说话人**，不会被误判给对方（修复「A 发的消息 UI 分给 B」）。渲染（`renderChatDetail`/`renderContactDetail`）、翻转（`flipTranscript`）、续写回解析都用它，保证无损。
+- 模型或旧备份的脚本可能是数组/对象，不能直接 `.split()`。`phoneTranscriptToText` 保留字符串、兼容逐行数组和带 `role/content`、`speaker/text`、`isMe/text` 的消息；未知对象保留可读字段。智能体（含深度对话）的生成落库、历史会话读取和编辑回写统一经过 `normalizePhoneAiSession`，`parseTranscript` 也有兜底，避免一条异常记录拖垮列表；不要求用户删除原记录。
 - `upsertContact` 合并时**只覆盖有值的字段**，且不动已有非空 `note`——扫描通讯录/对话回填不会把用户手填的备注抹掉（修复「角色不看备注」）。备注在 prompt 里以「必须遵守的已确立事实」注入。
 
 ## 注意

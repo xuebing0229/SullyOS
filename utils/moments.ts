@@ -273,7 +273,7 @@ const normalizeComments = (raw: any[], chars: CharacterProfile[], authorId: stri
 const participantBriefs = async (chars: CharacterProfile[], user: UserProfile): Promise<string> => {
     const rows = await Promise.all(chars.map(async char => {
         const recent = await recentChatFor(char.id, 5);
-        const identity = ContextBuilder.buildCoreContext(char, user, false).slice(0, 2600);
+        const identity = (await ContextBuilder.buildCoreContext(char, user, false)).slice(0, 2600);
         return `\n[角色ID=${char.id}｜${char.name}]\n${identity}\n近期私聊：\n${recent || '（暂无）'}`;
     }));
     return rows.join('\n');

@@ -28,11 +28,11 @@ import {
 } from '@phosphor-icons/react';
 import type { APIConfig, ApiPreset, CharacterProfile, ChatTheme, Emoji, EmojiCategory, GroupProfile, Message, RealtimeConfig, UserProfile } from '../../types';
 import TokenImg from '../../components/os/TokenImg';
-import { bucketFewCount, trackEvent } from '../../utils/analytics';
+import { bucketFewCount } from '../../utils/analytics';
 import { processImageToBlob } from '../../utils/file';
 import { shareOrDownloadBlob } from '../../utils/shareExport';
 import { describeImageWithVisionApi } from '../../utils/visionApi';
-import { loadCharacterContextRange } from '../../utils/chatContextRange';
+import { loadCollaborationChatHistory, selectCollaborationTransfer } from './chatBridge';
 import {
   collaborationProfileFromApi,
   collaborationProfileMatches,
@@ -47,15 +47,18 @@ import type { CollaborationInlineSpan } from './markdown';
 import { parseCollaborationRichOutput, resolveCollaborationEmoji, sanitizeCollaborationRichOutputSource } from './richOutput';
 import { canSynthesizeSpeech, providerUsesRawVoiceMarkup, synthesizeSpeechDetailed } from '../../utils/ttsRouter';
 import { CollaborationStore } from './store';
+import { changeMakerSelection } from './makerSelection';
 import { COLLABORATION_LIBRARY_GROUP_LABELS, collaborationLibraryGroupOf, type CollaborationLibraryGroup } from './chatLibrary';
 import {
   buildInstallablePreviewDocument,
+  installableToChatTheme,
   COLLABORATION_MAKERS,
   COLLABORATION_MAKER_MAP,
   materializeInstallableArtifact,
   parseInstallableArtifactBlocks,
   validateInstallableArtifact,
 } from './makers';
+import BeautyPresetPreview from '../../components/share/BeautyPresetPreview';
 import type {
   CollaborationApiProfile,
   CollaborationArtifactFormat,
@@ -797,7 +800,7 @@ const ApiSettingsPanel: React.FC<{
                 );
               })}
             </div>
-            <p className="mt-2 text-[10px] leading-relaxed text-slate-600">“用户设定范围”会直接读取 ChatApp 当前实际使用的上下文范围（含自适应范围和手动断点）。沉浸式会沿用 ChatApp 的完整角色上下文；中度协同只附加这些最新对话。修改后会从下一次生成开始生效，包括已有窗口。</p>
+            <p className="mt-2 text-[10px] leading-relaxed text-slate-600">“用户设定范围”会直接读取 ChatApp 当前实际使用的上下文范围（含自适应范围和手动断点）。最近 10／20 条也只在这个范围内选取，不会越过手动断点或记忆水位。沉浸式会沿用 ChatApp 的完整角色上下文；中度协同只附加这些最新对话。修改后会从下一次生成开始生效，包括已有窗口。</p>
           </section>
 
           <section>
@@ -956,7 +959,7 @@ const AttachmentButton: React.FC<{
 
 const MakerStudio: React.FC<{
   activeKind?: CollaborationMakerKind;
-  onChoose: (kind: CollaborationMakerKind) => void;
+  onChoose: (kind?: CollaborationMakerKind) => void;
   onClose: () => void;
 }> = ({ activeKind, onChoose, onClose }) => (
   <div className="absolute inset-0 z-[70] flex flex-col bg-[#f7f8fb] animate-[collabFade_.18s_ease-out]">
@@ -967,9 +970,10 @@ const MakerStudio: React.FC<{
     <div className="flex-1 overflow-y-auto px-5 pb-10 pt-7">
       <div className="mx-auto max-w-xl">
         <p className="text-[11px] font-semibold uppercase tracking-[.18em] text-slate-400">Beautification & Assets</p>
+        {activeKind && <button type="button" onClick={() => onChoose(undefined)} className="mt-3 flex items-center gap-2 rounded-full bg-white px-4 py-2 text-xs text-slate-600"><X size={14} />取消制作，回到普通协同</button>}
         <div className="mt-4 border-y border-slate-200/80">
           {COLLABORATION_MAKERS.map((maker, index) => (
-            <button key={maker.kind} type="button" onClick={() => onChoose(maker.kind)} className={`group flex w-full items-center gap-4 py-4 text-left transition-colors active:bg-white ${index < COLLABORATION_MAKERS.length - 1 ? 'border-b border-slate-200/70' : ''}`}>
+            <button key={maker.kind} type="button" aria-pressed={activeKind === maker.kind} onClick={() => onChoose(maker.kind)} className={`group flex w-full items-center gap-4 py-4 text-left transition-colors active:bg-white ${index < COLLABORATION_MAKERS.length - 1 ? 'border-b border-slate-200/70' : ''}`}>
               <span className="grid h-10 w-10 shrink-0 place-items-center rounded-2xl text-sm font-bold text-white shadow-sm" style={{ background: maker.accent }}>{maker.shortLabel.slice(0, 1)}</span>
               <span className="min-w-0 flex-1"><span className="flex items-center gap-2 text-sm font-semibold text-slate-800">{maker.label}{activeKind === maker.kind && <span className="rounded-full bg-indigo-50 px-2 py-0.5 text-[9px] text-indigo-600">当前</span>}</span><span className="mt-1 block text-[11px] leading-relaxed text-slate-400">{maker.description}</span></span>
               <span className="text-slate-300 transition-transform group-hover:translate-x-1">→</span>
@@ -1077,6 +1081,10 @@ const InstallablePreview: React.FC<{
   onClose: () => void;
 }> = ({ artifact, characters, currentCharacterId, onInstall, onClose }) => {
   const definition = COLLABORATION_MAKER_MAP[artifact.kind];
+  const chatPreview = useMemo(()=> {
+    if(!['whitebox-css','bubble-theme','psyche-css'].includes(artifact.kind))return null;
+    try{return {format:'sullyos-chat-decoration',version:1,name:artifact.title,parts:artifact.kind==='bubble-theme'?{bubbles:installableToChatTheme(artifact)}:artifact.kind==='psyche-css'?{psyche:{styleId:'echo',customCss:String(artifact.payload.css||'')}}:{css:String(artifact.payload.css||'')}};}catch{return null;}
+  },[artifact]);
   const errors = useMemo(() => validateInstallableArtifact(artifact), [artifact]);
   const [targetId, setTargetId] = useState(definition.target === 'optional-character' ? '' : currentCharacterId);
   const [targetPickerOpen, setTargetPickerOpen] = useState(false);
@@ -1093,8 +1101,8 @@ const InstallablePreview: React.FC<{
         <button type="button" onClick={onClose} className="grid h-10 w-10 place-items-center rounded-full text-white/75 active:bg-white/10" aria-label="关闭预览"><X size={21} /></button>
         <div className="min-w-0 flex-1 px-2"><p className="text-[9px] uppercase tracking-[.18em] text-white/40">{definition.label} · Preview</p><h2 className="truncate text-sm font-semibold">{artifact.title}</h2></div>
       </header>
-      <div className="min-h-0 flex-1 bg-[#1a1d26] p-3 sm:p-5">
-        <iframe title={`${artifact.title}预览`} sandbox="" srcDoc={buildInstallablePreviewDocument(artifact)} className="h-full w-full rounded-[24px] border-0 bg-white shadow-2xl" />
+      <div className="min-h-0 flex-1 overflow-y-auto bg-[#1a1d26] p-3 sm:p-5">
+        {chatPreview ? <div className="mx-auto max-w-sm rounded-2xl bg-white p-3 text-slate-700"><BeautyPresetPreview data={chatPreview}/></div> : <iframe title={`${artifact.title}预览`} sandbox="" srcDoc={buildInstallablePreviewDocument(artifact)} className="h-full w-full rounded-[24px] border-0 bg-white shadow-2xl" />}
       </div>
       <div className="shrink-0 border-t border-white/10 bg-[#11131a] px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-3">
         {errors.length > 0 ? <div className="mb-3 rounded-xl bg-rose-500/12 px-3 py-2 text-[11px] leading-relaxed text-rose-200">{errors[0]}</div> : null}
@@ -1602,6 +1610,11 @@ const CollaborationWindow: React.FC<CollaborationWindowProps> = ({
   const [settings, setSettings] = useState<CollaborationSettings>(() => cloneDefaultSettings());
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<CollaborationMessage[]>([]);
+  const [transferOpen, setTransferOpen] = useState(false);
+  const [transferIds, setTransferIds] = useState<Set<string>>(new Set());
+  const [transferring, setTransferring] = useState(false);
+  const [chatReadReceipt, setChatReadReceipt] = useState<{ sessionId: string; count: number } | null>(null);
+  useEffect(() => { setTransferOpen(false); setTransferIds(new Set()); setChatReadReceipt(null); }, [activeSessionId, character.id]);
   const [showModePicker, setShowModePicker] = useState(false);
   const [showEntryChooser, setShowEntryChooser] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -1614,11 +1627,14 @@ const CollaborationWindow: React.FC<CollaborationWindowProps> = ({
   const [sessionFilter, setSessionFilter] = useState<SessionFilter>('active');
   const [categoryFilter, setCategoryFilter] = useState('all');
   const [draft, setDraft] = useState('');
+  const [makerSaving, setMakerSaving] = useState(false);
+  const makerSavingRef = useRef(false);
   const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([]);
   const [requestedOutputFormat, setRequestedOutputFormat] = useState<CollaborationArtifactFormat | null>(null);
   const [uploadStatus, setUploadStatus] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
   const [streamingText, setStreamingText] = useState('');
+  const [toolStatus, setToolStatus] = useState('');
   const [loaded, setLoaded] = useState(false);
   const [actionDialog, setActionDialog] = useState<CollaborationDialogState | null>(null);
   const [editingMessage, setEditingMessage] = useState<CollaborationMessage | null>(null);
@@ -1690,7 +1706,7 @@ const CollaborationWindow: React.FC<CollaborationWindowProps> = ({
         if (!COLLABORATION_MAKER_MAP[parsed.kind]) throw new Error('未知作品类型');
         if (!cancelled) {
           setPreviewArtifact(parsed);
-          trackEvent('预览协同作品', { 类型: analyticsMakerKind(parsed.kind), 来源: '普通聊天' });
+          
         }
       } catch (error: any) {
         if (!cancelled) notifyRef.current(`作品无法预览：${error?.message || '数据损坏'}`, 'error');
@@ -1783,7 +1799,7 @@ const CollaborationWindow: React.FC<CollaborationWindowProps> = ({
       audio.onended = () => setPlayingVoiceId(null);
       await audio.play();
       setPlayingVoiceId(message.id);
-      trackEvent('播放协同语音条');
+      
     } catch (error: any) {
       notify(`语音生成失败：${error?.message || '请检查语音设置'}`, 'error');
     } finally {
@@ -1896,7 +1912,7 @@ const CollaborationWindow: React.FC<CollaborationWindowProps> = ({
     setShowModePicker(false);
     setShowEntryChooser(false);
     setDrawerOpen(false);
-    trackEvent('新建协同窗口', { 模式: mode });
+    
   };
 
   const updateSession = async (session: CollaborationSession) => {
@@ -1951,7 +1967,7 @@ const CollaborationWindow: React.FC<CollaborationWindowProps> = ({
     }
     const updated = { ...session, ...memoryArchivePatch, archivedAt: archived ? Date.now() : undefined, updatedAt: Date.now() };
     await updateSession(updated);
-    trackEvent('归档协同窗口', { 动作: archived ? '归档' : '撤销', 记忆: memoryAction });
+    
     if (archived && session.id === activeSessionId) {
       setActiveSessionId(null);
       setMessages([]);
@@ -1972,7 +1988,7 @@ const CollaborationWindow: React.FC<CollaborationWindowProps> = ({
     });
     if (choice !== 'confirm') return;
     await CollaborationStore.deleteSession(session.id);
-    trackEvent('删除协同窗口');
+    
     const next = sessions.filter(item => item.id !== session.id);
     setSessions(next);
     if (activeSessionId === session.id) {
@@ -2012,20 +2028,13 @@ const CollaborationWindow: React.FC<CollaborationWindowProps> = ({
 
   const saveSettings = async (next: CollaborationSettings) => {
     await CollaborationStore.saveSettings(next);
-    trackEvent('保存协同设置', {
-      沉浸线路: analyticsEnum(next.immersive.source, ['chat', 'preset', 'custom'], 'custom'),
-      中度线路: analyticsEnum(next.focused.source, ['chat', 'preset', 'custom'], 'custom'),
-    });
+    
     if (
       next.uiTheme !== settings.uiTheme
       || next.avatarMode !== settings.avatarMode
       || next.avatarStyle !== settings.avatarStyle
     ) {
-      trackEvent('设置协同界面', {
-        主题: analyticsEnum(next.uiTheme, ANALYTICS_UI_THEMES, 'custom'),
-        头像: analyticsEnum(next.avatarMode, ANALYTICS_AVATAR_MODES, 'custom'),
-        形状: analyticsEnum(next.avatarStyle, ANALYTICS_AVATAR_STYLES, 'custom'),
-      });
+      
     }
     setSettings(next);
     notify('协同设置已保存', 'success');
@@ -2094,7 +2103,7 @@ const CollaborationWindow: React.FC<CollaborationWindowProps> = ({
         setUploadStatus('');
       }
     }
-    if (acceptedCount > 0) trackEvent('协同上传文件', { 数量: bucketFewCount(acceptedCount) });
+    if (acceptedCount > 0) {}
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
@@ -2109,7 +2118,7 @@ const CollaborationWindow: React.FC<CollaborationWindowProps> = ({
         const parsed = JSON.parse(await blob.text()) as CollaborationInstallableArtifact;
         if (!COLLABORATION_MAKER_MAP[parsed.kind]) throw new Error('未知作品类型');
         setPreviewArtifact(parsed);
-        trackEvent('预览协同作品', { 类型: analyticsMakerKind(parsed.kind) });
+        
       } catch (error: any) {
         notify(`作品无法预览：${error?.message || '数据损坏'}`, 'error');
       }
@@ -2123,7 +2132,7 @@ const CollaborationWindow: React.FC<CollaborationWindowProps> = ({
       });
       if (result === 'shared') notify('已打开系统分享面板', 'success');
       else if (result === 'downloaded') notify('文件已下载', 'success');
-      if (result !== 'cancelled') trackEvent('打开协同文件', { 方式: result === 'shared' ? '分享' : '下载' });
+      if (result !== 'cancelled') {}
     } catch (error: any) {
       notify(error?.message || '无法分享或导出这个文件', 'error');
     }
@@ -2146,25 +2155,41 @@ const CollaborationWindow: React.FC<CollaborationWindowProps> = ({
         ...message,
         attachments: message.attachments?.filter(attachment => attachment.assetId !== file.assetId),
       })));
-      trackEvent('删除协同文件');
+      
       notify('文件已删除', 'success');
     } catch (error: any) {
       notify(error?.message || '文件删除失败', 'error');
     }
   };
 
-  const chooseMaker = async (kind: CollaborationMakerKind) => {
-    if (!activeSession) return;
-    await updateSession({ ...activeSession, makerKind: kind, updatedAt: Date.now() });
-    trackEvent('选择协同制作类型', { 类型: analyticsMakerKind(kind) });
+  const chooseMaker = async (kind?: CollaborationMakerKind, sourceDraft = draft) => {
+    if (!activeSession || isGenerating || makerSavingRef.current) return;
+    const next = changeMakerSelection(activeSession.makerKind, kind, sourceDraft);
+    makerSavingRef.current = true;
+    setMakerSaving(true);
     setMakerOpen(false);
-    if (!draft.trim()) setDraft(`请和我一起做「${COLLABORATION_MAKER_MAP[kind].label}」。我希望它的感觉是：`);
+    try {
+      await updateSession({ ...activeSession, makerKind: next.makerKind, updatedAt: Date.now() });
+      setDraft(next.draft);
+      if (next.makerKind) {}
+      else notify('已取消制作，后续不再附加制作要求', 'info');
+    } catch {
+      notify('制作类型保存失败，请重试', 'error');
+    } finally {
+      makerSavingRef.current = false;
+      setMakerSaving(false);
+    }
+  };
+
+  const changeComposerDraft = (value: string) => {
+    setDraft(value);
+    if (!value.trim() && activeSession?.makerKind && !isGenerating) void chooseMaker(undefined, value);
   };
 
   const toggleChatCollaboration = async (enabled: boolean) => {
     if (!enabled) {
       onToggleChatCollaboration(false);
-      trackEvent('切换日常聊天协同', { 状态: '关' });
+      
       return;
     }
     const choice = await requestActionDialog({
@@ -2177,7 +2202,7 @@ const CollaborationWindow: React.FC<CollaborationWindowProps> = ({
     });
     if (choice !== 'confirm') return;
     onToggleChatCollaboration(true);
-    trackEvent('切换日常聊天协同', { 状态: '开' });
+    
   };
 
   const persistPendingAttachments = async () => {
@@ -2203,6 +2228,7 @@ const CollaborationWindow: React.FC<CollaborationWindowProps> = ({
     const abortController = new AbortController();
     abortRef.current = abortController;
     setIsGenerating(true);
+    setToolStatus('');
     setStreamingText('');
     const taskText = collaborationMessageTaskText(latestUserMessage);
     let startedSession = sessionAtStart;
@@ -2210,16 +2236,13 @@ const CollaborationWindow: React.FC<CollaborationWindowProps> = ({
       let contextSnapshot = sessionAtStart.contextSnapshot || '';
       let liveChatContext: CollaborationContextMessage[] = [];
       const chatContextChoice = settings.recentChatContextCount ?? 'configured';
-      let liveRecentChatMessages = recentChatMessages;
-      let chatContextLimit: number = chatContextChoice === 'configured' ? 0 : chatContextChoice;
-      if (chatContextChoice === 'configured') {
-        const configuredRange = await loadCharacterContextRange(character);
-        liveRecentChatMessages = configuredRange.messages;
-        chatContextLimit = configuredRange.messages.length;
-      }
+      const liveHistory = await loadCollaborationChatHistory(character, chatContextChoice);
+      const liveRecentChatMessages = liveHistory.messages;
+      const chatContextLimit = liveRecentChatMessages.length;
+      setChatReadReceipt({ sessionId: sessionAtStart.id, count: chatContextLimit });
       if (sessionAtStart.mode === 'immersive') {
         const immersiveContext = await buildLiveCollaborationChatContext({
-          char: character,
+          char: liveHistory.character,
           user,
           groups,
           emojis,
@@ -2234,7 +2257,7 @@ const CollaborationWindow: React.FC<CollaborationWindowProps> = ({
       } else {
         if (chatContextLimit > 0) {
           const focusedChatContext = await buildLiveCollaborationChatContext({
-            char: character,
+            char: liveHistory.character,
             user,
             groups,
             emojis,
@@ -2251,7 +2274,7 @@ const CollaborationWindow: React.FC<CollaborationWindowProps> = ({
         }
         if (!contextSnapshot) {
           contextSnapshot = await buildCollaborationContextSnapshot({
-            char: character,
+            char: liveHistory.character,
             user,
             mode: sessionAtStart.mode,
             taskText,
@@ -2288,6 +2311,9 @@ const CollaborationWindow: React.FC<CollaborationWindowProps> = ({
         messages: requestMessages,
         signal: abortController.signal,
         onDelta: setStreamingText,
+        characterId: character.id,
+        userName: user.name,
+        onStatus: setToolStatus,
         makerKind: startedSession.makerKind,
         chatContextSnapshot: liveChatContext,
         thinkingEnabled: !!character.showThinkingChain,
@@ -2310,10 +2336,7 @@ const CollaborationWindow: React.FC<CollaborationWindowProps> = ({
       if (generatedAttachments.length > 0) {
         const hasInstallable = generatedAttachments.some(attachment => attachment.kind === 'installable');
         const hasFile = generatedAttachments.some(attachment => attachment.kind !== 'installable');
-        trackEvent('协同生成文件', {
-          结果: hasInstallable && hasFile ? '文件和作品' : hasInstallable ? '可安装作品' : '文件',
-          数量: bucketFewCount(generatedAttachments.length),
-        });
+        
       }
       const assistantMessage: CollaborationMessage = {
         id: collaborationId('message'),
@@ -2352,12 +2375,13 @@ const CollaborationWindow: React.FC<CollaborationWindowProps> = ({
     } finally {
       if (abortRef.current === abortController) abortRef.current = null;
       setIsGenerating(false);
+      setToolStatus('');
       setStreamingText('');
     }
   };
 
   const send = async () => {
-    if (!activeSession || isGenerating || uploadStatus) return;
+    if (!activeSession || isGenerating || uploadStatus || makerSavingRef.current) return;
     const content = draft.trim();
     if (!content && pendingAttachments.length === 0) return;
     const profile = settings[activeSession.mode];
@@ -2389,7 +2413,7 @@ const CollaborationWindow: React.FC<CollaborationWindowProps> = ({
   };
 
   const rerollLatestReply = async () => {
-    if (!activeSession || isGenerating || uploadStatus) return;
+    if (!activeSession || isGenerating || uploadStatus || makerSavingRef.current) return;
     let lastUserIndex = -1;
     for (let index = messages.length - 1; index >= 0; index -= 1) {
       if (messages[index].role === 'user') {
@@ -2412,15 +2436,13 @@ const CollaborationWindow: React.FC<CollaborationWindowProps> = ({
     const replacedMessages = messages.slice(lastUserIndex + 1);
     await CollaborationStore.deleteMessages(replacedMessages.map(message => message.id));
     setMessages(requestMessages);
-    trackEvent('重新生成协同回复', {
-      上次结果: replacedMessages.some(message => message.role === 'assistant') ? '已完成' : replacedMessages.length > 0 ? '失败或停止' : '无回复',
-    });
+    
     await generateCollaborationReply(activeSession, requestMessages, latestUserMessage);
   };
 
   const copyMessage = async (message: CollaborationMessage) => {
     const copied = await copyCollaborationText(message.content);
-    trackEvent('复制协同消息', { 结果: copied ? '成功' : '失败', 角色: message.role });
+    
     notify(copied ? '内容已复制' : '复制失败，请稍后重试', copied ? 'success' : 'error');
   };
 
@@ -2462,7 +2484,7 @@ const CollaborationWindow: React.FC<CollaborationWindowProps> = ({
         setEditingMessage(null);
         setEditDraft('');
         if (libraryOpen) void refreshLibrary();
-        trackEvent('编辑协同消息', { 角色: 'user', 后续移除: bucketFewCount(droppedMessages.length) });
+        
         notify('消息已修改，正在重新生成', 'success');
         await generateCollaborationReply(updatedSession, requestMessages, updatedMessage);
         return;
@@ -2478,7 +2500,7 @@ const CollaborationWindow: React.FC<CollaborationWindowProps> = ({
       });
       setEditingMessage(null);
       setEditDraft('');
-      trackEvent('编辑协同消息', { 角色: updatedMessage.role });
+      
       notify('内容已修改', 'success');
     } catch (error: any) {
       notify(error?.message || '消息修改失败', 'error');
@@ -2523,7 +2545,7 @@ const CollaborationWindow: React.FC<CollaborationWindowProps> = ({
       lastMessagePreview: collaborationMessagePreview(lastMessage),
     });
     if (libraryOpen) void refreshLibrary();
-    trackEvent('删除协同消息', { 范围: message.role === 'user' ? '整轮' : '单条' });
+    
     notify(message.role === 'user' ? '这一轮协同已删除' : '这条内容已删除', 'success');
   };
 
@@ -2559,26 +2581,23 @@ const CollaborationWindow: React.FC<CollaborationWindowProps> = ({
 
   const transferToChat = async () => {
     if (!activeSession) return;
-    const transferable: CollaborationTransferMessage[] = messages
-      .filter(message => message.role === 'user' || message.role === 'assistant')
-      .map(message => ({
-        role: message.role as 'user' | 'assistant',
-        type: 'text' as const,
-        content: [
-          message.content,
-          ...(message.attachments || []).map(attachment => `[文件：${attachment.name}]${attachment.extractedText ? `\n${attachment.extractedText}` : ''}`),
-        ].filter(Boolean).join('\n\n'),
-        timestamp: message.createdAt,
-      }));
+    if (transferring) return;
+    const transferable = selectCollaborationTransfer(messages, activeSession.id, transferIds);
     if (transferable.length === 0) {
       notify('这个窗口还没有可以发送的上下文', 'info');
       return;
     }
-    await onSendToChat(activeSession.title, transferable);
-    trackEvent('发送协同上下文到聊天', {
-      模式: analyticsEnum(activeSession.mode, ['immersive', 'focused'], 'custom'),
-    });
-    notify('这个窗口的上下文已经发给 ChatApp', 'success');
+    setTransferring(true);
+    try {
+      await onSendToChat(activeSession.title, transferable);
+      setTransferOpen(false);
+      setTransferIds(new Set());
+    } catch (error: any) {
+      notify(error?.message || '发送失败，请重试', 'error');
+      return;
+    } finally { setTransferring(false); }
+    
+    notify('已将选中的 ' + transferable.length + ' 条消息发给 ChatApp', 'success');
   };
 
   const backgroundStyle: React.CSSProperties = backgroundUrl
@@ -2631,12 +2650,12 @@ const CollaborationWindow: React.FC<CollaborationWindowProps> = ({
               <span className="collab-session-title truncate text-[13px] font-semibold text-slate-800">{activeSession?.title || (showEntryChooser ? '协同工作' : '新的协同')}</span>
               {activeSession && <span className={`collab-session-dot h-1.5 w-1.5 shrink-0 rounded-full ${activeSession.mode === 'immersive' ? 'bg-indigo-500' : 'bg-slate-400'}`} />}
             </div>
-            <p className="collab-header-meta truncate text-[9px] text-slate-500">{activeSession ? `${character.name} · ${MODE_LABELS[activeSession.mode]} · ${chatContextLabel}${activeSession.makerKind ? ` · ${COLLABORATION_MAKER_MAP[activeSession.makerKind].shortLabel}` : ''}` : showEntryChooser ? '新建或继续一项协同' : '选择协同模式'}</p>
+            <p className="collab-header-meta truncate text-[9px] text-slate-500">{activeSession ? `${character.name} · ${MODE_LABELS[activeSession.mode]} · ${chatContextLabel}${chatReadReceipt?.sessionId === activeSession.id ? ` · 本次读取 ${chatReadReceipt.count} 条` : ''}${activeSession.makerKind ? ` · ${COLLABORATION_MAKER_MAP[activeSession.makerKind].shortLabel}` : ''}` : showEntryChooser ? '新建或继续一项协同' : '选择协同模式'}</p>
           </div>
         </div>
         <button type="button" onClick={() => void rerollLatestReply()} disabled={!activeSession || isGenerating || !messages.some(message => message.role === 'user')} className="grid h-10 w-10 place-items-center rounded-full text-slate-600 disabled:opacity-25 active:bg-slate-100/80" aria-label="重新生成上一条回复" title="重新生成上一条回复"><ArrowCounterClockwise size={20} /></button>
-        <button type="button" onClick={transferToChat} disabled={!activeSession || messages.length === 0} className="grid h-10 w-10 place-items-center rounded-full text-slate-600 disabled:opacity-25 active:bg-slate-100/80" aria-label="发送上下文到 ChatApp" title="发送上下文到 ChatApp"><PaperPlaneRight size={20} /></button>
-        <button type="button" onClick={() => { setLibraryOpen(true); trackEvent('打开协同文件库'); }} className="grid h-10 w-10 place-items-center rounded-full text-slate-600 active:bg-slate-100/80" aria-label="协同文件库"><Folder size={20} /></button>
+        <button type="button" onClick={() => { setTransferIds(new Set()); setTransferOpen(true); }} disabled={!activeSession || messages.length === 0} className="grid h-10 w-10 place-items-center rounded-full text-slate-600 disabled:opacity-25 active:bg-slate-100/80" aria-label="选择消息发送到 ChatApp" title="选择消息发送到 ChatApp"><PaperPlaneRight size={20} /></button>
+        <button type="button" onClick={() => { setLibraryOpen(true);  }} className="grid h-10 w-10 place-items-center rounded-full text-slate-600 active:bg-slate-100/80" aria-label="协同文件库"><Folder size={20} /></button>
         <button type="button" onClick={() => setSettingsOpen(true)} className="grid h-10 w-10 place-items-center rounded-full text-slate-600 active:bg-slate-100/80" aria-label="协同设置"><GearSix size={20} /></button>
       </header>
 
@@ -2699,7 +2718,7 @@ const CollaborationWindow: React.FC<CollaborationWindowProps> = ({
                     ? streamingRichOutput.text
                       ? <CollaborationMarkdownView content={streamingRichOutput.text} />
                       : <span className="flex items-center gap-2 text-sm text-slate-400"><SpinnerGap size={16} className="animate-spin" />{streamingRichLabel}</span>
-                    : <span className="flex items-center gap-2 text-sm text-slate-400"><SpinnerGap size={16} className="animate-spin" />{character.name} 正在处理</span>}
+                    : <span className="flex items-center gap-2 text-sm text-slate-400"><SpinnerGap size={16} className="animate-spin" />{toolStatus || `${character.name} 正在处理`}</span>}
                 </div>
               </div>
             )}
@@ -2719,9 +2738,10 @@ const CollaborationWindow: React.FC<CollaborationWindowProps> = ({
                 {OUTPUT_FORMAT_OPTIONS.map(option => <option key={option.value || 'auto'} value={option.value}>{option.label}</option>)}
               </select>
               {COLLABORATION_MAKERS.slice(0, 5).map(maker => (
-                <button key={maker.kind} type="button" onClick={() => void chooseMaker(maker.kind)} disabled={isGenerating} className={`shrink-0 rounded-full px-3 py-1.5 text-[10px] font-medium transition-colors disabled:opacity-40 ${activeSession.makerKind === maker.kind ? 'collab-accent-chip bg-indigo-100 text-indigo-700' : 'bg-slate-100 text-slate-500'}`}>{maker.shortLabel}</button>
+                <button key={maker.kind} type="button" aria-pressed={activeSession.makerKind === maker.kind} title={activeSession.makerKind === maker.kind ? '再次点击取消制作' : maker.label} onClick={() => void chooseMaker(maker.kind)} disabled={isGenerating || makerSaving} className={`flex shrink-0 items-center gap-1 rounded-full px-3 py-1.5 text-[10px] font-medium transition-colors disabled:opacity-40 ${activeSession.makerKind === maker.kind ? 'collab-accent-chip bg-indigo-100 text-indigo-700' : 'bg-slate-100 text-slate-500'}`}>{maker.shortLabel}{activeSession.makerKind === maker.kind && <X size={12} />}</button>
               ))}
             </div>
+            {activeSession.makerKind && <div className="mb-2 flex items-center justify-between gap-2 px-1 text-[11px] text-slate-500"><span>正在制作：{COLLABORATION_MAKER_MAP[activeSession.makerKind].shortLabel}</span><button type="button" disabled={isGenerating || makerSaving} onClick={() => void chooseMaker()} className="flex min-h-8 items-center gap-1 rounded-full px-3 text-slate-600 disabled:opacity-40"><X size={13} />取消制作</button></div>}
             {(pendingAttachments.length > 0 || uploadStatus) && (
               <div className="mb-2 flex gap-2 overflow-x-auto no-scrollbar">
                 {pendingAttachments.map(item => (
@@ -2739,7 +2759,8 @@ const CollaborationWindow: React.FC<CollaborationWindowProps> = ({
               <input ref={fileInputRef} type="file" multiple accept="image/png,image/jpeg,image/webp,image/gif,.pdf,.docx,.doc,.txt,.md,.markdown,.json,.csv,.tsv,.html,.htm,.xml,.yaml,.yml" className="hidden" onChange={event => void handleFiles(event.target.files)} />
               <textarea
                 value={draft}
-                onChange={event => setDraft(event.target.value)}
+                disabled={makerSaving}
+                onChange={event => changeComposerDraft(event.target.value)}
                 onKeyDown={event => {
                   if (event.key === 'Enter' && !event.shiftKey) {
                     event.preventDefault();
@@ -2753,12 +2774,28 @@ const CollaborationWindow: React.FC<CollaborationWindowProps> = ({
               {isGenerating ? (
                 <button type="button" onClick={() => abortCollaborationRequest(abortRef.current, '用户已停止生成')} className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-slate-900 text-white active:scale-95" aria-label="停止生成"><Stop size={15} weight="fill" /></button>
               ) : (
-                <button type="button" onClick={() => void send()} disabled={(!draft.trim() && pendingAttachments.length === 0) || !!uploadStatus} className="collab-primary-action grid h-9 w-9 shrink-0 place-items-center rounded-full bg-slate-900 text-white disabled:bg-slate-200 disabled:text-slate-400 active:scale-95" aria-label="发送"><PaperPlaneRight size={18} weight="fill" /></button>
+                <button type="button" onClick={() => void send()} disabled={makerSaving || (!draft.trim() && pendingAttachments.length === 0) || !!uploadStatus} className="collab-primary-action grid h-9 w-9 shrink-0 place-items-center rounded-full bg-slate-900 text-white disabled:bg-slate-200 disabled:text-slate-400 active:scale-95" aria-label="发送"><PaperPlaneRight size={18} weight="fill" /></button>
               )}
             </div>
           </div>
         </>
       )}
+
+      {transferOpen && activeSession && <div className="absolute inset-0 z-[180] flex flex-col bg-slate-50" role="dialog" aria-modal="true" aria-label="选择发送到 ChatApp 的消息" style={{ paddingTop: 'var(--safe-top)', paddingBottom: 'var(--safe-bottom)' }}>
+        <header className="flex items-center justify-between gap-2 border-b border-slate-200 p-4">
+          <button disabled={transferring} onClick={() => setTransferOpen(false)} className="text-sm text-slate-500">取消</button>
+          <h2 className="text-sm font-semibold">选择消息</h2>
+          <button onClick={() => setTransferIds(new Set(messages.filter(message => message.sessionId === activeSession.id && (message.role === 'user' || message.role === 'assistant')).map(message => message.id)))} className="text-sm text-indigo-500">全选</button>
+        </header>
+        <p className="px-4 py-3 text-xs text-slate-500">只发送勾选的正文和附件文字，不包含思考过程。</p>
+        <div className="min-h-0 flex-1 overflow-y-auto px-4">
+          {messages.filter(message => message.sessionId === activeSession.id && (message.role === 'user' || message.role === 'assistant')).map(message => <label key={message.id} className="mb-3 flex items-start gap-3 rounded-xl border border-slate-200 bg-white p-3">
+            <input type="checkbox" className="mt-1" checked={transferIds.has(message.id)} onChange={() => setTransferIds(prev => { const next = new Set(prev); if (next.has(message.id)) next.delete(message.id); else next.add(message.id); return next; })}/>
+            <span className="min-w-0 flex-1"><span className="block text-[10px] font-semibold text-slate-400">{message.role === 'user' ? user.name : character.name}</span><span className="mt-1 block whitespace-pre-wrap break-words text-xs leading-relaxed text-slate-700">{message.content || '附件消息'}</span>{message.attachments?.map(attachment => <span key={attachment.id} className="mt-2 block break-all text-[10px] text-indigo-500">文件：{attachment.name}</span>)}</span>
+          </label>)}
+        </div>
+        <footer className="flex items-center gap-3 border-t border-slate-200 p-4"><button onClick={() => setTransferIds(new Set())} className="text-xs text-slate-400">清空选择</button><button onClick={() => void transferToChat()} disabled={!transferIds.size || transferring} className="flex-1 rounded-xl bg-slate-900 py-3 text-sm text-white disabled:opacity-40">{transferring ? '发送中…' : '发送 ' + transferIds.size + ' 条到 ChatApp'}</button></footer>
+      </div>}
 
       <SessionDrawer
         open={drawerOpen}
@@ -2815,10 +2852,7 @@ const CollaborationWindow: React.FC<CollaborationWindowProps> = ({
           onClose={() => setPreviewArtifact(null)}
           onInstall={async targetCharacterId => {
             const message = await onInstallArtifact(previewArtifact, targetCharacterId);
-            trackEvent('使用协同作品', {
-              类型: analyticsMakerKind(previewArtifact.kind),
-              目标: targetCharacterId ? '角色' : '全局',
-            });
+            
             notify(message, 'success');
             setPreviewArtifact(null);
           }}

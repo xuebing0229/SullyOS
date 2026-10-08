@@ -271,7 +271,7 @@ describe('story theater billing safety wiring', () => {
         expect(cloudStoryBridgeSource).toContain("timestamp: pending.createdAt");
         expect(cloudStoryBridgeSource).toContain("apiPresetId: successfulRoute.presetId");
         expect(amsgWorkerSource).toContain("await kickQueuedStoryJobs(env)");
-        expect(amsgWorkerSource).toContain("try {\n      await upstream.scheduled(event, env);\n    } finally {");
+        expect(amsgWorkerSource).toMatch(/try \{[\s\S]*await ensureSchemaOnce\([\s\S]*await upstream\.scheduled\(event, env\);[\s\S]*\} finally \{/);
         expect(amsgWorkerSource).toContain("await failRunningStoryJob(this.env, story.userId, story.jobId, error)");
         expect(amsgWorkerSource).toContain("running 绝不自动重跑");
         expect(interceptorSource).toContain('recentSuccessfulFetches.set(requestComparisonKey');

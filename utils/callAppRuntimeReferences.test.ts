@@ -21,7 +21,7 @@ describe('CallApp runtime references', () => {
     expect(source.match(/markCallTurnDirty\(\)/g)?.length ?? 0).toBeGreaterThanOrEqual(3);
   });
 
-  it('keeps the call analytics restored from the master-side merge', () => {
+  it('does not report call usage', () => {
     const source = readFileSync(path.resolve(__dirname, '../apps/CallApp.tsx'), 'utf8');
 
     for (const eventName of [
@@ -30,9 +30,9 @@ describe('CallApp runtime references', () => {
       '重掷角色的通话台词',
       '重播一条通话语音',
     ]) {
-      expect(source).toContain(`trackEvent('${eventName}'`);
+      expect(source).not.toContain(`trackEvent('${eventName}'`);
     }
-    expect(source).toMatch(/const beginSelectedCall[\s\S]*?trackEvent\('发起通话'\)/);
+    expect(source).not.toContain('trackEvent(');
   });
 
   it('routes every memory-palace trigger through the defined call hook', () => {
@@ -76,7 +76,7 @@ describe('CallApp runtime references', () => {
     expect(source).toContain('if (!callPreferences.voiceAutoPlay || !canSpeakVoice()) return');
     expect(source).toMatch(/if \(!callPreferences\.voiceAutoPlay\) \{\s+setCallState\('listening'\);\s+return;/);
     expect(source).toContain('const handlePlayBubbleAudio = async (bubble: CallBubble) =>');
-    expect(source).toContain("trackEvent('按需生成并播放通话语音')");
+    expect(source).not.toContain("trackEvent('按需生成并播放通话语音')");
     expect(source).toContain('shouldKeepNativeCallAudio');
     expect(source).not.toContain('<audio');
     expect(preferenceSheetSource).toContain('不改变聊天页的语音设置');
@@ -183,7 +183,7 @@ describe('CallApp runtime references', () => {
     expect(source).toContain('await captureUserCameraEmotionContext()');
     expect(source).toContain("userCameraMode === 'snapshot'");
     expect(source).toContain('captureUserCameraSnapshotContext()');
-    expect(source).toContain('attachSnapshotToLatestUserMessage(messages, userCameraSnapshot)');
+    expect(source).toContain('prepareUserCameraSnapshot(messages, userCameraSnapshot)');
     expect(source).toContain('userCameraSnapshot ? 0 : 2');
     expect(source).toContain('isVisionInputUnsupportedError(error)');
     expect(source).toContain('await requestAssistantReply(input, userDbId, pendingTouchesForTurn, true, userCameraSnapshotForTurn)');

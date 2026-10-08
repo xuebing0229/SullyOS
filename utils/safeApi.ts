@@ -13,6 +13,7 @@
 import { appendDevDebugApiLog, makeDebugLogger } from './devDebug';
 import { getApiCallAmbientContext, recordApiCall, type ApiCallMeta } from './apiCallLog';
 import { resolveBlobRefsInRequestBody } from './apiBlobRefs';
+import { waitForPalaceRequest } from './memoryPalace/maintenanceMode';
 
 const log = makeDebugLogger('api', 'SafeAPI');
 
@@ -545,6 +546,7 @@ export async function safeFetchJson(
         : { ...metaOptions, body: resolvedBody as BodyInit };
 
     for (let attempt = 0; attempt <= automaticRetryLimit; attempt++) {
+        if (meta?.appName === '记忆宫殿') await waitForPalaceRequest(options.signal ?? undefined);
         // 全局 fetch 拦截器和这里的“已解析响应兜底”共享 ID。前者覆盖裸 fetch，
         // 后者不依赖 Response.clone()，避免部分 iOS/WebView 克隆流不结束时漏记。
         const requestId = `api-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
@@ -818,7 +820,26 @@ function repairTruncatedJson(text: string): string | null {
     return repaired;
 }
 
-export function extractJson(raw: string): any | null {
+/** Repair formatting outside strings; preserve apostrophes and literal `, }` in prose. */
+function repairJsonPresentation(text: string): string {
+    let result = '';
+    let inString = false;
+    let escaped = false;
+    for (let i = 0; i < text.length; i++) {
+        const ch = text[i];
+        if (escaped) { result += ch; escaped = false; continue; }
+        if (inString && ch === '\\') { result += ch; escaped = true; continue; }
+        if (ch === '"') inString = !inString;
+        if (inString && ch.charCodeAt(0) < 32) {
+            result += JSON.stringify(ch).slice(1, -1);
+        } else if (!inString && ch === ',' && /^[\s]*[}\]]/.test(text.slice(i + 1))) {
+            continue;
+        } else result += ch;
+    }
+    return result;
+}
+
+export function extractJson(raw: string, options: { allowTruncated?: boolean; silent?: boolean } = {}): any | null {
     if (!raw) return null;
 
     // 1. Strip markdown code fences
@@ -846,6 +867,7 @@ export function extractJson(raw: string): any | null {
 
     // 4. Try parsing the extracted substring
     try { return JSON.parse(jsonStr); } catch {}
+    try { return JSON.parse(repairJsonPresentation(jsonStr)); } catch {}
 
     // 5. Fix common AI formatting issues and retry
     let fixed = jsonStr
@@ -864,6 +886,7 @@ export function extractJson(raw: string): any | null {
     // — the inner " breaks JSON parsing because they're not \-escaped.
     const innerQuoteFixed = escapeUnescapedInnerQuotes(jsonStr);
     if (innerQuoteFixed && innerQuoteFixed !== jsonStr) {
+        try { return JSON.parse(repairJsonPresentation(innerQuoteFixed)); } catch {}
         try { return JSON.parse(innerQuoteFixed); } catch {}
         try {
             return JSON.parse(innerQuoteFixed
@@ -875,7 +898,7 @@ export function extractJson(raw: string): any | null {
     // 7. Try to repair truncated JSON (LLM hit max_tokens)
     // Find the first { and attempt to close any open strings/brackets
     const firstBrace = text.indexOf('{');
-    if (firstBrace >= 0) {
+    if (firstBrace >= 0 && options.allowTruncated !== false) {
         let truncated = text.slice(firstBrace);
         const repaired = repairTruncatedJson(truncated);
         if (repaired) {
@@ -921,6 +944,6 @@ export function extractJson(raw: string): any | null {
         } catch {}
     }
 
-    console.error('[extractJson] All attempts failed. Raw:', raw.slice(0, 300));
+    if (!options.silent) console.error('[extractJson] All attempts failed. Raw:', raw.slice(0, 300));
     return null;
 }

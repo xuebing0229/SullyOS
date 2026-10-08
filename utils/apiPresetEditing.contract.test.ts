@@ -19,7 +19,7 @@ describe('editable multi-model API preset integration contract', () => {
   });
 
   it('immediately applies and selects a newly saved preset', () => {
-    expect(settings).toContain('const preset = addApiPreset(name, buildCurrentApiPresetConfig(), newPresetPricing)');
+    expect(settings).toContain('const preset = addApiPreset(name, buildCurrentApiPresetConfig(), newPresetPricing, newPresetGroup)');
     expect(settings).toContain('setSelectedPresetId(preset.id)');
     expect(context).toContain('persistCurrentApiConfig(applyApiPresetConfig(apiConfig, preset.config))');
     expect(context).toContain('persistActiveApiPresetId(preset.id)');

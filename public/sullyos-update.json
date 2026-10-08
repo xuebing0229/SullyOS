@@ -1,16 +1,16 @@
 {
   "schemaVersion": 1,
-  "versionCode": 30409,
-  "versionName": "3.4.9",
-  "apkUrl": "https://github.com/qegj567-cloud/SullyOS/releases/download/android-v3.4.9/SullyOS-Android-v3.4.9.apk",
-  "sha256": "a9d3842325688c2657a5a00e4a5c5a8010d7a335a38c312fe2c6a32bd0c97257",
-  "sizeBytes": 37110087,
-  "publishedAt": "2026-08-30T05:31:52Z",
+  "versionCode": 30508,
+  "versionName": "3.5.8",
+  "apkUrl": "https://github.com/qegj567-cloud/SullyOS/releases/download/android-v3.5.8/SullyOS-Android-v3.5.8.apk",
+  "sha256": "9babc22962afaf563f14f2cad4fa5a3387f173f8bb091d27adfea70dbf48adfa",
+  "sizeBytes": 80054069,
+  "publishedAt": "2026-10-07T17:19:42Z",
   "releaseNotes": [
-    "修复更新缓存目录已存在时出现 DirectoryExists、无法继续下载的问题",
-    "重复更新会清理旧 APK、重新下载并校验摘要、包名、签名与版本",
-    "只忽略目录已存在状态，真实权限或文件系统错误仍会正常提示",
-    "3.4.8 用户若仍遇到旧错误，请从 Release 手动覆盖安装 3.4.9 一次",
-    "延续固定签名、UnifiedPush / ntfy、Android PDF 导入、Umami 与应用内更新"
+    "同步最新 master 78f1f15f，包含 v3.13 At Home 居家桌面与 3D 家园",
+    "包含启动恢复、外观选择保留、3D 家园备份与自定义部件修复",
+    "宠物移除支持确认和撤销，同步角色 API、会话收藏与美化更新",
+    "主动消息 2.0 跟随上游；保留 ntfy、相机权限、PDF、Umami 和应用内更新",
+    "沿用固定正式签名，可直接覆盖升级保留数据"
   ]
 }

@@ -211,6 +211,18 @@ export const resolveWorldbookEntries = (
     .filter(entry => entry.content.trim())
     .sort((a, b) => a.order - b.order);
 
+/**
+ * 只取「聊天记录指定深度」的条目，交给 injectWorldbookDepthEntries 插进对话。
+ * 兼容旧调用方；新 App 使用 ContextBuilder 的完整消息入口，不自行解析或插入世界书。
+ */
+export const resolveWorldbookDepthEntries = (
+    books: WorldbookLike[] = [],
+    messages: WorldbookScanMessage[] = [],
+    charName = '',
+    userName = '',
+): ResolvedWorldbookEntry[] => resolveWorldbookEntries(books, messages, charName, userName)
+    .filter(entry => entry.position === 4);
+
 export const splitWorldbookSections = (entries: ResolvedWorldbookEntry[]): WorldbookSystemSections => ({
     beforeCharacter: entries.filter(entry => entry.position === 0),
     afterCharacter: entries.filter(entry => entry.position === 1),
@@ -246,7 +258,7 @@ export const formatWorldbookSection = (
 export const injectWorldbookDepthEntries = <T extends WorldbookScanMessage>(
     messages: T[],
     entries: ResolvedWorldbookEntry[],
-): Array<T | { role: string; content: string }> => {
+): Array<T | { role: 'system' | 'user' | 'assistant'; content: string }> => {
     if (entries.length === 0) return [...messages];
     const buckets = new Map<number, ResolvedWorldbookEntry[]>();
     for (const entry of entries) {
@@ -257,7 +269,7 @@ export const injectWorldbookDepthEntries = <T extends WorldbookScanMessage>(
         buckets.set(index, bucket);
     }
 
-    const result: Array<T | { role: string; content: string }> = [];
+    const result: Array<T | { role: 'system' | 'user' | 'assistant'; content: string }> = [];
     for (let index = 0; index <= messages.length; index += 1) {
         const bucket = buckets.get(index) || [];
         for (const entry of bucket) {

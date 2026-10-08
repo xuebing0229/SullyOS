@@ -7,7 +7,7 @@ import { XhsFreeRoamEngine, FreeRoamCallbacks } from '../utils/xhsFreeRoam';
 import { XhsMcpClient, extractNotesFromMcpData, normalizeNote } from '../utils/xhsMcpClient';
 import { collectOwnedPostsFromActivities } from '../utils/xhsFreeRoamOwnership';
 import ConfirmDialog from '../components/os/ConfirmDialog';
-import { trackEvent } from '../utils/analytics';
+
 import { Book, PencilSimple, MagnifyingGlass, DeviceMobileCamera, ChatCircleDots, PushPin, Moon, House } from '@phosphor-icons/react';
 import { CharacterGroupFilterBar, filterCharactersByGroup, GROUP_FILTER_ALL } from '../components/character/CharacterGroupFilter';
 import TokenImg from '../components/os/TokenImg';
@@ -129,7 +129,7 @@ const XhsFreeRoamApp: React.FC = () => {
         setStatus('启动中...');
         setThinking('');
         setLiveActivities([]);
-        trackEvent('开始角色自由活动');
+        
 
         const callbacks: FreeRoamCallbacks = {
             onStatus: (s) => setStatus(s),
@@ -606,7 +606,7 @@ const XhsFreeRoamApp: React.FC = () => {
                         {ownedPosts.map(post => (
                             <button
                                 key={post.id}
-                                onClick={() => { setShowOwnedPost(post); trackEvent('打开角色小红书主页帖子'); }}
+                                onClick={() => { setShowOwnedPost(post);  }}
                                 className="bg-white min-h-44 p-4 text-left flex flex-col active:bg-rose-50 transition-colors"
                             >
                                 <div className="flex-1">
@@ -672,7 +672,7 @@ const XhsFreeRoamApp: React.FC = () => {
                 activities.map(a => (
                     <button
                         key={a.id}
-                        onClick={() => { setShowDetail(a); trackEvent('打开自由活动记录详情'); }}
+                        onClick={() => { setShowDetail(a);  }}
                         className="w-full bg-white rounded-2xl border border-slate-100 p-3 text-left active:scale-[0.98] transition-transform"
                     >
                         <div className="flex items-center justify-between">

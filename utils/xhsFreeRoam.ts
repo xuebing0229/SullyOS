@@ -62,11 +62,13 @@ interface LlmDetailReaction {
     wantToComment?: { comment: string };
 }
 
+type FreeRoamPrompt = { char: CharacterProfile; user: UserProfile; instructions: string };
+
 // ==================== LLM Helpers ====================
 
 const callLlm = async (
     apiConfig: APIConfig,
-    systemPrompt: string,
+    systemPrompt: FreeRoamPrompt,
     userMessage: string,
 ): Promise<string> => {
     const baseUrl = apiConfig.baseUrl.replace(/\/+$/, '');
@@ -78,10 +80,9 @@ const callLlm = async (
         },
         body: JSON.stringify({
             model: apiConfig.model,
-            messages: [
-                { role: 'system', content: systemPrompt },
+            messages: (await ContextBuilder.buildCharacterRequest(systemPrompt, [
                 { role: 'user', content: userMessage },
-            ],
+            ])),
             temperature: 0.85,
             stream: false,
         }),
@@ -107,14 +108,14 @@ const parseJson = <T>(text: string): T | null => {
 
 // ==================== Prompt Builders ====================
 
-const buildFreeRoamSystemPrompt = (
+export const buildFreeRoamSystemPrompt = (
     char: CharacterProfile,
     user: UserProfile,
     recentChatSummary: string,
     pastActivities: XhsActivityRecord[],
-): string => {
+): FreeRoamPrompt => {
     // 加载完整上下文（含详细记忆和心情标签），让角色在自由活动时保持情感连贯
-    const coreContext = ContextBuilder.buildCoreContext(char, user, true);
+
     // 自由活动是角色自己在刷手机，「现在几点」得跟 ta 那边的钟——
     // coreContext 顶部注入的当前时间已按角色时区折算，这里再用设备时间就会自相矛盾。
     const charTz = resolveCharTimeZone(char);
@@ -134,7 +135,7 @@ const buildFreeRoamSystemPrompt = (
         }).join('\n');
     }
 
-    return `${coreContext}
+    return { char, user, instructions: `
 
 ### 🕐 当前状态
 - 现在是: ${timeStr} (${timeOfDay})
@@ -164,7 +165,7 @@ ${pastStr}
 - **搜索自己的帖子**: 你可以用自己的名字作为关键词搜索，看看自己发过的帖子现在怎么样了。
 - 不要每次都发帖，真实的人有时候只是刷刷看看。
 - 发的帖子要像你自己会发的东西——符合人设，不要写得太正式或像AI。
-- 你可以选择保存一些有趣的帖子内容作为话题，下次和用户聊天时可以提起。`;
+- 你可以选择保存一些有趣的帖子内容作为话题，下次和用户聊天时可以提起。` };
 };
 
 const buildDecisionPrompt = (): string => {
@@ -309,10 +310,9 @@ const getRecentChatContext = async (char: CharacterProfile): Promise<string> => 
 /**
  * 查看笔记详情 + 评论区，并让角色反应（回复评论等）
  */
-const handleViewDetail = async (
-    mcpUrl: string,
+const handleViewDetail = async (mcpUrl: string,
     apiConfig: APIConfig,
-    systemPrompt: string,
+    systemPrompt: FreeRoamPrompt,
     noteId: string,
     noteTitle: string,
     contextNotes: any[],
@@ -362,8 +362,7 @@ const handleViewDetail = async (
     callbacks.onStatus(commentsUnavailable
         ? `${char.name}看完了正文，评论区暂时读取失败`
         : `${char.name}在看评论区...`);
-    const reactionRaw = await callLlm(
-        apiConfig,
+    const reactionRaw = await callLlm(apiConfig,
         systemPrompt,
         buildDetailReactionPrompt(noteTitle, noteContent, comments, commentsUnavailable, canInteract),
     );
@@ -467,6 +466,7 @@ export const XhsFreeRoamEngine = {
         realtimeConfig: RealtimeConfig,
         callbacks: FreeRoamCallbacks,
     ): Promise<XhsFreeRoamSession> => {
+
         const mcpUrl = realtimeConfig.xhsMcpConfig?.serverUrl;
         if (!mcpUrl) throw new Error('MCP Server URL 未配置');
         XhsMcpClient.setCookie(realtimeConfig.xhsMcpConfig?.cookie); // lite Worker auth (no-op for local backends)
@@ -490,7 +490,7 @@ export const XhsFreeRoamEngine = {
             callbacks.onStatus(`${char.name}正在思考...`);
             const pastActivities = await DB.getXhsActivities(char.id, 10);
             const chatSummary = await getRecentChatContext(char);
-            const systemPrompt = buildFreeRoamSystemPrompt(char, user, chatSummary, pastActivities);
+            const systemPrompt = (await buildFreeRoamSystemPrompt(char, user, chatSummary, pastActivities));
 
             // 4. Character decides
             callbacks.onStatus(`${char.name}在决定做什么...`);
@@ -644,8 +644,7 @@ export const XhsFreeRoamEngine = {
                     // If character wants to view note detail (comments section)
                     // 注意：浏览/搜索看到的是别人的帖子，不执行评论（wantToComment 已从 prompt 中移除）
                     if (reaction?.wantToViewDetail?.noteId) {
-                        await handleViewDetail(
-                            mcpUrl, apiConfig, systemPrompt,
+                        await handleViewDetail(mcpUrl, apiConfig, systemPrompt,
                             reaction.wantToViewDetail.noteId,
                             reaction.wantToViewDetail.title || '',
                             notes, char, session, callbacks,
@@ -748,8 +747,7 @@ export const XhsFreeRoamEngine = {
                         profileRecord.thinking = reaction.thinking;
                     }
                     if (reaction?.wantToViewDetail?.noteId) {
-                        await handleViewDetail(
-                            mcpUrl, apiConfig, systemPrompt,
+                        await handleViewDetail(mcpUrl, apiConfig, systemPrompt,
                             reaction.wantToViewDetail.noteId,
                             reaction.wantToViewDetail.title || '',
                             notes, char, session, callbacks,

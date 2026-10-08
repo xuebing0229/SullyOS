@@ -1,6 +1,9 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';
+import DatabaseGuard from './components/DatabaseGuard';
+import { openDB } from './utils/db';
+import { checkDatabaseReadable } from './utils/databaseHealth';
 import { installTranslateCrashGuard } from './utils/translateCrashGuard';
 import { ActiveMsgRuntime } from './utils/activeMsgRuntime';
 import { KeepAlive } from './utils/keepAlive';
@@ -8,7 +11,7 @@ import { ProactiveChat } from './utils/proactiveChat';
 import { VRScheduler } from './utils/vrWorld/scheduler';
 import { installIOSStandaloneWorkaround } from './utils/iosStandalone';
 import { installWakeListener } from './utils/proactivePushConfig';
-import { initAnalytics } from './utils/analytics';
+
 import { installStoryPollingVisibilityGuard } from './utils/storyPollingVisibilityGuard';
 import { Capacitor } from '@capacitor/core';
 import { isChunkLoadError, refreshDocumentForInstalledAppVersion, tryAutoReloadForChunkError } from './utils/chunkLoadRecovery';
@@ -51,8 +54,10 @@ if (Capacitor.isNativePlatform()) {
   }
 }
 
-// Register the keep-alive Service Worker early so it's ready before any AI calls
-KeepAlive.init().then(() => {
+// Finish opening/upgrading the archive before our SW registration starts update
+// inspection, offline-shell preparation or cache cleanup. DatabaseGuard gates AI callers too.
+checkDatabaseReadable(openDB).then(async () => {
+  await KeepAlive.init();
   // Resume any active proactive schedule after SW is ready
   ProactiveChat.resume();
   // Resume 「彼方」 autonomous-login schedules
@@ -60,13 +65,13 @@ KeepAlive.init().then(() => {
   void ActiveMsgRuntime.init();
   // Record every wake the SW reports so the diagnostic panel can show "last received".
   installWakeListener();
-});
+}).catch(error => console.error('后台任务暂未启动：本地数据或保活服务未就绪', error));
 
 installIOSStandaloneWorkaround();
 
 // 使用统计。构建时没配 VITE_UMAMI_* 就整个不生效，自部署实例默认如此。
 // 用户关掉开关、或浏览器开了 DNT，同样在这里就返回，连脚本都不会挂上去。
-initAnalytics();
+
 
 // 浏览器自动翻译 (Chrome/Edge 等) 会改动 React 托管的 DOM，导致 reconcile 时
 // insertBefore/removeChild 抛 NotFoundError 白屏。挂载前先打护栏。详见该 util 注释。
@@ -80,7 +85,7 @@ if (!rootElement) {
 const root = ReactDOM.createRoot(rootElement);
 root.render(
   <React.StrictMode>
-    <App />
+    <DatabaseGuard><App /></DatabaseGuard>
   </React.StrictMode>
 );
 }

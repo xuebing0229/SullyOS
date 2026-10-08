@@ -28,7 +28,7 @@ describe('story theater voice settings', () => {
     expect(enabled.storyVoiceDirectorModel).toBe('flash-mini');
 
     const elevenLabs = normalizeStoryTheater({
-      ...draft,
+      ...base,
       storyTtsEnabled: true,
       storyTtsProvider: 'elevenlabs',
     });
@@ -36,7 +36,7 @@ describe('story theater voice settings', () => {
     expect(elevenLabs.storyTtsProvider).toBe('elevenlabs');
 
     const invalidProvider = normalizeStoryTheater({
-      ...draft,
+      ...base,
       storyTtsProvider: 'fishaudio' as any,
     });
     expect(invalidProvider.storyTtsProvider).toBe('minimax');

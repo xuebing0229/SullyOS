@@ -1,9 +1,16 @@
+import FirstUseGuide from './FirstUseGuide';
+import FeedbackInvitation from './FeedbackInvitation';
+import BeautyRepoInvitation from './share/BeautyRepoInvitation';
+import { useFirstUseGuideStep } from '../utils/firstUseGuide';
+import AnniversaryGiftPopup from './os/AnniversaryGiftPopup';
+import { shouldShowAnniversaryGift, markAnniversaryGiftSeen } from '../utils/anniversaryGifts';
 
 
 
 import React, { useState, useEffect, useMemo, useRef, Suspense } from 'react';
 import { IMPORT_IN_PROGRESS_KEY, useOS } from '../context/OSContext';
 import StatusBar from './os/StatusBar';
+import { SARModuleMonitor } from './sar/SARModuleMonitor';
 import Launcher from '../apps/Launcher';
 import CompanionLockChrome from './os/CompanionLockChrome';
 import { loadCompanionFrameStyle } from './os/companionFrameStyles';
@@ -24,7 +31,7 @@ const ApiCost = lazyApp(() => import('../apps/ApiCost'));
 const Character = lazyApp(() => import('../apps/Character'));
 const Chat = lazyApp(() => import('../apps/Chat'));
 const GroupChat = lazyApp(() => import('../apps/GroupChat'));
-const ThemeMaker = lazyApp(() => import('../apps/ThemeMaker'));
+const ThemeMaker = lazyApp(() => import('./chat/LegacyBubbleMakerEntry'));
 const Appearance = lazyApp(() => import('../apps/Appearance'));
 const Gallery = lazyApp(() => import('../apps/Gallery'));
 const VoiceLibraryApp = lazyApp(() => import('../apps/VoiceLibraryApp'));
@@ -113,7 +120,7 @@ import { loadInstantConfig, probeInstantWorkerVersion } from '../utils/instantPu
 import { BackupReminderController } from './BackupReminderEvent';
 import { shouldShowBackupReminder, markBackupReminderShown, daysSinceLastBackup } from '../utils/backupReminder';
 import { formatBytes } from '../utils/format';
-import { trackEvent } from '../utils/analytics';
+
 import { AppID } from '../types';
 import { shellHandlesSafeArea } from '../utils/safeAreaApps';
 import { App as CapApp } from '@capacitor/app';
@@ -285,17 +292,20 @@ const DisclaimerPopup: React.FC<{ onAccept: () => void }> = ({ onAccept }) => (
       {/* Header */}
       <div className="pt-7 pb-3 px-6 text-center">
         <img src="https://cdnjs.cloudflare.com/ajax/libs/twemoji/14.0.2/72x72/1f4e2.png" alt="announcement" className="w-8 h-8 mb-2" />
-        <h2 className="text-lg font-extrabold text-slate-800">免责声明</h2>
-        <p className="text-[11px] text-slate-400 mt-1">Disclaimer · 手抓糯米机 (SullyOS)</p>
+        <h2 className="text-lg font-extrabold text-slate-800">使用与授权说明</h2>
+        <p className="text-[11px] text-slate-400 mt-1">Usage & License · SullyOS·糯米机</p>
       </div>
 
       {/* Content */}
       <div className="px-6 pb-4 max-h-[55vh] overflow-y-auto no-scrollbar space-y-3">
         <p className="text-[13px] text-slate-600 leading-relaxed">
-          本项目「手抓糯米机 (SullyOS)」是一个<strong className="text-slate-800">完全开源、免费</strong>的软件，仅供个人学习、研究与技术交流使用。
+          本项目「SullyOS·糯米机」是一个<strong className="text-slate-800">源码可见、免费使用</strong>的项目。源码供学习与参考，不代表授予二改、再分发或官方服务的访问权限。
         </p>
+        <p className="text-[13px] text-slate-600 leading-relaxed">二改授权通过官方 DC 社区提供，具体范围以社区授权说明为准。社区不定期开放；未经另行许可，不得对外分发原版、修改版或整合包。</p>
+        <p className="text-[13px] text-slate-600 leading-relaxed">官方服务受后端容量限制，请勿向社区外转发访问入口、邀请信息或下载资源，也请勿自行组织对外推广。二改授权不包含共享官方后端资源。</p>
+        <p className="text-[13px] text-slate-600 leading-relaxed">完整规则以随版本提供的源码许可与社区授权说明为准；旧版本既有许可及第三方许可分别适用。</p>
         <ul className="text-[12px] text-slate-500 leading-relaxed space-y-1.5 list-none">
-          <li className="flex gap-2"><span className="shrink-0">•</span><span>本软件不提供任何明示或暗示的担保，作者不对使用本软件产生的任何后果承担责任。</span></li>
+          <li className="flex gap-2"><span className="shrink-0">•</span><span>在法律允许的范围内，本软件按现状提供，不附带保证；法律规定不得排除或限制的责任除外。</span></li>
           <li className="flex gap-2"><span className="shrink-0">•</span><span>用户应自行承担使用本软件的一切风险，包括但不限于数据丢失、设备损坏等。</span></li>
           <li className="flex gap-2"><span className="shrink-0">•</span><span>本软件生成的任何 AI 内容均不代表作者立场，用户需自行判断内容的准确性与合规性。</span></li>
           <li className="flex gap-2"><span className="shrink-0">•</span><span>禁止将本软件用于任何违反当地法律法规的用途。</span></li>
@@ -413,7 +423,7 @@ const AppLoadingFallback: React.FC<{ onReturn?: () => void; animationEnabled?: b
     // Suspense 会永远停在这一屏（不报错 → 错误边界不触发 → 不会自动刷新），用户狂点中心光点却毫无反应。
     // 超过 STALL_MS 仍未加载完 → 把「看着像按钮其实不是」的光点换成真正可点的「刷新/返回」按钮，
     // 既明确告诉用户该点哪里，又把静默卡死变成一键可恢复。只动占位 UI，不碰 import 逻辑。
-    const stall = setTimeout(() => { setStalled(true); trackEvent('App 加载卡死超时'); }, 15_000);
+    const stall = setTimeout(() => { setStalled(true);  }, 15_000);
     return () => { if (t) clearTimeout(t); clearTimeout(stall); };
   }, [animationEnabled]);
   if (stalled) {
@@ -427,7 +437,7 @@ const AppLoadingFallback: React.FC<{ onReturn?: () => void; animationEnabled?: b
         <div className="flex flex-col gap-3 w-full max-w-xs">
           <button
             type="button"
-            onClick={() => { trackEvent('卡死页点刷新恢复'); window.location.reload(); }}
+            onClick={() => {  window.location.reload(); }}
             className="w-full px-6 py-3 bg-red-600 rounded-full font-bold text-sm shadow-lg active:scale-95 transition-transform"
           >
             刷新恢复
@@ -435,7 +445,7 @@ const AppLoadingFallback: React.FC<{ onReturn?: () => void; animationEnabled?: b
           {onReturn && (
             <button
               type="button"
-              onClick={() => { onReturn(); trackEvent('从卡死页返回桌面'); }}
+              onClick={() => { onReturn();  }}
               className="w-full px-4 py-2 bg-slate-700 rounded-full text-xs font-bold active:scale-95 transition-transform"
             >
               返回桌面
@@ -461,7 +471,7 @@ const AppLoadingFallback: React.FC<{ onReturn?: () => void; animationEnabled?: b
 };
 
 const PhoneShell: React.FC = () => {
-  const { theme, isLocked, unlock, activeApp, closeApp, openApp, virtualTime, isDataLoaded, toasts, unreadMessages, characters, handleBack, suspendedCall, resumeCall, activeCharacterId, errorDialog, dismissError } = useOS();
+  const { theme, isLocked, unlock, activeApp, closeApp, openApp, virtualTime, isDataLoaded, toasts, unreadMessages, characters, handleBack, suspendedCall, resumeCall, activeCharacterId, errorDialog, dismissError, sysOperation } = useOS();
   const useIOSStandaloneLayout = isIOSStandaloneWebApp();
 
   // 三档顶部状态栏：安全显示 / 紧凑显示 / 隐藏。旧存档仍由 hideStatusBar 兼容解析。
@@ -600,22 +610,35 @@ const PhoneShell: React.FC = () => {
       ? phase
       : 'other';
     const hasError = !!importRecoveryMarker?.error;
-    trackEvent('弹出上次导入未完成提醒', { kind: hasError ? '失败' : '中断', stage });
-    trackEvent('弹出导入中断恢复提醒', {
-      中断类型: hasError ? '导入失败' : '导入被中断',
-      中断阶段: getImportPhaseLabel(phase),
-    });
+    
+    
   }, [showDisclaimer, showImportRecoveryPrompt, importRecoveryMarker]);
 
   const handleReimportFromRecovery = () => {
     setImportRecoveryDismissed(true);
     setImportRecoveryMarker(null);
     openApp(AppID.Settings);
-    trackEvent('点去重新导入', { kind: importRecoveryMarker?.error ? '失败' : '中断' });
+    
   };
 
   // 「致用户的一封信」已下线：常量置 false，保留变量让下面弹窗链的条件继续成立（恒真/恒不显示）。
   const showAuthorLetter = false;
+
+  // Ta-da 周年赠礼先于更新公告，等基础启动提示、开机动画与解锁完成。
+  const [showAnniversaryGift, setShowAnniversaryGift] = useState(false);
+  const anniversaryAsked = useRef(false);
+  const firstUseGuideActive = useFirstUseGuideStep() !== null;
+  const anniversaryBlocked = firstUseGuideActive || showDisclaimer || showImportRecoveryPrompt || showAuthorLetter;
+  // 待展示也占住顺序，避免同一轮 effects 同时开启赠礼和更新公告。
+  // Complete setup before promotional/release popups; disclaimer/recovery still have priority.
+  const anniversaryHasPriority = firstUseGuideActive || showAnniversaryGift || (!anniversaryAsked.current && shouldShowAnniversaryGift());
+  useEffect(() => {
+    if (anniversaryAsked.current || anniversaryBlocked || !isDataLoaded || isLocked || (!bootDone && bootAnimationEnabled)) return;
+    if (shouldShowAnniversaryGift()) {
+      anniversaryAsked.current = true;
+      setShowAnniversaryGift(true);
+    }
+  }, [anniversaryBlocked, isDataLoaded, isLocked, bootDone, bootAnimationEnabled]);
 
   // 本次版本首映：数据就绪且解锁后出现一次，避免按钮打开的 App 被锁屏挡在背后。
   const [showUpdateNotification, setShowUpdateNotification] = useState(false);
@@ -630,13 +653,13 @@ const PhoneShell: React.FC = () => {
 
   useEffect(() => {
     if (updateNoticeAsked.current) return;
-    if (showDisclaimer || showImportRecoveryPrompt || showAuthorLetter || showUpdateNotification) return;
+    if (anniversaryHasPriority || showDisclaimer || showImportRecoveryPrompt || showAuthorLetter || showUpdateNotification) return;
     if (!isDataLoaded || isLocked) return;
     if (shouldShowUpdateNotification()) {
       updateNoticeAsked.current = true;
       setShowUpdateNotification(true);
     }
-  }, [showDisclaimer, showImportRecoveryPrompt, showAuthorLetter, showUpdateNotification, isDataLoaded, isLocked]);
+  }, [anniversaryHasPriority, showDisclaimer, showImportRecoveryPrompt, showAuthorLetter, showUpdateNotification, isDataLoaded, isLocked]);
 
   // 七夕特别活动推送：严格按北京时间 2026-08-19 判断，用户处理后永久不再弹。
   // 排在版本更新之后、日常维护提醒之前；按钮只带到「特别时光」，不替用户选择角色。
@@ -644,23 +667,23 @@ const PhoneShell: React.FC = () => {
   const qixiLaunchAsked = useRef(false);
   useEffect(() => {
     if (qixiLaunchAsked.current) return;
-    if (showDisclaimer || showImportRecoveryPrompt || showAuthorLetter || showUpdateNotification) return;
+    if (anniversaryHasPriority || showDisclaimer || showImportRecoveryPrompt || showAuthorLetter || showUpdateNotification) return;
     if (!isDataLoaded || isLocked) return;
     if (shouldShowQixiLaunchPopup()) {
       qixiLaunchAsked.current = true;
       setShowQixiLaunchPopup(true);
     }
-  }, [showDisclaimer, showImportRecoveryPrompt, showAuthorLetter, showUpdateNotification, isDataLoaded, isLocked]);
+  }, [anniversaryHasPriority, showDisclaimer, showImportRecoveryPrompt, showAuthorLetter, showUpdateNotification, isDataLoaded, isLocked]);
 
   // 520 特别活动弹窗（2026-05-20 当天，且没被 dismiss / completed）
   // 一次性：用户点过任何按钮就标记 dismissed，下次刷新不再出现；
   // API 配置改成弹窗内嵌，配完直接进活动，不再需要把弹窗暂存让位给 Settings。
   const [showLike520Popup, setShowLike520Popup] = useState(false);
   useEffect(() => {
-    if (showDisclaimer || showImportRecoveryPrompt || showAuthorLetter || showUpdateNotification || showQixiLaunchPopup) return;
+    if (anniversaryHasPriority || showDisclaimer || showImportRecoveryPrompt || showAuthorLetter || showUpdateNotification || showQixiLaunchPopup) return;
     if (!isDataLoaded) return;
     if (shouldShowLike520Popup()) setShowLike520Popup(true);
-  }, [showDisclaimer, showImportRecoveryPrompt, showAuthorLetter, showUpdateNotification, showQixiLaunchPopup, isDataLoaded]);
+  }, [anniversaryHasPriority, showDisclaimer, showImportRecoveryPrompt, showAuthorLetter, showUpdateNotification, showQixiLaunchPopup, isDataLoaded]);
 
   // Instant Push 下线通知 — 只对现在开着它的人弹，每天最多一次。
   // 排在 Worker 更新提醒前面：这两条都只找同一批人，而「这功能要没了」比
@@ -706,25 +729,25 @@ const PhoneShell: React.FC = () => {
   // 「该备份啦」提醒 — local-first 数据只在本机，隔 N 天（默认 7，可在设置里改）没导出就弹一次
   const [showBackupReminder, setShowBackupReminder] = useState(false);
   useEffect(() => {
-    if (showDisclaimer || showImportRecoveryPrompt || showAuthorLetter || showUpdateNotification || showQixiLaunchPopup || showLike520Popup || showInstantPushSunset || showWorkerUpdateReminder) return;
+    if (anniversaryHasPriority || showDisclaimer || showImportRecoveryPrompt || showAuthorLetter || showUpdateNotification || showQixiLaunchPopup || showLike520Popup) return;
     if (!isDataLoaded || isLocked) return;
     if (shouldShowBackupReminder()) {
       setShowBackupReminder(true);
       // 只报「从未备份 / 已过期」这一个二选一，不报具体天数、也不报用户设的提醒间隔。
-      trackEvent('弹出该备份啦提醒', { state: daysSinceLastBackup() == null ? '从未备份' : '已过期' });
+      
     }
-  }, [showDisclaimer, showImportRecoveryPrompt, showAuthorLetter, showUpdateNotification, showQixiLaunchPopup, showLike520Popup, showInstantPushSunset, showWorkerUpdateReminder, isDataLoaded, isLocked]);
+  }, [anniversaryHasPriority, showDisclaimer, showImportRecoveryPrompt, showAuthorLetter, showUpdateNotification, showQixiLaunchPopup, showLike520Popup, isDataLoaded, isLocked]);
 
   const dismissBackupReminder = () => {
     markBackupReminderShown();
     setShowBackupReminder(false);
-    trackEvent('点知道了稍后再说');
+    
   };
   const goBackupFromReminder = () => {
     markBackupReminderShown();
     setShowBackupReminder(false);
     openApp(AppID.Settings);
-    trackEvent('点立即备份');
+    
   };
 
   // Web browsers normally interpret an edge-swipe/back shortcut as leaving SullyOS.
@@ -838,7 +861,7 @@ const PhoneShell: React.FC = () => {
     const wallpaper = theme.wallpaper;
     const backgroundValue = !wallpaper
       ? '#0f1115'
-      : (wallpaper.startsWith('http') || wallpaper.startsWith('data:') || wallpaper.startsWith('blob:'))
+      : (wallpaper.startsWith('http') || wallpaper.startsWith('data:') || wallpaper.startsWith('blob:') || wallpaper.startsWith('./') || wallpaper.startsWith('/'))
         ? `url(${wallpaper})`
         : wallpaper;
 
@@ -853,7 +876,7 @@ const PhoneShell: React.FC = () => {
   // 冷启动：先放「世界入场」cinematic（数据没就绪时它持续呼吸等待，绝不出现 spinner）。
   // BootSequence 在「数据就绪 + 停留够时长」后推进退场，再交还控制权给下方的锁屏/桌面。
   if (!bootDone && bootAnimationEnabled) {
-    return <BootSequence dataReady={isDataLoaded} wallpaper={theme.wallpaper} onDone={() => setBootDone(true)} />;
+    return <BootSequence dataReady={isDataLoaded} wallpaper={theme.wallpaper} style={theme.bootAnimationStyle} onDone={() => setBootDone(true)} />;
   }
 
   // 兜底：理论上 bootDone 时数据已就绪；万一未就绪（极端慢）退化为最简静态深色屏，不闪 spinner。
@@ -862,7 +885,7 @@ const PhoneShell: React.FC = () => {
   }
 
   const getBgStyle = (wp: string) => {
-      const isUrl = wp.startsWith('http') || wp.startsWith('data:') || wp.startsWith('blob:');
+      const isUrl = wp.startsWith('http') || wp.startsWith('data:') || wp.startsWith('blob:') || wp.startsWith('./') || wp.startsWith('/');
       return isUrl ? `url(${wp})` : wp;
   };
 
@@ -930,7 +953,7 @@ const PhoneShell: React.FC = () => {
                    <span>🍃</span><span>无人岛生活</span><span>🍃</span>
                </div>
            ) : (
-               <div className="text-lg tracking-widest opacity-90 mt-2 uppercase text-xs font-bold">SullyOS Simulation</div>
+               <div className="text-lg tracking-widest opacity-90 mt-2 uppercase text-xs font-bold">SullyOS·糯米机 Simulation</div>
            )}
         </div>}
 
@@ -1050,6 +1073,7 @@ const PhoneShell: React.FC = () => {
             : { bottom: 'var(--standalone-safe-area-bottom, 0px)' }
         }
       >
+          <FirstUseGuide />
           {/* App Container */}
           <div className="flex-1 relative overflow-hidden" style={{ contain: useIOSStandaloneLayout ? undefined : 'layout style paint' }}>
             <AppErrorBoundary onCloseApp={closeApp} resetKey={`${activeApp}:${activeCharacterId || 'none'}`}>
@@ -1071,11 +1095,12 @@ const PhoneShell: React.FC = () => {
               错误指示器、系统调试终端与开关无关、始终在。 */}
           <StatusBar />
           
-          {/* Overlays: Suspended Call Bar */}
+          {/* 通话条跟随安全区和状态栏高度，避免被灵动岛遮挡；无安全区时保留原来的顶部间距。 */}
           {suspendedCall && activeApp !== AppID.Call && (
             <button
               onClick={resumeCall}
-              className="absolute top-7 left-0 w-full z-[55] flex items-center justify-center gap-2 bg-emerald-500 text-white text-xs font-bold py-1.5 animate-pulse cursor-pointer active:bg-emerald-600 transition-colors"
+              className="absolute left-0 w-full z-[55] flex items-center justify-center gap-2 bg-emerald-500 text-white text-xs font-bold py-1.5 animate-pulse cursor-pointer active:bg-emerald-600 transition-colors"
+              style={{ top: 'max(1.75rem, calc(var(--chrome-top, 1.5rem) + 0.25rem))' }}
             >
               <span className="w-2 h-2 rounded-full bg-white animate-ping" />
               <span>通话中 · {suspendedCall.charName}</span>
@@ -1085,6 +1110,7 @@ const PhoneShell: React.FC = () => {
 
           {/* Overlays: Global Mini Player (when music is playing in background) */}
           <GlobalMiniPlayer />
+          {!isLocked && <SARModuleMonitor />}
 
           {/* 朋友圈本地调度器：App 未打开时也按设置检查并补发角色动态。 */}
           <MomentsScheduler />
@@ -1117,40 +1143,12 @@ const PhoneShell: React.FC = () => {
        />
 
        {/* First-time disclaimer popup */}
-       {showDisclaimer && <DisclaimerPopup onAccept={handleAcceptDisclaimer} />}
-
-       {/* Interrupted import recovery reminder */}
-       {!showDisclaimer && showImportRecoveryPrompt && (
-         <ImportRecoveryPopup
-           marker={importRecoveryMarker}
-           onLater={() => {
-             setImportRecoveryDismissed(true);
-             setImportRecoveryMarker(null);
-             trackEvent('点稍后再说放着不管', { kind: importRecoveryMarker?.error ? '失败' : '中断' });
-             trackEvent('导入恢复提醒选稍后再说', { 中断阶段: getImportPhaseLabel(importRecoveryMarker?.phase) });
-           }}
-           onReimport={handleReimportFromRecovery}
-         />
+       {!anniversaryBlocked && !isLocked && showAnniversaryGift && (
+         <AnniversaryGiftPopup onClose={() => {
+           markAnniversaryGiftSeen();
+           setShowAnniversaryGift(false);
+         }} />
        )}
-
-       {/* 见面 · 剧情首映：解锁后一次性出现 */}
-       {!showDisclaimer && !showImportRecoveryPrompt && !showAuthorLetter && showUpdateNotification && (
-         <UpdateNotificationController onClose={() => setShowUpdateNotification(false)} />
-       )}
-
-       {/* 七夕特别活动推送（北京时间 2026-08-19，当天至多出现一次） */}
-       {!showDisclaimer && !showImportRecoveryPrompt && !showAuthorLetter && !showUpdateNotification && showQixiLaunchPopup && (
-         <QixiLaunchPopup onClose={() => setShowQixiLaunchPopup(false)} />
-       )}
-
-       {/* 520 特别活动弹窗（2026-05-20 当天，一次性） */}
-       {!showDisclaimer && !showImportRecoveryPrompt && !showAuthorLetter && !showUpdateNotification && !showQixiLaunchPopup && showLike520Popup && (
-         <Like520Controller
-           onClose={() => setShowLike520Popup(false)}
-         />
-       )}
-
-       {/* Instant Push 下线通知（仅现在开着它的用户，每天最多一次） */}
        {!showDisclaimer && !showImportRecoveryPrompt && !showAuthorLetter && !showUpdateNotification && !showQixiLaunchPopup && !showLike520Popup && showInstantPushSunset && (
          <InstantPushSunsetController
            onClose={() => setShowInstantPushSunset(false)}
@@ -1165,7 +1163,50 @@ const PhoneShell: React.FC = () => {
        )}
 
        {/* 「该备份啦」提醒（local-first 数据只在本机，隔 N 天没导出弹一次） */}
-       {!showDisclaimer && !showImportRecoveryPrompt && !showAuthorLetter && !showUpdateNotification && !showQixiLaunchPopup && !showLike520Popup && !showInstantPushSunset && !showWorkerUpdateReminder && showBackupReminder && (
+       {showDisclaimer && <DisclaimerPopup onAccept={handleAcceptDisclaimer} />}
+
+       {/* Interrupted import recovery reminder */}
+       {!showDisclaimer && showImportRecoveryPrompt && (
+         <ImportRecoveryPopup
+           marker={importRecoveryMarker}
+           onLater={() => {
+             setImportRecoveryDismissed(true);
+             setImportRecoveryMarker(null);
+             
+             
+           }}
+           onReimport={handleReimportFromRecovery}
+         />
+       )}
+
+       {/* 见面 · 剧情首映：解锁后一次性出现 */}
+       {!anniversaryHasPriority && !showDisclaimer && !showImportRecoveryPrompt && !showAuthorLetter && showUpdateNotification && (
+         <UpdateNotificationController onClose={() => setShowUpdateNotification(false)} />
+       )}
+
+       {/* 七夕特别活动推送（北京时间 2026-08-19，当天至多出现一次） */}
+       {!anniversaryHasPriority && !showDisclaimer && !showImportRecoveryPrompt && !showAuthorLetter && !showUpdateNotification && showQixiLaunchPopup && (
+         <QixiLaunchPopup onClose={() => setShowQixiLaunchPopup(false)} />
+       )}
+
+       {/* 520 特别活动弹窗（2026-05-20 当天，一次性） */}
+       {!anniversaryHasPriority && !showDisclaimer && !showImportRecoveryPrompt && !showAuthorLetter && !showUpdateNotification && !showQixiLaunchPopup && showLike520Popup && (
+         <Like520Controller
+           onClose={() => setShowLike520Popup(false)}
+         />
+       )}
+
+       <FeedbackInvitation
+         ready={isDataLoaded && !isLocked && (bootDone || !bootAnimationEnabled)}
+         blocked={activeApp !== AppID.Launcher || !!suspendedCall || !!errorDialog || sysOperation.status !== 'idle' || anniversaryHasPriority || showDisclaimer || showImportRecoveryPrompt || showAuthorLetter || showUpdateNotification || shouldShowUpdateNotification() || showQixiLaunchPopup || showLike520Popup || showBackupReminder}
+       />
+
+       <BeautyRepoInvitation
+         ready={isDataLoaded && !isLocked && (bootDone || !bootAnimationEnabled)}
+         blocked={activeApp !== AppID.Launcher || !!suspendedCall || !!errorDialog || sysOperation.status !== 'idle' || anniversaryHasPriority || showDisclaimer || showImportRecoveryPrompt || showAuthorLetter || showUpdateNotification || shouldShowUpdateNotification() || showQixiLaunchPopup || showLike520Popup || showBackupReminder}
+       />
+       {/* 「该备份啦」提醒（local-first 数据只在本机，隔 N 天没导出弹一次） */}
+       {!anniversaryHasPriority && !showDisclaimer && !showImportRecoveryPrompt && !showAuthorLetter && !showUpdateNotification && !showQixiLaunchPopup && !showLike520Popup && showBackupReminder && (
          <BackupReminderController
            onDismiss={dismissBackupReminder}
            onGoBackup={goBackupFromReminder}

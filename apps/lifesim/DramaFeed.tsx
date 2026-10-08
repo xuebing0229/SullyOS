@@ -9,7 +9,7 @@ import {
 } from '@phosphor-icons/react';
 import StoryAttachments from './StoryAttachments';
 import { formatLifeSimActionDescription } from '../../utils/lifeSimTone';
-import { trackEvent } from '../../utils/analytics';
+
 import { isImageValue } from '../../utils/blobRef';
 import TokenImg from '../../components/os/TokenImg';
 
@@ -362,7 +362,7 @@ const DramaFeed: React.FC<{ gameState: LifeSimState }> = ({ gameState }) => {
                         return (
                             <button
                                 key={item.value}
-                                onClick={() => { setFilter(item.value); trackEvent('筛选动态流', { filter: item.value }); }}
+                                onClick={() => { setFilter(item.value);  }}
                                 className="retro-btn"
                                 style={{
                                     padding: '3px 10px',

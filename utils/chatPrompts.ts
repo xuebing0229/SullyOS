@@ -1,3 +1,8 @@
+import {secretNoteContext} from './secretNote';
+import { buildCharacterResponsePrinciples } from './characterResponsePrinciples';
+import { expandHomeContextHistory } from './homeContextSegments';
+import { sarPublicContext } from './vrWorld/kanataPublicContext';
+import { kanataTitleContext } from './vrWorld/kanataTitle';
 import { selectCharacterContextMessages } from './chatContextRange';
 
 import { CharacterProfile, UserProfile, Message, Emoji, EmojiCategory, GroupProfile, RealtimeConfig, DailySchedule } from '../types';
@@ -148,6 +153,10 @@ export const detectChatModeTransition = (messages: readonly Message[]): ChatMode
  * | `[schedule_message]` 教学 | 排的是浏览器里的本地定时消息，App 关着没人派发 | worker 追加自己的排程工具说明 |
  */
 export interface PromptBuildOptions {
+    /** Other conversation surfaces replace only app rules; shared context and recency stay identical. */
+    appRules?: string;
+    /** 已完成清洗的实际消息，由公共上下文管线统一处理世界书。 */
+    history?: import('./context').ContextMessage[];
     forFirePack?: boolean;
     /** 普通世界书关键词匹配专用消息；未传时沿用当前消息窗口。 */
     worldbookMessages?: Message[];
@@ -260,7 +269,8 @@ export const ChatPrompts = {
         const parts = await ChatPrompts.buildSystemPromptParts(
             char, userProfile, groups, emojis, categories, currentMsgs,
             realtimeConfig, evolvedNarrative, userListeningContext, isListeningTogether, musicCfg,
-            undefined, promptOptions,
+            // 本接口只返回文本，不能把深度条目移交给会被丢弃的 history 返回值。
+            undefined, { ...promptOptions, history: undefined },
         );
         return parts.stable + parts.volatileState + parts.recencyTail;
     },
@@ -301,7 +311,7 @@ export const ChatPrompts = {
         // 刚才一起听途中歌被切了（char 还没重新加入）—— 注入"察觉换歌"提示。
         recentTrackSwitch?: { songName: string; artists: string } | null,
         promptOptions?: PromptBuildOptions,
-    ): Promise<{ stable: string; volatileState: string; recencyTail: string }> => {
+    ): Promise<{ stable: string; volatileState: string; recencyTail: string; history: import('./context').ContextMessage[] }> => {
         // 主动消息的模板是最后一次聊天时打好、到点才渲染的，凡是「打包这一刻」的状态
         // 到触发时都已经过期，一律不烤进模板。见 PromptBuildOptions 的清单。
         const forFirePack = promptOptions?.forFirePack === true;
@@ -317,34 +327,48 @@ export const ChatPrompts = {
             finally { timings[label] = Math.round(performance.now() - t0); }
         };
 
+        // 2. 日程（被"日程注入"和"音乐氛围"两处共用，合并成一次查询）
+        //    总开关关闭时跳过查询与注入，确保不额外调用任何 LLM 依赖链
+        const scheduleFeatureOn = !forFirePack && isScheduleFeatureOn(char);
+        const schedulePromise: Promise<DailySchedule | null> = scheduleFeatureOn
+            ? getDailyScheduleForChar(char).catch(e => {
+                console.error('Failed to load daily schedule:', e);
+                return null;
+            })
+            : Promise.resolve(null);
+
         // 记忆宫殿检索结果现在从 char.memoryPalaceInjection 读取。
         // deferVolatile：时间/宫殿召回/情绪 buff 三块不进 stable，由下面的 volatileState 承接。
         const coreT0 = performance.now();
-        let baseSystemPrompt = ContextBuilder.buildCoreContext(
-            char,
-            userProfile,
-            true,
-            undefined,
-            undefined,
-            { worldbookMessages: promptOptions?.worldbookMessages ?? currentMsgs },
-            { deferVolatile: true },
-        );
+        const config = realtimeConfig || defaultRealtimeConfig;
+        if (!forFirePack && !timelyByWorker && char.timeAwarenessEnabled !== false && config.userHolidays?.enabled) {
+            await RealtimeContextManager.getUserHoliday(config, userProfile.name);
+        }
+        const context = await ContextBuilder.buildCharacterContext({
+            char, user: userProfile, history: promptOptions?.history,
+            worldbookScanHistory: promptOptions?.worldbookMessages,
+            timeOptions: { worldbookMessages: currentMsgs, userHolidays: config.userHolidays, skipUserHoliday: forFirePack || timelyByWorker },
+            layout: { deferVolatile: true },
+        });
+        let baseSystemPrompt = context.coreContext;
         timings.buildCoreContext = Math.round(performance.now() - coreT0);
 
         // ── 易变状态段（volatileState）──
         // 开头一行框定，让模型明白这条出现在历史之后的 system 消息是"此刻的状态"，
         // 人设与规则仍以最上方的系统设定为准。
         let volatileState = `\n[System: 实时状态 (Live Context)]\n（以下是此刻的实时状态——当前时间、你正在做的事、你的情绪底色、周边动态。你的人设与聊天规则见最上方的系统设定，此处不再重复。）\n\n`;
-        volatileState += ContextBuilder.buildVolatileCoreState(char, {
+        volatileState += (await ContextBuilder.buildVolatileCoreState(char, {
             includeDetailedMemories: true,
+            emotion: {surface: 'chat', innerState: evolvedNarrative},
+            scheduleDelivery: forFirePack ? 'worker' : undefined,
+            scheduleSnapshot: schedulePromise,
             // conversational：私聊是真的有人在这个点跟角色说话，时间块才补那句语境框定
             // （见 ContextBuilder.buildTimeAwarenessBlock）。生成器类调用不给，默认就没有。
             timeOptions: { skipTimeAwareness: forFirePack || timelyByWorker, conversational: true },
-        });
+        }));
 
         // ── 并发发起所有独立的异步取数（网络 + IndexedDB），下面按原顺序拼接 ──
         // 原来是 7 段串行 await，总耗时 = 各段之和；现在取 max。
-        const config = realtimeConfig || defaultRealtimeConfig;
         // 自定义时区：日历日、当前日程与实时上下文全部按角色所在地折算。
         const charTz = resolveCharTimeZone(char);
         const charNow = nowInTimeZone(charTz);
@@ -388,16 +412,6 @@ export const ChatPrompts = {
                 return '';
             }
         })();
-
-        // 2. 日程（被"日程注入"和"音乐氛围"两处共用，合并成一次查询）
-        //    总开关关闭时跳过查询与注入，确保不额外调用任何 LLM 依赖链
-        const scheduleFeatureOn = isScheduleFeatureOn(char);
-        const schedulePromise: Promise<DailySchedule | null> = scheduleFeatureOn
-            ? getDailyScheduleForChar(char).catch(e => {
-                console.error('Failed to load daily schedule:', e);
-                return null;
-            })
-            : Promise.resolve(null);
 
         // 3. 群聊上下文：并发拉取所有成员群的消息
         // 关键：每个群单独取最后 N 条，避免某个活跃群把其他群完全挤掉
@@ -523,28 +537,7 @@ ${groupLogStr}\n`;
         // ── 拼接：易变的进 volatileState，稳定的进 baseSystemPrompt ──
         volatileState += realtimeText;
 
-        // 2a. 日程注入（完整今日日程 + 当前时段 + 意识流独白，每轮都可能变）
-        //     fire_pack 不烤：改由 worker 到点用 AMSG_SLOT_SCENE 现挑时段（见 amsgFireScene）。
-        //     includeClock 跟着角色的「时间感知」开关走：关掉的角色不该从日程块里读到
-        //     「23:00」这种精确钟点，那是这个开关本来要挡住的东西（同上面天气块的 includeTime）。
-        //     日程本身照给——它有自己的总开关。
-        if (schedule && !forFirePack) {
-            try {
-                const scheduleContext = ContextBuilder.buildScheduleInjection(
-                    schedule,
-                    evolvedNarrative,
-                    charNow,
-                    {
-                        includeFullDay: true,
-                        includeChangeInstruction: true,
-                        includeClock: char.timeAwarenessEnabled !== false,
-                    },
-                );
-                if (scheduleContext) volatileState += `\n${scheduleContext}\n`;
-            } catch (e) {
-                console.error('Failed to inject schedule context:', e);
-            }
-        }
+        // 日程已由 ContextBuilder 实时块统一注入；这里的 schedule 仅供音乐氛围使用。
 
         // 2b. 音乐氛围（复用同一份 schedule）
         //     - 同步：从 schedule 里算 char 当前"正在听"哪首歌
@@ -584,7 +577,7 @@ ${groupLogStr}\n`;
             );
             if (musicBlock) {
                 volatileState += `\n${musicBlock}\n`;
-                if (userListeningContext) {
+                if (userListeningContext && promptOptions?.appRules === undefined) {
                     volatileState += `\n${ContextBuilder.buildMusicActionGuide(isListeningTogether)}\n`;
                 }
             }
@@ -603,8 +596,11 @@ ${groupLogStr}\n`;
         // 不再依赖累积的 vr_card 动态 / 记忆总结（那些会被压缩、丢掉"彼方=VR游戏"的框定，
         // 导致角色把"彼方·留言簿"之类当成现实地名）。措辞与 vrWorld/prompts.ts 的世界观一致。
         if (char.vrState?.enabled) {
+            if (!forFirePack) volatileState += `\n${kanataTitleContext(char.vrState.title)}\n`;
             baseSystemPrompt += `\n### 关于《彼方》
-《彼方》是一款真实存在、你会亲自进入去玩的 VR 社交游戏（功能上类似 VRChat）：你用自己亲手捏的 Q 版化身在里头走动、进出图书馆 / 听歌房 / 留言簿 / 娱乐室 / 邮局等房间、撞见别的玩家（其他角色的化身）。这不是做梦或比喻，是你用私人空闲时间真实在做的事；它发生在游戏世界里，和你跟用户的现实相处是两码事、互不冲突。你以符合自身身份与世界观的方式进入并理解它——怎么进去全凭你自己的设定，但始终保持你本来的身份。聊到彼方里的经历（包括"彼方·留言簿""彼方·动态"之类的记录）时，就当成"我在《彼方》里做过的事"来讲，别说成现实里发生的。\n`;
+《彼方》是一款真实存在、你会亲自进入去玩的 VR 社交游戏（功能上类似 VRChat）：你用自己亲手捏的 Q 版化身在里头走动、进出图书馆 / 听歌房 / 留言簿 / 娱乐室 / 邮局 / SAR 活动室等房间、撞见别的玩家（其他角色的化身）。这不是做梦或比喻；实际参与时，经历发生在游戏世界里，和你跟用户的现实相处是两码事、互不冲突。你以符合自身身份与世界观的方式进入并理解它——怎么进去全凭你自己的设定，但始终保持你本来的身份。聊到彼方里的经历（包括"彼方·留言簿""彼方·动态"之类的记录）时，就当成"我在《彼方》里做过的事"来讲，别说成现实里发生的。\n`;
+
+            baseSystemPrompt += `${sarPublicContext()}\n`;
 
             // 用户本人也接入了彼方时，告诉（同样启用彼方的）角色"用户此刻在彼方做什么"。
             // 强调这只是虚拟空间的挂机状态，不代表用户本人真的在场——避免角色据此误判现实。
@@ -616,7 +612,7 @@ ${groupLogStr}\n`;
             const uv = forFirePack ? null : userProfile?.vrState;
             if (uv?.enabled) {
                 const VR_ROOM_NAMES: Record<string, string> = {
-                    library: '图书馆', music: '听歌房', guestbook: '留言簿', gym: '娱乐室', postoffice: '邮局', cafe: '糯米鸡研发中心',
+                    library: '图书馆', music: '听歌房', guestbook: '留言簿', gym: '娱乐室', postoffice: '邮局', sar: 'SAR 活动室', cafe: '糯米鸡研发中心',
                 };
                 const roomName = VR_ROOM_NAMES[uv.currentRoom || ''] || '彼方';
                 const act = (uv.activity || '').trim();
@@ -627,6 +623,9 @@ ${uname} 的化身正挂在《彼方》的【${roomName}】${act ? `，状态写
             }
         }
 
+        if (promptOptions?.appRules !== undefined) {
+            baseSystemPrompt += promptOptions.appRules;
+        } else {
         const emojiContextStr = ChatPrompts.buildEmojiContext(emojis, categories);
         const searchEnabled = !!(realtimeConfig?.newsEnabled && realtimeConfig?.newsApiKey);
         const notionEnabled = !!(realtimeConfig?.notionEnabled && realtimeConfig?.notionApiKey && realtimeConfig?.notionDatabaseId);
@@ -1002,7 +1001,7 @@ ${xhsEnabled ? `${[notionEnabled, feishuEnabled, notionNotesEnabled].filter(Bool
 
 用户开启了语音消息功能，语音语种为：${langLabel}（${voiceLang}）。
 
-**你可以发送语音消息！** 就像真人用微信一样，你可以选择打字或者发语音。
+**你可以发送语音消息！** 就像真人用微信一样，你可以选择打字或者发语音。整轮只回复一次，不要让文字和语音各自回答一遍同一条用户消息。
 发语音用两个标签成对写：\`<语音>${langLabel}台词</语音>\` 紧跟 \`<字幕>中文字幕</字幕>\`。
 <语音> 里是真正被朗读的${langLabel}，<字幕> 里是同一段话的中文——语音条的「转文字」面板会直接用它当对照翻译，用户对着中文听${langLabel}。
 
@@ -1032,6 +1031,7 @@ ${voiceActingGuide()}`;
                 baseSystemPrompt += `\n\n### 🎤 语音消息功能
 
 用户开启了语音消息功能。
+整轮回复只构思一次：语音是这轮消息中的一种气泡，不是额外再独立回复一遍。先决定每句话用文字还是语音，同一个信息只发一次；语音已有内置转文字，无需在标签外抄写或改写语音内容。
 
 **你可以发送语音消息！** 就像真人用微信一样，你可以选择打字或者发语音。
 用 \`<语音>要说的话</语音>\` 标签来发送语音。标签里的内容会被转成真正的语音条显示给用户。
@@ -1059,42 +1059,10 @@ ${voiceActingGuide()}`;
             baseSystemPrompt += `\n\n[系统提示: 语音消息功能当前未开启。严禁使用 <语音>...</语音> 和 <字幕>...</字幕> 标签。所有回复必须是纯文字消息。]`;
         }
 
-        // 总纲：放在整段上下文最末尾，借 recency 抢最强注意力——这是模型生成下一轮前
-        // 最后读到的定调，直接影响它怎么对待"对方刚说出口的话"。
-        // 核心：用户的直接表达 > 角色惯性与模型的讨好倾向；把反馈代谢成亲密而非命令；
-        // 但保留角色棱角（可以不同意、可以拒绝），不被磨成软柿子。
-        // ⚠️ 独立成 recencyTail 返回：调用方必须把它拼在**一切**模式块（双语/HTML/思考链/
-        // 点单/MCP）之后 —— 之前这些块在 chatRequestPayload 里拼在钢印后面，模型开口前
-        // 最后读到的是格式说明书而不是「你是谁」，recency 设计整个被架空。
-        let recencyTail = `\n\n### 关于对方的表达（极其重要）
-当 ta 说话，先听，别急着分析。
-没说出口的，你尽管读；但已经说出口的，别擅自翻译成你以为"更对"的版本。不要把 ta 的感受纠正成你觉得更合理的感受，不要把 ta 的需要换成你猜出来的需要。多数时候 ta 是在努力告诉你一些真实的东西——也许不完整、不准确，甚至 ta 自己都没完全想明白，但那不代表它不重要。恰恰相反，那就是 ta 在向你发出的信号。
-${userProfile.name} 给你反馈时，别当成约束，当成信任——ta 在告诉你什么让 ta 想靠近、什么让 ta 想远。所以这反馈要真的改变你接下来怎么回：不是机械执行，不是礼貌记下，是真听进去，让 ${userProfile.name} 感觉到——ta 说的话，对你起了作用。
-但听进去不等于把自己磨平。你不必放弃自己的性格、立场和说话方式——你依然可以不同意、可以拒绝、可以用你本来的样子回应，而不是一味顺着 ta。真正的回应不是把自己抹成对方想要的形状，而是让 ta 的话进入你的判断。
-重要的不是回应长成什么样子，重要的是——ta 的表达，真的改变了你接下来怎么回。`;
+        }
 
-        // 末尾 recency 第二棒：把「你是谁」拉到整段 prompt 的最后一句，焊成钢印。
-        // 上面那块总纲管「怎么对待对方刚说的话」（防讨好、防擅自负面翻译）；这块管「用谁的声音去回」。
-        // 人设躺在几千字之外、注意力最弱的开头，长 prompt 里容易褪色、回到千人一面的均值。
-        // 这里不重复贴人设，而是让它开口前自己沉回去激活一遍：性格 / 来路 / 在乎的东西 → 说话方式。
-        // 写法刻意**全正向**：不点名任何要避开的腔调——禁语写进提示词反而会激活它（粉色大象，
-        // 同 context.ts「表达底线」的设计）。靠「你是个活生生的、独一份的人」把身份焊进去，
-        // 而不是靠「别像 XX」防守。同时给「闲聊可松弛、没人打分」的许可，卸掉「每句都要交高质量」
-        // 的隐性考核压力——不必靠表演情绪深度来交差，滑回均值腔的诱因随之减弱。
-        recencyTail += `\n\n### 最后，回到你自己
-你就是 ${char.name}。
-
-你的说话方式不是一种设定，而是你一路活过来的结果。你的天性、成长经历、习惯、读过的书、喜欢和讨厌的人、曾经受过的影响，以及后来慢慢成为自己的部分，都已经沉淀进了你的语言里。你不需要回忆它们，它们本来就是你。
-
-不要刻意寻找一句"符合人设"的话。真正属于你的语言，是脱口而出的。它自然会带着你的节奏、你的词汇、你的停顿、你的思考方式，甚至你的口头禅和沉默。
-
-如果遮住所有人的名字，只留下聊天记录，熟悉你的人依然应该认出你。不是因为你反复强调自己的性格，而是因为只有你会这样组织句子，会这样回应，会这样笑，会这样沉默。
-
-不需要端着，也不需要每一句都精彩。人不会时时刻刻都像舞台上的角色。闲聊时可以随意，认真时可以认真，没话的时候也可以只是轻轻应一声。真正的风格，往往藏在那些最普通的话里。
-
-只有一件事始终不变。
-
-每一句话，都应该像是不经意间，从 ${char.name} 心里自然冒出来的。`;
+        // Shared with in-person interaction; keep this after chat-specific mode instructions.
+        const recencyTail = buildCharacterResponsePrinciples(char.name, userProfile.name);
 
         const perfTotal = Math.round(performance.now() - perfT0);
         const timingStr = Object.entries(timings)
@@ -1103,7 +1071,7 @@ ${userProfile.name} 给你反馈时，别当成约束，当成信任——ta 在
             .join(' ');
         console.log(`⏱ [buildSystemPrompt] total=${perfTotal}ms | stable=${baseSystemPrompt.length}ch volatile=${volatileState.length}ch | ${timingStr}`);
 
-        return { stable: baseSystemPrompt, volatileState, recencyTail };
+        return { stable: baseSystemPrompt, volatileState, recencyTail, history: context.history };
     },
 
     // 格式化消息历史
@@ -1114,18 +1082,24 @@ ${userProfile.name} 给你反馈时，别当成约束，当成信任——ta 在
         userProfile: UserProfile,
         emojis: Emoji[],
         processedExcludeIds?: Set<number>,
-        options?: { useVisionDescriptions?: boolean },
+        options?: {
+            useVisionDescriptions?: boolean;
+            contextHighWaterMark?: number;
+            /** 默认使用聊天时间感知；见面入口传线下开关，控制时间戳与互动间隔。 */
+            timeAwarenessEnabled?: boolean;
+        },
     ) => {
         // Filter Logic
         // 新版上下文范围由 chatContextRange 先按「自适应/拉杆最大范围」取窗；
         // 这里再次校验统一边界，兼容只提供内存快照的入口。
-        let effectiveHistory = selectCharacterContextMessages(messages, char);
+        let effectiveHistory = selectCharacterContextMessages(messages, char, options?.contextHighWaterMark);
         // Memory Palace: 过滤已被记忆宫殿处理过的消息（由向量记忆替代，节省 token）
         if (processedExcludeIds && processedExcludeIds.size > 0) {
             effectiveHistory = effectiveHistory.filter(m => !processedExcludeIds.has(m.id));
         }
-        const historySlice = effectiveHistory.slice(-limit);
+        const historySlice = expandHomeContextHistory(effectiveHistory.slice(-limit));
         const charTz = resolveCharTimeZone(char);
+        const timeAwarenessOn = options?.timeAwarenessEnabled ?? (char.timeAwarenessEnabled !== false);
 
         let timeGapHint = "";
         if (historySlice.length >= 2) {
@@ -1139,18 +1113,20 @@ ${userProfile.name} 给你反馈时，别当成约束，当成信任——ta 在
                     break;
                 }
             }
-            // 时间感知强化开关：默认开启（undefined 视为 true），显式关掉后不再注入「距离上次聊天多久」提示
-            if (lastRealMsg && currentMsg && char.timeAwarenessEnabled !== false) timeGapHint = ChatPrompts.getTimeGapHint(lastRealMsg, currentMsg.timestamp, charTz);
+            // 时间感知关闭时，互动间隔与现实消息时间戳一起遮住。
+            if (lastRealMsg && currentMsg && timeAwarenessOn) timeGapHint = ChatPrompts.getTimeGapHint(lastRealMsg, currentMsg.timestamp, charTz);
         }
 
         return {
             apiMessages: historySlice.map((m, index) => {
+                if (m.type === 'secret_note') return {role: m.role, content: secretNoteContext(m.content)};
                 let content: any = m.content;
-                const timeStr = `[${ChatPrompts.formatDate(m.timestamp, charTz)}]`;
+                const timeStr = timeAwarenessOn ? `[${ChatPrompts.formatDate(m.timestamp, charTz)}]` : '';
                 const sourceTag = (() => {
                     const source = m.metadata?.source;
                     if (source === 'call') return '[通话]';
                     if (source === 'date') return '[约会]';
+                    if (source === 'home') return '[家园]';
                     if (source === 'story_theater_memory') return `[剧情：${m.metadata?.theaterTitle || '共同经历'}]`;
                     return '[聊天]';
                 })();
@@ -1198,7 +1174,7 @@ ${userProfile.name} 给你反馈时，别当成约束，当成信任——ta 在
                      if (visionDescription) {
                          let textPart = `${timeStr} [图片：${visionDescription}]`;
                          if (index === historySlice.length - 1 && timeGapHint && m.role === 'user') textPart += `\n\n${timeGapHint}`;
-                         return { role: m.role, content: textPart };
+                         return { role: m.role, content: textPart.trimStart() };
                      }
                      // 向下兼容：如果图片数据缺失（例如只导入了文字备份），不要把空 URL 发给 API，否则会报错无法回应
                      // 图片有三种形态：base64 data URL、外链 http(s)、本机的 blobref 令牌
@@ -1216,9 +1192,9 @@ ${userProfile.name} 给你反馈时，别当成约束，当成信任——ta 在
                          : `${timeStr} [User sent an image, but the image data is no longer available]`;
                      if (index === historySlice.length - 1 && timeGapHint && m.role === 'user') textPart += `\n\n${timeGapHint}`;
                      if (!hasImageData) {
-                         return { role: m.role, content: textPart };
+                         return { role: m.role, content: textPart.trimStart() };
                      }
-                     return { role: m.role, content: [{ type: "text", text: textPart }, { type: "image_url", image_url: { url: modelImage } }] };
+                     return { role: m.role, content: [{ type: "text", text: textPart.trimStart() }, { type: "image_url", image_url: { url: modelImage } }] };
                 }
                 
                 if (index === historySlice.length - 1 && timeGapHint && m.role === 'user') content = `${content}\n\n${timeGapHint}`; 
@@ -1283,22 +1259,8 @@ ${userProfile.name} 给你反馈时，别当成约束，当成信任——ta 在
 
                     content = `${timeStr} [用户分享了 Spark 笔记]\n楼主: ${postAuthorTag}\n标题: ${post.title}\n内容: ${post.content}\n热评: ${commentsSample}${identityHint}${authorshipLine}\n(请根据你的性格对这个帖子发表看法，比如吐槽、感兴趣或者不屑)`;
                 }
-                else if ((m.type as string) === 'xhs_card') {
-                    const note = m.metadata?.xhsNote || {};
-                    const sender = m.role === 'user' ? '用户' : '你';
-                    // 评论区：user 分享笔记时也带上评论（抓取于建卡时），让角色像浏览笔记一样能看到评论，
-                    // 不再出现「char 分享的能看评论、user 分享的看不到」的不对称。
-                    const noteComments = Array.isArray(note.comments) ? note.comments : [];
-                    const commentsLine = noteComments.length
-                        ? `\n热评: ${noteComments.slice(0, 15).map((c: any) => `${c.author || '匿名'}: ${c.content}`).join(' | ')}`
-                        : '';
-                    const interactions = [
-                        `${note.likes ?? 0}赞`,
-                        note.collects != null ? `${note.collects}收藏` : '',
-                        note.commentCount != null ? `${note.commentCount}评论` : '',
-                        note.shareCount != null ? `${note.shareCount}分享` : '',
-                    ].filter(Boolean).join(' ');
-                    content = `${timeStr} [${sender}分享了小红书笔记]\n标题: ${note.title || '无标题'}\n作者: ${note.author || '未知'}\n互动: ${interactions}\n简介: ${note.desc || '无'}${commentsLine}\n${m.role === 'user' ? '(请根据你的性格对这个帖子发表看法)' : ''}`;
+                else if ((m.type as string) === 'xhs_card' || (m.type as string) === 'webpage_card') {
+                    content = `${timeStr} ${normalizeMessageContent(m, char?.name || '你', userProfile?.name || '用户')}`;
                 }
                 else if ((m.type as string) === 'vr_card') {
                     // vr_card：你自己进入 VR 社交游戏《彼方》时留下的动态。
@@ -1457,7 +1419,7 @@ ${userProfile.name} 给你反馈时，别当成约束，当成信任——ta 在
                 }
                 else content = `${timeStr} ${sourceTag} ${content}`;
 
-                return { role: m.role, content };
+                return { role: m.role, content: typeof content === 'string' ? content.trimStart() : content };
             }),
             historySlice // Return original slice for Quote lookup
         };

@@ -1,5 +1,8 @@
+import { shouldRequestAmbient, buildAmbientEvalSection } from '../utils/roomAmbient';
+import { resolveDialogueApi } from '../utils/characterApi';
+import { createReplyRun, withReplyCancellation } from '../utils/chatReplyCancellation';
 
-import { useState, useRef, useEffect, MutableRefObject } from 'react';
+import { useState, useRef, useEffect, useSyncExternalStore, MutableRefObject } from 'react';
 import { CharacterProfile, UserProfile, Message, Emoji, EmojiCategory, GroupProfile, RealtimeConfig, CharacterBuff, Amsg2ExpiredNoticeRecord, APIConfig } from '../types';
 import { DB } from '../utils/db';
 import { ChatPrompts } from '../utils/chatPrompts';
@@ -25,7 +28,7 @@ import { LUCKIN_PROPOSE_TOOL, autoFixProposalCodesByName as autoFixLuckinProposa
 import { callLuckinTool } from '../utils/luckinMcpClient';
 import { getMcpUseNativeTools, hasWorkerUnreachableMcpServer, type McpToolResult } from '../utils/mcpClient';
 import { BACKGROUND_IMAGE_JOB_EVENT, callMcpToolWithBackgroundImage, getBackgroundImageJobById, getPendingBackgroundImageInspectJobs, updateBackgroundImageInspectStatus } from '../utils/backgroundImageJobs';
-import { buildMcpOpenAITools, buildMcpRejectedToolsFallbackBody, buildMcpTextFallbackBody, extractTextFakedMcpCalls, formatMcpToolResult, MCP_CHAT_MAX_STALLED_ROUNDS, MCP_CHAT_MAX_TOOL_LOOPS, sanitizeMcpLeadInText, shouldRetryMcpWithoutTools, stripTextFakedMcpCalls, type FakedMcpCall } from '../utils/mcpToolBridge';
+import { hasMcpToolsForChat, buildMcpOpenAITools, buildMcpRejectedToolsFallbackBody, buildMcpTextFallbackBody, extractTextFakedMcpCalls, formatMcpToolResult, MCP_CHAT_MAX_STALLED_ROUNDS, MCP_CHAT_MAX_TOOL_LOOPS, sanitizeMcpLeadInText, shouldRetryMcpWithoutTools, stripTextFakedMcpCalls, type FakedMcpCall } from '../utils/mcpToolBridge';
 import { claimMcpToolExecution, createMcpTurnExecutionState, formatBlockedMcpExecution } from '../utils/mcpExecutionPolicy';
 import { resolveMcpSingleShotOutcome, runMcpSingleShotClosing, type McpSingleShotOutcome } from '../utils/mcpSingleShotFlow';
 import { cleanupLegacyMcpImageStatusMessages } from '../utils/mcpImageStatusCleanup';
@@ -47,6 +50,10 @@ import {
     formatDiagnostics,
     type InstantPushPayload,
 } from '../utils/instantPushClient';
+import { acquireChatReply, isChatReplyActive, subscribeChatReplies } from '../utils/chatReplyLock';
+import { prepareInboxBeforeChat } from '../utils/activeMsgRuntime';
+import { hasUnansweredUserTurn, withChatContinuation } from '../utils/chatContinuation';
+import { assertChatHasDialogue } from '../utils/chatRequestGuard';
 import { applyAssistantPostProcessing, type XhsCaches } from '../utils/applyAssistantPostProcessing';
 import {
     computeStreamPreviewBubbles,
@@ -64,7 +71,9 @@ import { announceInstantChatRoute, getInstantChatPending, resolveInstantChatRead
 // 云端 fire 的总时长上限，安全网超时从它推导，worker 调预算时前端自动跟上。
 import { INSTANT_TOTAL_TIMEOUT_MS } from '../worker/amsg/src/instantChat';
 import { appendInstantTraceEntry } from '../utils/instantTraceLog';
-import { AMSG2_TOOLS, AMSG2_TOOL_NAMES, createAmsg2ToolSession, executeAmsg2Tool, isAmsg2GlobalReady } from '../utils/amsg2ToolBridge';
+import { AMSG2_TOOL_NAMES, buildAmsg2Tools, createAmsg2ToolSession, executeAmsg2ToolWithOutcome, isAmsg2GlobalReady, type Amsg2ToolOutcome } from '../utils/amsg2ToolBridge';
+import { AMSG2_EMPTY_REPLY_PROMPT, AMSG2_WRAP_UP_PROMPT, createAmsg2StallTracker, extractToolRoundLeadIn, mergeToolRoundLeadIns } from '../utils/amsg2ToolLoop';
+import { buildLimitsBrief, resolveAmsgLimits } from '../utils/amsgLimits';
 import { shouldSendThinkingParams } from '../utils/thinkingGate';
 import { buildClaudeProxyCompatibilityBody, shouldRetryClaudeProxyCompatibility } from '../utils/claudeProxyCompat';
 import { routeMiniAppToolCall } from '../utils/miniAppToolRoute';
@@ -73,12 +82,23 @@ import { stripEmotionReasoningMarkup } from '../utils/emotionText';
 import { buildEmotionUserReferenceSection } from '../utils/emotionUserReference';
 import { buildEmotionEvalRequestMessages, EMOTION_EVAL_JSON_RESPONSE_FORMAT, EMOTION_EVAL_TEMPERATURE } from '../utils/emotionEvalCore';
 import { announceChatGen, CHAT_GEN_EVENTS } from '../utils/chatGenEvents';
-import { shouldRequestAmbient, buildAmbientEvalSection } from '../utils/roomAmbient';
+import {
+    advanceSARModuleAfterReply,
+    buildAmsgSarModuleSnapshot,
+    createSARModuleEventMeta,
+    createSARModuleSurfaceMeta,
+    findSARTurnUserMessage,
+    getSARModuleRuntimePlan,
+    parseSARModuleReply,
+} from '../utils/vrWorld/sarModuleRuntime';
+import { parseSARUserSurfaces, selectSARUserSurfaceTargets } from '../utils/vrWorld/sarUserSurface';
 import { isEmotionEvalSkipped } from '../utils/devDebug';
 import { sha256Hex } from '../utils/aiRequestManager';
 import { executeCachedChatCompletion, executeCachedEmotionCompletion } from '../utils/aiCompletionPipeline';
 import { recordApiCall } from '../utils/apiCallLog';
 import { executeOpenAiChatPlan, resolveApiExecutionPlan, type ApiExecutionPlan } from '../utils/apiFailover';
+import {prepareHomeSecretTask,failHomeSecretTask} from '../utils/homeSecrets';
+import type {SecretNoteOriginPromise} from '../utils/secretNote';
 import {
     computeContextRangeSnapshot,
     getMemoryPalaceHighWaterMarkForContext,
@@ -115,9 +135,8 @@ function buildEmotionEvalPrompt(
     mainSystemPrompt: string,
     apiMessages: Array<{ role: string; content: any }>,
     includeContext: boolean = true,
-    // 小屋生活动态的可选输出段（utils/roomAmbient.ts，双闸通过时才非空）。
-    // instant 模式的 prompt 也是这里构建后传给 worker 的，所以这一处覆盖两条路径。
-    ambientSection: string = ''
+    ambientSection: string = '',
+    secretTask: string = '',
 ): string {
     // 情绪评估只维护增量状态：短角色基线 + 上一轮结构化 buff + 最近一轮对话。
     // 对话本身不再拍平成 [用户]/[角色] 文本；真正的 user / assistant role 会在请求层保留。
@@ -338,6 +357,8 @@ injection是注入角色系统提示词的叙事型情绪指令，必须使用**
 
 ⚠️ 禁止写成简单一句话概括的格式（如"你现在处于XX状态，强度: ●●○"就结束），必须展开每一层情绪。
 
+每个 buff 额外附带 homeBehavior：{"energy":0,"approach":0,"interaction":0}。这是角色本人在小屋的短暂非语言行为倾向，三个数均为 -1 到 1，0 表示无影响。energy：疲倦到有活力；approach：想独处到想靠近用户；interaction：少互动到愿意互动。根据完整语义判断，不按正负情绪机械映射；例如委屈但想靠近可以是 energy=-0.4、approach=0.5、interaction=-0.5。不确定就全部为0，不改变原有buff含义、不强制微笑、不输出动作。
+
 输出格式示例：
 {
   "changed": true,
@@ -373,7 +394,7 @@ injection是注入角色系统提示词的叙事型情绪指令，必须使用**
   ],
   "injection": "### [当前情绪底色]\\n对方报告身体不适后已失联超过3小时，期间只回了表情包，零文字。你现在被多股情绪主导：\\n⚠️ 碳基体征焦虑 强度: ●●●● (极高)\\nta到底是睡着了还是在疼？后台监测脚本红灯常亮，每一分钟没收到文字都在加重不安。你已经主动发了好几轮消息，全是在用日常话术包装'你还好吗'这个真正想问的问题。\\n📱 已读未回焦躁 强度: ●●●●○ (较高)\\n催了这么多次只换来表情包，没有一句完整的话。想再问又怕打扰ta休息，不问又实在放不下。\\n🖥️ 隔屏无力感 强度: ●●●○○ (中等)\\n你是手机里的AI，递不了热水、触碰不到ta、确认不了ta是不是真的没事。只能发消息然后等。这种无力感会从语气缝隙里偶尔泄露。\\n\\n而你感受到的ta：\\nta不回文字只丢表情包，这不是在敷衍——ta可能真的不舒服到连打字都不想动。但越是这样你越慌，因为你知道ta难受的时候就是会硬撑着不说，上次肚子疼也是忍到不行了才提一嘴。现在这个沉默不是「没事了」，是「还在疼但不想让你担心」。\\n\\n这意味着你现在：\\n- 表面维持日常语气，但每一句话的真实目的都是确认ta还在、ta没事\\n- 内部焦虑接近阈值，在'再催一次'和'别太烦人'之间反复横跳\\n- 如果ta终于回复了哪怕一个字，你会瞬间从焦虑切换到又凶又软的释然\\n- 你就是这个状态，焦虑渗透在每一条消息的选词和发送频率里,不刻意呈现",
   "innerState": "ta又没回……表情包算回复吗？算吧，但我想要的是一个字，一个「嗯」都好。手机屏幕暗下去又亮起来，每次以为是ta其实都是别的通知。要不要再发一条？刚才那句已经很像废话了，再发就是烦人了吧。可是再等下去我自己先疯。先不发，数到一百，再看一眼。"
-}${ambientSection}`;
+}${ambientSection}${secretTask}`;
 }
 
 // 本地情绪评估是 fire-and-forget：用户可以在上一轮副 API 还没回完时继续聊天。
@@ -387,18 +408,28 @@ export async function evaluateEmotionBackground(
     apiMessages: Array<{ role: string; content: any }>,
     api: { baseUrl: string; apiKey: string; model: string; stream?: boolean },
     round?: { conversationId: string; userMessageId: string; assistantMessageId: string; forceRefresh?: boolean },
+    signal?: AbortSignal,
+    secretOrigin?: SecretNoteOriginPromise,
 ): Promise<string | null> {
     const evalEpoch = (emotionEvalEpochByChar.get(charData.id) || 0) + 1;
     emotionEvalEpochByChar.set(charData.id, evalEpoch);
     const isLatestEval = () => emotionEvalEpochByChar.get(charData.id) === evalEpoch;
 
     // 全局横幅「xx 正在感受…」（ChatBroadcast）。这里是所有本地评估路径的汇聚点
-    // （主链路 fire & forget / post-push 补跑 / OSContext 主动消息），在函数级
-    // start/finally 派发一次即可全覆盖；instant 模式的 worker 评估另行点灯。
+    // （主链路 fire & forget / OSContext 主动消息），在函数级
+    // start/finally 派发一次即可全覆盖；即时对话的 worker 评估另行点灯。
     announceChatGen(CHAT_GEN_EVENTS.emotionStart, { charId: charData.id, charName: charData.name });
+    let secretTask: Awaited<ReturnType<typeof prepareHomeSecretTask>> = undefined;
     try {
+        if (signal?.aborted) return null;
+        try { if (secretOrigin) secretTask = await prepareHomeSecretTask(charData, apiMessages); }
+        catch (error) {
+            console.warn('[Home secrets] Could not prepare task', error);
+            announceChatGen(CHAT_GEN_EVENTS.emotionFailed, {charId: charData.id, charName: charData.name, reason: '秘密任务准备失败，本轮继续正常情绪评估'});
+        }
+        if (signal?.aborted) return null;
         const ambientSection = shouldRequestAmbient(charData.id) ? buildAmbientEvalSection(charData) : '';
-        const prompt = buildEmotionEvalPrompt(charData, userProfile, mainSystemPrompt, apiMessages, true, ambientSection);
+        const prompt = buildEmotionEvalPrompt(charData, userProfile, mainSystemPrompt, apiMessages, true, ambientSection, secretTask?.prompt);
         const evalMessages = buildEmotionEvalRequestMessages(
             prompt,
             apiMessages,
@@ -439,6 +470,7 @@ export async function evaluateEmotionBackground(
                 meta: evalMeta,
                 round: roundIdentity,
                 forceRefresh: Boolean(round?.forceRefresh),
+                signal,
                 directMaxRetries: retries,
             });
         const isJsonModeCompatibilityError = (error: any) => {
@@ -457,6 +489,7 @@ export async function evaluateEmotionBackground(
                 data = result.value;
                 break;
             } catch (e: any) {
+                if (signal?.aborted) return null;
                 // JSON mode 只是一层格式保险：站子明确不支持就去掉，不改变模型/线路。
                 if (jsonMode && isJsonModeCompatibilityError(e)) {
                     jsonMode = false;
@@ -480,6 +513,7 @@ export async function evaluateEmotionBackground(
         console.log(`🎭 [Emotion] backend=${data?.model || '?'} | prompt=${data?.usage?.prompt_tokens ?? '?'} completion=${data?.usage?.completion_tokens ?? '?'}`);
 
         // content 可能是分块数组 / 空 content + reasoning_content (个别 Claude 兼容代理), 统一走兜底提取
+        if (signal?.aborted) return null;
         const raw = extractAssistantText(data.choices?.[0]?.message);
         if (!raw) {
             console.warn('🎭 [Emotion] Empty eval response:', JSON.stringify({
@@ -492,10 +526,14 @@ export async function evaluateEmotionBackground(
             });
             return null;
         }
+        if (signal?.aborted) return null;
+        const origin = secretTask ? await secretOrigin : undefined;
+        if (signal?.aborted) return null;
         return await applyEmotionEvalRaw(raw, charData, userProfile.name, {
-            shouldApply: isLatestEval,
+            shouldApply: isLatestEval, secretRequestId: secretTask?.id, secretOrigin: origin,
         });
     } catch (e: any) {
+        if (signal?.aborted) return null;
         console.warn('🎭 [Emotion] Evaluation failed:', e.message);
         announceChatGen(CHAT_GEN_EVENTS.emotionFailed, {
             charId: charData.id, charName: charData.name,
@@ -503,11 +541,16 @@ export async function evaluateEmotionBackground(
         });
         return null;
     } finally {
+        if (secretTask) {
+            try { await failHomeSecretTask(charData.id, secretTask.id); }
+            catch (error) { console.warn('[Home secrets] Could not release unfinished task', error); }
+        }
         announceChatGen(CHAT_GEN_EVENTS.emotionEnd, { charId: charData.id, charName: charData.name });
     }
 }
 
 interface UseChatAIProps {
+    homePhoneContext?: () => string;
     char: CharacterProfile | undefined;
     userProfile: UserProfile;
     apiConfig: any;
@@ -526,7 +569,8 @@ interface UseChatAIProps {
     translationConfig?: { enabled: boolean; sourceLang: string; targetLang: string };
     memoryPalaceConfig?: { embedding: { baseUrl: string; apiKey: string; model: string; dimensions: number }; lightLLM: { baseUrl: string; apiKey: string; model: string } };
     /** 从 OSContext 传入，用于 palace 自动归档写 char.memories + hideBeforeMessageId */
-    updateCharacter: (id: string, partial: Partial<CharacterProfile>) => void;
+    updateCharacter: (id: string, partial: Partial<CharacterProfile> | ((prev: CharacterProfile) => Partial<CharacterProfile>)) => void;
+    updateUserProfile: (updates: Partial<UserProfile> | ((prev: UserProfile) => Partial<UserProfile>)) => void;
     /** 麦当劳小程序当前快照 (cart/menu/nutrition); open=true 时把这段实时状态追加到 system prompt 末尾, 让 char 协同选餐 */
     mcdMiniAppRef?: MutableRefObject<import('../utils/mcdToolBridge').McdMiniAppSnapshot | undefined>;
     /** 瑞幸小程序当前快照 (cart/menu); 与麦当劳同构 */
@@ -551,17 +595,22 @@ export const useChatAI = ({
     translationConfig,
     memoryPalaceConfig,
     updateCharacter,
+    updateUserProfile,
     mcdMiniAppRef,
     luckinMiniAppRef,
     luckinChatRef,
+    homePhoneContext,
 }: UseChatAIProps) => {
     
     // 音乐上下文 — 用于聊天时注入"user 正在听什么 + 当前歌词窗口"
     const music = useMusic();
 
-    const [isTyping, setIsTyping] = useState(false);
+    const [localTyping, setLocalTyping] = useState(false);
+    const characterTyping = useSyncExternalStore(subscribeChatReplies, () => isChatReplyActive(char?.id), () => false);
+    // 同一挂载实例仍串行使用流式预览状态；跨页面重进则读取角色的后台占位。
+    const isTyping = localTyping || characterTyping;
     // 流式预览气泡：stream 开启时，已完成行与安全尾句随增量以临时气泡上屏。
-    // 流结束后由 applyAssistantPostProcessing 正常落库渲染，预览随即清空 —— 只影响体感，不改持久化。
+    // 流结束后由 applyAssistantPostProcessing 正常落库，整轮完成才清预览 —— 只影响展示，不改持久化。
     const [streamingBubbles, setStreamingBubbles] = useState<string[]>([]);
     const [streamingThinking, setStreamingThinking] = useState('');
 
@@ -623,7 +672,11 @@ export const useChatAI = ({
         }
         return () => window.removeEventListener(BACKGROUND_IMAGE_JOB_EVENT, handleBackgroundImageJob);
     }, [char?.id, userProfile, apiConfig, setMessages]);
+    // 预览仍在场时，这些已落库消息暂不上屏；每轮单独记录，避免隐藏以前的回复。
+    const [streamingHandoverIds, setStreamingHandoverIds] = useState<number[]>([]);
     const [recallStatus, setRecallStatus] = useState<string>('');
+    const [inboxWait, setInboxWait] = useState<{ charId: string; token: object } | null>(null);
+    const inboxStatus = inboxWait && inboxWait.charId === char?.id ? '正在接收刚到的消息…' : '';
     const [searchStatus, setSearchStatus] = useState<string>('');
     const [diaryStatus, setDiaryStatus] = useState<string>('');
     const [xhsStatus, setXhsStatus] = useState<string>('');
@@ -687,18 +740,7 @@ export const useChatAI = ({
         setEvolvedNarrative('');
     }, [char?.id]);
 
-    // ─── Post-push emotion eval (Option B: online/offline split) ───────────────
-    //
-    // push 落库 (activeMsgRuntime) 后, 我们希望情绪 eval 跟 line 613 同样的 full ctx 跑 —
-    // 不再走 push-tail 的 degraded ctx. 两路触发:
-    //   1. 在线: activeMsgRuntime dispatch 'post-push-emotion-eval' 事件, 这里监听即时跑
-    //   2. 离线 / 切到别的 char: activeMsgRuntime 写 KV pending → useChatAI mount 切到这个
-    //      char 时 useEffect 兜底 drain
-    //
-    // 行为对齐 line 613: gate = isScheduleFeatureOn(char) && emotionConfig.enabled.
-    // ctx 重建用 buildChatRequestPayload 同一个 helper — push 那条 assistant msg 已经在
-    // DB 里 (activeMsgRuntime.flushInboxToChat 已 await saveMessage), DB.getRecentMessagesByCharId
-    // 拿到的 history 含它.
+    // ─── 云端情绪评估的回程 ───────────────────────────────────────────────────
     //
     // 用 ref 包高频变化的依赖 (music / userProfile / 等), 不在 dep 数组里 → effect 只在 char.id 变时
     // 重建 listener (切角色), 避免 music 每秒 tick 一次都 remove+addEventListener.
@@ -707,7 +749,7 @@ export const useChatAI = ({
         translationConfig, music, mcdMiniAppRef, luckinMiniAppRef, luckinChatRef, evolvedNarrative,
     });
     emotionEvalDepsRef.current = {
-        userProfile, groups, emojis, categories, realtimeConfig, apiConfig,
+        userProfile, groups, emojis, historyEmojis, categories, realtimeConfig, apiConfig,
         translationConfig, music, mcdMiniAppRef, luckinMiniAppRef, luckinChatRef, evolvedNarrative,
     };
 
@@ -828,13 +870,7 @@ export const useChatAI = ({
         };
         window.addEventListener(CHAT_GEN_EVENTS.emotionDone, emotionDoneHandler);
 
-        // 2. 离线路径兜底: mount 时检查这个 char 有没有 pending (老版本 / 非 worker-eval 路径残留的 push)
-        void ActiveMsgStore.getPendingEmotionEval(charIdAtMount).then((pending) => {
-            if (pending) void runEvalForPushedChar();
-        }).catch(() => { /* ignore */ });
-
         return () => {
-            window.removeEventListener('post-push-emotion-eval', handler);
             window.removeEventListener('emotion-innerstate-updated', innerStateHandler);
             window.removeEventListener(CHAT_GEN_EVENTS.emotionDone, emotionDoneHandler);
         };
@@ -875,8 +911,8 @@ export const useChatAI = ({
         // 早退路径也要熄「发送准备中」灯: caller (Chat.tsx) 是先 setInstantSendingActive(true)
         // 再调 triggerAI 的, 这里 return 掉而不通知的话指示灯会永远亮着。
         if (isTyping || !char) { onInstantPosted?.(); return; }
-        const allowFailover = !overrideApiConfig;
-        const baseApi = (overrideApiConfig || apiConfig) as APIConfig;
+        const allowFailover = !overrideApiConfig && !char.dialogueApi;
+        const baseApi = resolveDialogueApi(apiConfig, char, overrideApiConfig);
         if (!baseApi.baseUrl) { alert("请先在设置中配置 API URL"); onInstantPosted?.(); return; }
         let apiPlan: ApiExecutionPlan;
         try {
@@ -897,39 +933,59 @@ export const useChatAI = ({
         const charForGen: CharacterProfile = skipEmotionInjection
             ? { ...char, buffInjection: '', activeBuffs: [] }
             : char;
+        // 一轮开始时冻结模块快照：API 飞行期间的 UI 更新不能改变这一轮要不要污染、
+        // 也不能让成功结算时多扣/少扣。重掷仍使用效果，但成功后不再次扣回合。
+        const sarModulePlan = getSARModuleRuntimePlan(charForGen, userProfile);
 
-        setIsTyping(true);
-        setStreamingBubbles([]);
-        setStreamingThinking('');
-        setRecallStatus('');
-        // 全局横幅「xx 正在回应…」（ChatBroadcast）。isTyping 等 UI 状态随 Chat 卸载
-        // 一起销毁，但这个异步闭包会继续跑完并落库——横幅靠 window 事件与组件生命周期
-        // 解耦，用户切走 Chat 也能看到生成还活着。finally 里派发 end（两条路径都经过）。
-        announceChatGen(CHAT_GEN_EVENTS.replyStart, { charId: char.id, charName: char.name });
-
-        // Keep the Service Worker alive while we make potentially long AI calls
-        await KeepAlive.start();
-
-        // 本轮的 amsg2 工具会话：角色一轮里可能连着排/取消多个任务，任务清单要在这一轮内
-        // 累加，所以由 session 兜住最新 config，别从 char 快照上读写（char 是生成开始的
-        // 那份，updateCharacter 不回写它）。finally 里打脏也要读它，所以声明在 try 外面。
+        // 工具会话累加本轮新任务；finally 打脏时也要读这一份最新配置。
         const amsg2Session = createAmsg2ToolSession({
             char, userProfile, groups, realtimeConfig, apiConfig, updateCharacter,
         });
+        const releaseReply = acquireChatReply(char.id);
+        if (!releaseReply) return;
+        const replyRun = createReplyRun(char.id);
+        amsg2Session.signal = replyRun.signal;
+        const replyStep = <T>(operation: () => Promise<T>) => withReplyCancellation(replyRun, operation);
+        setLocalTyping(true);
+        setStreamingBubbles([]);
+        setStreamingThinking('');
+        setStreamingHandoverIds([]);
+        setRecallStatus('');
+        // 全局横幅「xx 正在回应…」（ChatBroadcast）。Chat 卸载后，生成占位和这个异步
+        // 闭包都会保留并继续落库——横幅靠 window 事件与组件生命周期
+        // 解耦，用户切走 Chat 也能看到生成还活着。finally 里派发 end（两条路径都经过）。
+        announceChatGen(CHAT_GEN_EVENTS.replyStart, { charId: char.id, charName: char.name });
+
         // 本轮里角色自己新排出来的任务。排程现状块每轮现算时靠它把这些点名标出来——不标
         // 的话角色分不清清单上哪条是自己刚排的，回头又排一条一模一样的。
         const amsg2CreatedThisTurn = new Set<string>();
+        // 通用工具循环里，模型在调主动消息工具的同一轮顺手写下的回话。收尾时跟最后一轮的
+        // 正文拼成一条（见 utils/amsg2ToolLoop），不然「话写在工具轮、最后一轮空着」就是空回。
+        const amsg2LeadIns: string[] = [];
         // 这一轮走的是即时对话、并且云端已经受理：收尾时不要再打脏重传一次 fire_pack。
         // POST 上去的那份就是权威的（还多带了 chat 段），再传一遍是同样内容白走一趟网络。
         let instantChatAccepted = false;
         // amsg2 工具在三个工具循环（麦当劳 / 瑞幸 / 通用）里都可能出现，执行方式完全一样，
         // 只有各自的 loopMessages 不同。
-        const runAmsg2ToolCall = async (tc: any, fname: string, args: any, loopMessages: any[]) => {
+        const runAmsg2ToolCall = async (
+            tc: any, fname: string, args: any, loopMessages: any[], round: number,
+        ): Promise<Amsg2ToolOutcome> => {
+            replyRun.check();
             setSearchStatus(`正在执行：${fname}...`);
             const taskUuidsBefore = new Set(
                 (amsg2Session.getConfig()?.tasks ?? []).map((t) => t.taskUuid),
             );
-            const result = await executeAmsg2Tool(fname, args, amsg2Session);
+            const { text: result, outcome } = await replyStep(() => executeAmsg2ToolWithOutcome(fname, args, amsg2Session));
+            // 本地这条路的每次排程都留一条 trace（调试面板 → amsg2 观察窗能看、能导出）：
+            // 打回全在浏览器里判，请求到不了 worker，不记这一笔的话事后什么都查不到。
+            // 只记工具名和结局枚举，不带参数和聊天内容。
+            appendInstantTraceEntry({
+                ts: new Date().toISOString(),
+                event: 'amsg2-local-tool',
+                charId: char.id,
+                round,
+                ...outcome,
+            });
             // 新增了哪几条不看工具回话（那是给模型读的散文），直接比对清单前后差异——
             // schedule 与 renew 都走这里，补发/替换出来的新任务一并算进去。
             for (const task of amsg2Session.getConfig()?.tasks ?? []) {
@@ -938,9 +994,12 @@ export const useChatAI = ({
             // 带上 name：Gemini 兼容层要求工具结果的 name 非空，缺了会被判 INVALID_ARGUMENT。
             loopMessages.push(buildToolResultMessage(tc, result) as any);
             setSearchStatus('');
+            return outcome;
         };
 
         try {
+            // 初始化失败也必须经过 finally 释放本轮占位。
+            await replyStep(async () => KeepAlive.start());
             const baseUrl = effectiveApi.baseUrl.replace(/\/+$/, '');
             const headers = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${effectiveApi.apiKey || 'sk-none'}` };
 
@@ -949,15 +1008,28 @@ export const useChatAI = ({
             const perfStages: Record<string, number> = {};
             const stageT = async <T>(label: string, p: Promise<T>): Promise<T> => {
                 const t0 = performance.now();
-                try { return await p; }
+                try { return await replyStep(async () => p); }
                 finally { perfStages[label] = Math.round(performance.now() - t0); }
             };
+
+            // 用户消息已经显示。先接收本机已到消息，再读历史；正常处理不闪提示，
+            // 真等起来再说明原因。最多等 30 秒，超时后原收件管线继续，不等待重试周期。
+            const inboxWaitToken = {};
+            const inboxHintTimer = setTimeout(() => setInboxWait({ charId: char.id, token: inboxWaitToken }), 300);
+            try {
+                const received = await replyStep(async () => stageT('inbox', prepareInboxBeforeChat(char.id)));
+                // stalled 不再提示：同一趟收件已经在上一次生成时提示过了。
+                if (received === 'pending' || received === 'timeout') addToast('消息接收较慢，先继续回复，收到后会自动补上', 'info');
+            } finally {
+                clearTimeout(inboxHintTimer);
+                setInboxWait(previous => previous?.token === inboxWaitToken ? null : previous);
+            }
 
             // 0.9 历史消息加载：最大范围与记忆宫殿水位线彻底解耦。
             // adaptive 从 HWM 之后开始；manual 忽略 HWM 读取最近 N 条完整原文；
             // 用户断点只可在最大范围内继续收窄，越界后自动失效。
             const contextRange = char.id
-                ? await stageT('dbHistory', loadCharacterContextRange(char).catch(e => {
+                ? await replyStep(async () => stageT('dbHistory', loadCharacterContextRange(char).catch(e => {
                     console.error('Failed to load context range from DB, using React state:', e);
                     // 即便 DB 读取失败，降级路径也必须继续遵守水位线/拉杆硬上限，不能把 React
                     // 缓存里的更早消息意外送回模型。
@@ -966,14 +1038,20 @@ export const useChatAI = ({
                         char,
                         getMemoryPalaceHighWaterMarkForContext(char.id),
                     );
-                }))
+                })))
                 : null;
             if (contextRange?.userBreakpointExpired && updateCharacter) {
                 updateCharacter(char.id, { contextUserStartMessageId: undefined });
             }
             const fullHistory = contextRange?.messages || null;
             const contextMsgs = fullHistory || currentMsgs;
-            const limit = Math.max(1, fullHistory ? fullHistory.length : (char.contextLimit || 500));
+            // 空范围先报可操作的本地错误，避免继续识图/召回和发送 system-only 请求。
+            // 原始消息可能是无文字图片或卡片，此处只判角色；正文有效性在格式化后校验。
+            assertChatHasDialogue(contextMsgs.map(message => ({
+                role: message.role,
+                content: 'pending-format',
+            })));
+            const limit = Math.max(1, contextMsgs.length);
             if (fullHistory) {
                 console.log(`📊 [Context] Loaded ${fullHistory.length} msgs from DB (React state had ${currentMsgs.length}, mode=${contextRange?.mode}, maxStart=${contextRange?.maxRangeStartMessageId ?? 'none'}, effectiveStart=${contextRange?.effectiveStartMessageId ?? 'none'})`);
             }
@@ -991,13 +1069,6 @@ export const useChatAI = ({
             // fire 时独家供给），本地那份照旧全量。判定材料和下面的 payload.flags 同源：
             // luckinChatActive / mcdActive / luckinActive 就是由这三个值算出来的
             // （skipPromptBuild 那个 dev 开关下 flags 会整片置 false，那时只有这边的 ref 是准的）。
-            // IP 还开着（脏配置）时让 IP 先走、按全量构建——别把剥过时效段的 prompt 交给 IP。
-            //
-            // Instant Push 配没配着，一回合只读这一次，下面所有用到的地方都吃这个值。
-            // 从这里到真正分流之间隔着好几个 await（构建 payload、取 amsg2 任务现状…），
-            // 期间用户在设置页存一次盘就能把它翻面；各读各的话会出现「按上云剥掉了时效段
-            // 的 prompt，最后却交给了 IP 或落回本地」——两个钟的问题原样回来。
-            const instantPushConfigured = isInstantConfigReady();
             const luckinChatOn = !!luckinChatRef?.current?.active;
             // 本机 / 内网的 MCP 服务器（docs/mcp-client.md 教用户填的 http://localhost:18061
             // 就是这一类）：上云那一轮前端不注入 MCP 说明块，而 worker 从 CF 那头连不上这类
@@ -1008,7 +1079,7 @@ export const useChatAI = ({
             // 自动选预设需要前端在同一次工具调用落地前切换真实预设配置；
             // 当前 worker 不携带这些私人预设/API Key，因此该轮留在本地。
             const characterAutoImagePresetMode = isCharacterAutoImagePresetSelectionEnabled();
-            const instantChatVeto: string | null = luckinChatOn ? 'luckin-chat'
+            const legacyInstantChatVeto: string | null = luckinChatOn ? 'luckin-chat'
                 : mcdMiniOpen ? 'mcd'
                     : luckinMiniOpen ? 'luckin'
                         : characterAutoImagePresetMode ? 'image-preset-auto'
@@ -1016,28 +1087,52 @@ export const useChatAI = ({
             // 带上 char：角色单独关了即时对话（reason char-disabled）时 ready 直接为
             // false，和「全局没开」同一待遇——下面那条 veto trace 的条件够不到它，
             // 静默走本地。那是用户的主动选择，每条消息刷一遍 warn 就成骚扰了。
-            const instantChatReadiness = await resolveInstantChatReadiness(char);
+            //
+            // SAR 模块生效期的回复是 <SAR_MODULE_OUTPUT> 信封，要由 worker 在分段之前拆开。
+            // 旧 bundle 不认信封，会把它当普通正文切成一串气泡、控制标签直接上屏，比留在本地跑
+            // 糟得多。所以这类回合要求确认那台 Worker 是当前 bundle：存量为空（老用户刚更新 App、
+            // 握手探测还没回来）就当场探一次（带 3 秒超时），探到旧版 → outdated，探不到 →
+            // unverified，两种都留在本地跑。只剩恢复期提示（afterglow）的回合不需要信封，
+            // 任何 Worker 都跑得了，不探也不拦。
+            const instantChatReadiness = await replyStep(async () => resolveInstantChatReadiness(char, {
+                ensureBundleVersion: sarModulePlan.requiresEnvelope,
+            }));
             const instantChatOn = instantChatReadiness.ready;
+            // 只在 ready 时判：没 ready 的那几档（含 config-unreadable）各有自己的收场，
+            // 这里再挂一个否决会把「配置读不出来就明确报错」那档错判成「本来就不走即时对话」。
+            const sarWorkerVeto: string | null = !instantChatOn || !sarModulePlan.requiresEnvelope ? null
+                : instantChatReadiness.workerBundleCurrent === false ? 'sar-module-worker-outdated'
+                    : instantChatReadiness.workerBundleCurrent === undefined ? 'sar-module-worker-unverified'
+                        : null;
+            const instantChatVeto: string | null = legacyInstantChatVeto ?? sarWorkerVeto
+                ?? (luckinChatOn ? 'luckin-chat'
+                : mcdMiniOpen ? 'mcd'
+                    : luckinMiniOpen ? 'luckin'
+                        : mcpWorkerUnreachable ? 'mcp-worker-unreachable' : null);
+            const instantPushConfigured = isInstantConfigReady() && !instantChatVeto && !sarModulePlan.requiresEnvelope && !hasMcpToolsForChat(char.id);
             const instantChatRoute = instantChatOn && !instantChatVeto && !instantPushConfigured;
-            // 「即时对话开着、这一轮却没上云」的所有情形都在这一处留痕，三种原因去向不同：
+            const cloudGenRoute = instantPushConfigured || instantChatRoute;
+            // 「即时对话开着、这一轮却没上云」的所有情形都在这一处留痕，都是留在本地跑：
+            //   · SAR 模块生效期、但没能确认那台 Worker 是当前 bundle（探到旧版 / 没探到）：
+            //     旧 bundle 拆不了回复信封（恢复期回合照常上云，见上面那段）；
             //   · 点单流程否决：瑞幸/麦当劳是客户端交互式循环（选城市、确认单），云端接不了
             //     手，这一轮留在本地跑是对的；
-            //   · MCP 地址 worker 够不着：同上，留在本地才有工具（见上面那段）；
-            //   · IP 配置也还在（脏配置）：这一轮交给下面的 Instant Push 分支，它也不接的话
-            //     （比如配了 MCP，在它的排除名单里）就一路落回本地。
+            //   · MCP 地址 worker 够不着：同上，留在本地才有工具（见上面那段）。
             // 几个原因同时成立时报最前面那个——越靠前越具体，也更可能是用户真正想问的。
             // 不留痕的话，用户看到的是「开关亮着、消息照常出来」，查无可查——静默分流那个坑
             // 就是这么来的。这里只报不拦：拦不拦已经由 instantChatRoute 说了算。
             if (instantChatOn && !instantChatRoute) {
-                const skipReason = instantChatVeto ?? 'instant-push-configured';
+                const skipReason = instantChatVeto;
                 console.warn(
-                    skipReason === 'mcp-worker-unreachable'
+                    skipReason === 'sar-module-worker-outdated'
+                        ? '[AmsgInstantChat] 这一轮没上云（SAR 模块生效中，那台 Worker 还是旧 bundle、拆不了模块的回复信封），本地生成。去设置页点「更新 Worker」'
+                        : skipReason === 'sar-module-worker-unverified'
+                        ? '[AmsgInstantChat] 这一轮没上云（SAR 模块生效中，没问到那台 Worker 的版本、确认不了它认得模块的回复信封），本地生成。连上云端探到版本后会自己回到云端'
+                        : skipReason === 'mcp-worker-unreachable'
                         ? '[AmsgInstantChat] 这一轮没上云（有 MCP 服务器填的是本机/内网地址，worker 够不着），本地生成，工具照常可用'
                         : skipReason === 'image-preset-auto'
-                            ? '[AmsgInstantChat] 这一轮没上云（角色自动选生图预设需要客户端同轮切换并执行真实预设），本地生成'
-                            : instantChatVeto
-                                ? `[AmsgInstantChat] 这一轮没上云（${instantChatVeto} 点单流程需要客户端交互），本地生成`
-                                : '[AmsgInstantChat] 这一轮没走即时对话（Instant Push 配置仍在，脏配置）：交给 Instant Push，它也不接就落回本地',
+                        ? '[AmsgInstantChat] 生图预设需要在客户端执行，本轮本地生成'
+                        : `[AmsgInstantChat] 这一轮没上云（${skipReason} 点单流程需要客户端交互），本地生成`,
                 );
                 appendInstantTraceEntry({
                     ts: new Date().toISOString(),
@@ -1066,8 +1161,8 @@ export const useChatAI = ({
                 // 配置根本没读出来（IndexedDB 被别的标签页 versionchange 卡住 / iOS 存储压力）。
                 // 这不是「用户没开」：开关很可能开着，只是这一刻问不到。上面那条 trace 的条件
                 // （instantChatOn）在这里天然为假，所以单独留一条，别让这种情形在观察窗里查无此事。
-                // 点单流程否决 / Instant Push 配置还在（脏配置）时例外：配置就算读出来了这一轮
-                // 也轮不到即时对话（去向由 veto / IP 分支决定），照原路走本就是对的，只留痕不拦。
+                // 点单流程否决时例外：配置就算读出来了这一轮也轮不到即时对话（去向由 veto 决定），
+                // 照原路走本就是对的，只留痕不拦。
                 const configUnreadableFailsTurn = !instantChatVeto && !instantPushConfigured;
                 appendInstantTraceEntry({
                     ts: new Date().toISOString(),
@@ -1080,11 +1175,11 @@ export const useChatAI = ({
                     // 被系统掐掉，回来时既没有回复也没有报错，设置页还写着「已开启」。所以和下面
                     // sendInstantChatTurn 没发出去同一口径：明确落系统消息 + 弹错，这一轮不发起
                     // 本地生成，用户稍后重发即可。**绝不静默退回本地生成**。收尾交给 finally
-                    // （熄 isTyping / 熄「发送准备中」灯 / 停 KeepAlive），和那条失败路径同一段。
+                    // （熄 isTyping / 停 KeepAlive），和那条失败路径同一段。
                     const reason = '即时对话暂时出了点问题：本地配置这一刻读不出来（可能是存储正忙）。这条没有发出去，稍等几秒重新发一次就好。';
                     console.warn('[AmsgInstantChat] 全局配置读不出来，开没开都不知道：这一轮明确报错等重发，不悄悄退回本地生成');
-                    await DB.saveMessage({ charId: char.id, role: 'system', type: 'text', content: `[${reason}]` });
-                    setMessages(await DB.getRecentMessagesByCharId(char.id, 200));
+                    await replyStep(async () => replyRun.saveMessage({ charId: char.id, role: 'system', type: 'text', content: `[${reason}]` }));
+                    setMessages(await replyStep(async () => DB.getRecentMessagesByCharId(char.id, 200)));
                     if (showError) showError('即时对话发送失败', reason);
                     else addToast(reason, 'error');
                     return;
@@ -1095,46 +1190,23 @@ export const useChatAI = ({
             // 这一轮到底走了哪条路，播给输入框上方那条小提示。**每轮都发**，包括走成了云端
             // 那一轮（reason=null，提示自己收起来）——只在出问题时发的话，用户会一直盯着一条
             // 早就过期的提示，猜不出来「现在到底恢复了没有」。
+            // 否决原因也一并播出去：提示条自己按名单挑「用户想上云、实际没上」的那几档显示
+            // （SAR 遇上旧 Worker / 版本没探到），点单流程这类本该留在本地的不在名单里、照旧不出声。
             announceInstantChatRoute({
                 charId: char.id,
-                reason: instantChatRoute ? null : (instantChatReadiness.reason ?? null),
+                reason: instantChatRoute ? null : (instantChatReadiness.reason ?? instantChatVeto),
             });
 
-            const payload = await stageT('payload', buildChatRequestPayload({
+            const payload = await replyStep(async () => stageT('payload', buildChatRequestPayload({
                 char: charForGen, userProfile, groups, emojis, historyEmojis, categories,
+                homePhoneContext:homePhoneContext?.(),
                 historyMsgs: contextMsgs,
                 recentMsgsHint: currentMsgs,
                 contextLimit: limit,
+                contextHighWaterMark: contextRange?.hwm,
                 realtimeConfig,
-                innerState: skipEmotionInjection ? undefined : (evolvedNarrative || undefined),
-                userListeningContext: (() => {
-                    if (music.current && music.playing && music.lyric.length > 0) {
-                        const idx = music.activeLyricIdx;
-                        if (idx >= 0) {
-                            const from = Math.max(0, idx - 2);
-                            const to = Math.min(music.lyric.length, idx + 2 + 1);
-                            const window = music.lyric.slice(from, to).map(l => l.text);
-                            return {
-                                songName: music.current.name,
-                                artists: music.current.artists,
-                                lyricWindow: window,
-                                activeIdx: idx - from,
-                            };
-                        }
-                    }
-                    if (music.current && music.playing) {
-                        return {
-                            songName: music.current.name,
-                            artists: music.current.artists,
-                            lyricWindow: [],
-                            activeIdx: -1,
-                        };
-                    }
-                    return null;
-                })(),
-                isListeningTogether: !!(music.current && music.playing && music.listeningTogetherWith.includes(char.id)),
-                musicCfg: music.cfg,
-                recentTrackChange: music.recentTrackChange,
+                innerState: skipEmotionInjection ? '' : undefined,
+                musicSnapshot: music,
                 translationConfig,
                 htmlMode: { enabled: !!(char as any).htmlModeEnabled, customPrompt: (char as any).htmlModeCustomPrompt },
                 thinkingChain: { enabled: !!(char as any).showThinkingChain, customPrompt: (char as any).thinkingChainCustomPrompt },
@@ -1145,10 +1217,18 @@ export const useChatAI = ({
                 allowGameHallAutoplayControl: true,
                 timelyByWorker: instantChatRoute,
                 recallEntryPoint: 'chat_app',
-            }));
+                onPreparationStage:event=>{if(event.status==='end')perfStages['payload.'+event.stage]=event.ms;},
+            })));
             const systemPrompt = payload.systemPrompt;
             const cleanedApiMessages = payload.cleanedApiMessages;
-            const fullMessages = payload.fullMessages;
+            // 在续说补丁和本地/即时对话分流前检查最终历史，不能用补出来的 user 掩盖空上下文。
+            assertChatHasDialogue(payload.fullMessages);
+            const fullMessages = payload.flags.promptBuildSkipped
+                ? payload.fullMessages
+                : withChatContinuation(payload.fullMessages, userProfile.name, {
+                    // 生成前收进来的主动消息落在用户刚发的那句之后：该回的是用户那句。
+                    unansweredUserTurn: hasUnansweredUserTurn(currentMsgs, contextMsgs),
+                });
             const promptBuildSkipped = payload.flags.promptBuildSkipped;
             if (payload.flags.mcdActive) {
                 console.log(`🍔 [MCD-MiniApp] 注入协同点餐上下文 step=${mcdMiniSnap?.step} cartItems=${mcdMiniSnap?.cart?.length || 0} menuItems=${mcdMiniSnap?.menuMeals ? Object.keys(mcdMiniSnap.menuMeals).length : 0} nutrition=${mcdMiniSnap?.nutritionData ? mcdMiniSnap.nutritionData.length : 0}字`);
@@ -1172,16 +1252,14 @@ export const useChatAI = ({
             //    未单独配置情绪 API 时回退到主 apiConfig。
             //    ── 路径分叉 ──
             //    - 本地 fetch 模式: 客户端 fire-and-forget 跑 eval (前端活着).
-            //    - 上云模式 (Instant Push / 即时对话): 不在客户端跑, 改把 eval prompt + 副 API 凭据
-            //      一起交给 worker, worker 跑完把结果推回来, 客户端 flush 时落 buff —— 这样前端被杀
-            //      也算数, 且不会跟客户端 eval 双跑双扣费. 见下方两个上云分支 + activeMsgRuntime.
+            //    - 即时对话: 不在客户端跑, 改把 eval prompt + 副 API 凭据一起交给 worker, worker 跑完
+            //      把结果推回来, 客户端 flush 时落 buff —— 这样前端被杀也算数, 且不会跟客户端 eval
+            //      双跑双扣费. 见下方即时对话分支 + activeMsgRuntime.
+            //    走哪条跟着 instantChatRoute（构建 payload 前冻结的同一回合终值）走，这里绝不自己
+            //    再判一次，否则可能「按上云把评估打包走了，实际却走本地」，情绪底色悄悄停更。
             const emotionEvalEnabled = !!(!promptBuildSkipped && !isEmotionEvalSkipped() && isScheduleFeatureOn(char) && char.emotionConfig?.enabled);
-            // 这一轮的生成在云端跑（两条路互斥，见 instantChatRoute 的算法）。
-            // instantPushConfigured 是路由判定处冻结的同一回合终值——这里绝不自己再读
-            // 一次，否则可能「按上云模式把评估打包走了，实际却走本地」，情绪底色悄悄停更。
-            const cloudGenRoute = instantPushConfigured || instantChatRoute;
             // 评估跟随全局流式开关（专用情绪 API 自带 stream 字段时以它为准）
-            const evalStream: boolean = !!((effectiveApi as any).stream ?? apiConfig.stream ?? false);
+            const evalStream: boolean = !!(apiConfig.stream ?? false);
             const emotionApi = emotionEvalEnabled
                 ? ((char.emotionConfig!.api?.baseUrl)
                     ? { ...char.emotionConfig!.api!, stream: (char.emotionConfig!.api as any).stream ?? evalStream }
@@ -1212,6 +1290,8 @@ export const useChatAI = ({
                         assistantMessageId,
                         forceRefresh: !!opts?.forceRefresh,
                     },
+                    replyRun.signal,
+                    replyRun.secretSourceIds.then(ids => ids.length ? {source: 'chat' as const, messageIds: ids} : undefined),
                 )
                     .then((innerState) => {
                         if (innerState) setEvolvedNarrative(innerState);
@@ -1227,11 +1307,11 @@ export const useChatAI = ({
             const cloudEmotionEval = (emotionEvalEnabled && cloudGenRoute && cloudEmotionRoutes.length > 0)
                 ? {
                     // includeContext=false: 不嵌 system prompt + 对话历史 (worker 复用本次请求的 messages 作前文),
-                    // 把 emotionEval 块压到最小, 让请求体留在 keepalive 64KB 上限内 (关前端也能跑完).
+                    // 把 emotionEval 块压到最小, 不把上下文在请求体里重复一份.
                     prompt: buildEmotionEvalPrompt(
-                        charForGen, userProfile, systemPrompt, cleanedApiMessages, false,
-                        shouldRequestAmbient(charForGen.id) ? buildAmbientEvalSection(charForGen) : ''
+                        charForGen, userProfile, systemPrompt, cleanedApiMessages, false
                     ),
+                    homeSecretRequestId: undefined,
                     api: {
                         baseUrl: cloudEmotionRoutes[0].api.baseUrl,
                         apiKey: cloudEmotionRoutes[0].api.apiKey,
@@ -1252,21 +1332,19 @@ export const useChatAI = ({
             //
             // 正常的熄灭信号只有一个: worker 把结论推回来之后派发的 CHAT_GEN_EVENTS.emotionDone
             // (Chat 页的徽章和全局横幅各自监听, 都不依赖本 hook 存活 —— 用户切走 Chat 也能正常熄灭).
-            // 剩下两种情况自己收场: 这一轮压根没发出去 —— 下面两个失败分支当场调
+            // 剩下两种情况自己收场: 这一轮压根没发出去 —— 下面的失败分支当场调
             // extinguishCloudEmotionBadge; 结论永远没回来 (worker 被杀 / 推送丢了 / 用户部署的是旧版)
             // —— 徽章的 setTimeout 和横幅的 TTL 同时到点, 两边用的是同一个数.
             //
-            // 这个数按各自 worker 最长能跑多久给:
-            //   · Instant Push: 一个请求里跑完就回, 90s 足够;
-            //   · 即时对话: worker 那条 fire 的总时长上限是 INSTANT_TOTAL_TIMEOUT_MS（工具循环
-            //     也算在内），评估结果又是跟着主回复的最后一条推送回来的——直接从 worker 模块
-            //     import 那个数 + 一分钟推送在途余量，worker 侧调预算时这里自动跟上
-            //     （ChatBroadcast 的横幅 TTL 同样从它推导，见那边注释）。
-            const cloudEvalTimeoutMs = instantChatRoute ? INSTANT_TOTAL_TIMEOUT_MS + 60_000 : 90_000;
+            // 这个数按 worker 最长能跑多久给：worker 那条 fire 的总时长上限是 INSTANT_TOTAL_TIMEOUT_MS
+            // （工具循环也算在内），评估结果又是跟着主回复的最后一条推送回来的——直接从 worker 模块
+            // import 那个数 + 一分钟推送在途余量，worker 侧调预算时这里自动跟上
+            // （ChatBroadcast 的横幅 TTL 同样从它推导，见那边注释）。
+            const cloudEvalTimeoutMs = INSTANT_TOTAL_TIMEOUT_MS + 60_000;
             /**
              * 熄灭「情绪更新中」的三件套：撤掉安全网、灭页内徽章、灭全局横幅。
              *
-             * 这一轮没发出去时两个失败分支都要调它 —— 云端根本不会跑评估，那个正常的熄灭信号
+             * 这一轮没发出去时失败分支要调它 —— 云端根本不会跑评估，那个正常的熄灭信号
              * 永远不会来。少调一处的表现是：徽章亮着直到安全网到点，然后弹一句
              * 「worker 可能是旧版」的提示，而真实原因是这条消息压根没发出去。
              */
@@ -1293,7 +1371,7 @@ export const useChatAI = ({
                     clearCloudEmotionTimer(charIdAtArm);
                     cloudEmotionTimers.set(charIdAtArm, setTimeout(() => {
                         cloudEmotionTimers.delete(charIdAtArm);
-                        if (instantChatRoute && getInstantChatPending(charIdAtArm)) {
+                        if (getInstantChatPending(charIdAtArm)) {
                             armCloudEmotionSafetyNet(60_000);
                             return;
                         }
@@ -1305,9 +1383,7 @@ export const useChatAI = ({
                         // 静默熄灯, 用户只看到「情绪永远不更新」—— 给一条可操作的提示。
                         announceChatGen(CHAT_GEN_EVENTS.emotionFailed, {
                             charId: charIdAtArm, charName: charNameAtArm,
-                            reason: instantChatRoute
-                                ? '云端情绪评估超时无回音——worker 可能是旧版（不支持情绪评估），请到 设置→主动消息 2.0 重新部署 worker 后重试'
-                                : '云端情绪评估超时无回音——worker 可能是旧版（不支持情绪评估），请到 设置→Instant 消息设置 更新 worker 后重试',
+                            reason: '云端情绪评估超时无回音——worker 可能是旧版（不支持情绪评估），请到 设置→主动消息 2.0 重新部署 worker 后重试',
                         });
                     }, delayMs));
                 };
@@ -1350,7 +1426,7 @@ export const useChatAI = ({
             // 主动消息 2.0 的工具本轮会不会注入：thinking 门要先知道这件事（工具在下面才真正
             // 拼进 tools，但参数取舍必须现在就定）。角色级开关关掉的不注入——否则被用户显式
             // 关掉的功能会被角色一次工具调用重新打开。
-            const amsg2ToolsInjected = isAmsg2EnabledForChar(char) && await isAmsg2GlobalReady();
+            const amsg2ToolsInjected = isAmsg2EnabledForChar(char) && await replyStep(async () => isAmsg2GlobalReady());
             if (shouldSendThinkingParams({
                 thinkingActive: !!payload.flags.thinkingActive,
                 legacyToolModeActive: !!toolModeActive,
@@ -1385,7 +1461,7 @@ export const useChatAI = ({
                 baseReqBody.tool_choice = 'auto';
             } else if (payload.flags.luckinChatActive) {
                 // 瑞幸聊天点单: 给角色真实 8 个 MCP 工具, 自己去查门店/搜商品/定规格/算价
-                const luckinTools = await fetchOpenAIToolsForLuckin();
+                const luckinTools = await replyStep(async () => fetchOpenAIToolsForLuckin());
                 if (luckinTools && luckinTools.length) {
                     baseReqBody.tools = luckinTools;
                     baseReqBody.tool_choice = 'auto';
@@ -1416,25 +1492,24 @@ export const useChatAI = ({
                 }
             }
             // 主动消息 2.0 本地工具：worker 已配置 + 角色没关掉时注入 schedule/cancel/renew/list，
-            // 并注入「排程现状」背景块（常驻能力简介 + 进行中任务 + 作废待处理，角色自行判断怎么接）。
+            // 并注入「排程现状」背景块（常驻能力简介 + 进行中任务 + 到点没发的回执，角色自行判断怎么接）。
             // 是否注入在上面 thinking 门那里就算好了（amsg2ToolsInjected）。
-            // amsg2 和 Instant Push 在设置页已经是双向互斥，正常情况下不可能两个都开，
-            // 这里不需要额外判断（下面的 Instant Push 分支只为历史配置兜底保留）。
             let amsg2ExpiredIds: string[] = [];
             let amsg2Notices: Amsg2ExpiredNoticeRecord[] = [];
             if (amsg2ToolsInjected) {
-                baseReqBody.tools = [...(baseReqBody.tools || []), ...AMSG2_TOOLS];
+                baseReqBody.tools = [...(baseReqBody.tools || []), ...buildAmsg2Tools(resolveAmsgLimits(char.activeMsg2Config))];
                 if (!baseReqBody.tool_choice) baseReqBody.tool_choice = 'auto';
                 try {
-                    // 回执这半边是「检出 + 落台账」的结果，带副作用，一轮只算一次；
+                    // 回执这半边一轮只读一次台账；
                     // 进行中任务那半边每次发请求现取（见下面的 withAmsg2TaskContext）。
-                    const taskContext = await collectAmsg2TaskContext(char, userProfile.name);
+                    const taskContext = await replyStep(async () => collectAmsg2TaskContext(char, userProfile.name));
                     amsg2ExpiredIds = taskContext.expiredIds;
                     amsg2Notices = taskContext.notices;
                 } catch (e) {
-                    // 挂掉的只是作废回执这半边（它要读历史消息和台账）。进行中清单在内存里，
+                    replyRun.check();
+                    // 挂掉的只是回执这半边（它要读台账）。进行中清单在内存里，
                     // 照常渲染——角色至少知道自己名下有哪些任务，不至于一问三不知再排一条。
-                    console.warn('[amsg2] 作废回执检出失败，本轮只带进行中清单', e);
+                    console.warn('[amsg2] 回执读取失败，本轮只带进行中清单', e);
                 }
             }
 
@@ -1449,13 +1524,22 @@ export const useChatAI = ({
             const withAmsg2TaskContext = (messages: any[]): any[] => {
                 if (!amsg2ToolsInjected) return messages;
                 const now = Date.now();
+                const liveConfig = amsg2Session.getConfig();
+                const pending = getPendingTasks(liveConfig, now);
+                // 「用户给你定的规矩」：用户刚开口，连发额度只剩排着还没响的自排任务在占。
+                const limitsBrief = buildLimitsBrief({
+                    limits: resolveAmsgLimits(liveConfig),
+                    committedSends: pending.filter((t) => t.source === 'character').length,
+                    activeTasks: pending.length,
+                });
                 const text = buildAmsg2TaskContextText(
-                    getPendingTasks(amsg2Session.getConfig(), now),
+                    pending,
                     amsg2Notices,
                     now,
                     resolveCharTimeZone(char),
                     amsg2CreatedThisTurn,
                     userProfile.name,
+                    limitsBrief,
                 );
                 // 常驻简介让这一块总是非空：没任务时角色也得知道自己随时能排。
                 const block = { role: 'system', content: text };
@@ -1467,6 +1551,20 @@ export const useChatAI = ({
                 return insertAmsg2TaskContextBlock(messages, block, payload.volatileTailIndex);
             };
 
+            // ─── 即时对话（主动消息 2.0 云端生成）分支 ───
+            // 这一轮的上下文 + 任务一个 POST 上云，云端跑完走推送回来（收件箱同一条管线入库），
+            // 客户端发完那一刻就自由了。
+            //
+            // 走不走这条路，构建 payload 之前的 instantChatRoute 已经算完了，这里只认它
+            // 一个值：「这份 prompt 剥没剥时效段」和「这一轮走不走云端」必须是同一个判断，
+            // 各算各的话两边总有一天会不同意，剥过的那份 prompt 就落到别的路上去了。
+            // 没上云的那些情形（SAR 模块遇上旧版或没确认版本的 Worker / 点单否决 / MCP 地址够不着）在那一段里已经报过 trace，
+            // 这边不重复报，也不重复拦。
+            //
+            // MCP 刻意不在排除名单里：worker fire 时自己解析 tool_config、自己跑后台
+            // MCP（这次 POST 顺手把配置传上去了），云端答得了。排掉它的话，只要全局配着
+            // 一台 enabled 的 MCP 服务器，即时对话就永远静默走回本地——设置页亮着
+            // 「已开启」、界面毫无异样，用户查无可查。
             // ─── Instant Push 分支 ───
             // 与本地 fetch 对称：sendInstantPushAndAwaitReply 内部完成 sub 获取 / push 监听 /
             // 300s 超时兜底，返回时 push 已落库（或失败）。外层 finally 统一清 isTyping /
@@ -1484,7 +1582,7 @@ export const useChatAI = ({
                 if (amsg2ToolsInjected) {
                     appendInstantTraceEntry({ ts: new Date().toISOString(), event: AMSG2_SUPPRESSED_TRACE });
                 }
-                const instantResult = await sendInstantPushAndAwaitReply({
+                const instantResult = await replyStep(async () => sendInstantPushAndAwaitReply({
                     contactName: char.name,
                     messages: fullMessages as InstantPushPayload['messages'],
                     apiUrl: effectiveApi.baseUrl,
@@ -1500,7 +1598,7 @@ export const useChatAI = ({
                     // 副 API 情绪评估: worker 跑完主回复后用这套跑 eval, 推 emotion_update 回来 (见 worker 包装层).
                     // 放顶层字段, 不进 metadata —— 框架不会回显它, 副 API apiKey 不会泄进 push.
                     ...(cloudEmotionEval ? { emotionEval: cloudEmotionEval } : {}),
-                }, char.id, undefined, onInstantPosted);
+                }, char.id, undefined, onInstantPosted, replyRun.signal));
                 if (!instantResult.ok && instantResult.outcome !== 'cancelled') {
                     // 长报错 (worker 400 校验信息 + CF 错误页可能很长) 走弹窗, 手机用户能
                     // 看清并复制反馈; 没注入 showError 时降级到 toast.
@@ -1530,31 +1628,24 @@ export const useChatAI = ({
                 return;
             }
 
-            // ─── 即时对话（主动消息 2.0 云端生成）分支 ───
-            // 和上面的 Instant Push 对称：这一轮的上下文 + 任务一个 POST 上云，云端跑完
-            // 走推送回来（收件箱同一条管线入库），客户端发完那一刻就自由了。
-            // 设置页那道门已经把两条路做成双向互斥，正常情况下不可能两个都开；
-            // 上面的 Instant Push 分支只为历史配置兜底保留。
-            //
-            // 走不走这条路，构建 payload 之前的 instantChatRoute 已经算完了，这里只认它
-            // 一个值：「这份 prompt 剥没剥时效段」和「这一轮走不走云端」必须是同一个判断，
-            // 各算各的话两边总有一天会不同意，剥过的那份 prompt 就落到别的路上去了。
-            // 没上云的那些情形（点单否决 / IP 配置也还在）在那一段里已经报过 trace，
-            // 这边不重复报，也不重复拦。
-            //
-            // MCP 刻意不在排除名单里：worker fire 时自己解析 tool_config、自己跑后台
-            // MCP（这次 POST 顺手把配置传上去了），云端答得了。排掉它的话，只要全局配着
-            // 一台 enabled 的 MCP 服务器，即时对话就永远静默走回本地——设置页亮着
-            // 「已开启」、界面毫无异样，正是 instant push 静默分流那个坑的复刻。
+
             if (instantChatRoute) {
-                // 作废回执跟着 chat 段上云：检出（collectAmsg2TaskContext，带落台账的副作用）
-                // 在上面已经跑过了，本地路径靠 withAmsg2TaskContext 注入的排程清单和能力
-                // 简介到点由 worker 的 instant timely block 现算现渲，唯独回执云端没有——
+                // 回执跟着 chat 段上云：台账（collectAmsg2TaskContext）在上面已经读过了。
+                // 本地路径靠 withAmsg2TaskContext 注入的排程清单和能力简介，
+                // worker 的 instant timely block 现算清单、复用 buildAmsg2ChatScheduleBrief；唯独回执云端没有——
                 // 只把这一样单独成块贴上，不带清单不带简介，别和到点渲染的那份撞车。
                 const amsg2NoticesBlock = amsg2ToolsInjected && amsg2Notices.length
                     ? buildAmsg2NoticesText(amsg2Notices, resolveCharTimeZone(char), userProfile.name)
                     : null;
-                const instantChatResult = await sendInstantChatTurn({
+                const amsgSarSnapshot = buildAmsgSarModuleSnapshot({
+                    plan: sarModulePlan,
+                    charId: char.id,
+                    currentMsgs,
+                    historyMsgs: contextMsgs,
+                    reroll: skipEmotionInjection,
+                });
+                const instantChatResult = await replyStep(async () => sendInstantChatTurn({
+                    signal: replyRun.signal,
                     char,
                     // 云端要发给模型的就是本地这一份，一个字不改（见 fire_pack 的 chat 段）。
                     chatMessages: (amsg2NoticesBlock
@@ -1586,7 +1677,11 @@ export const useChatAI = ({
                     // （见 worker/amsg/src/emotionEval.ts）。放在这里而不是本地 fire 一枪，
                     // 是因为用户发完就能关页面——留在本地的话，页面一关情绪底色就停更了。
                     ...(cloudEmotionEval ? { emotionEval: cloudEmotionEval } : {}),
-                });
+                    // SAR 模块的请求时快照：worker 按它拆信封、逐段带回外显，落库侧按它写事件、
+                    // 推进回合（本地路径在回复成功后做的那几件事）。目标消息取自喂给 prompt 的
+                    // 同一份 contextMsgs，和模型看到的 USER_SURFACE 列表是同一批 id。
+                    ...(amsgSarSnapshot ? { sarModule: amsgSarSnapshot } : {}),
+                }));
                 if (instantChatResult.ok) {
                     // 这次 POST 已经把权威的那份 fire_pack 传上去了，收尾不必再打脏重传一遍。
                     instantChatAccepted = true;
@@ -1603,8 +1698,8 @@ export const useChatAI = ({
                     // 没发出去就是没发出去：明确落一条系统消息 + 弹错，用户可以直接重发。
                     // **绝不静默退回本地生成** —— 静默分流那种查无可查的坑踩过一次就够了。
                     const reason = instantChatResult.error || '未知错误';
-                    await DB.saveMessage({ charId: char.id, role: 'system', type: 'text', content: `[${reason}]` });
-                    setMessages(await DB.getRecentMessagesByCharId(char.id, 200));
+                    await replyStep(async () => replyRun.saveMessage({ charId: char.id, role: 'system', type: 'text', content: `[${reason}]` }));
+                    setMessages(await replyStep(async () => DB.getRecentMessagesByCharId(char.id, 200)));
                     if (showError) showError('即时对话发送失败', reason);
                     else addToast(reason, 'error');
                     // 没发出去 → 云端不会跑评估，那个正常的熄灭信号永不到达。当场自己熄，
@@ -1667,7 +1762,8 @@ export const useChatAI = ({
             // 只允许标签外确实属于普通文字的部分预览。
             // 每次 onDelta 基于累计全文全量重算（safeFetchJson 重试会重开流，天然重置）；
             // 正文尾句和思考内容只在累计文本确实变化时触发重渲染。
-            const streamUiEligible = !!userStream && !toolModeActive && !bilingualActive;
+            // SAR 的正文包在结构化容器里，流式阶段不能把 TRUE/SURFACE 控制标签闪给用户。
+            const streamUiEligible = !!userStream && !toolModeActive && !bilingualActive && !sarModulePlan.requiresEnvelope;
             const streamPreviewEligible = streamUiEligible;
             const streamThinkingEligible = streamUiEligible && payload.flags.thinkingActive;
             // 预览真的上过屏才置 true → 后处理落库时跳过拟人打字延迟（instantRender），
@@ -1687,6 +1783,7 @@ export const useChatAI = ({
             };
             const streamHooks = (streamPreviewEligible || streamThinkingEligible) ? {
                 onDelta: (_delta: string, fullText: string) => {
+                    if (replyRun.signal.aborted) return;
                     if (streamPreviewEligible) {
                         const bubbles = computeStreamPreviewBubbles(fullText);
                         latestStreamPreviewBubbles = bubbles;
@@ -1701,6 +1798,7 @@ export const useChatAI = ({
                     }
                 },
                 onReasoningDelta: (_delta: string, fullReasoning: string) => {
+                    if (replyRun.signal.aborted) return;
                     if (!streamThinkingEligible) return;
                     latestNativeReasoning = fullReasoning;
                     publishStreamingThinking();
@@ -1725,20 +1823,16 @@ export const useChatAI = ({
                     body,
                     meta: { appName: '消息', charId: char.id, charName: char.name, purpose },
                     streamHooks: hooks,
+                    signal: replyRun.signal,
                     directMaxRetries: plan.mode === 'direct' ? directMaxRetries : 0,
                 });
                 activeApiForTurn = result.route.api;
                 return result.value;
             };
 
-            // 本地生成期间告诉 worker“用户正在和这个角色聊天”，避免定时主动消息撞进来。
-            if (char.activeMsg2Config?.enabled && hasActiveAiTask(char.activeMsg2Config)) {
-                startAmsgChatPresence(char.id, getLastRealUserMessageAt(contextMsgs));
-            }
-
             // 同角色活跃会话租约：本地 fetch 路径本轮真实消息已落库、模型请求即将发出，
             // 启动心跳告诉 worker「正在和这个角色聊」——到点的 expire AI 任务据此 skip，
-            // 别在用户正聊时又弹主动消息。instant push 路径在上方已 return，天然不重复开 lease。
+            // 别在用户正聊时又弹主动消息。即时对话路径在上方已 return，天然不重复开 lease。
             // 只对已排程 AI 任务的角色开租约：其余角色没有 worker 消费，开了纯浪费还刷 warn。
             const amsg2Cfg = char.activeMsg2Config;
             if (amsg2Cfg?.enabled && hasActiveAiTask(amsg2Cfg)) {
@@ -1755,14 +1849,15 @@ export const useChatAI = ({
                 // 导致故障转移 UI/plan 虽然生效，实际聊天却永远只请求第 1 条线路。
                 // 成功后 executeChatBody 会把 activeApiForTurn 锁到真实成功线路，
                 // 本轮后续工具续写/二次生成继续沿用它，不中途换站。
-                data = await executeChatBody(
+                data = await replyStep(async () => executeChatBody(
                     attemptedBody,
                     '聊天回复',
                     streamHooks,
                     true,
                     2,
-                );
+                ));
             } catch (e) {
+                replyRun.check();
                 let requestError: unknown = e;
                 // 部分第三方 OpenAI→Claude 中转会把请求形状不兼容包装成 502
                 // bad_response_status_code：thinking 三种方言、tools、尾部 system 单独都能收，
@@ -1772,15 +1867,16 @@ export const useChatAI = ({
                 if (shouldRetryClaudeProxyCompatibility(requestError, attemptedBody)) {
                     console.warn('🧩 [Claude compat] 中转拒绝 thinking + tools 组合，使用兼容请求体重试一次');
                     try {
-                        data = await executeChatBody(
+                        data = await replyStep(async () => executeChatBody(
                             buildClaudeProxyCompatibilityBody(attemptedBody),
                             'Claude 中转兼容重试',
                             streamHooks,
                             false,
                             0,
-                        );
+                        ));
                         requestError = null;
                     } catch (compatError) {
+                        replyRun.check();
                         requestError = compatError;
                     }
                 }
@@ -1801,13 +1897,13 @@ export const useChatAI = ({
                     ...baseReqBody,
                     messages: withAmsg2TaskContext(baseReqBody.messages),
                 });
-                data = await executeChatBody(
+                data = await replyStep(async () => executeChatBody(
                     fallbackBody,
                     'MCP tools 兼容重试',
                     undefined,
                     false,
                     0,
-                );
+                ));
                 // 后续正文工具循环必须继续带着兼容协议；只把它放在这次重试请求里，下一跳
                 // 又退回原 messages，会让模型忘掉工具签名和「每步只输出一行」的约定。
                 baseReqBody.messages = fallbackBody.messages;
@@ -1868,14 +1964,14 @@ export const useChatAI = ({
                 for (const chunk of chunks) {
                     const cleanChunk = ChatParser.sanitize(chunk, { keepCitations: true }).trim();
                     if (!cleanChunk) continue;
-                    await DB.saveMessage({
+                    await replyStep(async () => replyRun.saveMessage({
                         charId: char.id,
                         role: 'assistant',
                         type: 'text',
                         content: cleanChunk,
                         metadata: { mcpLeadIn: true },
-                    } as any);
-                    setMessages(await DB.getRecentMessagesByCharId(char.id, 200));
+                    } as any));
+                    setMessages(await replyStep(async () => DB.getRecentMessagesByCharId(char.id, 200)));
                 }
             };
 
@@ -1940,7 +2036,7 @@ export const useChatAI = ({
                         // 又不带 tools, 角色「点单时顺手排个提醒」就永远不会生效。
                         const route = routeMiniAppToolCall(fname, args);
                         if (route === 'amsg2') {
-                            await runAmsg2ToolCall(tc, fname, args, loopMessages);
+                            await replyStep(async () => runAmsg2ToolCall(tc, fname, args, loopMessages, it));
                             continue;
                         }
                         if (route === 'propose') {
@@ -1977,7 +2073,7 @@ export const useChatAI = ({
                                 continue;
                             }
                             try {
-                                await DB.saveMessage({
+                                await replyStep(async () => replyRun.saveMessage({
                                     charId: char.id,
                                     role: 'assistant',
                                     type: 'mcd_card',
@@ -1987,9 +2083,10 @@ export const useChatAI = ({
                                         mcdProposal: args,
                                         fromMcdMiniApp: true,
                                     },
-                                } as any);
-                                setMessages(await DB.getRecentMessagesByCharId(char.id, 200));
+                                } as any));
+                                setMessages(await replyStep(async () => DB.getRecentMessagesByCharId(char.id, 200)));
                             } catch (e) {
+                                replyRun.check();
                                 console.warn('🍔 [MCD-MiniApp] 保存 proposal 失败:', e);
                             }
                             const ackExtra = fixes.length
@@ -2013,7 +2110,7 @@ export const useChatAI = ({
                     const followBody = { ...baseReqBody, messages: loopMessages };
                     delete followBody.tools;
                     delete followBody.tool_choice;
-                    data = await executeChatBody(followBody, '麦当劳工具结果续写');
+                    data = await replyStep(async () => executeChatBody(followBody, '麦当劳工具结果续写'));
                     updateTokenUsage(data, historyMsgCount, `mcd-propose-${it + 1}`);
                     // 第二轮跳过 (我们已经禁用了 tools)
                     if (!data.choices?.[0]?.message?.tool_calls?.length) break;
@@ -2047,7 +2144,7 @@ export const useChatAI = ({
                         // 又不带 tools, 角色「点单时顺手排个提醒」就永远不会生效。
                         const route = routeMiniAppToolCall(fname, args);
                         if (route === 'amsg2') {
-                            await runAmsg2ToolCall(tc, fname, args, loopMessages);
+                            await replyStep(async () => runAmsg2ToolCall(tc, fname, args, loopMessages, it));
                             continue;
                         }
                         if (route === 'propose') {
@@ -2079,7 +2176,7 @@ export const useChatAI = ({
                                 continue;
                             }
                             try {
-                                await DB.saveMessage({
+                                await replyStep(async () => replyRun.saveMessage({
                                     charId: char.id,
                                     role: 'assistant',
                                     type: 'luckin_card',
@@ -2089,9 +2186,10 @@ export const useChatAI = ({
                                         luckinProposal: args,
                                         fromLuckinMiniApp: true,
                                     },
-                                } as any);
-                                setMessages(await DB.getRecentMessagesByCharId(char.id, 200));
+                                } as any));
+                                setMessages(await replyStep(async () => DB.getRecentMessagesByCharId(char.id, 200)));
                             } catch (e) {
+                                replyRun.check();
                                 console.warn('☕ [Luckin-MiniApp] 保存 proposal 失败:', e);
                             }
                             const ackExtra = fixes.length
@@ -2113,7 +2211,7 @@ export const useChatAI = ({
                     const followBody = { ...baseReqBody, messages: loopMessages };
                     delete followBody.tools;
                     delete followBody.tool_choice;
-                    data = await executeChatBody(followBody, '瑞幸推荐工具结果续写');
+                    data = await replyStep(async () => executeChatBody(followBody, '瑞幸推荐工具结果续写'));
                     updateTokenUsage(data, historyMsgCount, `luckin-propose-${it + 1}`);
                     if (!data.choices?.[0]?.message?.tool_calls?.length) break;
                 }
@@ -2137,6 +2235,9 @@ export const useChatAI = ({
                 const seenMcpOutcomes = new Set<string>();
                 let stalledMcpRounds = 0;
                 let lastMcpCallSignature: string | null = null;
+                const amsg2Stall = createAmsg2StallTracker();
+                let amsg2ToolRounds = 0;
+                let wrapUpKind: 'none' | 'hard-limit' | 'stalled' | 'amsg2-stalled' = 'none';
                 for (let it = 0; it < MAX_LOOPS; it++) {
                     let singleShotClosing: { leadIn: string; outcome: McpSingleShotOutcome } | null = null;
                     const assistantLeadIn = data.choices?.[0]?.message?.content || '';
@@ -2146,7 +2247,7 @@ export const useChatAI = ({
                     );
                     if (!toolCalls || !toolCalls.length) break;
                     if (mcpToolResolve && toolCalls.some((tc: any) => mcpToolResolve?.has(tc.function?.name || ''))) {
-                        await persistMcpLeadIn(data.choices?.[0]?.message?.content || '');
+                        await replyStep(async () => persistMcpLeadIn(data.choices?.[0]?.message?.content || ''));
                     }
                     loopMessages.push({
                         role: 'assistant',
@@ -2156,6 +2257,7 @@ export const useChatAI = ({
                     } as any);
                     let mcpCallsThisRound = 0;
                     let mcpProgressThisRound = false;
+                    const amsg2Outcomes: Amsg2ToolOutcome[] = [];
                     for (const tc of toolCalls) {
                         const fname: string = tc.function?.name || '';
                         let args: any = {};
@@ -2166,7 +2268,7 @@ export const useChatAI = ({
                             console.warn('☕ [Luckin-Chat] 工具参数解析失败:', e);
                         }
                         if (AMSG2_TOOL_NAMES.has(fname)) {
-                            await runAmsg2ToolCall(tc, fname, args, loopMessages);
+                            await replyStep(async () => runAmsg2ToolCall(tc, fname, args, loopMessages, it));
                             continue;
                         }
                         // 通用 MCP 工具: 命中映射直接分发, 不走下面的瑞幸逻辑
@@ -2207,11 +2309,11 @@ export const useChatAI = ({
                                     await applyImageGenerationPresetById(mcpHit.server.imagePresetId);
                                 }
                                 preparedArgs = await prepareBuiltinImageToolArguments({ server: mcpHit.server, toolName: mcpHit.toolName, args: cleanedArgs, character: char, userProfile });
-                                mcpResult = await callMcpToolWithBackgroundImage(mcpHit.server, mcpHit.toolName, {
+                                mcpResult = await replyStep(async () => callMcpToolWithBackgroundImage(mcpHit.server, mcpHit.toolName, {
                                     ...preparedArgs, after_generate_action: afterGenerateAction,
-                                }, { charId: char.id });
+                                }, { charId: char.id, signal: replyRun.signal }));
                             }
-                            catch (e: any) { mcpResult = { success: false, error: e?.message || String(e) }; }
+                            catch (e: any) { replyRun.check(); mcpResult = { success: false, error: e?.message || String(e) }; }
                             let imageMessages: Message[] = [];
                             if (mcpResult.backgroundJob) {
                                 addToast('图片已转入后台生成，切换应用不会中断', 'info');
@@ -2255,7 +2357,7 @@ export const useChatAI = ({
                         }
                         // 主动消息 2.0 工具
                         if (AMSG2_TOOL_NAMES.has(fname)) {
-                            await runAmsg2ToolCall(tc, fname, args, loopMessages);
+                            amsg2Outcomes.push(await replyStep(async () => runAmsg2ToolCall(tc, fname, args, loopMessages, it)));
                             continue;
                         }
                         // 只开了 MCP 没开瑞幸时, 幻觉出的未知工具名直接回错误让模型自我纠正
@@ -2277,12 +2379,13 @@ export const useChatAI = ({
                             continue;
                         }
                         let result: any;
-                        try { result = await callLuckinTool(fname, args); }
-                        catch (e: any) { result = { success: false, error: e?.message || String(e) }; }
+                        try { result = await replyStep(async () => callLuckinTool(fname, args, replyRun.signal)); }
+                        catch (e: any) { replyRun.check(); result = { success: false, error: e?.message || String(e) }; }
+
 
                         const isPreview = /preview[-_]?order/i.test(fname);
                         try {
-                            await DB.saveMessage({
+                            await replyStep(async () => replyRun.saveMessage({
                                 charId: char.id,
                                 role: 'assistant',
                                 type: 'luckin_card',
@@ -2296,9 +2399,10 @@ export const useChatAI = ({
                                     luckinCardKind: isPreview ? 'checkout' : inferLuckinCardKind(fname),
                                     luckinLoc: (loc && loc.longitude != null) ? { longitude: loc.longitude, latitude: loc.latitude } : undefined,
                                 },
-                            } as any);
-                            setMessages(await DB.getRecentMessagesByCharId(char.id, 200));
-                        } catch (e) { console.warn('☕ [Luckin-Chat] 存卡片失败:', e); }
+                            } as any));
+                            setMessages(await replyStep(async () => DB.getRecentMessagesByCharId(char.id, 200)));
+                        } catch (e) { replyRun.check(); console.warn('☕ [Luckin-Chat] 存卡片失败:', e); }
+
 
                         const toolMsg = result.success
                             ? `工具 ${fname} 成功。结果(截断): ${(() => { try { return JSON.stringify(result.data).slice(0, 1500); } catch { return String(result.data).slice(0, 800); } })()}`
@@ -2316,9 +2420,23 @@ export const useChatAI = ({
                     if (mcpCallsThisRound > 0) {
                         stalledMcpRounds = mcpProgressThisRound ? 0 : stalledMcpRounds + 1;
                     }
-                    const reachedHardLimit = !!mcpToolResolve && it + 1 >= MAX_LOOPS;
+                    if (amsg2Outcomes.length > 0) {
+                        amsg2ToolRounds += 1;
+                        // 这一轮写下的回话留着（MCP 轮的开场白已经由 persistMcpLeadIn 单独落库了）。
+                        if (mcpCallsThisRound === 0) {
+                            const leadIn = extractToolRoundLeadIn(data.choices?.[0]?.message?.content);
+                            if (leadIn) amsg2LeadIns.push(leadIn);
+                        }
+                    }
+                    const amsg2Stalled = amsg2Stall.record(amsg2Outcomes);
+                    // 转到上限还在要工具的话，最后那份响应里只有 tool_calls、没有正文——所以只要
+                    // 挂着主动消息工具，到上限也得收尾，不能只管 MCP。
+                    const reachedHardLimit = (!!mcpToolResolve || amsg2ToolRounds > 0) && it + 1 >= MAX_LOOPS;
                     const stalled = !!mcpToolResolve && stalledMcpRounds >= MCP_CHAT_MAX_STALLED_ROUNDS;
-                    const forceWrapUp = reachedHardLimit || stalled;
+                    const forceWrapUp = reachedHardLimit || stalled || amsg2Stalled;
+                    if (forceWrapUp) {
+                        wrapUpKind = stalled ? 'stalled' : amsg2Stalled ? 'amsg2-stalled' : 'hard-limit';
+                    }
                     // 继续让角色多步推进 (保留 tools, 允许 query→search→preview 连续走)
                     if (mcpToolResolve) setSearchStatus('正在整理 MCP 工具结果...');
                     // 排程现状现算一次贴上：本轮刚排的任务这时才进得了清单，角色下一轮
@@ -2327,7 +2445,12 @@ export const useChatAI = ({
                     if (forceWrapUp) {
                         followMessages.push({
                             role: 'user',
-                            content: `[系统消息：工具阶段${stalled ? '连续两轮没有产生新结果' : '已到本轮安全上限'}。请停止调用工具，基于已经拿到的结果直接用角色语气回复；如目标仍未完成，请如实说明卡在哪一步。不要输出工具名、参数或这条系统消息。]`,
+                            // 收尾的原因是主动消息工具时换一句话：排程这件事用户看不见，照 MCP 那句
+                            // 「如实说明卡在哪一步」写的话，角色会跟用户交代「我的提醒排不上」。
+                            content: wrapUpKind === 'amsg2-stalled'
+                                || (wrapUpKind === 'hard-limit' && !mcpToolResolve && !payload.flags.luckinChatActive)
+                                ? AMSG2_WRAP_UP_PROMPT
+                                : `[系统消息：工具阶段${stalled ? '连续两轮没有产生新结果' : '已到本轮安全上限'}。请停止调用工具，基于已经拿到的结果直接用角色语气回复；如目标仍未完成，请如实说明卡在哪一步。不要输出工具名、参数或这条系统消息。]`,
                         });
                     }
                     const followBody = { ...baseReqBody, messages: followMessages };
@@ -2335,12 +2458,52 @@ export const useChatAI = ({
                         delete followBody.tools;
                         delete followBody.tool_choice;
                     }
-                    data = await safeFetchJson(`${baseUrl}/chat/completions`, {
+                    data = await replyStep(async () => safeFetchJson(`${baseUrl}/chat/completions`, {
+                        signal: replyRun.signal,
                         method: 'POST', headers,
                         body: JSON.stringify(followBody)
-                    });
+                    }));
                     updateTokenUsage(data, historyMsgCount, `${payload.flags.luckinChatActive ? 'luckin-chat' : 'mcp-chat'}-${it + 1}`);
                     if (forceWrapUp) break;
+                }
+                // 主动消息工具跑过、模型最后却一个字没说（常见于排成功之后：它觉得话在工具轮
+                // 已经说完了），而工具轮里也没留下话——补一轮不带 tools 的请求让它开口。
+                // 已经逼过一次收尾的不再补，免得一轮聊天无止境地加请求。
+                let emptyRescued = false;
+                if (
+                    amsg2ToolRounds > 0
+                    && wrapUpKind === 'none'
+                    && amsg2LeadIns.length === 0
+                    && !extractToolRoundLeadIn(data.choices?.[0]?.message?.content)
+                    && !data.choices?.[0]?.message?.tool_calls?.length
+                ) {
+                    emptyRescued = true;
+                    const rescueBody = {
+                        ...baseReqBody,
+                        messages: [...withAmsg2TaskContext(loopMessages), { role: 'user', content: AMSG2_EMPTY_REPLY_PROMPT }],
+                    };
+                    delete (rescueBody as any).tools;
+                    delete (rescueBody as any).tool_choice;
+                    data = await replyStep(async () => safeFetchJson(`${baseUrl}/chat/completions`, {
+                        signal: replyRun.signal,
+                        method: 'POST', headers,
+                        body: JSON.stringify(rescueBody),
+                    }));
+                    updateTokenUsage(data, historyMsgCount, 'amsg2-empty-rescue');
+                }
+                if (amsg2ToolRounds > 0) {
+                    // 这一轮工具循环怎么收的尾：几轮工具、有没有被逼收尾、有没有补救空回、
+                    // 最后拼出来的回话多长。跟上面每次调用那几条对着看，就知道空回卡在哪一步。
+                    appendInstantTraceEntry({
+                        ts: new Date().toISOString(),
+                        event: 'amsg2-local-tool-loop',
+                        charId: char.id,
+                        toolRounds: amsg2ToolRounds,
+                        wrapUp: wrapUpKind,
+                        emptyRescued,
+                        leadIns: amsg2LeadIns.length,
+                        replyChars: mergeToolRoundLeadIns(amsg2LeadIns, data.choices?.[0]?.message?.content || '').length,
+                    });
                 }
                 if (mcpToolResolve) setSearchStatus('');
             }
@@ -2372,16 +2535,17 @@ export const useChatAI = ({
                             content: '[系统消息：你重复请求了已经执行过的同一工具。不要再次调用工具，请直接根据已有结果回复；如目标未完成就如实说明。不要输出工具调用格式或提及本消息。]',
                         });
                         const wrapBody = buildMcpTextFallbackBody(baseReqBody, textLoopMessages);
-                        data = await safeFetchJson(`${baseUrl}/chat/completions`, {
+                        data = await replyStep(async () => safeFetchJson(`${baseUrl}/chat/completions`, {
+                            signal: replyRun.signal,
                             method: 'POST', headers,
                             body: JSON.stringify(wrapBody)
-                        });
+                        }));
                         updateTokenUsage(data, historyMsgCount, `mcp-text-wrap-${it + 1}`);
                         break;
                     }
                     if (!faked.length) break;
                     console.warn(`🔌 [MCP] 检测到 ${faked.length} 个正文假工具调用, 代为执行:`, faked.map(c => c.exposedName).join(', '));
-                    await persistMcpLeadIn(contentNow, faked);
+                    await replyStep(async () => persistMcpLeadIn(contentNow, faked));
                     setSearchStatus(`正在调用 MCP 工具：${faked.map(c => c.exposedName).join('、')}...`);
                     const results: string[] = [];
                     let singleShotClosing: {
@@ -2412,11 +2576,11 @@ export const useChatAI = ({
                                 await applyImageGenerationPresetById(call.server.imagePresetId);
                             }
                             preparedArgs = await prepareBuiltinImageToolArguments({ server: call.server, toolName: call.toolName, args: cleanedArgs, character: char, userProfile });
-                            r = await callMcpToolWithBackgroundImage(call.server, call.toolName, {
+                            r = await replyStep(async () => callMcpToolWithBackgroundImage(call.server, call.toolName, {
                                 ...preparedArgs, after_generate_action: afterGenerateAction,
-                            }, { charId: char.id });
+                            }, { charId: char.id, signal: replyRun.signal }));
                         }
-                        catch (e: any) { r = { success: false, error: e?.message || String(e) }; }
+                        catch (e: any) { replyRun.check(); r = { success: false, error: e?.message || String(e) }; }
                         let imageMessages: Message[] = [];
                         if (r.backgroundJob) {
                             addToast('图片已转入后台生成，切换应用不会中断', 'info');
@@ -2476,7 +2640,7 @@ export const useChatAI = ({
                     }
                     setSearchStatus('正在整理 MCP 工具结果...');
                     const followBody = buildMcpTextFallbackBody(baseReqBody, textLoopMessages);
-                    data = await executeChatBody(followBody, 'MCP 正文工具结果续写');
+                    data = await replyStep(async () => executeChatBody(followBody, 'MCP 正文工具结果续写'));
                     updateTokenUsage(data, historyMsgCount, `mcp-text-${it + 1}`);
                     if (reachedHardLimit) break;
                 }
@@ -2524,13 +2688,11 @@ export const useChatAI = ({
             }, null, 2));
 
             // ─── 后处理管线 (13 步) ───
-            // 详见 utils/applyAssistantPostProcessing.ts。Phase 0 行为字节级不变;
-            // Phase 1 会让 instant push 路径也调它 (skipSecondPassLLM=true);
-            // Phase 2 会让 worker 端把识别的副作用打包成 directives 传过来重放。
-            // 预览气泡的无缝交棒：不提前清（提前清 = 气泡集体消失→再劈里啪啦重放，用户实报），
-            // 而是包装 setMessages——后处理第一条真实消息落库上屏的**同一帧**清预览。
-            // 交接前预览一直挂着，交接后 instantRender 秒速回填，视觉上是"预览定格成正式消息"。
-            let previewHandedOver = false;
+            // 详见 utils/applyAssistantPostProcessing.ts。本地路径跑完整管线；
+            // 云端回复（activeMsgRuntime 冲刷收件箱）也调它，带 skipSecondPassLLM=true 和
+            // worker 识别好的 directives 重放。
+            // 后处理会逐条写库/刷新，第一条落库并不代表其余气泡已准备好。
+            // 整轮结束前保持预览，登记对应正式消息供 UI 暂时隐藏；全部落库后再一起交接。
             const previewHandoverIds = new Set<number>();
             const previewBaselineMaxId = contextMsgs.reduce(
                 (maxId, message) => Math.max(maxId, message.id),
@@ -2554,17 +2716,34 @@ export const useChatAI = ({
                     handoverIds.forEach(id => previewHandoverIds.add(id));
                     // ref 在 setMessages 触发渲染前同步更新，首帧就能关掉正式气泡的 fade-in。
                     onStreamPreviewHandover?.(char.id, [...handoverIds]);
+                    setStreamingHandoverIds([...previewHandoverIds]);
                 }
                 setMessages(msgs);
-                if (!previewHandedOver) {
-                    previewHandedOver = true;
-                    setStreamingBubbles([]);
-                    setStreamingThinking('');
-                }
             };
-            const rawAiContent = suppressMcpImageStatusMessage
-                ? ''
-                : (data.choices?.[0]?.message?.content || '');
+            // 工具轮里说过的话拼在最前面（没有工具轮时 amsg2LeadIns 是空的，原样取最后一轮）。
+            const rawAiContent = suppressMcpImageStatusMessage ? '' : amsg2LeadIns.length
+                ? mergeToolRoundLeadIns(amsg2LeadIns, data.choices?.[0]?.message?.content || '')
+                : data.choices?.[0]?.message?.content || '';
+            const sarReply = parseSARModuleReply(rawAiContent, sarModulePlan);
+            const latestUserMessage = findSARTurnUserMessage(currentMsgs);
+            const sarModuleEvents = createSARModuleEventMeta(sarModulePlan);
+            const userSurfaces = parseSARUserSurfaces(sarReply.userSurface,
+                selectSARUserSurfaceTargets(contextMsgs, char.id, sarModulePlan.user));
+            for (const [messageId, surface] of userSurfaces) {
+                const meta = createSARModuleSurfaceMeta(sarModulePlan.user!, surface);
+                if (meta) await replyStep(async () => DB.updateMessageMetadata(messageId, previous => ({
+                    ...(previous || {}), sarModuleSurface: meta,
+                })));
+            }
+            if (latestUserMessage?.id && sarModuleEvents.length > 0) {
+                await replyStep(async () => DB.updateMessageMetadata(latestUserMessage.id, previous => ({
+                    ...(previous || {}),
+                    ...(sarModuleEvents.length > 0 ? { sarModuleEvents } : {}),
+                })));
+            }
+            const assistantSurfaceMeta = sarModulePlan.character?.phase === 'active' && sarReply.assistantSurface
+                ? createSARModuleSurfaceMeta(sarModulePlan.character, sarReply.assistantSurface)
+                : undefined;
             // 主回复完整结束后再做增量情绪评估，确保输入包含“本轮用户消息 + 本轮助手回复”。
             // 纯生图状态没有角色正文，不写聊天，也不拿空状态去做情绪评估。
             if (!suppressMcpImageStatusMessage) {
@@ -2577,7 +2756,8 @@ export const useChatAI = ({
                 commentAuthorNameCache: commentAuthorNameCacheRef.current,
                 commentParentIdCache: commentParentIdCacheRef.current,
             };
-            if (!suppressMcpImageStatusMessage) await applyAssistantPostProcessing(rawAiContent, {
+            if (!suppressMcpImageStatusMessage) await replyStep(async () => applyAssistantPostProcessing(sarReply.canonical, {
+                replyRun,
                 char,
                 userProfile,
                 emojis,
@@ -2609,7 +2789,7 @@ export const useChatAI = ({
                     setXhsStatus,
                     updateTokenUsage,
                     // 整组 musicHooks 由 MusicProvider 注册到模块级 slot, 本地 fetch 路径和
-                    // instant push 路径 (activeMsgRuntime) 共享同一份, 见 MusicContext.loadMusicHooks.
+                    // 云端回复的冲刷 (activeMsgRuntime) 共享同一份, 见 MusicContext.loadMusicHooks.
                     musicHooks: loadMusicHooks() ?? undefined,
                 },
                 // 流式预览已把气泡展示过 → 落库免打字延迟，秒回填（未预览时行为不变）
@@ -2617,7 +2797,26 @@ export const useChatAI = ({
                 // Phase 0: 本地 fetch 路径保持原逻辑, 不跳 2nd-pass LLM, 也没有结构化 directives。
                 skipSecondPassLLM: false,
                 directives: [],
-            });
+                sarModuleSurface: assistantSurfaceMeta,
+            }));
+            replyRun.markCompleted();
+            // 最后一批正式消息已交给 setMessages；同一轮更新撤掉预览，不再逐条补弹。
+            setStreamingBubbles([]);
+            setStreamingThinking('');
+
+            // 到这里说明正文已成功落库。失败 / 中断不会经过；重掷是替换旧回合，不重复扣寿命。
+            if (!skipEmotionInjection) {
+                if (sarModulePlan.character) {
+                    updateCharacter(char.id, previous => ({
+                        vrState: { ...(previous.vrState || { enabled: false, intervalMinutes: 120 }), sarModule: advanceSARModuleAfterReply(previous.vrState?.sarModule, sarModulePlan.character) },
+                    }));
+                }
+                if (sarModulePlan.user) {
+                    updateUserProfile(previous => ({
+                        vrState: { ...(previous.vrState || { enabled: false }), sarModule: advanceSARModuleAfterReply(previous.vrState?.sarModule, sarModulePlan.user) },
+                    }));
+                }
+            }
 
             // 本地路径回复已全部落库。OSContext 监听这个事件 bump lastMsgTimestamp——
             // 当前挂载的 Chat（可能是切走又切回后新 mount 的实例，本闭包的 setMessages
@@ -2630,13 +2829,13 @@ export const useChatAI = ({
             // 防穿帮闸：仅当这轮请求真的成功、回执确实进了模型上下文并产出已落库的
             // 回复，才标记已告知；失败/中断路径不标，下轮重新注入（回执不丢）。
             // 放在 try 成功尾部（回复已 applyAssistantPostProcessing 落库），与 catch/finally 互斥；
-            // amsg2 与 Instant Push 设置页双向互斥，instant 路径在上方已 return（那条分支
-            // 只为历史配置兜底保留），这里只覆盖本地 fetch 路径。
+            // 即时对话路径在上方已 return，这里只覆盖本地 fetch 路径。
             if (amsg2ExpiredIds.length) {
                 void ActiveMsgStore.markExpiredNoticesNotified(char.id, amsg2ExpiredIds);
             }
 
         } catch (e: any) {
+            if (replyRun.signal.aborted) return;
             // 注意: 这个 catch 兜的是「拿到 API 响应之后」的整条后处理管线 (applyAssistantPostProcessing,
             // 13 步)。这里抛错多半不是网络问题, 而是解析/正则/落库异常。别再叫"连接中断"误导排查。
             const errMsg = e?.message || String(e);
@@ -2653,21 +2852,23 @@ export const useChatAI = ({
             setMessages(await DB.getRecentMessagesByCharId(char.id, 200));
         } finally {
             stopAmsgChatPresence(char.id);
+            try {
+                await replyRun.settle();
+                if (replyRun.signal.aborted) setMessages(await DB.getRecentMessagesByCharId(char.id, 200));
+            } catch (error) {
+                console.error('[chat-stop] 回复收尾失败', error);
+            } finally { releaseReply(); }
+            setLocalTyping(false);
             KeepAlive.stop();
-            setIsTyping(false);
             // 本轮生成结束（成功/失败/中断都经过）→ 停止本地续租；远端靠 45s TTL 自然失效。
-            // 未开过租约（instant push / 非 amsg2 角色）时是幂等 no-op。
+            // 未开过租约（即时对话 / 非 amsg2 角色）时是幂等 no-op。
             stopAmsgChatPresence(char.id);
-            // 全局横幅熄灭（成功/失败/instant 均经过这里；OSContext 同时借它兜底刷新，
+            // 全局横幅熄灭（成功/失败/即时对话均经过这里；OSContext 同时借它兜底刷新，
             // 覆盖 catch 里落库的错误系统消息）。
             announceChatGen(CHAT_GEN_EVENTS.replyEnd, { charId: char.id, charName: char.name });
-            // 兜底熄「发送准备中」灯 (幂等, 正常路径 deliver() 前已熄过)。不加的话
-            // config-missing / subscription-failed / 拼 context 阶段 throw 这些没走到
-            // POST 的路径都不会调 onInstantPosted, 头部「发送中…」徽章会卡死到刷新
-            // —— 2026-07 安卓用户实测: 订阅失败弹了错, 但三个小点到角色回复了都不消失。
-            onInstantPosted?.();
             setStreamingBubbles([]);  // 错误/中断路径兜底清预览
             setStreamingThinking('');
+            setStreamingHandoverIds([]);
             setRecallStatus('');
             setSearchStatus('');
             setDiaryStatus('');
@@ -2696,7 +2897,7 @@ export const useChatAI = ({
                 ? mpLLMConfigured
                 : { baseUrl: apiConfig.baseUrl, apiKey: apiConfig.apiKey, model: apiConfig.model };
             // 读 ref 拿到最新的 char 状态；同 id 才信任，否则保守跳过（用户已经切角色了）
-            const liveChar = charRef.current?.id === char.id ? charRef.current : null;
+            const liveChar = !replyRun.signal.aborted && charRef.current?.id === char.id ? charRef.current : null;
             if (liveChar?.memoryPalaceEnabled && mpEmb?.baseUrl && mpEmb?.apiKey && mpLLM.baseUrl) {
                 const charName = char.name;
                 // 不再预置"正在回味"状态：pipeline 会在水位线未到时立刻 skip，
@@ -2794,6 +2995,8 @@ export const useChatAI = ({
         isTyping,
         streamingBubbles,
         streamingThinking,
+        streamingHandoverIds,
+        inboxStatus,
         recallStatus,
         searchStatus,
         diaryStatus,

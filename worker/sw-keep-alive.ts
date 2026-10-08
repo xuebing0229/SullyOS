@@ -1,6 +1,10 @@
 /// <reference lib="WebWorker" />
 
 import { installReiSW } from '@rei-standard/amsg-sw';
+import { createStaticCache, type StaticManifest } from './staticCache';
+
+declare const __STATIC_CACHE_MANIFEST__: StaticManifest | undefined;
+const staticManifest = typeof __STATIC_CACHE_MANIFEST__ === 'undefined' ? undefined : __STATIC_CACHE_MANIFEST__;
 
 /**
  * SW_VERSION: 改 SW 实质行为时（push handler / message protocol / 通知策略 / IDB 升级）
@@ -75,18 +79,21 @@ import { installReiSW } from '@rei-standard/amsg-sw';
  *            手上等于没有），并把 notifyClients 记细：找到几个页面、各自可见性、
  *            postMessage 成没成。排「推送到了、通知也弹了、界面半天不动」这类故障时，
  *            SW 到底有没有喊到页面是第一个要回答的问题。
+ *  - 1.19.0: push handler 只分 content / emotion_update / error / result 四轨；
+ *            _blob 信封、reasoning、tool_request 三条路线移除。
  */
-const SW_VERSION = '1.18.0';
+// 1.20.0: 静态资源缓存、离线启动、用户确认更新；保留原推送注册。
+const SW_VERSION = '1.20.0';
 
 const PING_INTERVAL = 15_000;
 const MAX_MANUAL_ALIVE_MS = 5 * 60_000;
 const ACTIVE_MSG_DB_NAME = 'ActiveMsg';
-// MUST be kept in sync with utils/activeMsgStore.ts:DB_VERSION. Phase 2 Round 1 bumped to 2 to add
-// outbound_sessions / pending_tool_calls / reasoning_buffer stores. SW only reads/writes `inbox`,
-// but if SW pins a lower version while main thread is on v2, SW's open() will throw VersionError
-// and push messages will be silently dropped.
+// MUST be kept in sync with utils/activeMsgStore.ts:DB_VERSION. If SW pins a lower version while
+// main thread is on v2, SW's open() will throw VersionError and push messages will be silently dropped.
 const ACTIVE_MSG_DB_VERSION = 2;
 const ACTIVE_MSG_INBOX_STORE = 'inbox';
+// 下面三张表现在没人读写（主线程启动时清空过一次旧数据）。建表逻辑留着是为了不动库版本：
+// 删表就得升 DB_VERSION，页面和 SW 必须同步升级，否则老的一方打开库直接 VersionError。
 const ACTIVE_MSG_OUTBOUND_SESSIONS_STORE = 'outbound_sessions';
 const ACTIVE_MSG_PENDING_TOOL_CALLS_STORE = 'pending_tool_calls';
 const ACTIVE_MSG_REASONING_BUFFER_STORE = 'reasoning_buffer';
@@ -105,6 +112,35 @@ const proactiveTimers = new Map<string, number>();
 
 const sw = self as unknown as ServiceWorkerGlobalScope;
 
+const resourceCache = staticManifest && createStaticCache({
+  manifest: staticManifest, scope: sw.registration.scope, caches: sw.caches,
+  fetch: request => fetch(request), waitUntil: () => {},
+  digest: async bytes => [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))].map(byte => byte.toString(16).padStart(2, '0')).join(''),
+});
+if (resourceCache) {
+  sw.addEventListener('fetch', event => {
+    const result = resourceCache.handle(event.request, promise => event.waitUntil(promise));
+    // A failed download reaches the page as the network error it is, without an unhandled rejection per request.
+    if (result) event.respondWith(result.catch(() => Response.error()));
+  });
+}
+
+/** Clears shells of releases no open page still runs. Pages that do not answer postpone it. */
+async function tidyResourceCache(cache: NonNullable<typeof resourceCache>): Promise<void> {
+  const clients = await sw.clients.matchAll({ type: 'window', includeUncontrolled: true });
+  const scope = new URL(sw.registration.scope);
+  const pages = clients.filter(client => new URL(client.url).pathname.startsWith(scope.pathname));
+  const builds = await Promise.all(pages.map(client => new Promise<string | null>(resolve => {
+    const channel = new MessageChannel();
+    const finish = (build: string | null) => { clearTimeout(timer); channel.port1.close(); channel.port2.close(); resolve(build); };
+    const timer = setTimeout(() => finish(null), 1500);
+    channel.port1.onmessage = message => finish(typeof message.data?.buildId === 'string' ? message.data.buildId : null);
+    try { client.postMessage({ type: 'SULLY_GET_PAGE_BUILD' }, [channel.port2]); }
+    catch { finish(null); }
+  })));
+  await cache.activate(builds.includes(null) ? null : builds as string[]).catch(() => {});
+}
+
 function summarizeAmsgPayload(payload: any): Record<string, any> {
   return {
     messageKind: payload?.messageKind ?? 'content',
@@ -114,7 +150,6 @@ function summarizeAmsgPayload(payload: any): Record<string, any> {
     charId: payload?.metadata?.charId,
     chunk: payload?.messageIndex,
     total: payload?.totalMessages,
-    hasBlob: payload?._blob === true,
   };
 }
 
@@ -398,11 +433,10 @@ function readPushPayload(event: PushEvent): any | null {
   }
 }
 
-// 单例连接缓存。SW 原本每条 push 都新开一条 ActiveMsg 连接且从不 close —— 在主库
-// (utils/db.ts) 连接风暴撑爆 Chromium backing store 后, 这里 open 同样失败 →
-// saveContentToInbox 抛错 → 永不 notifyClients('active-msg-received') → 主线程 Instant
-// Push 等不到落库确认而超时。复用同一条连接, 失效 (版本升级 / 浏览器强制关闭) 时清
-// 缓存自愈, 下条 push 自动重开。
+// 单例连接缓存。每条 push 都新开一条 ActiveMsg 连接且从不 close 的话, 会跟主库
+// (utils/db.ts) 的连接一起撑爆 Chromium backing store, 这里 open 失败 →
+// saveContentToInbox 抛错 → 永不 notifyClients('active-msg-received') → 页面迟迟等不到
+// 落库。复用同一条连接, 失效 (版本升级 / 浏览器强制关闭) 时清缓存自愈, 下条 push 自动重开。
 let inboxDbPromise: Promise<IDBDatabase> | null = null;
 
 function openInboxDb(): Promise<IDBDatabase> {
@@ -453,9 +487,7 @@ function openInboxDb(): Promise<IDBDatabase> {
       if (!db.objectStoreNames.contains(ACTIVE_MSG_INBOX_STORE)) {
         db.createObjectStore(ACTIVE_MSG_INBOX_STORE, { keyPath: 'messageId' });
       }
-      // Phase 2 Round 1: additive schema for agentic-loop / reasoning correlation. SW only writes
-      // `inbox` today, but it must own the schema for these stores so it can fire its own upgrade
-      // (and so an SW-first-install can still create them without main thread being open).
+      // 这三张表没人读写，只为让 SW-first 安装建出来的库跟主线程 v2 schema 一致（见常量处注释）。
       if (!db.objectStoreNames.contains(ACTIVE_MSG_OUTBOUND_SESSIONS_STORE)) {
         db.createObjectStore(ACTIVE_MSG_OUTBOUND_SESSIONS_STORE, { keyPath: 'sessionId' });
       }
@@ -521,7 +553,7 @@ async function withInboxTx(
   }
 }
 
-// ─── content / inbox (kind=content 老路径, tool_request 的 prefix 也走这里) ───
+// ─── content / inbox (kind=content) ───────────────────────────────────────────
 
 async function saveContentToInbox(payload: any) {
   const charId = payload?.metadata?.charId;
@@ -565,8 +597,8 @@ async function saveContentToInbox(payload: any) {
       taskUuid: payload?.taskUuid ?? null,
       recurrenceType: payload?.recurrenceType ?? null,
       occurrenceMs: payload?.occurrenceMs ?? null,
-      // sessionId / messageIndex 放到 metadata 里, 主线程 flushInboxToChat 反查 reasoning_buffer
-      // + 标记是第几条 (第 1 条才挂 metadata.thinkingChain).
+      // sessionId / messageIndex 放到 metadata 里, 主线程 flushInboxToChat 据此标记是第几条
+      // (第 1 条才挂 metadata.thinkingChain).
       metadata: {
         ...(payload?.metadata || {}),
         sessionId: payload?.sessionId,
@@ -729,7 +761,6 @@ async function saveEmotionUpdateToInbox(payload: any) {
   await notifyClients({ type: 'active-msg-received', charId, charName: payload?.contactName || '', body: '', emotionUpdate: true });
 }
 
-
 // ─── _blob envelope (fetch real body, recurse) ───────────────────────────────
 
 async function fetchBlobEnvelope(payload: any): Promise<any | null> {
@@ -758,15 +789,14 @@ async function fetchBlobEnvelope(payload: any): Promise<any | null> {
 // ─── 路由总入口 ──────────────────────────────────────────────────────────────
 
 async function saveIncomingActiveMessage(payload: any) {
-  // 1. blob envelope: 真正 body 在 BlobStore 里, fetch 出来后用 body 继续路由.
-  // 重投递的 dedup 由主线程处理 (consumePendingToolCalls / inbox 都是原子 claim).
   if (payload?._blob === true) {
     const real = await fetchBlobEnvelope(payload);
     if (!real) return;
     return saveIncomingActiveMessage(real);
   }
 
-  // 2. 按 messageKind 分轨; 兜底: 老 worker (0.6.x) 推过来的没 messageKind 字段, 当 content 处理.
+
+  // 按 messageKind 分轨; 没带 messageKind 字段的当 content 处理.
   const messageKind: string = payload?.messageKind ?? 'content';
   traceSw('route-payload', payload, { route: messageKind });
 
@@ -781,14 +811,6 @@ async function saveIncomingActiveMessage(payload: any) {
 
     case 'emotion_update':
       await saveEmotionUpdateToInbox(payload);
-      return;
-
-    case 'tool_request':
-      await savePendingToolCall(payload);
-      // tool_request 也可能带 prefix (worker hook 把数据标签前的 narration 放进 message),
-      // 走 content 路径让前置 narration 立刻显示 + 触发 applyAssistantPostProcessing 走副作用.
-      if (payload?.message) await saveContentToInbox(payload);
-      await notifyVisibleClientForToolRequest(payload);
       return;
 
     case 'error':
@@ -896,6 +918,31 @@ sw.addEventListener('message', (event: ExtendableMessageEvent) => {
   const { type } = event.data || {};
 
   switch (type) {
+    case 'SULLY_CACHE_STATUS':
+    case 'SULLY_CACHE_PREPARE':
+    case 'SULLY_CACHE_CLEAR': {
+      if (!resourceCache) { event.ports[0]?.postMessage({ error: '资源缓存尚未启用' }); break; }
+      event.waitUntil((async () => {
+        try {
+          if (type === 'SULLY_CACHE_CLEAR') await resourceCache.clearRuntime();
+          if (type === 'SULLY_CACHE_PREPARE') await resourceCache.install();
+          event.ports[0]?.postMessage(await resourceCache.stats());
+        } catch { event.ports[0]?.postMessage({ error: '暂时无法读取资源缓存' }); }
+      })());
+      break;
+    }
+    case 'SULLY_ACTIVATE_UPDATE':
+      event.waitUntil(sw.skipWaiting());
+      break;
+    case 'SULLY_RELEASE_READY':
+      // The next release is downloaded. With the same version number it needs no consent, so page
+      // loads go to the network from now on and the next refresh is already the new release; the
+      // page then lets the waiting worker take over. A new version number waits for the user.
+      if (resourceCache && event.data.appVersion === staticManifest!.appVersion) event.waitUntil(resourceCache.markReplaced());
+      break;
+    case 'SULLY_CACHE_TIDY':
+      if (resourceCache) event.waitUntil(tidyResourceCache(resourceCache));
+      break;
     case 'GET_SW_VERSION':
       // BuildBadge 通过 MessageChannel + port 协议查询；不响应时 BuildBadge 显示 sw@?
       event.ports[0]?.postMessage({ version: SW_VERSION });
@@ -939,10 +986,25 @@ sw.addEventListener('message', (event: ExtendableMessageEvent) => {
   }
 });
 
-sw.addEventListener('install', () => {
-  void sw.skipWaiting();
+sw.addEventListener('install', (event: ExtendableEvent) => {
+  // Without a manifest (dev server, native app) this is the push-only worker, replaced at once.
+  if (!resourceCache) { void sw.skipWaiting(); return; }
+  // A first installation activates right away so push and keep-alive are ready; the page then
+  // asks for the offline shell. Upgrades download the shell first and wait. A failed download
+  // does not hold the worker back, so push fixes always arrive: that version loads its page from
+  // the network until the page gets the shell stored.
+  const previous = sw.registration.active;
+  if (previous) event.waitUntil(resourceCache.install().catch(error => {
+    console.warn('[StaticCache] Offline shell not stored; the page will retry after the update', error);
+  }).then(() => {
+    // The worker in charge decides what this means for the pages it serves (SULLY_RELEASE_READY).
+    try { previous.postMessage({ type: 'SULLY_RELEASE_READY', appVersion: staticManifest!.appVersion }); }
+    catch { /* it finds out when the page next asks */ }
+  }));
 });
 
 sw.addEventListener('activate', (event: ExtendableEvent) => {
+  // Requests of the page that is about to load are held until this finishes, so it only takes
+  // control. Older shells are cleared later, when a started page asks (SULLY_CACHE_TIDY).
   event.waitUntil(sw.clients.claim());
 });

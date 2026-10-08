@@ -17,6 +17,7 @@
  */
 
 import { DB } from './db';
+import { HOME3D_LOCAL_KEYS } from './home3DBackup';
 
 /**
  * 参与镜像的键。收录标准：用户手动配置或长期积累、丢了没法凭空再生、体积是小段
@@ -25,6 +26,8 @@ import { DB } from './db';
  * OSContext.exportSystem / importFullData），新增备份键时记得两边同步。
  */
 export const MIRRORED_KEYS: readonly string[] = [
+    ...HOME3D_LOCAL_KEYS,
+    'sullyos_feedback_invitation_v1',     // 邀请资格/已显示状态；避免局部清理后重复提醒
     'os_theme',                          // 外观主题（丢了 = 回初始主题）
     'os_api_config',                     // 全局 API（丢了 = 一切生成静默失效）
     'os_api_presets',
@@ -37,7 +40,6 @@ export const MIRRORED_KEYS: readonly string[] = [
     'world_home_api',                    // 家园全局 API 覆盖
     'study_api_config',
     'study_tutor_presets',
-    'instant_push_config_v1',
     'push_vapid_v1',                     // VAPID 密钥对，须与浏览器既有推送订阅匹配
     'chat_archive_prompts',
     'chat_active_archive_prompt_id',

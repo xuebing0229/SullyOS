@@ -10,7 +10,7 @@ import {
     WarningCircle,
 } from '@phosphor-icons/react';
 import { useOS } from '../../context/OSContext';
-import { trackEvent } from '../../utils/analytics';
+
 import {
     createMcpServer,
     getMcpUseNativeTools,
@@ -121,7 +121,7 @@ const McpConnectionConsole: React.FC<{
         const next = createMcpServer(`MCP 服务器 ${servers.length + 1}`, '');
         persist([...servers, next]);
         setExpandedId(next.id);
-        trackEvent('添加 MCP 服务器');
+        
     };
 
     const removeServer = (server: McpServerConfig) => {
@@ -129,7 +129,7 @@ const McpConnectionConsole: React.FC<{
         resetMcpSession(server.id);
         persist(servers.filter(item => item.id !== server.id));
         setExpandedId(current => current === server.id ? null : current);
-        trackEvent('删除 MCP 服务器');
+        
     };
 
     const discover = async (server: McpServerConfig) => {
@@ -156,10 +156,7 @@ const McpConnectionConsole: React.FC<{
                     [server.id]: { tone: 'ok', message: result.message },
                 }));
                 addToast(`${server.name || 'MCP 服务器'}已连接`, 'success');
-                trackEvent('测试 MCP 服务器连接', {
-                    result: result.tools.length ? 'connected' : 'connected-no-tools',
-                    protocol: result.connection.protocolVersion,
-                });
+                
             } else {
                 setTestStates(current => ({
                     ...current,
@@ -172,7 +169,7 @@ const McpConnectionConsole: React.FC<{
                     : /协议版本不兼容/.test(message) ? 'protocol-version'
                     : /MCP HTTP/.test(message) ? 'http-error'
                     : 'other';
-                trackEvent('测试 MCP 服务器连接', { result: 'failed', failureKind });
+                
             }
         } finally {
             setTestingId(null);
@@ -188,7 +185,8 @@ const McpConnectionConsole: React.FC<{
                     <div>
                         <h3 className="text-sm font-bold text-slate-800">MCP 工具服务器</h3>
                         <p className="mt-1 max-w-[250px] text-[10px] leading-relaxed text-slate-500">
-                            连接支持 Streamable HTTP 的 MCP 服务器，让聊天调用其中的工具。
+                            连接 MCP，让角色在聊天时使用你接入的工具。
+                            <span className="mt-1 block text-slate-400">支持 Streamable HTTP</span>
                         </p>
                     </div>
                     <button
@@ -223,7 +221,7 @@ const McpConnectionConsole: React.FC<{
                         setUseNativeToolsState(next);
                         setMcpUseNativeTools(next);
                         onMcpConfigChanged?.();
-                        trackEvent('切换原生工具调用', { state: next ? 'on' : 'off' });
+                        
                     }}
                 />
             </section>
@@ -336,7 +334,7 @@ const McpConnectionConsole: React.FC<{
                                                             <input type="password" className={`${inputClass} font-mono`} value={server.proxyKey || ''} onChange={event => update(server.id, { proxyKey: event.target.value.trim() })} placeholder="PROXY_KEY" />
                                                         </div>
                                                     )}
-                                                    <p className="text-[9px] leading-relaxed text-slate-400">用于解决浏览器 CORS 限制。代理由你自行部署，SullyOS 不强制经过中央服务器。</p>
+                                                    <p className="text-[9px] leading-relaxed text-slate-400">用于解决浏览器 CORS 限制。代理由你自行部署，SullyOS·糯米机 不强制经过中央服务器。</p>
                                                 </div>
                                             </details>
                                         </div>

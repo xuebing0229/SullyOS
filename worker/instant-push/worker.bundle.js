@@ -2242,6 +2242,24 @@ function sanitizeTable(value) {
   return value;
 }
 
+// utils/voiceTextDedup.ts
+function deduplicateVoiceText(text) {
+  if (/\[html\]|<翻[译譯]>|```/i.test(text)) return text;
+  const normalize = (s) => s.replace(/[\s\p{P}\p{S}]/gu, "").toLowerCase();
+  const blocks = [];
+  const spoken = [];
+  const protectedText = text.replace(/<[语語]音[^>]*>([\s\S]*?)<\/[语語]音>(?:\s*<字幕>([\s\S]*?)<\/字幕>)?/g, (block, voice, subtitle) => {
+    spoken.push(normalize(voice), ...subtitle ? [normalize(subtitle)] : []);
+    return "\nVOICE" + (blocks.push(block) - 1) + "\n";
+  });
+  if (!blocks.length) return text;
+  return protectedText.split(/\r?\n/).filter((line) => {
+    if (/[<>\[\]\u0002]/.test(line)) return true;
+    const plain = normalize(line);
+    return plain.length < 12 || !spoken.some((voice) => voice.includes(plain));
+  }).join("\n").replace(/\u0002VOICE(\d+)\u0002/g, (_, i) => blocks[Number(i)]).trim();
+}
+
 // node_modules/.pnpm/@rei-standard+amsg-instant@0.11.0-next.6/node_modules/@rei-standard/amsg-instant/dist/index.mjs
 var PUSH_PAYLOAD_BYTE_ENCODER2 = new TextEncoder();
 function segmentTextWithProtectedBlocks(text, options) {
@@ -2326,7 +2344,7 @@ var SSE_DONE_BYTES2 = SSE_ENCODER2.encode("event: done\ndata: {}\n\n");
 // utils/sanitize.ts
 var stripLiteralBackslashN = (t) => t.replace(/\\n/g, "\n");
 var stripLeakedSourceTags = (t) => t.replace(
-  /\s*\[\s*(?:聊\s*(?:天|chat)|chat|通\s*(?:话|call)|call|约\s*(?:会|date)|date)\s*\]\s*/giu,
+  /\s*\[\s*(?:聊\s*(?:天|chat(?:\s*天)?)|chat|通\s*(?:话|call)|call|约\s*(?:会|date)|date)\s*\]\s*/giu,
   "\n"
 );
 var stripTimestamps = (t) => t.replace(/\[\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}\]\s*/g, "").replace(/^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}\s*/gm, "").replace(/（[上下]午\d{1,2}[：:]\d{2}）/g, "").replace(/\(\d{1,2}:\d{2}\s*[AP]M\)/gi, "");
@@ -2483,7 +2501,7 @@ function sanitizeForNotification(text) {
 function sanitizeIntoSegments(text) {
   let cleaned = stripLiteralBackslashN(text);
   cleaned = stripThinkBlocks(cleaned);
-  cleaned = normalizeVoiceTags(cleaned);
+  cleaned = deduplicateVoiceText(normalizeVoiceTags(cleaned));
   cleaned = normalizeTranslationTags(cleaned);
   const ATOM_MARKER = String.fromCharCode(2);
   const atomBlocks = [];
@@ -3091,8 +3109,11 @@ var maskAndSnip = (text, apiKey) => {
   if (apiKey && snippet.includes(apiKey)) snippet = snippet.split(apiKey).join("***");
   return snippet.slice(0, ERROR_SNIPPET_MAX);
 };
-var requestEmotionEval = async (api, promptContent, timeoutMs = EMOTION_EVAL_TIMEOUT_MS) => {
+var requestEmotionEval = async (api, promptContent, timeoutMs = EMOTION_EVAL_TIMEOUT_MS, signal) => {
   const controller = new AbortController();
+  const abort = () => controller.abort(signal?.reason);
+  if (signal?.aborted) return { raw: null, error: null };
+  signal?.addEventListener("abort", abort, { once: true });
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const baseUrl = String(api.baseUrl).replace(/\/+$/, "");
@@ -3166,14 +3187,16 @@ var requestEmotionEval = async (api, promptContent, timeoutMs = EMOTION_EVAL_TIM
     }
     return { raw, error: null, failoverEligible: false };
   } catch (error) {
+    if (signal?.aborted) return { raw: null, error: null };
     console.warn("[emotion-eval] \u8BC4\u4F30\u5931\u8D25\uFF08\u4E3B\u6D41\u7A0B\u4E0D\u53D7\u5F71\u54CD\uFF09", error);
     const reason = controller.signal.aborted ? `\u8BC4\u4F30\u8D85\u65F6\uFF08${Math.round(timeoutMs / 1e3)} \u79D2\u6CA1\u56DE\u6765\uFF09` : `\u8BC4\u4F30\u8BF7\u6C42\u6CA1\u53D1\u51FA\u53BB\uFF1A${maskAndSnip(error instanceof Error ? error.message : String(error), api.apiKey)}`;
     return { raw: null, error: reason, failoverEligible: true };
   } finally {
     clearTimeout(timer);
+    signal?.removeEventListener("abort", abort);
   }
 };
-var requestEmotionEvalWithFailover = async (apis, promptContent, timeoutMs = EMOTION_EVAL_TIMEOUT_MS) => {
+var requestEmotionEvalWithFailover = async (apis, promptContent, timeoutMs = EMOTION_EVAL_TIMEOUT_MS, signal) => {
   const routes = (Array.isArray(apis) ? apis : []).filter(
     (api) => !!api?.baseUrl && !!api?.model
   );
@@ -3182,7 +3205,7 @@ var requestEmotionEvalWithFailover = async (apis, promptContent, timeoutMs = EMO
   }
   let last = null;
   for (let i = 0; i < routes.length; i += 1) {
-    const outcome = await requestEmotionEval(routes[i], promptContent, timeoutMs);
+    const outcome = await requestEmotionEval(routes[i], promptContent, timeoutMs, signal);
     if (outcome.raw != null) return outcome;
     last = outcome;
     if (!outcome.failoverEligible) return outcome;

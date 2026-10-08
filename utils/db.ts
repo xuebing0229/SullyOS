@@ -1,3 +1,15 @@
+import { readLocalCursor } from './localRead';
+import { reportDatabaseFailure } from './databaseHealth';
+import { recordDatabaseOpen } from './databaseOpenDiagnostics';
+import {migrateLegacyWhiteboxPresets} from './legacyWhiteboxPresets';
+import {restoreDecorationMedia} from './decorationMediaBackup';
+import {exportBeautyPreferences,importBeautyPreferences} from './beautyPreferencesBackup';
+import {exportBeautyAuthorBackup,importBeautyAuthorBackup} from './beautyAuthorBackup';
+import { toMountedWorldbook } from './worldbook';
+import { persistCharacterWithHomeMessages } from './homeMessageBridge';
+import {deleteSecretNotesForIds, announceSecretNotesChanged} from './secretNote';
+
+import { orderWorldEpisodes } from './worldHome/episodeOrder';
 
 
 
@@ -8,7 +20,7 @@ import {
     BankTransaction, SavingsGoal, BankFullState, DollhouseState, XhsStockImage, XhsActivityRecord, XhsOwnedPost, SongSheet, QuizSession, GuidebookSession,
     LifeSimState, HandbookEntry, Tracker, TrackerEntry, HotNewsSnapshot,
     LifeRecord, MedPlan, LifeRecordSettings, CharacterGroup,
-    VRWorldNovel, VRNovelAnnotation, CustomCreatorPart, VRMusicRoomState, VRGuestbookState, VRScript, VRStagedPlay, VRLetter,
+    VRWorldNovel, VRLibraryCategory, VRNovelAnnotation, CustomCreatorPart, VRMusicRoomState, VRGuestbookState, VRScript, VRStagedPlay, VRLetter,
     ApiCallUnpricedReason, ApiCostBucket, ApiCostDailySummary, ApiCostOverview, ApiCostResolution, ApiCostUnresolvedEntry,
     WorldProfile, WorldEpisode, AppMemoryCandidate, SimulatorProject, SimulatorSession, ReadingProject, ReadingRecord, ReadingWriting, ReadingStylePreset,
     StoryTheaterEntry, StoryTheaterPreset, StoryTheaterMask
@@ -20,6 +32,7 @@ import { exportSignalLocal, importSignalLocal } from './vrWorld/signal';
 import { exportLuckinLocal, importLuckinLocal } from './luckinMcpClient';
 import { exportMcdLocal, importMcdLocal } from './mcdMcpClient';
 import { exportMcpLocal, importMcpLocal } from './mcpClient';
+import { exportHome3DLocal, importHome3DLocal, HOME3D_LOCAL_KEYS } from './home3DBackup';
 import { exportAmsg2GlobalConfig, importAmsg2GlobalConfig } from './activeMsgStore';
 import { exportWorldHomeLocal, importWorldHomeLocal } from './worldHome/localBackup';
 import { exportDesktopSkinLocal, importDesktopSkinLocal } from './desktopSkinBackup';
@@ -27,6 +40,7 @@ import { applyGalleryReview } from './galleryReview';
 import { GAME_HALL_BACKUP_STORES, GAME_HALL_PROTOCOL_CACHE_STORE } from './gameHallBackup';
 import { prepareGameHallSessionsForRestore } from './gameHallAutoplayBackup';
 import { LIVE_BACKUP_STORES, prepareLiveRowsForRestore } from './liveBackup';
+import { editLibrary, VR_LIBRARY_RECORD, type LibraryEdit } from './vrWorld/library';
 
 const DB_NAME = 'AetherOS_Data';
 // v67：两条并行线各自用掉了 v65/v66（A线: blob_assets + 生活记录；B线: room_plates 门牌 + digest_reports 消化日志），
@@ -41,7 +55,11 @@ const DB_NAME = 'AetherOS_Data';
 // v70：剧场面具箱（原创人物面具）；角色面具仍只存 characterId，不复制神经链接资料。
 // v71：角色小红书伪主页；发帖归属与可删除的自由活动日志分离。
 // v78：合并两条已各自升到 77/71 的 schema 线，确保已有 fork 数据库也会补建上游表。
-const DB_VERSION = 78;
+// v72: home projection reads only home-source rows, never scans private-chat history.
+// v73: direct home-turn lookups for incremental journal writes.
+// v74: merge master delivery lookup with both home indexes, including existing v73 databases.
+// v79: add upstream home indexes without replacing any fork stores.
+const DB_VERSION = 79;
 
 const STORE_CHARACTERS = 'characters';
 const STORE_CHAR_GROUPS = 'character_groups'; // 角色分组定义（角色通过 groupId 指向；与群聊 groups 无关）
@@ -151,15 +169,28 @@ const SULLY_PRESET_EMOJIS = [
 // 单例连接缓存。openDB 原本每次调用都新开一条 IDB 连接, 既不复用也不 close ——
 // 在记忆管线 (hybridSearch / touchAccess 等) 并发读写下会瞬间堆出几十条 AetherOS_Data
 // 连接, 撑爆 Chromium 底层 backing store; 一旦底层报错, 整个 origin 的 IndexedDB
-// (含 Service Worker 的 dedupe / inbox 库) 可能跟着开不了或被强关, Instant Push 因此确认超时。
+// (含 Service Worker 的 dedupe / inbox 库) 可能跟着开不了或被强关, 推送消息因此确认超时。
 // 改成复用同一条连接, 并在连接被外部失效 (另一 tab 升级版本 / 浏览器强制关闭) 时
 // 清掉缓存, 下次 openDB 自动重开 —— 一处改, 全部 ~165 个调用点受益。
 let dbPromise: Promise<IDBDatabase> | null = null;
+
+/** 和新消息同事务失效镜像，防止后台把刚清掉的旧水位重新恢复。 */
+function clearStaleMemoryMirror(transaction: IDBTransaction, charId: string, newId: number): void {
+    const assets = transaction.objectStore(STORE_ASSETS);
+    const key = `mp_hwm_v1_${charId}`;
+    const request = assets.get(key);
+    request.onsuccess = () => {
+        const mirror = request.result?.data;
+        const hwm = typeof mirror === 'number' ? mirror : Number(mirror?.msgId);
+        if (Number.isFinite(hwm) && hwm >= newId) assets.delete(key);
+    };
+}
 
 export const openDB = (): Promise<IDBDatabase> => {
   if (dbPromise) return dbPromise;
 
   const promise = new Promise<IDBDatabase>((resolve, reject) => {
+    recordDatabaseOpen('open-requested', { requestedVersion: DB_VERSION });
     const request = indexedDB.open(DB_NAME, DB_VERSION);
     // onblocked 不是终态: 它先 reject, 但底层 open request 还活着, 等占用方关闭后仍会
     // 触发 onsuccess。用 settled 标记 promise 已 settle, 让那条迟到的连接被 close 掉而
@@ -167,8 +198,15 @@ export const openDB = (): Promise<IDBDatabase> => {
     // 清缓存一律先比对 dbPromise === promise: onclose/onerror 等都是异步回调, 期间若已
     // 重开并缓存了新 promise, 陈旧连接的回调不能误清新单例 (否则又凭空多开一条连接)。
     let settled = false;
+    const openTimer = setTimeout(() => {
+        recordDatabaseOpen('open-timeout', { requestedVersion: DB_VERSION });
+        settled = true;
+        if (dbPromise === promise) dbPromise = null;
+        reject(new Error('本地数据库连接超时，请关闭其他糯米机页面后重试；无需清理数据'));
+    }, 20_000);
 
     request.onerror = () => {
+        if (settled) return;
         const err = request.error;
         // 版本回退兜底: 浏览器里已存在「比当前 build 的 DB_VERSION 更高」的版本时
         // (用户先跑过更新的 build / 另一个 tab 升过级 / SW 缓存了更新的 bundle),
@@ -178,11 +216,16 @@ export const openDB = (): Promise<IDBDatabase> => {
         // 只是当前 schema 的超集, 不带版本号打开就能连到现有版本、读写完全兼容,
         // 不需要也不能降级建表。所以这里回退到「不带版本号 open」一次而不是报死。
         if (err?.name === 'VersionError') {
+            recordDatabaseOpen('versionless-fallback', { requestedVersion: DB_VERSION });
             console.warn('[DB] open VersionError —— 现有版本高于当前 build, 回退到不带版本号打开');
-            settled = true; // 原 request 已终结 (VersionError 后不会再 onsuccess), 标记以防迟到回调
+            // Keep the timeout active until the versionless request settles.
+            // 原 request 已终结 (VersionError 后不会再 onsuccess)，由 fallback 负责结算。
             const fb = indexedDB.open(DB_NAME); // 不带版本号 = 连到现有(更高)版本, 不触发 upgrade
             fb.onsuccess = () => {
                 const db = fb.result;
+                if (settled) { db.close(); return; }
+                clearTimeout(openTimer);
+                recordDatabaseOpen('open-ready', { requestedVersion: DB_VERSION, actualVersion: db.version });
                 // 与正常路径一致地挂上失效自愈回调 (另一 tab 升级 / 浏览器强关连接)。
                 db.onversionchange = () => {
                     db.close();
@@ -194,12 +237,18 @@ export const openDB = (): Promise<IDBDatabase> => {
                 resolve(db);
             };
             fb.onerror = () => {
+                if (settled) return;
+                clearTimeout(openTimer);
+                recordDatabaseOpen('open-error', { requestedVersion: DB_VERSION });
+                settled = true;
                 console.error("DB Open Error (versionless fallback):", fb.error);
                 if (dbPromise === promise) dbPromise = null;
                 reject(fb.error);
             };
             return;
         }
+        clearTimeout(openTimer);
+        recordDatabaseOpen('open-error', { requestedVersion: DB_VERSION });
         console.error("DB Open Error:", err);
         if (dbPromise === promise) dbPromise = null; // 打开失败别把 rejected promise 缓存住
         settled = true;
@@ -207,6 +256,7 @@ export const openDB = (): Promise<IDBDatabase> => {
     };
 
     request.onsuccess = () => {
+        clearTimeout(openTimer);
         const db = request.result;
         // 已经 reject 过 (onblocked / onerror): 这条迟到的连接没人接收, 直接 close,
         // 否则它开着会 block 后续的版本升级 / deleteDatabase。
@@ -214,9 +264,11 @@ export const openDB = (): Promise<IDBDatabase> => {
             try { db.close(); } catch { /* ignore */ }
             return;
         }
+        recordDatabaseOpen('open-ready', { requestedVersion: DB_VERSION, actualVersion: db.version });
         // 另一个 tab 触发版本升级时必须主动 close 让位, 否则对方 open 会被 block;
         // 顺手清缓存, 下次 openDB 重开到新版本。
         db.onversionchange = () => {
+            recordDatabaseOpen('version-change', { requestedVersion: DB_VERSION, actualVersion: db.version });
             db.close();
             if (dbPromise === promise) dbPromise = null;
         };
@@ -231,12 +283,15 @@ export const openDB = (): Promise<IDBDatabase> => {
         // 的竞态会让 push 静默丢失 → 主线程超时, 所以那边 (worker/sw-keep-alive.ts 的
         // withInboxTx) 单独补了「InvalidStateError 清缓存重开一次」的事务级兜底。
         db.onclose = () => {
+            recordDatabaseOpen('connection-closed', { requestedVersion: DB_VERSION, actualVersion: db.version });
             if (dbPromise === promise) dbPromise = null;
         };
         resolve(db);
     };
 
     request.onblocked = () => {
+        clearTimeout(openTimer);
+        recordDatabaseOpen('open-blocked', { requestedVersion: DB_VERSION });
         // 另一个 tab 仍持有旧版本连接, 升级被挡。清缓存 + reject, 别让调用方无限挂着;
         // 与 activeMsgStore / sw-keep-alive 的 openDB 一致, 对方 tab 关闭后下次调用可重试。
         console.warn('[DB] open blocked —— 另一个 tab 仍持有旧版本连接未关闭');
@@ -246,7 +301,13 @@ export const openDB = (): Promise<IDBDatabase> => {
     };
 
     request.onupgradeneeded = (event) => {
+      // A legitimate schema migration may be slow; never cancel it halfway.
+      clearTimeout(openTimer);
       const db = (event.target as IDBOpenDBRequest).result;
+      const upgradeVersions = { requestedVersion: DB_VERSION, fromVersion: event.oldVersion, actualVersion: db.version };
+      recordDatabaseOpen('upgrade-started', upgradeVersions);
+      request.transaction!.addEventListener('complete', () => recordDatabaseOpen('upgrade-committed', upgradeVersions));
+      request.transaction!.addEventListener('abort', () => recordDatabaseOpen('upgrade-aborted', upgradeVersions));
 
       const createStore = (name: string, options?: IDBObjectStoreParameters) => {
           if (!db.objectStoreNames.contains(name)) {
@@ -279,6 +340,20 @@ export const openDB = (): Promise<IDBDatabase> => {
               msgStore.createIndex('charId_type', ['charId', 'type'], { unique: false });
           }
       } catch (e) { console.log('charId_type index migration skipped', e); }
+
+      const messageStore = (event.target as IDBOpenDBRequest).transaction!.objectStore(STORE_MESSAGES);
+      if (!messageStore.indexNames.contains('charId_source')) {
+          messageStore.createIndex('charId_source', ['charId', 'metadata.source'], { unique: false });
+      }
+
+      if (!messageStore.indexNames.contains('charId_homeTurn')) {
+          messageStore.createIndex('charId_homeTurn', ['charId', 'metadata.homeTurnId'], { unique: false });
+      }
+
+      const deliveryStore = (event.target as IDBOpenDBRequest).transaction!.objectStore(STORE_MESSAGES);
+      if (!deliveryStore.indexNames.contains('charId_deliveryId')) {
+          deliveryStore.createIndex('charId_deliveryId', ['charId', 'metadata.deliveryId'], { unique: false });
+      }
 
       createStore(STORE_EMOJIS, { keyPath: 'name' });
       createStore(STORE_EMOJI_CATEGORIES, { keyPath: 'id' });
@@ -633,6 +708,8 @@ export const openDB = (): Promise<IDBDatabase> => {
   });
 
   dbPromise = promise;
+  // Notify the app guard even when a background caller catches the rejection.
+  void promise.catch(reportDatabaseFailure);
   return promise;
 };
 
@@ -804,14 +881,30 @@ export const DB = {
 
   saveCharacter: async (character: CharacterProfile): Promise<void> => {
     const db = await openDB();
-    // 等事务真正提交再 resolve —— 否则调用方 await 后立刻重读 DB 会拿到旧值 (情绪 buff 落库竞态根因).
+    return persistCharacterWithHomeMessages(db, character, clearStaleMemoryMirror);
+  },
+
+  /** An asynchronous evaluation updates only emotion fields, never its stale home/history snapshot. */
+  saveCharacterEmotion: async (charId: string, activeBuffs: CharacterProfile['activeBuffs'], buffInjection: string): Promise<void> => {
+    const db = await openDB();
     return new Promise((resolve, reject) => {
-      const transaction = db.transaction(STORE_CHARACTERS, 'readwrite');
-      transaction.objectStore(STORE_CHARACTERS).put(character);
-      transaction.oncomplete = () => resolve();
-      transaction.onerror = () => reject(transaction.error);
-      transaction.onabort = () => reject(transaction.error || new Error('saveCharacter aborted'));
+      const tx = db.transaction(STORE_CHARACTERS, 'readwrite');
+      const store = tx.objectStore(STORE_CHARACTERS), get = store.get(charId);
+      get.onsuccess = () => {if (get.result) store.put({...get.result, activeBuffs, buffInjection});};
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error || new Error('情绪保存失败'));
     });
+  },
+
+  ensureHomeContextMessages: async (charId: string): Promise<void> => {
+    const db = await openDB();
+    const migrated = await new Promise<boolean>((resolve, reject) => {
+      const request = db.transaction(STORE_CHARACTERS, 'readonly').objectStore(STORE_CHARACTERS).get(charId);
+      request.onsuccess = () => resolve(!request.result || request.result.homeContextBridgeVersion === 3);
+      request.onerror = () => reject(request.error);
+    });
+    if (!migrated) await persistCharacterWithHomeMessages(db, charId, clearStaleMemoryMirror);
   },
 
   deleteCharacter: async (id: string): Promise<void> => {
@@ -864,15 +957,24 @@ export const DB = {
    * @param includeProcessed 是否包含已被记忆宫殿处理的消息（默认 false，即自动过滤）。
    *                         记忆归档、批量总结等需要完整历史的场景应传 true。
    */
-  getMessagesByCharId: async (charId: string, includeProcessed: boolean = false): Promise<Message[]> => {
+  getMessagesByCharId: async (charId: string, includeProcessed: boolean = false, sealHomeActions: boolean = false): Promise<Message[]> => {
     const db = await openDB();
     return new Promise((resolve, reject) => {
-      const transaction = db.transaction(STORE_MESSAGES, 'readonly');
+      const transaction = db.transaction(STORE_MESSAGES, sealHomeActions ? 'readwrite' : 'readonly');
       const store = transaction.objectStore(STORE_MESSAGES);
       const index = store.index('charId');
       const request = index.getAll(IDBKeyRange.only(charId));
+      let snapshot: Message[] = [];
       request.onsuccess = () => {
           let results = (request.result || []).filter((m: Message) => !m.groupId);
+          // A one-shot archive includes the tail. Freeze its home action segments
+          // in the same transaction as the snapshot, before any LLM/network wait.
+          if (sealHomeActions) for (const message of results) {
+              if (message.metadata?.source === 'home' && message.metadata?.homeContextKind === 'actions' && !message.metadata.homeContextSealed) {
+                  message.metadata = { ...message.metadata, homeContextSealed: true };
+                  store.put(message);
+              }
+          }
           // 记忆宫殿：过滤已处理的消息（高水位标记之前的），用向量记忆替代
           if (!includeProcessed) {
               try {
@@ -882,9 +984,12 @@ export const DB = {
                   }
               } catch {}
           }
-          resolve(results);
+          snapshot = results;
       };
       request.onerror = () => reject(request.error);
+      transaction.oncomplete = () => resolve(snapshot);
+      transaction.onerror = () => reject(transaction.error);
+      transaction.onabort = () => reject(transaction.error || new Error('聊天历史快照未能完成'));
     });
   },
 
@@ -931,7 +1036,7 @@ export const DB = {
 
   // DateApp 等按来源展示的轻量历史读取：用 charId 索引倒序扫，只收集目标 source 的最近 N 条。
   // 这样不会为了渲染见面阅读模式，把该角色全量聊天（含图片/base64消息）一次性 getAll 进内存。
-  getRecentMessagesByCharIdAndSource: async (charId: string, source: string, limit: number): Promise<Message[]> => {
+  getRecentMessagesByCharIdAndSource: async (charId: string, source: string, limit: number, beforeId?: number): Promise<Message[]> => {
     const db = await openDB();
     return new Promise((resolve, reject) => {
       const transaction = db.transaction(STORE_MESSAGES, 'readonly');
@@ -942,6 +1047,13 @@ export const DB = {
       cursorReq.onsuccess = () => {
           const cursor = cursorReq.result;
           if (cursor && collected.length < limit) {
+              // Index duplicates are ordered by message primary key. Seek straight to
+              // the page boundary instead of deserializing every newer message again.
+              if (beforeId !== undefined && Number(cursor.primaryKey) >= beforeId) {
+                  if (Number(cursor.primaryKey) > beforeId) cursor.continuePrimaryKey(charId, beforeId);
+                  else cursor.continue();
+                  return;
+              }
               const m = cursor.value as Message;
               if (!m.groupId && m.metadata?.source === source) collected.push(m);
               cursor.continue();
@@ -961,42 +1073,55 @@ export const DB = {
   //
   // 性能：走 [charId, type] 复合索引直取 vr_card，成本只跟该角色 vr_card 条数相关，
   // 跟总消息量无关——上万条聊天的用户也不会把整段历史读进内存。
-  getVRCardsByCharId: async (charId: string): Promise<Message[]> => {
+  getVRCardsByCharId: async (charId: string, limit?: number, accept: (message: Message) => boolean = () => true): Promise<Message[]> => {
     const db = await openDB();
-    return new Promise((resolve, reject) => {
-      const transaction = db.transaction(STORE_MESSAGES, 'readonly');
-      const store = transaction.objectStore(STORE_MESSAGES);
-      if (store.indexNames.contains('charId_type')) {
-          const idx = store.index('charId_type');
-          const req = idx.getAll(IDBKeyRange.only([charId, 'vr_card']));
-          req.onsuccess = () => {
-              const results = (req.result || []).filter((m: Message) => !m.groupId && (m as any).metadata?.vrCard);
-              resolve(results);
-          };
-          req.onerror = () => reject(req.error);
-          return;
-      }
-      // 兜底：复合索引尚未建好的极少数情况（如升级事务还没跑完），用倒序游标扫，
-      // 凑够 80 条 vr_card 即停——避免 getAll 整段历史。
-      const index = store.index('charId');
-      const collected: Message[] = [];
-      const cursorReq = index.openCursor(IDBKeyRange.only(charId), 'prev');
-      cursorReq.onsuccess = () => {
-          const cursor = cursorReq.result;
-          if (cursor && collected.length < 80) {
-              const m = cursor.value as Message;
-              if (!m.groupId && m.type === 'vr_card' && (m as any).metadata?.vrCard) collected.push(m);
-              cursor.continue();
-          } else {
-              resolve(collected);
-          }
-      };
-      cursorReq.onerror = () => reject(cursorReq.error);
+    const indexed = db.transaction(STORE_MESSAGES, 'readonly').objectStore(STORE_MESSAGES).indexNames.contains('charId_type');
+    return readLocalCursor<Message>(db, STORE_MESSAGES, {
+      index: indexed ? 'charId_type' : 'charId',
+      query: IDBKeyRange.only(indexed ? [charId, 'vr_card'] : charId),
+      direction: limit === undefined && indexed ? 'next' : 'prev',
+      limit: limit ?? (indexed ? undefined : 80),
+      accept: m => !m.groupId && m.type === 'vr_card' && m.metadata?.vrCard && accept(m),
     });
   },
 
-  // Same as getRecentMessagesByCharId but also returns the total count (for UI display)
-  getRecentMessagesWithCount: async (charId: string, limit: number): Promise<{ messages: Message[], totalCount: number }> => {
+  /** Legacy market deduplication only needs IDs, never retain every card body. */
+  getVRMarketEventIds: async (charId: string): Promise<string[]> => {
+    const db = await openDB();
+    const indexed = db.transaction(STORE_MESSAGES, 'readonly').objectStore(STORE_MESSAGES).indexNames.contains('charId_type');
+    return readLocalCursor<string>(db, STORE_MESSAGES, {
+      index: indexed ? 'charId_type' : 'charId',
+      query: IDBKeyRange.only(indexed ? [charId, 'vr_card'] : charId),
+      accept: m => !m.groupId && m.type === 'vr_card' && m.metadata?.vrCard && typeof m.metadata.marketEventId === 'string',
+      map: m => m.metadata.marketEventId,
+    });
+  },
+
+  // UI 的可见性判断只需要 ID；游标逐条丢弃正文，避免把图片和全量聊天留在内存。
+  getPrivateMessageRefs: async (charId: string, limit: number, afterId = 0): Promise<Pick<Message, 'id' | 'groupId'>[]> => {
+    const db = await openDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE_MESSAGES, 'readonly');
+      const refs: Pick<Message, 'id' | 'groupId'>[] = [];
+      const req = tx.objectStore(STORE_MESSAGES).index('charId').openCursor(IDBKeyRange.only(charId), 'prev');
+      req.onsuccess = () => {
+        const cursor = req.result;
+        if (!cursor || Number(cursor.primaryKey) <= afterId || refs.length >= limit) {
+          resolve(refs.reverse());
+          return;
+        }
+        const message = cursor.value as Message;
+        if (!message.groupId) refs.push({ id: message.id });
+        cursor.continue();
+      };
+      req.onerror = () => reject(req.error);
+      tx.onabort = () => reject(tx.error || new Error('消息读取中断'));
+    });
+  },
+
+  // UI 读取不受记忆水位影响。先按展示范围筛选，再凑满 N 条，避免见面/通话占满窗口。
+  // totalCount 仍是廉价的索引计数上限；游标已取尽时，调用方用实际展示条数替代它。
+  getRecentMessagesWithCount: async (charId: string, limit: number, accept?: (message: Message) => boolean): Promise<{ messages: Message[], totalCount: number }> => {
     const db = await openDB();
     return new Promise((resolve, reject) => {
       const transaction = db.transaction(STORE_MESSAGES, 'readonly');
@@ -1012,7 +1137,7 @@ export const DB = {
               const cursor = cursorReq.result;
               if (cursor && collected.length < limit) {
                   const m = cursor.value as Message;
-                  if (!m.groupId) collected.push(m);
+                  if (!m.groupId && (!accept || accept(m))) collected.push(m);
                   cursor.continue();
               } else {
                   resolve({ messages: collected.reverse(), totalCount });
@@ -1052,12 +1177,14 @@ export const DB = {
   saveMessage: async (msg: Omit<Message, 'id' | 'timestamp'> & { timestamp?: number }): Promise<number> => {
     const db = await openDB();
     return new Promise((resolve, reject) => {
-        const transaction = db.transaction(STORE_MESSAGES, 'readwrite');
+        const transaction = db.transaction([STORE_MESSAGES, STORE_ASSETS], 'readwrite');
         const store = transaction.objectStore(STORE_MESSAGES);
         const timestamp = typeof msg.timestamp === 'number' ? msg.timestamp : Date.now();
         const { timestamp: _ignored, ...payload } = msg;
         const request = store.add({ ...payload, timestamp });
-        request.onsuccess = () => {
+        request.onsuccess = () => clearStaleMemoryMirror(transaction, msg.charId, request.result as number);
+        // request 成功后事务仍可能回滚。主动消息通知和定时任务销账都必须等提交。
+        transaction.oncomplete = () => {
             const newId = request.result as number;
             // 水位线自愈：新消息的自增 id 必然大于既有一切消息 id，也就必然大于水位线
             // （水位线本身是某条旧消息的 id）。出现 newId ≤ 水位线，只有一种可能——
@@ -1068,6 +1195,48 @@ export const DB = {
             resolve(newId);
         };
         request.onerror = () => reject(request.error);
+        transaction.onerror = () => reject(transaction.error || new Error('消息未能保存'));
+        transaction.onabort = () => reject(transaction.error || new Error('消息未能保存'));
+    });
+  },
+
+  /** One persisted message per logical delivery, including retries after a tab closes. */
+  saveMessageOnce: async (deliveryId: string, msg: Omit<Message, 'id' | 'timestamp'> & { timestamp?: number }): Promise<number> => {
+    const db = await openDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction([STORE_MESSAGES, STORE_ASSETS], 'readwrite');
+      const store = tx.objectStore(STORE_MESSAGES);
+      let savedId = 0;
+      let inserted = false;
+      const indexed = store.indexNames.contains('charId_deliveryId');
+      const cursorRequest = store.index(indexed ? 'charId_deliveryId' : 'charId').openCursor(
+        IDBKeyRange.only(indexed ? [msg.charId, deliveryId] : msg.charId), 'prev',
+      );
+      cursorRequest.onsuccess = () => {
+        const cursor = cursorRequest.result;
+        if (cursor) {
+          if (cursor.value.metadata?.deliveryId === deliveryId) { savedId = cursor.value.id; return; }
+          cursor.continue(); return;
+        }
+        const request = store.add({ ...msg, timestamp: msg.timestamp ?? Date.now(), metadata: { ...msg.metadata, deliveryId } });
+        request.onsuccess = () => {
+          savedId = request.result as number;
+          inserted = true;
+          clearStaleMemoryMirror(tx, msg.charId, savedId);
+        };
+      };
+      tx.oncomplete = () => {
+        if (inserted) {
+          try {
+            for (const key of [`mp_lastMsgId_${msg.charId}`, ...(msg.groupId ? [`mp_lastMsgId_group_${msg.groupId}`] : [])]) {
+              if (parseInt(localStorage.getItem(key) || '0', 10) >= savedId) localStorage.removeItem(key);
+            }
+          } catch { /* message was committed even if browser preferences are unavailable */ }
+        }
+        resolve(savedId);
+      };
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error || new Error('消息未能保存'));
     });
   },
 
@@ -1155,8 +1324,9 @@ export const DB = {
     const db = await openDB();
     return new Promise((resolve, reject) => {
       const transaction = db.transaction(STORE_MESSAGES, 'readwrite');
+      deleteSecretNotesForIds(transaction.objectStore(STORE_MESSAGES), [id]);
       transaction.objectStore(STORE_MESSAGES).delete(id);
-      transaction.oncomplete = () => resolve();
+      transaction.oncomplete = () => {announceSecretNotesChanged(); resolve();};
       transaction.onerror = () => reject(transaction.error);
       transaction.onabort = () => reject(transaction.error || new Error('deleteMessage aborted'));
     });
@@ -1169,9 +1339,12 @@ export const DB = {
       const db = await openDB();
       const transaction = db.transaction(STORE_MESSAGES, 'readwrite');
       const store = transaction.objectStore(STORE_MESSAGES);
+      deleteSecretNotesForIds(store, ids);
       ids.forEach(id => store.delete(id));
-      return new Promise((resolve) => {
-          transaction.oncomplete = () => resolve();
+      return new Promise((resolve, reject) => {
+          transaction.oncomplete = () => {announceSecretNotesChanged(); resolve();};
+          transaction.onerror = () => reject(transaction.error);
+          transaction.onabort = () => reject(transaction.error || new Error('deleteMessages aborted'));
       });
   },
 
@@ -1232,7 +1405,7 @@ export const DB = {
         }
       };
       request.onerror = () => reject(request.error);
-      transaction.oncomplete = () => resolve();
+      transaction.oncomplete = () => {announceSecretNotesChanged(charId); resolve();};
       transaction.onerror = () => reject(transaction.error);
       transaction.onabort = () => reject(transaction.error || new Error('clearMessages aborted'));
     });
@@ -1581,6 +1754,19 @@ export const DB = {
         transaction.oncomplete = () => resolve();
         transaction.onerror = () => reject(transaction.error);
         transaction.onabort = () => reject(transaction.error || new Error('IndexedDB transaction aborted'));
+    });
+  },
+
+  // Commit a preset together with its provenance so a failed save cannot advance its version.
+  saveAssetBatch: async (entries: Array<{id:string;data:string}>): Promise<void> => {
+    const db=await openDB();
+    return new Promise((resolve,reject)=>{
+      const transaction=db.transaction(STORE_ASSETS,'readwrite');
+      const store=transaction.objectStore(STORE_ASSETS);
+      for(const entry of entries)store.put(entry);
+      transaction.oncomplete=()=>resolve();
+      transaction.onerror=()=>reject(transaction.error);
+      transaction.onabort=()=>reject(transaction.error||new Error('Asset batch aborted'));
     });
   },
 
@@ -2062,8 +2248,13 @@ export const DB = {
 
   saveScheduledMessage: async (msg: ScheduledMessage): Promise<void> => {
       const db = await openDB();
-      const transaction = db.transaction(STORE_SCHEDULED, 'readwrite');
-      transaction.objectStore(STORE_SCHEDULED).put(msg);
+      return new Promise((resolve, reject) => {
+          const transaction = db.transaction(STORE_SCHEDULED, 'readwrite');
+          transaction.objectStore(STORE_SCHEDULED).put(msg);
+          transaction.oncomplete = () => resolve();
+          transaction.onerror = () => reject(transaction.error || new Error('定时消息未能保存'));
+          transaction.onabort = () => reject(transaction.error || new Error('定时消息未能保存'));
+      });
   },
 
   getDueScheduledMessages: async (charId: string): Promise<ScheduledMessage[]> => {
@@ -2085,14 +2276,33 @@ export const DB = {
 
   deleteScheduledMessage: async (id: string): Promise<void> => {
       const db = await openDB();
-      const transaction = db.transaction(STORE_SCHEDULED, 'readwrite');
-      transaction.objectStore(STORE_SCHEDULED).delete(id);
+      return new Promise((resolve, reject) => {
+          const transaction = db.transaction(STORE_SCHEDULED, 'readwrite');
+          transaction.objectStore(STORE_SCHEDULED).delete(id);
+          transaction.oncomplete = () => resolve();
+          transaction.onerror = () => reject(transaction.error || new Error('定时消息未能删除'));
+          transaction.onabort = () => reject(transaction.error || new Error('定时消息未能删除'));
+      });
   },
 
   saveUserProfile: async (profile: UserProfile): Promise<void> => {
       const db = await openDB();
-      const transaction = db.transaction(STORE_USER, 'readwrite');
-      transaction.objectStore(STORE_USER).put({ ...profile, id: 'me' });
+      return new Promise((resolve,reject)=>{
+          const transaction=db.transaction(STORE_USER,'readwrite'),store=transaction.objectStore(STORE_USER),request=store.get('me');
+          request.onsuccess=()=>store.put({...profile,wardrobeOutfits:request.result?.wardrobeOutfits??profile.wardrobeOutfits,id:'me'});
+          transaction.oncomplete=()=>resolve();transaction.onerror=transaction.onabort=()=>reject(transaction.error);
+      });
+  },
+
+  /** Wardrobe is edited independently of profile forms; merge within one transaction. */
+  updateWardrobeOutfits: async (update:(items:NonNullable<UserProfile['wardrobeOutfits']>)=>NonNullable<UserProfile['wardrobeOutfits']>):Promise<NonNullable<UserProfile['wardrobeOutfits']>> => {
+      const db=await openDB();
+      return new Promise((resolve,reject)=>{
+          const tx=db.transaction(STORE_USER,'readwrite'),store=tx.objectStore(STORE_USER),request=store.get('me');
+          let items:NonNullable<UserProfile['wardrobeOutfits']>=[],failure:unknown;
+          request.onsuccess=()=>{try{const profile=request.result??{id:'me',name:'我',avatar:'',bio:''};items=update(profile.wardrobeOutfits??[]);store.put({...profile,wardrobeOutfits:items});}catch(e){failure=e;tx.abort();}};
+          tx.oncomplete=()=>resolve(items);tx.onerror=tx.onabort=()=>reject(failure??tx.error);
+      });
   },
 
   getUserProfile: async (): Promise<UserProfile | null> => {
@@ -2247,8 +2457,27 @@ export const DB = {
 
   saveDailySchedule: async (schedule: DailySchedule): Promise<void> => {
       const db = await openDB();
-      const transaction = db.transaction(STORE_DAILY_SCHEDULE, 'readwrite');
-      transaction.objectStore(STORE_DAILY_SCHEDULE).put(schedule);
+      return new Promise((resolve, reject) => {
+          const transaction = db.transaction(STORE_DAILY_SCHEDULE, 'readwrite');
+          const store = transaction.objectStore(STORE_DAILY_SCHEDULE);
+          // Generated schedules (including background results) may omit the local cover.
+          // Read and inherit in the same transaction so a concurrent upload is retained.
+          if (schedule.coverImage !== undefined) store.put(schedule);
+          else {
+              const range = IDBKeyRange.bound(`${schedule.charId}_`, `${schedule.charId}_\uffff`);
+              const request = store.openCursor(range, 'prev');
+              request.onsuccess = () => {
+                  const cursor = request.result;
+                  if (!cursor) store.put(schedule);
+                  else if (cursor.value.charId === schedule.charId && cursor.value.coverImage) {
+                      store.put({ ...schedule, coverImage: cursor.value.coverImage });
+                  } else cursor.continue();
+              };
+          }
+          transaction.oncomplete = () => resolve();
+          transaction.onerror = () => reject(transaction.error);
+          transaction.onabort = () => reject(transaction.error);
+      });
   },
 
   deleteDailySchedule: async (charId: string, date: string): Promise<void> => {
@@ -2317,7 +2546,7 @@ export const DB = {
           if (!db.objectStoreNames.contains(STORE_DAILY_SCHEDULE)) { resolve(null); return; }
           const transaction = db.transaction(STORE_DAILY_SCHEDULE, 'readonly');
           const store = transaction.objectStore(STORE_DAILY_SCHEDULE);
-          const req = store.openCursor();
+          const req = store.openCursor(null, 'prev');
           req.onsuccess = () => {
               const cursor = req.result;
               if (cursor) {
@@ -2606,6 +2835,48 @@ export const DB = {
       transaction.objectStore(STORE_WORLDBOOKS).delete(id);
   },
 
+  // Read current records and update the library + mounted caches atomically.
+  // Never loop updateWorldbook with a captured React character snapshot.
+  mutateWorldbooks: async (ids: string[], updates: Partial<Worldbook> | null): Promise<{ books: Worldbook[]; characters: CharacterProfile[] }> => {
+      const db = await openDB();
+      return new Promise((resolve, reject) => {
+          const tx = db.transaction([STORE_WORLDBOOKS, STORE_CHARACTERS], 'readwrite');
+          const library = tx.objectStore(STORE_WORLDBOOKS);
+          const charactersStore = tx.objectStore(STORE_CHARACTERS);
+          const targets = new Set(ids);
+          const books: Worldbook[] = [];
+          const changedCharacters: CharacterProfile[] = [];
+          const request = library.getAll();
+          request.onsuccess = () => {
+              for (const book of request.result as Worldbook[]) {
+                  if (!targets.has(book.id)) continue;
+                  if (updates === null) library.delete(book.id);
+                  else {
+                      const next = { ...book, ...updates, id: book.id, createdAt: book.createdAt, updatedAt: Date.now() };
+                      books.push(next);
+                      library.put(next);
+                  }
+              }
+              const replacements = new Map(books.map(book => [book.id, toMountedWorldbook(book)]));
+              const chars = charactersStore.getAll();
+              chars.onsuccess = () => {
+                  for (const char of chars.result as CharacterProfile[]) {
+                      const mounted = char.mountedWorldbooks || [];
+                      if (!mounted.some(book => updates === null ? targets.has(book.id) : replacements.has(book.id))) continue;
+                      const next = { ...char, mountedWorldbooks: updates === null
+                          ? mounted.filter(book => !targets.has(book.id))
+                          : mounted.map(book => replacements.get(book.id) || book) };
+                      changedCharacters.push(next);
+                      charactersStore.put(next);
+                  }
+              };
+          };
+          tx.oncomplete = () => resolve({ books, characters: changedCharacters });
+          tx.onerror = () => reject(tx.error || new Error('世界书保存失败'));
+          tx.onabort = () => reject(tx.error || new Error('世界书保存已撤销'));
+      });
+  },
+
   // --- 见面 · 剧情剧场 ---
   getStoryTheaters: async (): Promise<StoryTheaterEntry[]> => {
       const db = await openDB();
@@ -2718,6 +2989,58 @@ export const DB = {
   },
 
   // --- VR World 「彼方」 全局小说库 ---
+  getVRLibraryCategories: async (): Promise<VRLibraryCategory[]> => {
+      const db = await openDB();
+      const rows = await readLocalCursor<{ categories?: VRLibraryCategory[] }>(db, STORE_VR_SETTINGS, { query: VR_LIBRARY_RECORD, limit: 1 });
+      return rows[0]?.categories || [];
+  },
+
+  editVRLibrary: async (edit: LibraryEdit): Promise<void> => {
+      const db = await openDB();
+      return new Promise((resolve, reject) => {
+          const tx = db.transaction([STORE_VR_SETTINGS, STORE_VR_NOVELS], 'readwrite');
+          const settings = tx.objectStore(STORE_VR_SETTINGS), books = tx.objectStore(STORE_VR_NOVELS);
+          const categoryRequest = settings.get(VR_LIBRARY_RECORD), novelRequest = books.getAll();
+          let ready = 0;
+          let failure: unknown;
+          const apply = () => {
+              if (++ready !== 2) return;
+              try {
+                  const result = editLibrary(categoryRequest.result?.categories || [], novelRequest.result || [], edit);
+                  settings.put({ id: VR_LIBRARY_RECORD, categories: result.categories });
+                  for (const novel of result.changed) books.put(novel);
+              } catch (error) { failure = error; tx.abort(); }
+          };
+          categoryRequest.onsuccess = apply;
+          novelRequest.onsuccess = apply;
+          tx.oncomplete = () => resolve();
+          tx.onerror = tx.onabort = () => reject(failure || tx.error || new Error('书库分类保存失败'));
+      });
+  },
+
+  getVRNovelSummaries: async (): Promise<import('../types').VRWorldNovelSummary[]> => {
+      const db = await openDB();
+      if (!db.objectStoreNames.contains(STORE_VR_NOVELS)) return [];
+      return readLocalCursor<import('../types').VRWorldNovelSummary>(db, STORE_VR_NOVELS, {
+          map: (book: VRWorldNovel) => {
+              if (!book || !Array.isArray(book.segments)) throw new Error('书库中有无法读取的旧书目，请保留备份后重试');
+              const { segments, ...metadata } = book;
+              return { ...metadata, segmentCount: segments.length };
+          },
+      });
+  },
+
+  getVRNovel: async (id: string): Promise<VRWorldNovel | undefined> => {
+      const db = await openDB();
+      return new Promise((resolve, reject) => {
+          const tx = db.transaction(STORE_VR_NOVELS, 'readonly');
+          const request = tx.objectStore(STORE_VR_NOVELS).get(id);
+          request.onsuccess = () => resolve(request.result);
+          request.onerror = () => reject(request.error);
+          tx.onabort = () => reject(tx.error || new Error('书籍读取中断'));
+      });
+  },
+
   getVRNovels: async (): Promise<VRWorldNovel[]> => {
       const db = await openDB();
       if (!db.objectStoreNames.contains(STORE_VR_NOVELS)) return [];
@@ -2731,8 +3054,12 @@ export const DB = {
 
   saveVRNovel: async (novel: VRWorldNovel): Promise<void> => {
       const db = await openDB();
-      const transaction = db.transaction(STORE_VR_NOVELS, 'readwrite');
-      transaction.objectStore(STORE_VR_NOVELS).put(novel);
+      return new Promise((resolve, reject) => {
+          const transaction = db.transaction(STORE_VR_NOVELS, 'readwrite');
+          transaction.objectStore(STORE_VR_NOVELS).put(novel);
+          transaction.oncomplete = () => resolve();
+          transaction.onerror = transaction.onabort = () => reject(transaction.error || new Error('书籍保存失败'));
+      });
   },
 
   deleteVRNovel: async (id: string): Promise<void> => {
@@ -2845,11 +3172,54 @@ export const DB = {
       transaction.objectStore(STORE_VR_GUESTBOOK).put({ ...state, id: 'board', messages });
   },
 
+  /** Atomic append: concurrent visitors and system announcements cannot replace each other. */
+  appendVRGuestbookMessages: async (messages: VRGuestbookState['messages']): Promise<void> => {
+    const db = await openDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE_VR_GUESTBOOK, 'readwrite');
+      const store = tx.objectStore(STORE_VR_GUESTBOOK);
+      const request = store.get('board');
+      request.onsuccess = () => {
+        const board: VRGuestbookState = request.result || { id: 'board', messages: [], updatedAt: 0 };
+        const ids = new Set(board.messages.map(m => m.id));
+        const fresh = messages.filter(m => { if (ids.has(m.id)) return false; ids.add(m.id); return true; });
+        if (fresh.length) store.put({ ...board, messages: [...board.messages, ...fresh], updatedAt: Date.now() });
+      };
+      tx.oncomplete = () => { if (typeof window !== 'undefined') window.dispatchEvent(new Event('vr-guestbook-updated')); resolve(); };
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error || new Error('留言未能保存'));
+    });
+  },
+
   clearVRGuestbook: async (): Promise<void> => {
       const db = await openDB();
       if (!db.objectStoreNames.contains(STORE_VR_GUESTBOOK)) return;
       const transaction = db.transaction(STORE_VR_GUESTBOOK, 'readwrite');
       transaction.objectStore(STORE_VR_GUESTBOOK).put({ id: 'board', messages: [], updatedAt: Date.now() });
+  },
+
+  /** Edit/delete against the latest board, without replacing concurrent posts. */
+  editVRGuestbookMessage: async (id: string, content: string | null): Promise<void> => {
+      const db = await openDB();
+      return new Promise((resolve, reject) => {
+          const tx = db.transaction(STORE_VR_GUESTBOOK, 'readwrite');
+          const store = tx.objectStore(STORE_VR_GUESTBOOK);
+          const request = store.get('board');
+          request.onsuccess = () => {
+              const board = request.result as VRGuestbookState | undefined;
+              if (!board) return;
+              const messages = content === null
+                  ? board.messages.filter(m => m.id !== id)
+                  : board.messages.map(m => m.id === id ? { ...m, content } : m);
+              store.put({ ...board, messages, updatedAt: Date.now() });
+          };
+          tx.oncomplete = () => {
+              if (typeof window !== 'undefined') window.dispatchEvent(new Event('vr-guestbook-updated'));
+              resolve();
+          };
+          tx.onerror = () => reject(tx.error);
+          tx.onabort = () => reject(tx.error);
+      });
   },
 
   // --- 剧院·投稿剧本库 ---
@@ -2913,12 +3283,8 @@ export const DB = {
   getVRLetters: async (): Promise<VRLetter[]> => {
       const db = await openDB();
       if (!db.objectStoreNames.contains(STORE_VR_LETTERS)) return [];
-      return new Promise((resolve, reject) => {
-          const transaction = db.transaction(STORE_VR_LETTERS, 'readonly');
-          const request = transaction.objectStore(STORE_VR_LETTERS).getAll();
-          request.onsuccess = () => resolve((request.result || []).sort((a: VRLetter, b: VRLetter) => b.createdAt - a.createdAt));
-          request.onerror = () => reject(request.error);
-      });
+      const letters = await readLocalCursor<VRLetter>(db, STORE_VR_LETTERS);
+      return letters.sort((a, b) => b.createdAt - a.createdAt);
   },
 
   saveVRLetter: async (letter: VRLetter): Promise<void> => {
@@ -2976,6 +3342,24 @@ export const DB = {
       });
   },
 
+  /** Apply UI changes against the latest persisted world without rolling back engine progress. */
+  updateWorld: async (id: string, patch: Partial<WorldProfile> | ((current: WorldProfile) => Partial<WorldProfile>)): Promise<void> => {
+      const db = await openDB();
+      return new Promise((resolve, reject) => {
+          const tx = db.transaction(STORE_WORLDS, 'readwrite');
+          const store = tx.objectStore(STORE_WORLDS);
+          const request = store.get(id);
+          request.onsuccess = () => {
+              if (!request.result) return;
+              const current = request.result as WorldProfile;
+              store.put({ ...current, ...(typeof patch === 'function' ? patch(current) : patch), id });
+          };
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => reject(tx.error);
+          tx.onabort = () => reject(tx.error);
+      });
+  },
+
   deleteWorld: async (id: string): Promise<void> => {
       const db = await openDB();
       // 连带删掉该世界的全部演绎历史
@@ -3000,17 +3384,67 @@ export const DB = {
           const index = db.transaction(STORE_WORLD_EPISODES, 'readonly').objectStore(STORE_WORLD_EPISODES).index('worldId');
           const request = index.getAll(IDBKeyRange.only(worldId));
           request.onsuccess = () => {
-              const all = (request.result || []).sort((a: WorldEpisode, b: WorldEpisode) => b.round - a.round);
+              const all = orderWorldEpisodes(request.result || []);
               resolve(all.slice(0, limit));
           };
           request.onerror = () => reject(request.error);
       });
   },
 
+  /** 重演的正文与副作用同事务提交；请求期间的世界编辑不被旧快照覆盖。 */
+  replaceWorldBeat: async (
+      world: WorldProfile, episode: WorldEpisode, charId: string,
+      card: { content: string; metadata: Message['metadata']; insertIfMissing: boolean },
+      expectedWorld: WorldProfile, expectedEpisode: WorldEpisode,
+  ): Promise<void> => {
+      const db = await openDB();
+      return new Promise((resolve, reject) => {
+          const tx = db.transaction([STORE_WORLDS, STORE_WORLD_EPISODES, STORE_MESSAGES], 'readwrite');
+          const worlds = tx.objectStore(STORE_WORLDS);
+          const episodes = tx.objectStore(STORE_WORLD_EPISODES);
+          const messages = tx.objectStore(STORE_MESSAGES);
+          let failure: Error | undefined;
+          const abort = () => { failure = new Error('重演期间家园记录已变化，请重新重演'); tx.abort(); };
+          const request = worlds.get(world.id);
+          request.onsuccess = () => {
+              const current = request.result as WorldProfile | undefined;
+              const fields = ['storyClock', 'threads', 'seeds', 'relationships', 'feedReactions'] as const;
+              if (!current || fields.some(key => JSON.stringify(current[key]) !== JSON.stringify(expectedWorld[key]))) { abort(); return; }
+              worlds.put({ ...current, threads: world.threads, seeds: world.seeds, relationships: world.relationships, feedReactions: world.feedReactions, updatedAt: Date.now() });
+          };
+          const epRequest = episodes.get(episode.id);
+          epRequest.onsuccess = () => {
+              if (!epRequest.result || JSON.stringify(epRequest.result.beats) !== JSON.stringify(expectedEpisode.beats)) { abort(); return; }
+              const { observationNumber: _display, ...stored } = episode;
+              episodes.put(stored);
+          };
+          let found = false;
+          const cursorRequest = messages.index('charId').openCursor(IDBKeyRange.only(charId));
+          cursorRequest.onsuccess = () => {
+              const cursor = cursorRequest.result;
+              if (cursor) {
+                  const message = cursor.value as Message;
+                  const meta = message.metadata as any;
+                  if (message.type === 'world_card' && meta?.worldId === world.id && meta.round === episode.round && meta.storyTime === episode.storyTime) {
+                      found = true;
+                      cursor.update({ ...message, content: card.content, metadata: card.metadata });
+                  }
+                  cursor.continue();
+              } else if (!found && card.insertIfMissing) {
+                  messages.add({ charId, role: 'assistant', type: 'world_card', content: card.content, metadata: card.metadata, timestamp: Date.now() });
+              }
+          };
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => reject(failure || tx.error);
+          tx.onabort = () => reject(failure || tx.error || new Error('重演保存失败'));
+      });
+  },
+
   saveWorldEpisode: async (episode: WorldEpisode): Promise<void> => {
       const db = await openDB();
       const tx = db.transaction(STORE_WORLD_EPISODES, 'readwrite');
-      tx.objectStore(STORE_WORLD_EPISODES).put(episode);
+      const { observationNumber: _displayOnly, ...stored } = episode;
+      tx.objectStore(STORE_WORLD_EPISODES).put(stored);
       return new Promise((resolve, reject) => {
           tx.oncomplete = () => resolve();
           tx.onerror = () => reject(tx.error);
@@ -3812,11 +4246,10 @@ export const DB = {
       }
   },
 
-  /**
-   * 兼容旧版整包备份与现有回归测试的完整快照入口。
-   * 新版 ZIP 导出仍按分区流式读取；这里保留一次性快照语义，并覆盖上游与 fork 的 store。
-   */
-  exportFullData: async (): Promise<Partial<FullBackupData>> => {
+  exportFullData: async (
+      options: { includeBackendConnection?: boolean } = {},
+  ): Promise<Partial<FullBackupData>> => {
+      await migrateLegacyWhiteboxPresets(DB);
       const db = await openDB();
       const read = (storeName: string): Promise<any[]> => {
           if (!db.objectStoreNames.contains(storeName)) return Promise.resolve([]);
@@ -3858,7 +4291,7 @@ export const DB = {
       const entries = await Promise.all(Object.entries(stores).map(async ([key, store]) => [key, await read(store)] as const));
       const result: any = Object.fromEntries(entries);
       const users = await read(STORE_USER);
-      if (users[0]) result.userProfile = { name: users[0].name, avatar: users[0].avatar, bio: users[0].bio };
+      if (users[0]) { result.userProfile = { ...users[0] }; delete result.userProfile.id; }
       const bankData = await read(STORE_BANK_DATA);
       const mainState = bankData.find((item: any) => item.id === 'main_state');
       const dollhouse = bankData.find((item: any) => item.id === 'dollhouse_state');
@@ -3870,7 +4303,17 @@ export const DB = {
       result.vrSettings = await read(STORE_VR_SETTINGS);
       const apiLog = (await read(STORE_API_CALL_LOG)).find((item: any) => item.id === 'log');
       result.apiCallLog = apiLog?.entries || [];
-      result.amsg2GlobalConfig = await exportAmsg2GlobalConfig();
+      result.amsg2GlobalConfig = await exportAmsg2GlobalConfig(options);
+      result.home3DLocal = exportHome3DLocal();
+      result.beautyAuthorLocal = exportBeautyAuthorBackup();
+      result.beautyPreferences = exportBeautyPreferences();
+      result.vrPostOffice = exportPostOfficeLocal();
+      result.vrSignal = exportSignalLocal();
+      result.worldHomeLocal = exportWorldHomeLocal();
+      result.luckinLocal = exportLuckinLocal();
+      result.mcdLocal = exportMcdLocal();
+      result.mcpLocal = exportMcpLocal();
+      result.desktopSkinLocal = await exportDesktopSkinLocal();
       return result;
   },
 
@@ -3888,6 +4331,11 @@ export const DB = {
           }) => void;
           /** 导入落库完成后，报告清除了多少条旧 aiTurnContext 快照。 */
           onLegacyTurnContextCleaned?: (count: number) => void;
+          /**
+           * 让备份里带的 Worker 地址 / 密钥 / 用户 id 落地。默认不落：导入者未必知道
+           * 这份文件是谁的，静默连上去的话，ta 的 API 凭据和聊天上下文会写进别人那台 D1。
+           */
+          allowBackendConnection?: boolean;
       } = {}
   ): Promise<void> => {
       const db = await openDB();
@@ -4020,6 +4468,7 @@ export const DB = {
           data.worlds !== undefined,
           data.worldEpisodes !== undefined,
           (data as any).worldHomeLocal !== undefined,
+          data.home3DLocal !== undefined,
           (data as any).luckinLocal !== undefined,
           (data as any).mcdLocal !== undefined,
           data.pixelHomeAssets !== undefined,
@@ -4142,7 +4591,8 @@ export const DB = {
                       const img = media.roomItems?.[item.id];
                       return img ? { ...item, image: img } : item;
                   })
-              } : c.roomConfig
+              } : c.roomConfig,
+              ...restoreDecorationMedia(media.decoration),
           } as CharacterProfile;
       };
 
@@ -4206,6 +4656,9 @@ export const DB = {
           await clearAndAdd(STORE_ASSETS, data.assets || [], '系统资源', true);
           data.assets = undefined as any;
       }, data.assets?.length || 0);
+      await runSection('聊天收藏', data.contentFavoritesIndex != null, async () => {
+          await DB.saveAssetRaw('content_favorites_index_v1', data.contentFavoritesIndex);
+      });
       await runSection('日记贴纸', data.savedJournalStickers !== undefined, async () => {
           await mergeStore(STORE_JOURNAL_STICKERS, data.savedJournalStickers, '日记贴纸', true);
           data.savedJournalStickers = undefined as any;
@@ -4374,6 +4827,19 @@ export const DB = {
           importMcdLocal((data as any).mcdLocal); // token + 启用状态
           (data as any).mcdLocal = undefined;
       }, 1);
+      await runSection('3D 家园本机偏好', data.home3DLocal !== undefined, async () => {
+          importHome3DLocal(data.home3DLocal);
+          // Imported assets may contain an older localStorage mirror. Do not let
+          // the next startup resurrect preferences explicitly reset by this backup.
+          const mirror = await DB.getAssetRaw('ls_mirror_v1');
+          if (mirror?.data && typeof mirror.data === 'object' && !Array.isArray(mirror.data)) {
+              const values = {...mirror.data};
+              for (const key of HOME3D_LOCAL_KEYS) delete values[key];
+              await DB.saveAssetRaw('ls_mirror_v1', {...mirror, data: {...values, ...exportHome3DLocal()}});
+          }
+          data.home3DLocal = undefined;
+      });
+
       await runSection('MCP 服务器配置', (data as any).mcpLocal !== undefined, async () => {
           importMcpLocal((data as any).mcpLocal); // 用户自配的 MCP 服务器列表
           (data as any).mcpLocal = undefined;
@@ -4382,9 +4848,18 @@ export const DB = {
           // 必须在 OSContext 那段「导入后跟云端对一次账」之前落地：那段的第一道门是
           // 「本机有没有 Worker 地址」，地址还没写回去的话它会整段跳过，旧档角色留在
           // 云端的无主任务就没人取消，等用户手填回地址时照样到点推送。
-          await importAmsg2GlobalConfig((data as any).amsg2GlobalConfig);
+          await importAmsg2GlobalConfig(
+              (data as any).amsg2GlobalConfig,
+              { allowBackendConnection: options.allowBackendConnection },
+          );
           (data as any).amsg2GlobalConfig = undefined;
       }, 1);
+      await runSection('美化偏好', data.beautyPreferences !== undefined, async () => {
+          importBeautyPreferences(data.beautyPreferences);data.beautyPreferences=undefined;
+      });
+      await runSection('美化作者身份', data.beautyAuthorLocal !== undefined, async () => {
+          importBeautyAuthorBackup(data.beautyAuthorLocal);data.beautyAuthorLocal=undefined;
+      });
       await runSection('桌面皮肤偏好', (data as any).desktopSkinLocal !== undefined, async () => {
           await importDesktopSkinLocal((data as any).desktopSkinLocal); // 界面配色 + 看板 banner（data URL→本机 blob）
           (data as any).desktopSkinLocal = undefined;

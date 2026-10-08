@@ -19,6 +19,7 @@ readonly VRAutonomousRoomId[] = [
     'gym',
     'postoffice',
     'theater',
+    'sar',
 ] as const;
 
 const AUTONOMOUS_ROOM_ID_SET =
@@ -35,6 +36,7 @@ export interface VRAutonomousRoomPolicy {
 }
 
 export interface VRRoomAvailability {
+    hasSAR?: boolean;
     hasNovels: boolean;
 
     /**
@@ -46,6 +48,7 @@ export interface VRRoomAvailability {
 
 export interface ChooseVRRoomInput
 extends VRRoomAvailability {
+    manual?: boolean;
     char:
         CharacterProfile;
 
@@ -184,6 +187,7 @@ export function resolveAutonomousRoomPool(
                                  */
                                 return true;
 
+                            case 'sar': return Boolean(availability.hasSAR);
                             case 'guestbook':
                             case 'gym':
                             case 'postoffice':
@@ -222,6 +226,7 @@ export function resolveAutonomousRoomPool(
         pool.push('music');
     }
 
+    if (availability.hasSAR) pool.push('sar');
     return pool;
 }
 
@@ -311,6 +316,7 @@ export function resolveForcedVRRoom(
         case 'theater':
             return forcedRoom;
 
+        case 'sar': return availability.hasSAR ? 'sar' : null;
         case 'cafe':
         default:
             /*
@@ -334,13 +340,15 @@ export function chooseVRRoom(
 ): VRRoomId | null {
     const availability:
     VRRoomAvailability = {
+        hasSAR: input.hasSAR,
         hasNovels:
             input.hasNovels,
         hasMusicContent:
             input.hasMusicContent,
     };
 
-    if (input.forcedRoom) {
+    const manual = input.manual ?? Boolean(input.forcedRoom);
+    if (input.forcedRoom && manual) {
         const forced =
             resolveForcedVRRoom(
                 input.forcedRoom,
@@ -368,8 +376,10 @@ export function chooseVRRoom(
             availability,
         );
 
+    const allowed = pool.filter(id => !input.char.vrState?.excludedAutoRooms?.includes(id));
+    if (input.forcedRoom && !manual) return allowed.includes(input.forcedRoom as VRAutonomousRoomId) ? input.forcedRoom : null;
     return pickRandomVRRoom(
-        pool,
+        allowed,
         input.random,
     );
 }

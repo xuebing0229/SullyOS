@@ -2,7 +2,7 @@
  * amsg worker v2 服务端工具循环 — 决策纯逻辑回归测试。
  *
  * 钉住的行为：
- *  1. finish 分段与 instant push / 客户端气泡同一份（sanitizeIntoSegments：按换行切，
+ *  1. finish 分段与客户端气泡同一份（sanitizeIntoSegments：按换行切，
  *     [[...]] / [html] 等标签块保持原子）；push 业务字段形状与 v1 一致，另挂
  *     notification.body = 净化文本给 OS banner；
  *  2. 数据标签 → tool-request，旁白与旁白里的副作用跨轮累积、finish 时一起出；
@@ -55,7 +55,7 @@ describe('processLLMRound — 纯文本 finish', () => {
       avatarUrl: 'https://example.com/a.png',
       messageSubtype: 'chat',
       taskId: '42',
-      // 每条 push 都带触发时刻——客户端兜底闸的循环判定与吞放缓存键都靠它。
+      // 每条 push 都带触发时刻——客户端靠它认「这次触发送达过」。
       metadata: { charId: 'char-1', amsgMode: 'auto', amsgOccurrenceMs: build.occurrenceMs },
       notification: { title: '来自 小鹿', body: '想你了。' },
     });

@@ -1,6 +1,6 @@
 import React, { Component, ErrorInfo } from 'react';
 import { isChunkLoadError, reloadWithCacheBust, tryAutoReloadForChunkError } from '../../utils/chunkLoadRecovery';
-import { trackEvent } from '../../utils/analytics';
+
 import { INSTALLED_APPS, HIDDEN_APP_NAMES } from '../../constants';
 import { AppID } from '../../types';
 
@@ -11,7 +11,7 @@ const ERROR_PROMPT_LABEL = '\u8bf7\u624b\u52a8\u590d\u5236\u62a5\u9519\u4fe1\u60
 const ERROR_TITLE = '\u5e94\u7528\u8fd0\u884c\u9519\u8bef';
 const ERROR_RETURN_LABEL = '\u8fd4\u56de\u684c\u9762';
 const CHUNK_ERROR_TITLE = '\u8d44\u6e90\u52a0\u8f7d\u5931\u8d25';
-const CHUNK_ERROR_HINT = '\u5e94\u7528\u7ec4\u4ef6\u6ca1\u6709\u52a0\u8f7d\u6210\u529f\uff0c\u901a\u5e38\u662f\u7248\u672c\u521a\u66f4\u65b0\u6216\u7f51\u7edc\u77ac\u65ad\u5bfc\u81f4\u7684\uff0c\u5237\u65b0\u4e00\u6b21\u5373\u53ef\u6062\u590d\u3002';
+const CHUNK_ERROR_HINT = '页面组件未能加载或解析，可能与网络中断或版本更新有关。可以刷新重试；如果仍然报错，请复制报错信息反馈。';
 const CHUNK_ERROR_RELOADING = '\u6b63\u5728\u81ea\u52a8\u5237\u65b0\u6062\u590d\u2026';
 const CHUNK_ERROR_RELOAD_LABEL = '\u5237\u65b0\u91cd\u8bd5';
 
@@ -63,18 +63,15 @@ class AppErrorBoundary extends Component<AppErrorBoundaryProps, AppErrorBoundary
         console.error('App Crash:', error, errorInfo);
         // 使用统计: 只报「哪个 App 崩了 + 是哪一类崩」。报错文本留在 console, 不进上报。
         const appName = this.currentAppName();
-        trackEvent('触发 App 崩溃兜底页', {
-            错误类型: isChunkLoadError(error) ? '资源加载失败' : '运行错误',
-            ...(appName ? { 所在App: appName } : {}),
-        });
+        
         // chunk 加载失败: Safari 会把失败缓存进模块表, 同一 URL 本页内重试必失败,
         // 只有整页 reload 能恢复 — 自动刷一次 (冷却期内返回 false, 留给手动按钮)。
         if (isChunkLoadError(error) && tryAutoReloadForChunkError()) {
-            trackEvent('自动刷新恢复资源加载失败', { 恢复方式: '已自动刷新' });
+            
             this.setState({ autoReloading: true });
         } else if (isChunkLoadError(error)) {
             // 走到这里 = 是 chunk 错但没自动刷（冷却期内 / sessionStorage 不可用），页面还在。
-            trackEvent('自动刷新恢复资源加载失败', { 恢复方式: '冷却期内不刷' });
+            
         }
     }
 
@@ -116,7 +113,7 @@ class AppErrorBoundary extends Component<AppErrorBoundaryProps, AppErrorBoundary
                 await navigator.clipboard.writeText(errText);
                 this.updateCopyLabel(ERROR_COPIED_LABEL);
                 // 只报走了哪条复制路径, 报错文本本身一个字都不发。
-                trackEvent('复制报错信息', { 复制结果: '剪贴板成功' });
+                
                 return;
             }
         } catch {
@@ -138,7 +135,7 @@ class AppErrorBoundary extends Component<AppErrorBoundaryProps, AppErrorBoundary
 
             if (copied) {
                 this.updateCopyLabel(ERROR_COPIED_LABEL);
-                trackEvent('复制报错信息', { 复制结果: 'execCommand 兜底成功' });
+                
                 return;
             }
         } catch {
@@ -147,13 +144,11 @@ class AppErrorBoundary extends Component<AppErrorBoundaryProps, AppErrorBoundary
 
         window.prompt(ERROR_PROMPT_LABEL, errText);
         this.updateCopyLabel(ERROR_MANUAL_COPY_LABEL);
-        trackEvent('复制报错信息', { 复制结果: '需手动复制' });
+        
     };
 
     private handleClose = () => {
-        trackEvent('从崩溃页返回桌面', {
-            错误类型: this.state.isChunkError ? '资源加载失败' : '运行错误',
-        });
+        
         this.setState({
             hasError: false,
             error: null,
@@ -165,7 +160,7 @@ class AppErrorBoundary extends Component<AppErrorBoundaryProps, AppErrorBoundary
     };
 
     private handleReload = () => {
-        trackEvent('点刷新重试（资源加载失败）');
+        
         reloadWithCacheBust();
     };
 
@@ -186,6 +181,9 @@ class AppErrorBoundary extends Component<AppErrorBoundaryProps, AppErrorBoundary
                     <p className="text-xs text-slate-300 max-w-xs leading-relaxed">
                         {CHUNK_ERROR_HINT}
                     </p>
+                    <p className="text-xs text-slate-300 font-mono bg-black/30 p-3 rounded-2xl max-w-full overflow-auto max-h-40 select-text break-all whitespace-pre-wrap">
+                        {this.state.error?.message || 'Unknown Error'}
+                    </p>
                     {this.state.autoReloading ? (
                         <p className="text-sm font-bold text-slate-200">{CHUNK_ERROR_RELOADING}</p>
                     ) : (
@@ -196,6 +194,13 @@ class AppErrorBoundary extends Component<AppErrorBoundaryProps, AppErrorBoundary
                                 className="w-full px-6 py-3 bg-red-600 rounded-full font-bold text-sm shadow-lg active:scale-95 transition-transform"
                             >
                                 {CHUNK_ERROR_RELOAD_LABEL}
+                            </button>
+                            <button
+                                type="button"
+                                onClick={this.handleCopy}
+                                className="w-full px-4 py-2 bg-slate-700 rounded-full text-xs font-bold active:scale-95 transition-transform"
+                            >
+                                {this.state.copyLabel}
                             </button>
                             <button
                                 type="button"

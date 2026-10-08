@@ -188,19 +188,16 @@ const simpleHash = (value: string): string => {
 };
 
 export function createQixiFallbackBundle(contextSignature = '', charLayerColor = QIXI_FALLBACK_CHAR_LAYER_COLOR): QixiMemoryBundle {
-    const emptyScenes = QIXI_SCENE_IDS.reduce<Record<QixiSceneId, QixiScenePayload>>((scenes, sceneId) => {
-        scenes[sceneId] = {
-            transitionLines: [],
-            sharedObject: '',
-            memoryLine: '',
-            options: [],
-            charAction: '',
-            reveal: '',
-            artifactIds: [],
-            charSelectionIds: [],
-        };
-        return scenes;
-    }, {} as Record<QixiSceneId, QixiScenePayload>);
+    const emptyScenes = Object.fromEntries(QIXI_SCENE_IDS.map((sceneId): [QixiSceneId, QixiScenePayload] => [sceneId, {
+        transitionLines: [],
+        sharedObject: '',
+        memoryLine: '',
+        options: [],
+        charAction: '',
+        reveal: '',
+        artifactIds: [],
+        charSelectionIds: [],
+    }])) as Record<QixiSceneId, QixiScenePayload>;
     return {
         version: QIXI_MEMORY_BUNDLE_VERSION,
         source: 'fallback',
@@ -669,6 +666,7 @@ export async function prepareQixiMemoryBundle(
         userLayerColor?: string;
     } = {},
 ): Promise<QixiMemoryPreparation> {
+
     let messages: Message[] = [];
     try { messages = await loadCharacterContextMessages(char); } catch { /* fallback below */ }
     const contextSignature = buildContextSignature(messages, char, user);
@@ -707,7 +705,7 @@ export async function prepareQixiMemoryBundle(
             roomPlatesInjection: recallChar.roomPlatesInjection || '',
         };
         const recent = formatRecentMessages(messages);
-        const roleAndMemoryContext = ContextBuilder.buildCoreContext(memoryChar, user, true);
+
         const endpoint = `${apiConfig.baseUrl.replace(/\/+$/, '')}/chat/completions`;
         const requestPhase = async (phase: 'first' | 'second' | 'third', userContent: string) => {
             const data = await safeFetchJson(
@@ -717,10 +715,9 @@ export async function prepareQixiMemoryBundle(
                     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiConfig.apiKey}` },
                     body: JSON.stringify({
                         model: apiConfig.model,
-                        messages: [
-                            { role: 'system', content: roleAndMemoryContext },
+                        messages: (await ContextBuilder.buildCharacterRequest({ char: memoryChar, user }, [
                             { role: 'user', content: userContent },
-                        ],
+                        ])),
                         temperature: 0.68,
                         max_tokens: 32000,
                         // 七夕首轮内容较长。强制使用流式传输，让上游尽早返回响应头/数据片段，

@@ -1,5 +1,255 @@
-import { describe, it, expect, beforeEach } from 'vitest';
-import { scanSseForLog, coreModelName, isSameCoreModel, buildPromptBreakdown, isFixedPromptBlockLabel, getApiCallAmbientContext, setApiCallAmbientContext, captureApiBillingContext } from './apiCallLog';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import {
+    captureApiBillingContext,
+    buildApiRequestCapture,
+    buildPromptBreakdown,
+    captureApiRequestOnce,
+    coreModelName,
+    extractApiTokenUsage,
+    formatApiRequestCaptureTxt,
+    getApiCallAmbientContext,
+    getApiRequestCaptureSectionContent,
+    getApiRequestCaptureSectionSource,
+    isApiRequestCaptureArmed,
+    isFixedPromptBlockLabel,
+    isSameCoreModel,
+    scanSseForLog,
+    setApiRequestCaptureArmed,
+    setApiCallAmbientContext,
+    summarizeApiRequestCaptureDuplicates,
+    updateApiRequestCaptureUsage,
+} from './apiCallLog';
+import { formatWorldbookSection, resolveWorldbookEntries } from './worldbook';
+
+describe('one-shot full API request capture', () => {
+    it('uses the in-memory armed flag on the disabled hot path instead of reading localStorage per request', () => {
+        vi.stubGlobal('localStorage', {
+            getItem: () => { throw new Error('isApiRequestCaptureArmed must not read storage'); },
+            setItem: () => {},
+            removeItem: () => {},
+        });
+        setApiRequestCaptureArmed(true);
+        expect(isApiRequestCaptureArmed()).toBe(true);
+        setApiRequestCaptureArmed(false);
+        expect(isApiRequestCaptureArmed()).toBe(false);
+        vi.unstubAllGlobals();
+    });
+
+    it('keeps the complete payload and indexes memory, worldbook, history, tools and options', () => {
+        const capture = buildApiRequestCapture({
+            url: 'https://example.com/v1/chat/completions',
+            body: JSON.stringify({
+                model: 'gpt-test',
+                temperature: 0.7,
+                messages: [
+                    { role: 'system', content: '## 行为规范\n规则正文\n## 记忆召回\n昨天一起看了海。\n## 世界书\n海边城市设定。' },
+                    { role: 'user', content: '今天还去吗？' },
+                    { role: 'assistant', content: '当然。' },
+                ],
+                tools: [{ type: 'function', function: { name: 'read_calendar' } }],
+            }),
+            meta: { appName: '消息', charName: '测试角色' },
+            capturedAt: 1234,
+        });
+
+        expect(capture.model).toBe('gpt-test');
+        expect(capture.messageCount).toBe(3);
+        expect(capture.meta.charName).toBe('测试角色');
+        expect(capture.sections.some(section => section.kind === 'memory')).toBe(true);
+        expect(capture.sections.some(section => section.kind === 'worldbook')).toBe(true);
+        expect(capture.sections.some(section => section.kind === 'tools')).toBe(true);
+        expect(capture.sections.some(section => section.kind === 'user')).toBe(true);
+
+        const memory = capture.sections.find(section => section.kind === 'memory')!;
+        expect(getApiRequestCaptureSectionContent(capture, memory)).toContain('昨天一起看了海');
+        expect(getApiRequestCaptureSectionSource(memory)).toContain('记忆系统召回');
+        expect(memory.path).toBe('messages[0].content · 分块 2');
+        expect(JSON.stringify(capture.payload)).toContain('read_calendar');
+        expect(JSON.stringify(capture.payload)).toContain('今天还去吗');
+    });
+
+    it('classifies group-chat background separately instead of calling it a system prompt', () => {
+        const content = [
+            '## 行为规范',
+            '普通规则',
+            '### 【群聊背景 · 你亲历的近期群聊】',
+            '[2026-08-05 12:00] [群：朋友们] 小夏：晚上吃什么？',
+            '### 群聊场景共享设定 (Group Scene)',
+            '本群成员都知道今天下雨。',
+        ].join('\n');
+        const capture = buildApiRequestCapture({
+            url: 'https://example.com/v1/chat/completions',
+            body: { model: 'gpt-test', messages: [{ role: 'system', content }] },
+        });
+
+        const groupSections = capture.sections.filter(section => section.kind === 'group');
+        expect(groupSections).toHaveLength(2);
+        expect(groupSections.every(section => getApiRequestCaptureSectionSource(section).includes('群聊'))).toBe(true);
+        expect(capture.sections.filter(section => section.kind === 'system')).toHaveLength(1);
+        expect(capture.sections
+            .filter(section => section.messageIndex != null)
+            .reduce((sum, section) => sum + section.chars, 0)).toBe(content.length);
+    });
+
+    it('keeps a worldbook section whole even when entries carry their own markdown headings', () => {
+        // 用 formatWorldbookSection 真拼一段，跟线上发出去的形状保持一致
+        const worldbook = formatWorldbookSection(resolveWorldbookEntries([
+            { id: 'a', title: '破甲', content: '开头几行\n## 第一部分\n正文一\n### 第二部分\n正文二', category: '测试', sourceUid: 1 },
+            { id: 'b', title: '设定', content: '## 第二条的小标题\n第二条正文', category: '测试', sourceUid: 2 },
+        ]), '扩展设定集 (Worldbooks)');
+        const content = `### 你的身份 (Character)\n设定\n\n${worldbook}### 表达底线 (Anti-Filler)\n规则`;
+        const capture = buildApiRequestCapture({
+            url: 'https://example.com/v1/chat/completions',
+            body: { model: 'gpt-test', messages: [{ role: 'system', content }] },
+        });
+
+        const promptLabels = capture.sections.filter(section => section.messageIndex != null).map(section => section.label);
+        expect(promptLabels).toEqual([
+            '你的身份 (Character)',
+            '扩展设定集 (Worldbooks)',
+            '表达底线 (Anti-Filler)',
+        ]);
+        const worldbookSection = capture.sections.find(section => section.kind === 'worldbook')!;
+        const text = getApiRequestCaptureSectionContent(capture, worldbookSection);
+        expect(text).toContain('正文二');
+        expect(text).toContain('第二条正文');
+        expect(text).not.toContain('表达底线');
+
+        expect(buildPromptBreakdown({ messages: [{ role: 'system', content }] })!.map(block => block.label)).toEqual([
+            '你的身份 (Character)',
+            '扩展设定集 (Worldbooks)',
+            '表达底线 (Anti-Filler)',
+        ]);
+    });
+
+    it('still splits after a worldbook-looking heading that has no section ending', () => {
+        const capture = buildApiRequestCapture({
+            url: 'https://example.com/v1/chat/completions',
+            body: { model: 'gpt-test', messages: [{ role: 'system', content: '## 世界书\n设定\n## 记忆召回\n昨天\n## 行为规范\n规则' }] },
+        });
+        expect(capture.sections.filter(section => section.messageIndex != null).map(section => section.label))
+            .toEqual(['世界书', '记忆召回', '行为规范']);
+    });
+
+    it('classifies embedded full conversation history separately from system prompts', () => {
+        const capture = buildApiRequestCapture({
+            url: 'https://example.com/v1/chat/completions',
+            body: {
+                model: 'gpt-test',
+                messages: [{
+                    role: 'user',
+                    content: [
+                        `## 角色此刻看到的完整上下文\n${'设定'.repeat(3000)}`,
+                        `## 完整对话历史（与主 API 看到的消息历史一致）\n${'[用户] 你好\n[角色] 嗨\n'.repeat(300)}`,
+                        '## 任务\n分析当前情绪。',
+                    ].join('\n'),
+                }],
+            },
+        });
+
+        const history = capture.sections.find(section => section.kind === 'history');
+        expect(history).toBeTruthy();
+        expect(history?.label).toContain('完整对话历史');
+        expect(getApiRequestCaptureSectionSource(history!)).toContain('既往用户与角色对话');
+    });
+
+    it('reads real token usage from common OpenAI, Anthropic and Gemini-compatible fields', () => {
+        expect(extractApiTokenUsage({ usage: { prompt_tokens: 123, completion_tokens: 45, total_tokens: 168 } }))
+            .toMatchObject({ prompt: 123, completion: 45, total: 168 });
+        expect(extractApiTokenUsage({ usage: { input_tokens: 70, output_tokens: 20 } }))
+            .toMatchObject({ prompt: 70, completion: 20, total: undefined });
+        expect(extractApiTokenUsage({ usageMetadata: { promptTokenCount: 80, candidatesTokenCount: 10, totalTokenCount: 90 } }))
+            .toMatchObject({ prompt: 80, completion: 10, total: 90 });
+    });
+
+    it('backfills the real response usage into the same one-shot capture', async () => {
+        const { DB } = await import('./db');
+        await DB.clearApiRequestCapture();
+        setApiRequestCaptureArmed(true);
+        const captureId = captureApiRequestOnce({
+            url: 'https://example.com/v1/chat/completions',
+            body: { model: 'gpt-test', messages: [{ role: 'user', content: '你好' }] },
+        });
+        expect(captureId).toEqual(expect.any(String));
+
+        updateApiRequestCaptureUsage({
+            captureId,
+            ok: true,
+            response: { usage: { prompt_tokens: 456, completion_tokens: 78, total_tokens: 534 } },
+        });
+
+        await vi.waitFor(async () => {
+            expect(await DB.getApiRequestCapture()).toMatchObject({
+                id: captureId,
+                promptTokens: 456,
+                completionTokens: 78,
+                totalTokens: 534,
+                usageStatus: 'reported',
+            });
+        });
+    });
+
+    it('detects duplicated long prompt blocks in the client request without flagging short reminders', () => {
+        const duplicated = `## 固定规则\n${'不要重复发送这段提示词。'.repeat(30)}`;
+        const capture = buildApiRequestCapture({
+            url: 'https://example.com/v1/chat/completions',
+            body: {
+                model: 'gpt-test',
+                messages: [
+                    { role: 'system', content: duplicated },
+                    { role: 'system', content: duplicated },
+                    { role: 'system', content: '短提醒' },
+                    { role: 'system', content: '短提醒' },
+                ],
+            },
+        });
+
+        const summary = summarizeApiRequestCaptureDuplicates(capture);
+        expect(summary.groups).toBe(1);
+        expect(summary.repeatedSections).toBe(2);
+        expect(summary.extraChars).toBe(duplicated.length);
+        expect(summary.examples[0]).toMatchObject({ occurrences: 2, chars: duplicated.length });
+    });
+
+    it('exports a readable TXT report with source ranking, paths, section content and raw JSON', () => {
+        const capture = buildApiRequestCapture({
+            url: 'https://example.com/v1/chat/completions',
+            body: {
+                model: 'gpt-test',
+                messages: [
+                    { role: 'system', content: '## 记忆召回\n记忆正文' },
+                    { role: 'user', content: '用户正文' },
+                ],
+            },
+            meta: { appName: '消息', purpose: '聊天回复' },
+            capturedAt: 1234,
+        });
+        const txt = formatApiRequestCaptureTxt(capture);
+
+        expect(txt).toContain('来源体积排行');
+        expect(txt).toContain('记忆系统召回后注入本次请求的内容');
+        expect(txt).toContain('位置：messages[0].content · 分块 1');
+        expect(txt).toContain('记忆正文');
+        expect(txt).toContain('完整原始请求 JSON');
+        expect(txt).toContain('"content": "用户正文"');
+        expect(txt).toContain('请求体总字符（不是 Token）');
+        expect(txt).toContain('客户端发出前重复检查');
+        expect(txt).toContain('未发现完全相同的长文本被客户端重复发送');
+    });
+
+    it('replaces oversized inline binary data but preserves its original size for diagnosis', () => {
+        const dataUrl = `data:image/png;base64,${'a'.repeat(5000)}`;
+        const capture = buildApiRequestCapture({
+            url: 'https://example.com/v1/chat/completions',
+            body: { model: 'vision', messages: [{ role: 'user', content: [{ type: 'image_url', image_url: { url: dataUrl } }] }] },
+        });
+
+        expect(capture.binaryPlaceholders).toBe(1);
+        const raw = JSON.stringify(capture.payload);
+        expect(raw).toContain('原始 5,022 字符');
+        expect(raw).not.toContain('a'.repeat(100));
+    });
+});
 
 describe('API call ambient context snapshots', () => {
     it('keeps the request-start App even after ambient navigation changes', () => {
@@ -294,4 +544,16 @@ describe('failover preset billing capture', () => {
         ]));
         expect(captureApiBillingContext('https://same.test/v1/chat/completions', JSON.stringify({ model: 'm' })).missingPresetReason).toBe('preset_ambiguous');
     });
+});
+
+it('没有标准收尾的世界书文本仍按标题拆分，所有消息分区可还原全文', () => {
+    const content = '### 扩展设定集 (Worldbooks)\n开头几行\n### 自定义规则\n' + '完整规则正文\n'.repeat(500) + '末尾标记';
+    const capture = buildApiRequestCapture({
+        url: 'https://example.com/v1/chat/completions',
+        body: JSON.stringify({ messages: [{ role: 'system', content }] }),
+    });
+    const parts = capture.sections.filter(s => s.messageIndex === 0);
+    expect(parts.length).toBeGreaterThan(1);
+    expect(parts.map(s => getApiRequestCaptureSectionContent(capture, s)).join('')).toBe(content);
+    expect(JSON.stringify(capture.payload)).toContain('末尾标记');
 });

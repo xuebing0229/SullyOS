@@ -90,14 +90,13 @@ describe('用户反馈回归保护', () => {
         expect(item).toContain('{renderContent(langBContent)}');
     });
 
-    it('文游保持连续下滑并默认锚在底部，不回退到每页十条分页', () => {
+    it('文游默认保持连续下滑和底部锚点，分页须由用户选择', () => {
         const source = read('../components/date/story/StoryTheaterSession.tsx');
 
-        expect(source).not.toContain('STORY_PAGE_SIZE');
-        expect(source).not.toContain('StoryPagination');
-        expect(source).not.toContain('pageMessages');
-        expect(source).not.toContain('messagePage');
-        expect(source).toContain('{messages.map(message => {');
+        expect(source).toContain("useState<'continuous' | 'pages'>('continuous')");
+        expect(source).toContain("readingMode === 'pages' && pageCount > 1");
+        expect(source).toContain(': messages, [readingMode, messagePage, messages]');
+        expect(source).toContain('{visibleMessages.map(message => {');
         expect(source).toContain('scrollContainerRef');
         expect(source).toContain('initialBottomFollowRef');
         expect(source).toContain('ResizeObserver');
@@ -113,7 +112,8 @@ describe('用户反馈回归保护', () => {
         expect(source).toContain('setShowHistoryPreview(true)');
         expect(source).toContain('archived && message.id !== historySpotlightId');
         expect(source).toContain('pendingHistoryJumpRef');
-        expect(source).not.toContain('expandedArchivedIds');
+        expect(source).toContain('useState<Set<number>>(() => new Set())');
+        expect(source).toContain("readingMode === 'pages' && pageArchivedIds.length > 0");
         expect(source).not.toContain('setArchiveExpanded');
         expect(history).toContain("placeholder='搜索历史剧情'");
         expect(history).toContain('storyHistorySnippet');

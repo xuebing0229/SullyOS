@@ -3,7 +3,7 @@ import Modal from '../os/Modal';
 import { useOS } from '../../context/OSContext';
 import { generateVapidKeyPair } from '../../utils/vapidGen';
 import { loadPushVapid, savePushVapid, clearPushVapid } from '../../utils/pushVapid';
-import { trackEvent } from '../../utils/analytics';
+
 
 interface PushVapidSettingsModalProps {
   open: boolean;
@@ -13,9 +13,8 @@ interface PushVapidSettingsModalProps {
 /**
  * 推送凭据 (VAPID) 配置面板.
  *
- * 抽出来单独管理是因为 Proactive Push 和 Instant Push 共用一份 VAPID — 两边
- * 用不同的 key 时会反复 unsubscribe 抢同一个 pushManager 订阅. 把 UI 提到
- * 顶层后, 用户一眼看到这是全局推送凭据, 不会再以为它属于 Instant Push.
+ * 这对密钥是主动消息 2.0 Worker 签推送用的: 一键部署时自动沿用, 手动部署时照着填进
+ * Worker env. 整个站点只有一个 pushManager 订阅, 所以它放在设置顶层当全局推送凭据管.
  *
  * 私钥也存 localStorage 方便复制到 CF Worker env, 这里不当成一次性密钥处理.
  */
@@ -49,23 +48,23 @@ export const PushVapidSettingsModal: React.FC<PushVapidSettingsModalProps> = ({ 
       setShowPrivateKey(true);
       addToast('已生成新的 VAPID 密钥对', 'success');
       // 只报「这次生成成没成」。不带「之前配没配过」——那等于上报凭据配置状态。
-      trackEvent('生成 VAPID 密钥对', { result: 'success' });
+      
     } catch (e) {
       const err = e as { message?: string } | null;
       addToast(err?.message ?? '生成失败', 'error');
       // 只报「失败了」这一件事：报错原文可能带路径，留在 toast / console 里就够。
-      trackEvent('生成 VAPID 密钥对', { result: 'error' });
+      
     } finally {
       setGenerating(false);
     }
   };
 
   const handleClear = () => {
-    if (!confirm('确定清空 VAPID 密钥对？Proactive / Instant Push 都会立即失效，下次订阅需要重建。')) {
-      trackEvent('清空 VAPID 密钥对', { confirmed: false });
+    if (!confirm('确定清空 VAPID 密钥对？之后重新部署的 Worker 会换成新的一对，推送订阅需要重建。')) {
+      
       return;
     }
-    trackEvent('清空 VAPID 密钥对', { confirmed: true });
+    
     clearPushVapid();
     setPublicKey('');
     setPrivateKey('');
@@ -76,7 +75,7 @@ export const PushVapidSettingsModal: React.FC<PushVapidSettingsModalProps> = ({ 
     if (!publicKey) return;
     await navigator.clipboard.writeText(publicKey);
     addToast('公钥已复制', 'success');
-    trackEvent('复制 VAPID 公钥');
+    
   };
 
   const handleCopyPrivateKey = async () => {
@@ -86,7 +85,7 @@ export const PushVapidSettingsModal: React.FC<PushVapidSettingsModalProps> = ({ 
     }
     await navigator.clipboard.writeText(privateKey);
     addToast('私钥已复制', 'success');
-    trackEvent('复制 VAPID 私钥');
+    
   };
 
   const handleCopyEnv = async () => {
@@ -107,7 +106,7 @@ export const PushVapidSettingsModal: React.FC<PushVapidSettingsModalProps> = ({ 
     ];
     await navigator.clipboard.writeText(lines.join('\n'));
     addToast('env 已复制（含真实密钥）', 'success');
-    trackEvent('复制 Worker env 清单');
+    
   };
 
   const handleSave = () => {
@@ -150,8 +149,8 @@ export const PushVapidSettingsModal: React.FC<PushVapidSettingsModalProps> = ({ 
           <p className="font-bold mb-1">⚠ 一份 VAPID, 两个用法</p>
           <p>
             浏览器订阅 push 用<b>公钥</b>; Worker 签名 push 用<b>私钥</b>.
-            Proactive Push 和 Instant Push <b>都从这里读公钥</b> ——
-            两边公钥不一致会反复 unsubscribe 抢同一个订阅, 是 "推送配额没掉但是收不到通知" 的常见原因.
+            主动消息 2.0 部署 Worker 时<b>用的就是这一对</b> ——
+            Worker 上的公钥和浏览器订阅绑的不一致时, 推送会被 403 拒掉.
           </p>
           <p className="mt-1">
             生成 / 改了之后, 你的 CF Worker env (<code>VAPID_PUBLIC_KEY</code> + <code>VAPID_PRIVATE_KEY</code>) 也要同步更新, 否则签名校验会失败.
@@ -251,7 +250,7 @@ export const PushVapidSettingsModal: React.FC<PushVapidSettingsModalProps> = ({ 
               onClick={handleClear}
               className="text-[11px] text-rose-500 hover:text-rose-600 font-medium underline-offset-2 hover:underline"
             >
-              清空 VAPID（Proactive / Instant 都会失效）
+              清空 VAPID（重新部署后推送订阅要重建）
             </button>
           </div>
         )}

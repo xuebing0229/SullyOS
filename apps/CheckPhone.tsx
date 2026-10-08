@@ -1,5 +1,5 @@
 import { loadCharacterContextMessages } from '../utils/chatContextRange';
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useOS } from '../context/OSContext';
 import { DB } from '../utils/db';
 import { CharacterProfile, PhoneEvidence, PhoneCustomApp, PhoneContact, PhoneSimLog, ConvTopic, AiSession, AiServiceKind, TavernCard, APIConfig } from '../types';
@@ -12,13 +12,14 @@ import { injectMemoryPalace } from '../utils/memoryPalace/pipeline';
 import {
     runRealConversation, runNpcConversation, upsertContact, matchRealChar,
     clampAffinity, normName, flipTranscript, parseTranscript, serializeTurns, appendLearned,
-    topicText, summarizeConversation,
+    topicText, summarizeConversation, applyRealConversationToPhoneState,
 } from '../utils/relationshipChat';
 import PersonaSim, { LifeLog, generatePersonaScript } from './PersonaSim';
 import { usePersonaSim, personaSimStore } from '../utils/personaSimStore';
 import { getLastInnerState } from '../utils/emotionApply';
-import { trackEvent } from '../utils/analytics';
+
 import { buildPhoneEvidenceChatCard, normalizePhoneEvidence, phoneFieldToText } from '../utils/phoneEvidence';
+import { normalizePhoneAiSession } from '../utils/phoneTranscript';
 import { CharacterGroupFilterBar, filterCharactersByGroup, GROUP_FILTER_ALL } from '../components/character/CharacterGroupFilter';
 import { getCheckPhoneApi, resolveCheckPhoneApi, setCheckPhoneApi } from '../utils/checkPhoneApi';
 import {
@@ -380,7 +381,8 @@ const CheckPhone: React.FC = () => {
         ))?.detail
         : undefined;
     // 智能体 App：偷看到的 AI 会话 / 角色卡
-    const aiSessions = targetChar?.phoneState?.aiAgent?.sessions || [];
+    const rawAiSessions = targetChar?.phoneState?.aiAgent?.sessions;
+    const aiSessions = useMemo(() => (rawAiSessions || []).map(normalizePhoneAiSession), [rawAiSessions]);
     const aiCards = targetChar?.phoneState?.aiAgent?.cards || [];
     // 详情页会话从 sessions 实时取（互动续写后自动跟随最新状态）
     const selectedAiSession = aiSessions.find(s => s.id === selectedAiSessionId) || null;
@@ -480,7 +482,7 @@ const CheckPhone: React.FC = () => {
         setPhoneApiConfigState(config?.baseUrl ? config : null);
         setPhoneApiTestResult(null);
         addToast(config ? '查手机已切换到独立 API' : '查手机已改为跟随聊天默认', 'success');
-        trackEvent('切换查手机独立 API', { mode: config ? 'independent' : 'default' });
+        
     };
 
     const testPhoneApi = async () => {
@@ -610,7 +612,7 @@ const CheckPhone: React.FC = () => {
         setSelectedChatRecord(null);
         setActiveAppId('chat');
         addToast('已清空全部聊天记录', 'success');
-        trackEvent('清空全部聊天归档');
+        
     };
 
     // 把 Messages 归档里的一条聊天记录「转移/绑定」到人际关系系统。
@@ -655,7 +657,7 @@ const CheckPhone: React.FC = () => {
         } else {
             addToast('已绑定到联系人（虚构联系人）', 'success');
         }
-        trackEvent('把归档记录绑定到人际关系');
+        
     };
 
     const handleDeleteApp = (appId: string) => {
@@ -690,20 +692,19 @@ const CheckPhone: React.FC = () => {
         setNewAppLayout('generic');
         setPage(1);
         addToast(`已安装 ${newAppName}`, 'success');
-        trackEvent('安装自定义 App', { layout: newAppLayout });
+        
     };
 
     // --- Core Generation Logic ---
     const handleGenerate = async (type: string, customPrompt?: string, layout?: LayoutId) => {
+
         if (!targetChar || !effectiveApiConfig.apiKey) {
             addToast('配置错误', 'error');
             return;
         }
         setIsLoading(true);
         // 只上报内置 App 的固定类型；自定义 App 的 id 是用户造的，一律归成 custom
-        trackEvent('刷新生成手机 App 数据', {
-            appType: ['call', 'order', 'delivery', 'social', 'contacts'].includes(type) ? type : 'custom',
-        });
+        
 
         try {
             await injectMemoryPalace(targetChar);
@@ -711,10 +712,8 @@ const CheckPhone: React.FC = () => {
             const lastMsg = msgs[msgs.length - 1];
 
             // 「距离上次联系多久」交给 buildCoreContext 统一注入（受时间感知开关管控、口径与聊天/见面一致）
-            const context = ContextBuilder.buildCoreContext(
-                targetChar, userProfile, true, undefined, undefined,
-                { lastInteractionTs: lastMsg?.timestamp },
-            );
+            const characterContextInput = { char: targetChar, user: userProfile, includeDetailedMemories: true, timeOptions: { lastInteractionTs: lastMsg?.timestamp } };
+
 
             const recentMsgs = msgs.map(m => {
                 const roleName = m.role === 'user' ? userProfile.name : targetChar.name;
@@ -816,14 +815,14 @@ ${realCharRule}
 - **绝不是用户「${userProfile.name}」的社交关系**：不要生成用户的人脉圈，也不要从用户的角度/口吻写备注。
 - 用户「${userProfile.name}」只是在偷看你的手机，TA **不是**你的联系人、**不进**你的通讯录（下面「和用户的最近聊天」只是背景参考，不是要生成的对象，也别把用户的熟人搬进来）。`;
 
-            const fullPrompt = `${context}\n\n### [你和用户「${userProfile.name}」的最近聊天（仅背景参考）]\n${recentMsgs}\n\n${perspectiveLock}\n\n### [Task]\n${promptInstruction}\n请结合上面的「当前时间 / 距离上次联系」和人设调整生成内容的时间戳和情绪。如果很久没联系，记录可能是近期的独处状态；如果刚聊过，记录可能与聊天内容相关。`;
+            const fullPrompt = `\n\n### [你和用户「${userProfile.name}」的最近聊天（仅背景参考）]\n${recentMsgs}\n\n${perspectiveLock}\n\n### [Task]\n${promptInstruction}\n请结合上面的「当前时间 / 距离上次联系」和人设调整生成内容的时间戳和情绪。如果很久没联系，记录可能是近期的独处状态；如果刚聊过，记录可能与聊天内容相关。`;
 
             const response = await fetch(`${effectiveApiConfig.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${effectiveApiConfig.apiKey}` },
                 body: JSON.stringify({
                     model: effectiveApiConfig.model,
-                    messages: [{ role: "user", content: fullPrompt }],
+                    messages: (await ContextBuilder.buildCharacterRequest(characterContextInput, [{ role: "user", content: fullPrompt }])),
                     temperature: 0.8
                 })
             });
@@ -959,11 +958,15 @@ ${realCharRule}
     // ============================================================
 
     // 裸 LLM 调用（智能体生成 / 互动续写共用）
-    const callLLM = async (prompt: string, temperature = 0.85): Promise<string> => {
+    const callLLM = async (prompt: string, temperature = 0.85, withCharacter = true): Promise<string> => {
+        const recent = withCharacter && targetChar ? await loadCharacterContextMessages(targetChar) : [];
+        const messages = withCharacter && targetChar ? (await ContextBuilder.buildCharacterRequest({
+            char: targetChar, user: userProfile, timeOptions: { lastInteractionTs: recent[recent.length - 1]?.timestamp },
+        }, [{ role: 'user', content: prompt }])) : [{ role: 'user', content: prompt }];
         const response = await fetch(`${effectiveApiConfig.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${effectiveApiConfig.apiKey}` },
-            body: JSON.stringify({ model: effectiveApiConfig.model, messages: [{ role: 'user', content: prompt }], temperature }),
+            body: JSON.stringify({ model: effectiveApiConfig.model, messages, temperature }),
         });
         if (!response.ok) throw new Error('API Error');
         const data = await safeResponseJson(response);
@@ -976,24 +979,22 @@ ${realCharRule}
     const buildAiContext = async (char: CharacterProfile) => {
         await injectMemoryPalace(char);
         const msgs = await loadCharacterContextMessages(char);
-        const lastMsg = msgs[msgs.length - 1];
-        const context = ContextBuilder.buildCoreContext(
-            char, userProfile, true, undefined, undefined, { lastInteractionTs: lastMsg?.timestamp },
-        );
+
         const recentMsgs = msgs.map(m => {
             const roleName = m.role === 'user' ? userProfile.name : char.name;
             return `${roleName}: ${m.type === 'text' ? m.content : `[${m.type}]`}`;
         }).join('\n');
-        return { context, recentMsgs };
+        return { recentMsgs };
     };
 
     // 生成：偷看机主在某个 AI 服务里的使用记录
     const handleGenerateAiAgent = async (service: AiServiceKind) => {
+
         if (!targetChar || !effectiveApiConfig.apiKey) { addToast('配置错误', 'error'); return; }
         setIsLoading(true);
-        trackEvent('偷看 AI 助手使用记录', { service });
+        
         try {
-            const { context, recentMsgs } = await buildAiContext(targetChar);
+            const { recentMsgs } = await buildAiContext(targetChar);
             const userName = userProfile?.name || '用户';
             const pushToChat = targetChar.phoneState?.sendToChat !== false;
             const svcName = AI_SERVICES.find(s => s.id === service)?.name || 'AI';
@@ -1048,7 +1049,7 @@ ${AI_VENDOR_LORE}
 要点：扮演内容（剧情里）暴露你的幻想 / 渴望 / 不敢实现的关系。酒馆是 TA 卸下防备的安全屋，扮演里可以流露平时藏起来的反差面（暴戾者忽然温柔、温柔者露出掌控/施虐欲、疏离者变黏人），但**底色始终是「爱」**，不刻意过火。`;
             }
 
-            const fullPrompt = `${context}\n\n### [Recent Chat Context]\n${recentMsgs}\n\n### [Task]\n${task}\n请结合「当前时间 / 距离上次联系」和人设，让内容贴合你近期的真实状态。只输出 JSON，不要解释。`;
+            const fullPrompt = `\n\n### [Recent Chat Context]\n${recentMsgs}\n\n### [Task]\n${task}\n请结合「当前时间 / 距离上次联系」和人设，让内容贴合你近期的真实状态。只输出 JSON，不要解释。`;
 
             const content = await callLLM(fullPrompt);
             const now = Date.now();
@@ -1071,20 +1072,20 @@ ${AI_VENDOR_LORE}
                 }
                 for (const sess of (obj.sessions || [])) {
                     if (!sess?.transcript) continue;
-                    newSessions.push({
+                    newSessions.push(normalizePhoneAiSession({
                         id: `ai-${now}-${rid()}`, service, serviceName: sess.serviceName || sess.cardName || '酒馆',
                         title: sess.title || '一段扮演', transcript: sess.transcript, cardId: nameToId[normName(sess.cardName || '')], updatedAt: now,
-                    });
+                    }));
                 }
             } else {
                 const parsed = extractJson(content);
                 const arr: any[] = Array.isArray(parsed) ? parsed : [];
                 for (const sess of arr) {
                     if (!sess?.transcript) continue;
-                    newSessions.push({
+                    newSessions.push(normalizePhoneAiSession({
                         id: `ai-${now}-${rid()}`, service, serviceName: sess.serviceName || (service === 'claude' ? 'Claude' : 'AI 助手'),
                         title: sess.title || '一段对话', transcript: sess.transcript, updatedAt: now,
-                    });
+                    }));
                 }
             }
 
@@ -1138,7 +1139,7 @@ ${AI_VENDOR_LORE}
                 ...cur.phoneState, records: cur.phoneState?.records || [],
                 aiAgent: {
                     cards: cur.phoneState?.aiAgent?.cards || [],
-                    sessions: (cur.phoneState?.aiAgent?.sessions || []).map(s => s.id === sessionId ? patch(s) : s),
+                    sessions: (cur.phoneState?.aiAgent?.sessions || []).map(s => s.id === sessionId ? patch(normalizePhoneAiSession(s)) : s),
                 },
             },
         }));
@@ -1181,7 +1182,7 @@ ${prevRecap ? `\n【已有前情（仅供衔接，别重复）】\n${prevRecap}\
 ${olderText}
 
 要求：第三人称，含起因→经过→结果，重点写人物关系/情绪的变化与暴露的心事，200~350 字，文笔流畅，不要分点、不要"总结如下"开场白。直接输出正文：`;
-            let summaryText = (await callLLM(prompt, 0.7)).trim();
+            let summaryText = (await callLLM(prompt, 0.7, false)).trim();
             if (!summaryText) summaryText = '（这段剧情继续推进了）';
             const now = Date.now();
             patchAiSession(sessionId, (s) => ({
@@ -1196,6 +1197,7 @@ ${olderText}
 
     // 互动续写：assistant/claude = 你替机主问、AI 答；tavern = 你以卡片身份回、机主本色反应
     const handleAiSend = async () => {
+
         const session = selectedAiSession;
         const text = aiInput.trim();
         if (!session || !text || !targetChar || !effectiveApiConfig.apiKey) return;
@@ -1214,8 +1216,8 @@ ${olderText}
             let prompt = '';
             if (isTavern) {
                 const card = aiCards.find(c => c.id === session.cardId);
-                const { context } = await buildAiContext(targetChar);
-                prompt = `${context}\n\n你正在玩"酒馆"沉浸式长剧情角色扮演（像和 AI 合写小说）。你是玩家 ${charName}，对面是 AI 扮演的角色「${card?.name || session.serviceName}」${card?.persona ? `（人设：${card.persona}）` : ''}${card?.scenario ? `（背景：${card.scenario}）` : ''}${card?.basedOn ? `（这角色是照着你在意的「${card.basedOn}」捏的）` : ''}。
+                await buildAiContext(targetChar);
+                prompt = `\n\n你正在玩"酒馆"沉浸式长剧情角色扮演（像和 AI 合写小说）。你是玩家 ${charName}，对面是 AI 扮演的角色「${card?.name || session.serviceName}」${card?.persona ? `（人设：${card.persona}）` : ''}${card?.scenario ? `（背景：${card.scenario}）` : ''}${card?.basedOn ? `（这角色是照着你在意的「${card.basedOn}」捏的）` : ''}。
 下面是对戏记录（"我:"=你/玩家，"对方:"=AI 扮的角色）。对方刚回了最新一段。
 **最关键的前提：你非常清楚「对方」只是一个 AI 在扮演「${card?.name || session.serviceName}」这个角色——不是真人。** 正因为它是 AI、是你召来陪你玩的工具，你**握着绝对主导权**：可以随意对它下指令、调教它、OOC 它、让它重演、改设定。你绝不会把它错当成真人去迁就讨好。
 **同时你是个有独立人格和意志的人**：有自己的脾气、立场、节奏和底线，该怼就怼、该愣就愣、不爽就不配合。对方写得好你才会被带动、真情流露（甚至流露平时藏起来的反差面：暴戾者忽然温柔、温柔者露出掌控欲 / 施虐欲、疏离者变黏人，底色是「爱」、不刻意过火）；写得烂或不对胃口，你完全可以不接、嫌弃、跳出来调教它。
@@ -1228,11 +1230,11 @@ ${olderText}
 只输出你这层楼真正发出去的字，不要 "我:" 前缀、不要解释。${recap}\n\n${transcript}`;
             } else {
                 // 潜入：你扮 AI（刚由你写完"对方:"那句），LLM 演 char 本人对这句的真实反应
-                const { context } = await buildAiContext(targetChar);
+                await buildAiContext(targetChar);
                 const aiDesc = session.service === 'claude'
                     ? `一个像 Claude 那样的深度对话 AI「${session.serviceName}」（你的树洞，你会对它说当面对人说不出口的真心话）`
                     : `AI 助手「${session.serviceName}」（你拿它查东西 / 出主意 / 排解，它只是个工具）`;
-                prompt = `${context}\n\n你（${charName}）正在用手机和 ${aiDesc} 聊天。下面是对话（"我:"=你本人，"对方:"=那个 AI）。AI 刚回了最新一段，请以你的本色人设续写 "我:" 的下一句——你对它这句话的真实反应 / 追问 / 倾诉，贴合你的处境与心事。可以满意、可以失望、可以怼它答非所问、可以顺着深聊，别一味客气。别太长。只输出正文，不要前缀、不要解释。${recap}\n\n${transcript}`;
+                prompt = `\n\n你（${charName}）正在用手机和 ${aiDesc} 聊天。下面是对话（"我:"=你本人，"对方:"=那个 AI）。AI 刚回了最新一段，请以你的本色人设续写 "我:" 的下一句——你对它这句话的真实反应 / 追问 / 倾诉，贴合你的处境与心事。可以满意、可以失望、可以怼它答非所问、可以顺着深聊，别一味客气。别太长。只输出正文，不要前缀、不要解释。${recap}\n\n${transcript}`;
             }
 
             let reply = (await callLLM(prompt)).trim();
@@ -1254,6 +1256,7 @@ ${olderText}
 
     // 自然推进：不用 user 开口，让 LLM 接着剧情自己往下写一轮（双方都由 AI 演）
     const handleAiAutoContinue = async () => {
+
         const session = selectedAiSession;
         if (!session || !targetChar || !effectiveApiConfig.apiKey || aiSending) return;
         const isTavern = session.service === 'tavern';
@@ -1264,8 +1267,8 @@ ${olderText}
             let prompt = '';
             if (isTavern) {
                 const card = aiCards.find(c => c.id === session.cardId);
-                const { context } = await buildAiContext(targetChar);
-                prompt = `${context}\n\n你在还原一段"酒馆"沉浸式长剧情角色扮演（像小说）。玩家是 ${charName}(本色人设)，AI 扮演角色「${card?.name || session.serviceName}」${card?.persona ? `（人设：${card.persona}）` : ''}${card?.scenario ? `（背景：${card.scenario}）` : ''}${card?.basedOn ? `（这角色照着 TA 在意的「${card.basedOn}」捏的，扮演里那份在意会渗出来）` : ''}。
+                await buildAiContext(targetChar);
+                prompt = `\n\n你在还原一段"酒馆"沉浸式长剧情角色扮演（像小说）。玩家是 ${charName}(本色人设)，AI 扮演角色「${card?.name || session.serviceName}」${card?.persona ? `（人设：${card.persona}）` : ''}${card?.scenario ? `（背景：${card.scenario}）` : ''}${card?.basedOn ? `（这角色照着 TA 在意的「${card.basedOn}」捏的，扮演里那份在意会渗出来）` : ''}。
 **这是"替玩家跑一个完整回合"——所以要写"一来一回"两层楼**：先 AI 扮的角色「${card?.name || session.serviceName}」回应一段（"对方:"），再玩家 ${charName} 续一段（"我:"），承接最后一段（最后通常是"我:"，那就先"对方:"答、再"我:"续）。各 3-5 句小说体，*星号*包动作神态心理。**整段必须以 "我:"(玩家)收尾**（停在等对方处，方便随时接着玩）。
 **"我:"是玩家敲进输入框的 RP——只写故事场景里所扮角色的动作/对白**，括号外绝不要写玩家现实里的身体反应（盯屏幕、扔手机、吃东西、后背发凉等，那不会被敲进输入框）；**（全角括号内）= 越过角色直接跟皮下 AI 本体说话**（骂它 / OOC 提醒 / 指导怎么演 / 指出哪段不对）。玩家保有独立人格、清楚对面只是 AI。
 **两段都要带 "对方:" / "我:" 前缀，各自成行。** 不要解释。${recap}\n\n${session.transcript}`;
@@ -1393,25 +1396,26 @@ ${olderText}
 
     // 用指定的卡开一局：生成一段以这张卡为对手的酒馆剧情（卡片本身不新增、不顶掉）
     const handlePlayCard = async (card: TavernCard) => {
+
         if (!targetChar || !effectiveApiConfig.apiKey) { addToast('配置错误', 'error'); return; }
         setIsLoading(true);
-        trackEvent('用角色卡开一局');
+        
         try {
-            const { context, recentMsgs } = await buildAiContext(targetChar);
+            const { recentMsgs } = await buildAiContext(targetChar);
             const task = `你（${charName}）在玩"酒馆"AI 角色扮演（沉浸式长剧情、像和 AI 合写小说）。这次的对手是你的角色卡「${card.name}」${card.kind === 'world' ? '（大型世界卡）' : ''}：
 人设/设定：${card.persona || '（自行发挥，贴合卡名）'}${card.scenario ? `\n初始场景：${card.scenario}` : ''}
 请生成 1 段你和这张卡的扮演记录。
 **transcript 写法**：长剧情小说体，第三人称叙事 + 引号对白，动作/神态/心理用 *星号*；"我:" = 你(玩家 ${charName}) 敲进输入框的 RP，"对方:" = AI 扮的「${card.name}」，交替推进，4-6 轮，首轮"对方:"当开场白、**整段以 "我:"(玩家)收尾**（停在等对方回应处）。**"我:"括号外只写故事里所扮角色的动作/对白，不要写你现实里的身体反应（盯屏幕/扔手机/吃东西等）；（全角括号内）= 越过角色直接跟皮下 AI 本体说话（骂它/OOC 提醒/指导怎么演/指出哪段不对）。**
 返回 JSON：{ "title": "剧情标题(12字内)", "transcript": "我: ...\\n对方: ..." }`;
-            const fullPrompt = `${context}\n\n### [Recent Chat Context]\n${recentMsgs}\n\n### [Task]\n${task}\n只输出 JSON，不要解释。`;
+            const fullPrompt = `\n\n### [Recent Chat Context]\n${recentMsgs}\n\n### [Task]\n${task}\n只输出 JSON，不要解释。`;
             const content = await callLLM(fullPrompt);
             const obj: any = extractJson(content) || {};
             if (!obj.transcript) { addToast('没生成出来，再试一次', 'error'); return; }
             const now = Date.now();
-            const sess: AiSession = {
+            const sess: AiSession = normalizePhoneAiSession({
                 id: `ai-${now}-${Math.random().toString(36).slice(2, 6)}`, service: 'tavern',
                 serviceName: card.name, title: obj.title || `与${card.name}的一局`, transcript: obj.transcript, cardId: card.id, updatedAt: now,
-            };
+            });
             updateCharacter(targetChar.id, (cur) => ({
                 phoneState: {
                     ...cur.phoneState, records: cur.phoneState?.records || [],
@@ -1451,7 +1455,7 @@ ${olderText}
             phoneState: { ...cur.phoneState, records: cur.phoneState?.records || [], allowFictionalContacts: next },
         }));
         addToast(next ? '已允许 TA 结交虚构 NPC' : '已限定 · TA 只与神经链接里的角色来往', 'info');
-        trackEvent('切换允许虚构 NPC 开关', { enabled: next ? 'on' : 'off' });
+        
     };
 
     const handleSetContactStatus = (contact: PhoneContact, status: PhoneContact['status']) => {
@@ -1663,7 +1667,7 @@ ${olderText}
         setShowContactModal(false);
         setNcName(''); setNcKind('npc'); setNcLinkedId('');
         addToast('已添加联系人', 'success');
-        trackEvent('手动添加一位联系人', { contactKind: ncKind });
+        
     };
 
     // 给某个机主侧落一段真实对话：更新好感/状态 + 写 chat 记录 + （机主开了同步才）镜像进私聊 + 自动加删友播报
@@ -1671,32 +1675,14 @@ ${olderText}
         owner: CharacterProfile, partnerName: string, partnerCharId: string,
         detail: string, delta: number, partnerNote?: string, learnedNew?: string, seedIdentity?: string,
     ) => {
-        // 对方在我方通讯录里是否已存在——决定是否要「先建联系人」并给个起始备注名
-        const hadContact = (owner.phoneState?.contacts || []).some(
-            c => c.linkedCharId === partnerCharId || normName(c.name) === normName(partnerName),
-        );
-        // upsert 指向对方的真实联系人（不存在则在这里先建好，名字/头像/备注名都补上，再挂消息）
-        let contacts = upsertContact(owner.phoneState?.contacts || [], {
-            name: partnerName, kind: 'real', linkedCharId: partnerCharId, lastInteraction: Date.now(),
-            note: partnerNote,
-            // 仅新建时给个起始备注名（多数关系标签是对称的：网友↔网友、前任↔前任），已有则不动
-            identity: hadContact ? undefined : seedIdentity,
-        });
-        const cid = contacts.find(c => c.linkedCharId === partnerCharId || normName(c.name) === normName(partnerName))?.id;
-        // 好感增减 + 自动加删友 + 累积「了解」
-        let broadcast = '';
-        contacts = contacts.map(c => {
-            if (c.id !== cid) return c;
-            const newAff = clampAffinity(c.affinity + delta);
-            let status = c.status;
-            if (newAff <= -60 && c.status === 'friend') { status = 'deleted'; broadcast = `（我把 ${c.name} 删了，懒得再联系。）`; }
-            else if (newAff >= 60 && c.status !== 'friend' && c.status !== 'blocked') { status = 'friend'; broadcast = `（我又把 ${c.name} 加回来了。）`; }
-            const learned = learnedNew ? appendLearned(c.learned, learnedNew) : c.learned;
-            return { ...c, affinity: newAff, status, learned, lastInteraction: Date.now() };
-        });
-        // chat 记录（按联系人 upsert）
-        const recs = owner.phoneState?.records || [];
-        const existing = recs.find(r => r.type === 'chat' && (r.contactId === cid || (!r.contactId && normName(r.title) === normName(partnerName))));
+        const timestamp = Date.now();
+        const result = {
+            partnerName, partnerCharId, detail, delta, partnerNote, learnedNew, seedIdentity,
+            timestamp, recordId: `rec-${timestamp}-${Math.random()}`,
+        };
+        const contact = owner.phoneState?.contacts?.find(c => c.linkedCharId === partnerCharId || normName(c.name) === normName(partnerName));
+        const existing = owner.phoneState?.records?.find(r => r.type === 'chat'
+            && ((contact && r.contactId === contact.id) || (!r.contactId && normName(r.title) === normName(partnerName))));
         const ownerSendToChat = owner.phoneState?.sendToChat !== false;
         let msgId: number | undefined;
         if (ownerSendToChat) {
@@ -1708,15 +1694,14 @@ ${olderText}
                 metadata: { phoneCard: { app: '聊天软件', kind: 'chat', title: partnerName, detail } },
             } as any);
         }
-        const now = Date.now();
-        const nextRecs = existing
-            ? recs.map(r => r.id === existing.id ? { ...r, detail, timestamp: now, contactId: cid, systemMessageId: msgId ?? r.systemMessageId } : r)
-            : [...recs, { id: `rec-${now}-${Math.random()}`, type: 'chat', title: partnerName, detail, timestamp: now, contactId: cid, systemMessageId: msgId }];
         // 自动加删友播报：进机主与用户的私聊（同样受 sendToChat 控制）
+        const { broadcast } = applyRealConversationToPhoneState(owner.phoneState, result);
         if (broadcast && ownerSendToChat) {
             await DB.saveMessage({ charId: owner.id, role: 'assistant', type: 'text', content: broadcast } as any);
         }
-        updateCharacter(owner.id, (cur) => ({ phoneState: { ...cur.phoneState, contacts, records: nextRecs } }));
+        updateCharacter(owner.id, (cur) => ({
+            phoneState: applyRealConversationToPhoneState(cur.phoneState, { ...result, systemMessageId: msgId }).phoneState,
+        }));
     };
 
     // 聊满 100 条触发总结：把待归档的每 100 条原文，A/B 各自第一人称浓缩成一条话题盒记忆，推进水位线。
@@ -1766,7 +1751,7 @@ ${olderText}
         const b = characters.find(c => c.id === contact.linkedCharId);
         if (!b) { addToast('该联系人未绑定真实角色', 'error'); return; }
         setIsLoading(true);
-        trackEvent('生成一段与联系人的对话', { contactKind: 'real' });
+        
         try {
             const existing = (targetChar.phoneState?.records || []).find(r => r.type === 'chat' && (r.contactId === contact.id || normName(r.title) === normName(contact.name)));
             const bToA = (b.phoneState?.contacts || []).find(c => c.linkedCharId === targetChar.id || normName(c.name) === normName(targetChar.name));
@@ -1807,7 +1792,7 @@ ${olderText}
     const handleNpcConversation = async (contact: PhoneContact) => {
         if (!targetChar || !effectiveApiConfig.apiKey) { addToast('请先配置 API', 'error'); return; }
         setIsLoading(true);
-        trackEvent('生成一段与联系人的对话', { contactKind: 'npc' });
+        
         try {
             const existing = (targetChar.phoneState?.records || []).find(r => r.type === 'chat' && (r.contactId === contact.id || normName(r.title) === normName(contact.name)));
             const { detail, learnedNew } = await runNpcConversation({
@@ -1965,7 +1950,7 @@ ${olderText}
         const cid = targetChar.id, cname = targetChar.name;
         personaSimStore.set({ status: 'loading', mode: m, theme: t, charId: cid, charName: cname });
         // 只报模式（日常/事件）这个固定枚举；主题 t 是用户自己写的文本，不上报
-        trackEvent('生成人格模拟演出', { mode: m });
+        
         try {
             const generated = await generatePersonaScript({
                 char: targetChar, userProfile, apiConfig: effectiveApiConfig as any, mode: m, theme: t, userPresence: presence, tone,
@@ -2074,7 +2059,7 @@ ${olderText}
             }
             setEvidenceMenu(null);
             addToast('已把这条查手机记录同步到私聊', 'success');
-            trackEvent('事后同步查手机记录到私聊', { kind: record.type });
+            
         } catch (error: any) {
             addToast(error?.message || '同步失败，请重试', 'error');
         }
@@ -2594,7 +2579,7 @@ ${olderText}
                                     if (lpFired.current) { lpFired.current = false; return; }
                                     if (contactSelectMode) { toggleContactSelect(c.id); return; }
                                     setSelectedContact(c); setIdentityDraft(c.identity || ''); setEditingIdentity(false); setNoteDraft(c.note || ''); setEditingNote(false); setConvExpanded(false); setAffinityDraft(null); setShowProfile(false); exitMsgSelect(); setActiveAppId('contact_detail');
-                                    trackEvent('打开联系人对话详情', { contactKind: c.kind });
+                                    
                                 }}
                                 className={`group relative flex items-center gap-3 rounded-2xl p-3.5 border active:scale-[0.99] transition cursor-pointer animate-fade-in select-none ${selected ? 'bg-pink-500/10 border-pink-400/40' : 'bg-white/[0.035] border-white/[0.06]'} ${dimmed && !selected ? 'opacity-45' : ''}`}>
                                 {contactSelectMode && (
@@ -2666,7 +2651,7 @@ ${olderText}
                         const active = s.id === aiService;
                         const Icon = s.id === 'assistant' ? Robot : s.id === 'claude' ? Brain : MaskHappy;
                         return (
-                            <button key={s.id} onClick={() => { setAiService(s.id); trackEvent('切换智能体服务分类', { service: s.id }); }}
+                            <button key={s.id} onClick={() => { setAiService(s.id);  }}
                                 className={`flex-1 rounded-2xl px-2 py-2.5 border transition active:scale-[0.97] ${active ? 'text-white' : 'border-white/[0.07] bg-white/[0.03] text-white/55'}`}
                                 style={active ? { background: `linear-gradient(135deg, ${s.accent}33, ${s.accent}0d)`, borderColor: `${s.accent}66` } : undefined}>
                                 <Icon size={18} weight={active ? 'fill' : 'light'} style={{ color: active ? s.accent : undefined }} className="mx-auto" />
@@ -2823,7 +2808,7 @@ ${olderText}
                             <div className="px-4 py-2.5 text-[12px] text-white/50 border-b border-white/10">阅读皮肤</div>
                             <div className="grid grid-cols-2 gap-2 p-3">
                                 {TAVERN_STYLES.map(st => (
-                                    <button key={st.key} onClick={() => { setTavernStyle(st.key); setShowTavernStyle(false); trackEvent('切换酒馆阅读皮肤', { style: st.key }); }}
+                                    <button key={st.key} onClick={() => { setTavernStyle(st.key); setShowTavernStyle(false);  }}
                                         className={`rounded-xl p-3 text-left border transition ${tavernStyle === st.key ? 'border-white/40' : 'border-white/10'}`}
                                         style={{ background: st.bg }}>
                                         <div className="text-[13px] font-semibold" style={{ color: st.text, fontFamily: st.font }}>{st.label}</div>
@@ -3388,7 +3373,7 @@ ${olderText}
             )}
 
             {/* Persona simulation hero */}
-            <button onClick={() => { setActiveAppId('persona'); trackEvent('打开查手机子应用', { subApp: 'persona' }); }}
+            <button onClick={() => { setActiveAppId('persona');  }}
                 className="relative w-full rounded-[24px] p-5 mb-3.5 text-left overflow-hidden border border-white/[0.09] active:scale-[0.98] transition-transform"
                 style={{ background: 'linear-gradient(115deg, rgba(184,155,255,0.22), rgba(120,90,214,0.08) 55%, rgba(20,18,30,0.4))' }}>
                 <div className="absolute -top-10 -right-6 w-40 h-40 rounded-full blur-3xl pointer-events-none" style={{ background: 'radial-gradient(circle, rgba(184,155,255,0.55), transparent 70%)' }} />
@@ -3408,17 +3393,17 @@ ${olderText}
             {/* App cards —— 「联系人」占据原 Message 的主位（Message 已废弃，收进联系人里做不起眼入口） */}
             <div className="grid grid-cols-2 gap-3.5 mb-3.5">
                 <HomeCard icon={<UsersThree size={24} weight="light" />} label="联系人" sub={contactsSub} accent="#f472b6"
-                    onClick={() => { setActiveAppId('contacts'); trackEvent('打开查手机子应用', { subApp: 'contacts' }); }} />
+                    onClick={() => { setActiveAppId('contacts');  }} />
                 <HomeCard icon={<ImagesSquare size={24} weight="light" />} label="Moments" sub={momentsSub} accent="#c084fc"
-                    onClick={() => { setActiveAppId('social'); trackEvent('打开查手机子应用', { subApp: 'social' }); }} />
+                    onClick={() => { setActiveAppId('social');  }} />
                 <HomeCard icon={<Hamburger size={24} weight="light" />} label="Food" sub={foodSub} accent="#fbbf24"
-                    onClick={() => { setActiveAppId('waimai'); trackEvent('打开查手机子应用', { subApp: 'waimai' }); }} />
+                    onClick={() => { setActiveAppId('waimai');  }} />
                 <HomeCard icon={<ShoppingBag size={24} weight="light" />} label="Taobao" sub={taobaoSub} accent="#ff7a45"
-                    onClick={() => { setActiveAppId('taobao'); trackEvent('打开查手机子应用', { subApp: 'taobao' }); }} />
+                    onClick={() => { setActiveAppId('taobao');  }} />
             </div>
 
             {/* 智能体：偷看「TA 的小手机」 —— 给个抢眼的横条入口 */}
-            <button onClick={() => { setActiveAppId('aiagent'); trackEvent('打开查手机子应用', { subApp: 'aiagent' }); }}
+            <button onClick={() => { setActiveAppId('aiagent');  }}
                 className="relative w-full rounded-[24px] p-4 mb-3.5 text-left overflow-hidden border border-white/[0.09] active:scale-[0.98] transition-transform flex items-center gap-3.5"
                 style={{ background: 'linear-gradient(115deg, rgba(52,211,153,0.20), rgba(16,185,129,0.06) 55%, rgba(12,20,18,0.4))' }}>
                 <div className="absolute -top-10 -right-6 w-36 h-36 rounded-full blur-3xl pointer-events-none" style={{ background: 'radial-gradient(circle, rgba(52,211,153,0.45), transparent 70%)' }} />

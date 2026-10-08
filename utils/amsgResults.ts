@@ -18,6 +18,7 @@
 import { PLATE_CONSOLIDATE_RESULT_KIND } from './amsgPlateJob';
 import { SCHEDULE_CHANGE_RESULT_KIND } from './amsgScheduleResult';
 import { STORY_BACKGROUND_STATUS_RESULT_KIND } from './storyBackgroundStatus';
+import { FIRE_SKIP_RESULT_KIND } from './amsgFireSkipResult';
 
 const HEADER = '[amsg2:result]';
 
@@ -43,7 +44,7 @@ let dispatchChain: Promise<unknown> = Promise.resolve();
  *
  * 队是全局一条、所有 resultKind 共用的，所以「卡住」的代价不是这一条晚落地，而是**后面
  * 每一条都永远排不上**。而 handler 干的是 IndexedDB 的活儿：连接被别的标签页 block 住
- * （instant push 那次超时的连接风暴就是这么来的）、事务卡在那儿不 settle，都是真实发生
+ * （IndexedDB 连接风暴时就出过这种事）、事务卡在那儿不 settle，都是真实发生
  * 过的形态，promise 一辈子不 resolve。超时之后按「这条没处理成」算——账不销，下次上线
  * 还会拉回来重试；卡住那次的活儿还在后台跑，但至少不再挡着别人。
  *
@@ -119,6 +120,10 @@ const dispatchOne = async (payload: unknown, context?: AmsgResultContext): Promi
         // 这类 result 的正文就是 Android / Web Push 系统通知本身；客户端只认领后销账，
         // 绝不能把“正在生成/生成完成”当成角色聊天消息落库。
         return true;
+      case FIRE_SKIP_RESULT_KIND: {
+        const { applyFireSkipResult } = await import('./amsgFireSkipResultApply');
+        return await applyFireSkipResult(payload, context);
+      }
       default:
         // 认不出来的多半是**前端比 worker 旧**：worker 可以脱开前端单独更新（fork 的
         // Sync → Cloudflare Workers Builds），PWA 那边还可能跑着缓存下来的旧包。销账

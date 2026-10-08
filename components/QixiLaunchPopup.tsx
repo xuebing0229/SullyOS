@@ -1,7 +1,7 @@
 import React, { useEffect } from 'react';
 import { useOS } from '../context/OSContext';
 import { AppID } from '../types';
-import { trackEvent } from '../utils/analytics';
+
 import { markQixiLaunchPopupSeen } from '../utils/qixiLaunchPopup';
 import './QixiLaunchPopup.css';
 
@@ -13,20 +13,20 @@ export const QixiLaunchPopup: React.FC<QixiLaunchPopupProps> = ({ onClose }) => 
     const { openApp } = useOS();
 
     useEffect(() => {
-        trackEvent('弹出七夕特别活动提醒', { 日期: '2026-08-19', 时区: 'Asia/Shanghai' });
+        
     }, []);
 
     const dismiss = () => {
         markQixiLaunchPopupSeen();
         onClose();
-        trackEvent('收下七夕特别活动提醒', { 去向: '关闭' });
+        
     };
 
     const openQixi = () => {
         markQixiLaunchPopupSeen();
         onClose();
         openApp(AppID.SpecialMoments);
-        trackEvent('点七夕特别活动提醒', { 去向: '特别时光' });
+        
     };
 
     return (

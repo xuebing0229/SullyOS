@@ -1351,6 +1351,7 @@ export async function adoptBackgroundImageJob(
     },
     context: {
         charId: string;
+        signal?: AbortSignal;
         ownerType?: 'chat' | 'story-theater';
         storyTheaterTarget?: {
             entryId: string;
@@ -1443,6 +1444,7 @@ export async function callMcpToolWithBackgroundImage(
     args: Record<string, any>,
     context: {
         charId: string;
+        signal?: AbortSignal;
         ownerType?: 'chat' | 'story-theater';
         storyTheaterTarget?: {
             entryId: string;
@@ -1462,6 +1464,7 @@ export async function callMcpToolWithBackgroundImage(
             server,
             toolName,
             cleanedArgs,
+            context.signal,
         );
     }
 
@@ -1476,6 +1479,7 @@ export async function callMcpToolWithBackgroundImage(
             server,
             toolName,
             cleanedArgs,
+            context.signal,
         );
     }
 

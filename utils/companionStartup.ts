@@ -256,6 +256,7 @@ export const requestCompanionStartupDraft = async (options: {
   modelActions?: AvatarTouchModelAction[];
   hint?: string;
 }): Promise<CompanionStartupDraft> => {
+
   const {
     character,
     user,
@@ -273,20 +274,14 @@ export const requestCompanionStartupDraft = async (options: {
   const recentMessages = allMessages
     .filter(message => message.role === 'user' || message.role === 'assistant');
   const eventText = `[陪伴桌面开机演出设置] ${user.name || '用户'}希望你为每次回到陪伴主界面准备一句符合本人性格的短开场。`;
-  const coreContext = ContextBuilder.buildCoreContext(
-    character,
-    user,
-    true,
-    undefined,
-    undefined,
-    {
+  const characterContextInput = { char: character, user, includeDetailedMemories: true, timeOptions: {
       lastInteractionTs: recentMessages[recentMessages.length - 1]?.timestamp,
       worldbookMessages: [
         ...recentMessages.map(message => ({ role: message.role, content: message.content })),
         { role: 'user', content: eventText },
       ],
-    },
-  );
+    } };
+
   const { apiMessages } = ChatPrompts.buildMessageHistory(
     recentMessages,
     recentMessages.length,
@@ -302,11 +297,11 @@ export const requestCompanionStartupDraft = async (options: {
     },
     body: JSON.stringify({
       model: apiConfig.model,
-      messages: [
-        { role: 'system', content: buildCompanionStartupPrompt(coreContext, character.name, user.name || '用户', modelActions, hint) },
+      messages: (await ContextBuilder.buildCharacterRequest(characterContextInput, [
+        { role: 'system', content: buildCompanionStartupPrompt('', character.name, user.name || '用户', modelActions, hint) },
         ...apiMessages,
         { role: 'user', content: eventText },
-      ],
+      ])),
       temperature: 0.86,
       max_tokens: 1400,
       stream: false,

@@ -312,6 +312,7 @@ export const callMcpTool = async (
     server: McpServerConfig,
     toolName: string,
     args: Record<string, any> = {},
+    signal?: AbortSignal,
 ): Promise<McpToolResult> => {
     const tool = (server.tools || []).find(item => item.name === toolName);
     const needsApproval = tool?.annotations?.destructiveHint === true;
@@ -326,6 +327,7 @@ export const callMcpTool = async (
         if (!approved) return { success: false, error: '用户拒绝了这次 MCP 调用。' };
     }
     return callMcpToolCore(targetFor(server), getSession(server.id), toolName, args, {
+        signal,
         inputSchema: (server.tools || []).find(tool => tool.name === toolName)?.inputSchema,
         serverLabel: server.name,
         timeoutMs: getMcpRequestTimeoutMs(server),

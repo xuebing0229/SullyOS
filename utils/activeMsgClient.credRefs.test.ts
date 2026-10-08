@@ -63,6 +63,8 @@ const capturedPayloads: any[] = [];
 /** 每次 POST 的返回，按顺序取；用完了就一直回最后一个。 */
 let scheduleResponses: Array<{ status: number; body: unknown }> = [];
 let postedPaths: string[] = [];
+/** 每次 POST 的明文外壳（即时对话那条的外壳是明文 JSON，里面才是信封）。 */
+let postedBodies: any[] = [];
 
 const respond = () => {
   const next = scheduleResponses.length > 1 ? scheduleResponses.shift()! : scheduleResponses[0];
@@ -76,6 +78,7 @@ const respond = () => {
 beforeEach(() => {
   capturedPayloads.length = 0;
   postedPaths = [];
+  postedBodies = [];
   scheduleResponses = [{ status: 200, body: { success: true, data: { uuid: 'remote-uuid', status: 'pending' } } }];
   globalConfig.llmCredentialsSupported = true;
   forgetAllCredIds();
@@ -95,8 +98,9 @@ beforeEach(() => {
   vi.spyOn(ChatPrompts, 'buildMessageHistory').mockReturnValue({ apiMessages: [] } as any);
   vi.spyOn(ChatPrompts, 'filterVisibleEmojis').mockReturnValue({ emojis: [], categories: [] } as any);
   vi.spyOn(ActiveMsgClient, 'registerPushSubscription').mockResolvedValue(undefined);
-  vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
     postedPaths.push(String(url));
+    try { postedBodies.push(JSON.parse(String(init?.body ?? 'null'))); } catch { postedBodies.push(null); }
     return respond();
   }));
   clearInstantChatPending(CHAR_ID);
@@ -113,8 +117,8 @@ const scheduledTask = () => capturedPayloads.filter((p) => p && 'messageType' in
 /** 传上去的凭据行（扁平化所有批次）。 */
 const putRows = () => reiClient.putLlmCredentials.mock.calls.flatMap(([rows]: any[]) => rows);
 
-const schedule = (config: any = { enabled: true, tasks: [] }) => ActiveMsgClient.scheduleCharacterTask({
-  char: CHAR,
+const schedule = (config: any = { enabled: true, tasks: [] }, char = CHAR) => ActiveMsgClient.scheduleCharacterTask({
+  char,
   config,
   task: { mode: 'auto', firstSendTime: new Date(Date.now() + 3600_000).toISOString(), recurrenceType: 'none' },
   userProfile: { name: '小明' } as any,
@@ -139,6 +143,7 @@ describe('排程任务的凭据', () => {
 
     expect(putRows()).toEqual([{
       credId: `char:${CHAR_ID}/chat`,
+      owner: { type: 'character', id: CHAR_ID }, ownerGeneration: 0,
       value: {
         apiUrl: 'https://api.example.dev/v1/chat/completions',
         apiKey: 'sk-global',
@@ -149,7 +154,20 @@ describe('排程任务的凭据', () => {
       .toBeLessThan((globalThis.fetch as any).mock.invocationCallOrder.at(-1));
   });
 
-  it('角色开了单独 API → 那行写的是单独 API 的值', async () => {
+  it.each([true, false])('角色默认 API 进入实际排程载荷（凭据表支持=%s）', async supported => {
+    globalConfig.llmCredentialsSupported = supported;
+    const dialogueApi = { baseUrl: 'https://role.example/v1', apiKey: 'role-key', model: 'role-model' };
+    await schedule(undefined, { ...CHAR, dialogueApi });
+    const expected = { apiUrl: dialogueApi.baseUrl + '/chat/completions', apiKey: dialogueApi.apiKey, primaryModel: dialogueApi.model };
+    if (supported) {
+      expect(putRows()[0].value).toEqual(expected);
+      expect(scheduledTask()).not.toHaveProperty('apiKey');
+    } else {
+      expect(scheduledTask()).toMatchObject(expected);
+    }
+  });
+
+  it('主动消息单独 API 使用独立凭据，不覆盖即时对话', async () => {
     await schedule({
       enabled: true,
       tasks: [],
@@ -273,6 +291,13 @@ describe('即时对话的凭据与情绪评估', () => {
     });
   });
 
+  it('秘密请求编号随加密评估配置保留，凭据引用仍不携带副 API key', async () => {
+    await send({emotionEval: {...EVAL_SPEC, homeSecretRequestId: 'secret-request'}});
+    expect(scheduledTask().metadata.amsgEmotionEval).toEqual({
+      prompt: EVAL_SPEC.prompt, homeSecretRequestId: 'secret-request',
+    });
+  });
+
   it('这一轮不评估 → 只带聊天那个引用（绝不出现单挂 emotion 的空壳）', async () => {
     await send();
 
@@ -290,6 +315,39 @@ describe('即时对话的凭据与情绪评估', () => {
     expect(task.apiKey).toBe('sk-global');
     expect(task.metadata.amsgEmotionEval).toEqual(EVAL_SPEC);
     expect(reiClient.putLlmCredentials).not.toHaveBeenCalled();
+  });
+
+  // 回归守卫：本地底账只记得「这个入口传过什么」。云端那行被别的入口（iOS 上 Safari
+  // 和主屏 App 各存各的）或别的 Worker 改成别的模型之后，底账还说「没变」，于是一轮
+  // 都不传，本地怎么切 API 云端都还用那份旧的。凭据必须每一轮都随请求交给 worker。
+  it('值没变的第二轮照样把这一轮的凭据随请求带上（不看底账）', async () => {
+    await send();
+    postedBodies = [];
+    capturedPayloads.length = 0;
+    reiClient.putLlmCredentials.mockClear();
+
+    await send();
+
+    expect(reiClient.putLlmCredentials, '底账说没变，单独登记那一步照旧省掉').not.toHaveBeenCalled();
+    const outer = postedBodies.find((b) => b && 'taskPayload' in b);
+    expect(outer.credPayload).toEqual({ iv: 'iv', authTag: 'tag', encryptedData: 'enc' });
+    const credBody = capturedPayloads.find((p) => p && 'credentials' in p);
+    expect(credBody.credentials).toEqual([{
+      credId: `char:${CHAR_ID}/instant`,
+      owner: { type: 'character', id: CHAR_ID }, ownerGeneration: 0,
+      value: {
+        apiUrl: 'https://api.example.dev/v1/chat/completions',
+        apiKey: 'sk-global',
+        primaryModel: 'claude-sonnet-4-thinking',
+      },
+    }]);
+  });
+
+  it('不达标的 worker（内联凭据）不带 credPayload', async () => {
+    globalConfig.llmCredentialsSupported = false;
+    await send();
+    const outer = postedBodies.find((b) => b && 'taskPayload' in b);
+    expect(outer).not.toHaveProperty('credPayload');
   });
 
   it('包装层回「引用的凭据不存在」→ 补传后重发一次', async () => {

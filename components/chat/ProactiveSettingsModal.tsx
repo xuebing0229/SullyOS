@@ -29,6 +29,7 @@ const ProactiveSettingsModal: React.FC<ProactiveSettingsModalProps> = ({
     const saved = char.proactiveConfig;
     const [enabled, setEnabled] = useState(saved?.enabled ?? false);
     const [interval, setInterval_] = useState(saved?.intervalMinutes ?? 60);
+
     const [useSecondaryApi, setUseSecondaryApi] = useState(saved?.useSecondaryApi ?? false);
     const [secUrl, setSecUrl] = useState(saved?.secondaryApi?.baseUrl ?? '');
     const [secKey, setSecKey] = useState(saved?.secondaryApi?.apiKey ?? '');

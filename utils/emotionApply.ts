@@ -1,8 +1,11 @@
 import { DB } from './db';
+import {parseHomeEmotion} from './homeEmotion';
 import type { CharacterProfile, CharacterBuff } from '../types';
-import { landAmbientEventFromEval } from './roomAmbient';
 import { CHAT_GEN_EVENTS } from './chatGenEvents';
 import { stripEmotionReasoningMarkup } from './emotionText';
+import {landHomeSecrets} from './homeSecrets';
+import type {SecretNoteOrigin} from './secretNote';
+import {homeSecretEvalRequestId} from './emotionEvalCore';
 
 // 情绪评估失败的用户可见信号（OSContext 监听弹 toast）。本函数是本地 / instant(worker)
 // 两条路径的共用落点，在这里派发能覆盖「worker 推回的 raw 解析全灭」这类云端失败。
@@ -19,13 +22,8 @@ const announceEmotionFailed = (charData: CharacterProfile, reason: string): void
 // 角色「最后一次内心独白(InnerState)」的轻量缓存（localStorage）。
 // innerState 是瞬时产物，这里在情绪评估落地的共用点顺手缓存一份，供别处（如查手机首页）读取，
 // 不额外动 CharacterProfile / DB schema。
-export const lastInnerStateKey = (charId: string) => `sully_last_innerstate_${charId}`;
-export function getLastInnerState(charId: string): string {
-    try {
-        const stored = (typeof localStorage !== 'undefined' && localStorage.getItem(lastInnerStateKey(charId))) || '';
-        return stripEmotionReasoningMarkup(stored);
-    } catch { return ''; }
-}
+export {getLastInnerState, lastInnerStateKey} from './emotionState';
+import {lastInnerStateKey} from './emotionState';
 
 const INTERNAL_USER_LABEL_FALLBACK = '对方';
 const USER_NARRATIVE_FOLLOWERS = '(?:说|表示|告诉|问|回答|回复|觉得|认为|想|希望|担心|喜欢|讨厌|看|听|做|给|让|叫|称|提到|沉默|离开|回来|正在|已经|没有|还|又|会|要|能|可以|应该|可能|似乎|仿佛|的|对|与|和|向|把|被|在|从|为|令|使)';
@@ -93,6 +91,8 @@ const sanitizeBuffs = (buffs?: CharacterBuff[]): CharacterBuff[] => {
                 const description = stripEmotionReasoningMarkup(buff.description);
                 if (description) out.description = description;
             }
+            const behavior=parseHomeEmotion(buff.homeBehavior);
+            if(behavior){out.homeBehavior=behavior;out.homeBehaviorAt=Date.now();}
             return out;
         })
         .filter((buff): buff is CharacterBuff => !!buff);
@@ -374,6 +374,8 @@ const extractBalancedObject = (raw: string): string | undefined => {
 };
 
 export interface EmotionEvalResult {
+    homeSecrets?: unknown;
+    homeSecretRequestId?: string;
     changed: boolean;
     buffs?: CharacterBuff[];
     /** Explicit removals. Omitting an old buff from buffs no longer deletes it. */
@@ -386,13 +388,31 @@ export interface EmotionEvalResult {
 
 const looksLikeEvalResult = (v: any): boolean =>
     !!v && typeof v === 'object' && !Array.isArray(v)
-    && ('changed' in v || 'buffs' in v || 'removedBuffIds' in v || 'injection' in v || 'innerState' in v);
+    && ('changed' in v || 'buffs' in v || 'removedBuffIds' in v || 'injection' in v || 'innerState' in v || 'homeSecrets' in v);
 
 const tryParseObject = (s: string): any | null => {
     try {
         const v = JSON.parse(s);
         return (v && typeof v === 'object' && !Array.isArray(v)) ? v : null;
     } catch { return null; }
+};
+
+// Recover the complete secrets array independently when another JSON field is malformed.
+const salvageSecrets = (raw: string): unknown[] | undefined => {
+    const match = /"homeSecrets"\s*:\s*\[/.exec(raw);
+    if (!match) return;
+    const start = raw.indexOf('[', match.index);
+    let inString = false, escaped = false, depth = 0;
+    for (let i = start; i < raw.length; i++) {
+        const ch = raw[i];
+        if (escaped) {escaped = false; continue;}
+        if (inString) {if (ch === '\\') escaped = true; else if (ch === '"') inString = false; continue;}
+        if (ch === '"') inString = true;
+        else if (ch === '[') depth++;
+        else if (ch === ']' && --depth === 0) {
+            try {return JSON.parse(stripTrailingCommas(raw.slice(start, i + 1)));} catch {return;}
+        }
+    }
 };
 
 // 字段级抢救: 整体 parse 全灭时, 用带转义感知的正则把 innerState / injection / changed / buffs
@@ -473,13 +493,15 @@ const salvageFields = (repairedRaw: string): EmotionEvalResult | null => {
     const removedBuffIds = pickStringArray('removedBuffIds');
     const injection = pickString('injection');
     const innerState = pickString('innerState');
+    const homeSecrets = salvageSecrets(repairedRaw);
+    const homeSecretRequestId = pickString('homeSecretRequestId');
     const changedMatch = repairedRaw.match(/"changed"\s*:\s*"?(true|false)"?/i);
 
-    if (!injection && !innerState && !buffs && !removedBuffIds) return null;
+    if (!injection && !innerState && !buffs && !removedBuffIds && !homeSecrets) return null;
     const changed = changedMatch
         ? changedMatch[1].toLowerCase() === 'true'
         : !!(injection || buffs); // 抢救出了 injection/buffs 就当有变化, 只有 innerState 则不动 buff
-    return { changed, buffs, removedBuffIds, injection, innerState, salvaged: true };
+    return { changed, buffs, removedBuffIds, injection, innerState, homeSecrets, homeSecretRequestId, salvaged: true };
 };
 
 /**
@@ -537,6 +559,10 @@ export function parseEmotionEvalOutput(rawText: string): EmotionEvalResult | nul
                         : Array.isArray(v.buffs) || (typeof v.injection === 'string' && !!v.injection.trim());
                 return {
                     changed,
+                    // Closing a truncated JSON string is acceptable for partial emotion text,
+                    // but must not turn half a secret/memory into an established experience.
+                    homeSecrets: attempt === c4 && c4 !== c3 ? salvageSecrets(c3) : v.homeSecrets,
+                    homeSecretRequestId: typeof v.homeSecretRequestId === 'string' ? v.homeSecretRequestId : undefined,
                     buffs: Array.isArray(v.buffs) ? v.buffs : undefined,
                     removedBuffIds: Array.isArray(v.removedBuffIds)
                         ? v.removedBuffIds.map((value: unknown) => String(value || '').trim()).filter(Boolean)
@@ -586,6 +612,8 @@ export interface ApplyEmotionEvalOptions {
      * 异步评估可能前后轮重叠。返回 false 时说明这份结果已经过期，必须放弃所有角色状态落地。
      */
     shouldApply?: () => boolean;
+    secretRequestId?: string;
+    secretOrigin?: SecretNoteOrigin;
 }
 
 export async function applyEmotionEvalRaw(
@@ -594,9 +622,14 @@ export async function applyEmotionEvalRaw(
     userName?: string,
     options?: ApplyEmotionEvalOptions,
 ): Promise<string | null> {
+    const { secretRequestId, secretOrigin } = options || {};
     try {
         const result = parseEmotionEvalOutput(rawText || '');
         if (!result) {
+            const requestId = secretRequestId || homeSecretEvalRequestId(rawText);
+            if (requestId) {
+                try {await landHomeSecrets(charData.id, {}, requestId, rawText);} catch { /* Failure is announced below. */ }
+            }
             console.warn('🎭 [Emotion] Could not parse eval output (all repairs + salvage failed):', (rawText || '').slice(0, 300));
             announceEmotionFailed(charData, '评估模型的输出不是可解析的 JSON（模型掉格式，可换个评估模型试试）');
             return null;
@@ -620,12 +653,15 @@ export async function applyEmotionEvalRaw(
 
         if (innerStateOut) {
             try { localStorage.setItem(lastInnerStateKey(charData.id), innerStateOut); } catch { /* ignore */ }
+            if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('emotion-innerstate-updated', {detail: {charId: charData.id, innerState: innerStateOut}}));
         }
 
-        // 小屋生活动态（可选顺风车产出，见 utils/roomAmbient.ts）：落 room_card 进私聊。
-        // 本函数是在线 / instant(worker) 两条路径的共用落点，所以在这里接。
-        // 与情绪主链路完全解耦——失败只丢这条动态，不影响 buff。
-        await landAmbientEventFromEval(result, charData);
+        // Secrets are independent of changed/buffs; persist before the unchanged-emotion early return.
+        try {
+            await landHomeSecrets(charData.id, result, secretRequestId || homeSecretEvalRequestId(rawText), rawText, secretOrigin);
+        } catch (error) {
+            announceEmotionFailed(charData, error instanceof Error ? error.message : '秘密保存失败');
+        }
 
         const hasBuffArray = Array.isArray(result.buffs);
         const hasRemovedBuffIds = Array.isArray(result.removedBuffIds);
@@ -682,7 +718,7 @@ export async function applyEmotionEvalRaw(
             console.log('🎭 [Emotion] Dropped stale eval result before save:', charData.id);
             return null;
         }
-        await DB.saveCharacter(updated);
+        await DB.saveCharacterEmotion(updated.id, updated.activeBuffs || [], updated.buffInjection || '');
 
         // detail 直接带上 buffs + buffInjection: 监听方 (Chat) 可直接落 OSContext, 不必重读 DB
         // —— 避开 saveCharacter 未等事务提交 / instant flush 下 DB 重读偶发拿旧值的竞态.

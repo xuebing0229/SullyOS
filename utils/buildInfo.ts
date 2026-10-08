@@ -16,11 +16,5 @@ export const BUILD_TIME_LABEL = __BUILD_TIME__;
 /** Android 安装包的可比较版本号；正式发版工作流通过 VITE_APP_VERSION 注入。 */
 export const APP_RELEASE_VERSION = import.meta.env.VITE_APP_VERSION || '0.0.0-dev';
 
-/** 设置页底部的产品版本名（手工维护），跟构建 hash 是两码事——发版前改这里。 */
-export const APP_VERSION = 'v3.11 (Kitchen)';
-
-/**
- * 版本号那半截（`v3.0`）。统计给每条记录打的标签用它，面板里按版本切分数据时
- * 标签越短越好筛，代号留给设置页展示。跟着 APP_VERSION 走，改一处就够。
- */
-export const APP_VERSION_TAG = APP_VERSION.split(' ')[0];
+/** 产品版本名和它的版本号那半截，在 appVersion.ts 里维护。 */
+export { APP_VERSION, APP_VERSION_TAG } from './appVersion';

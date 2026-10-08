@@ -1,3 +1,4 @@
+import { ContextBuilder } from '../utils/context';
 import { loadCharacterContextMessages } from '../utils/chatContextRange';
 
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
@@ -18,7 +19,6 @@ import {
     type LyricStyleCategory,
 } from '../utils/songPrompts';
 import { injectMemoryPalace } from '../utils/memoryPalace/pipeline';
-import { ContextBuilder } from '../utils/context';
 import { safeResponseJson, extractJson } from '../utils/safeApi';
 import { DB } from '../utils/db';
 import { putImageBlob, useBlobRefUrl, resolveRefToDataUrl } from '../utils/blobRef';
@@ -53,7 +53,7 @@ import {
 } from '@phosphor-icons/react';
 import { useMusic, type Song as MusicSong } from '../context/MusicContext';
 import { CharacterGroupFilterBar, filterCharactersByGroup, GROUP_FILTER_ALL } from '../components/character/CharacterGroupFilter';
-import { trackEvent } from '../utils/analytics';
+
 
 // --- Helper Components ---
 
@@ -402,11 +402,7 @@ const SongwritingApp: React.FC = () => {
         setWorkMode('notebook');
         setLineDrafts({});
         setView('write');
-        trackEvent('进入乐谱写作模式', {
-            genre: newSong.genre,
-            mood: newSong.mood,
-            template: newSong.lyricTemplate || 'free',
-        });
+        
         resetTempState();
     };
 
@@ -436,6 +432,7 @@ const SongwritingApp: React.FC = () => {
     // --- AI Interaction ---
 
     const handleSendToAI = async (userMessage: string, addAsLine: boolean = false, requestedType?: 'inspiration' | 'discussion' | 'feedback') => {
+
         if (!activeSong || !collaborator) return;
         setIsTyping(true);
         setLastTokenUsage(null);
@@ -476,7 +473,7 @@ const SongwritingApp: React.FC = () => {
             }));
 
             await injectMemoryPalace(collaborator, undefined, `${updatedSong.title || ''} ${userMessage}`.trim() || undefined);
-            const systemPrompt = SongPrompts.buildMentorSystemPrompt(collaborator, userProfile, updatedSong, msgContext);
+            const systemPrompt = (await SongPrompts.buildMentorSystemPrompt(collaborator, userProfile, updatedSong, msgContext));
             let userPrompt = SongPrompts.buildUserMessage(updatedSong, userMessage, currentSection);
             if (requestedType) {
                 const typeHints: Record<string, string> = {
@@ -508,7 +505,7 @@ const SongwritingApp: React.FC = () => {
             const response = await fetch(`${apiConfig.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiConfig.apiKey}` },
-                body: JSON.stringify({ model: apiConfig.model, messages: apiMessages, temperature: 0.8, max_tokens: 2000 })
+                body: JSON.stringify({ model: apiConfig.model, messages: (await ContextBuilder.buildCharacterRequest({ char: collaborator, user: userProfile }, apiMessages)), temperature: 0.8, max_tokens: 2000 })
             });
 
             if (response.ok) {
@@ -660,12 +657,12 @@ const SongwritingApp: React.FC = () => {
 
     const handleAskForHelp = async () => {
         setInputText('');
-        trackEvent('请搭档给灵感');
+        
         await handleSendToAI('我不知道怎么写，能给我一些灵感和示范吗？', false, 'inspiration');
     };
 
     const handleDiscuss = async () => {
-        trackEvent('找搭档讨论接下来怎么写');
+        
         const text = inputText.trim();
         if (!text) return;
         setInputText('');
@@ -705,7 +702,7 @@ const SongwritingApp: React.FC = () => {
         setActiveSong(updated);
         updateSong(updated.id, { lines: newLines });
         setPendingLines(prev => prev.filter(l => l.id !== lineId));
-        trackEvent('采纳搭档写的一句歌词');
+        
     };
 
     const handleDismissPending = (lineId: string) => {
@@ -806,6 +803,7 @@ const SongwritingApp: React.FC = () => {
     }, [activeSong, lineAtSlot, updateSong]);
 
     const handleGenerateNotebookLine = useCallback(async (slot: LyricSlot) => {
+
         if (!activeSong || !collaborator || generatingSlotIndex !== null) return;
         if (!apiConfig.baseUrl || !apiConfig.apiKey) {
             addToast('请先在设置里配置 AI 模型。', 'error');
@@ -846,7 +844,7 @@ const SongwritingApp: React.FC = () => {
                 undefined,
                 `${snapshot.title} 第${slot.index + 1}句 ${snapshot.lines.map(line => line.content).join(' ')}`.trim(),
             );
-            const systemPrompt = SongPrompts.buildMentorSystemPrompt(collaborator, userProfile, snapshot, []);
+            const systemPrompt = (await SongPrompts.buildMentorSystemPrompt(collaborator, userProfile, snapshot, []));
             const existing = lineAtSlot(snapshot, slot.index);
             const request = [
                 `请为歌词本的第 ${slot.index + 1} 句${existing ? '重新写一个版本' : '写一句歌词'}。`,
@@ -865,10 +863,10 @@ const SongwritingApp: React.FC = () => {
                     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiConfig.apiKey}` },
                     body: JSON.stringify({
                         model: apiConfig.model,
-                        messages: [
+                        messages: (await ContextBuilder.buildCharacterRequest({ char: collaborator, user: userProfile }, [
                             { role: 'system', content: systemPrompt },
                             { role: 'user', content: userPrompt + retryInstruction },
-                        ],
+                        ])),
                         temperature: attempt === 0 ? 0.9 : 0.65,
                         max_tokens: 500,
                     }),
@@ -910,13 +908,14 @@ const SongwritingApp: React.FC = () => {
 
     // --- Completion ---
     const handleComplete = async () => {
+
         if (!activeSong || !collaborator) return;
         if (activeSong.lines.filter(l => !l.isDraft).length === 0) { addToast('歌曲还没有任何歌词', 'error'); return; }
 
         setIsCompleting(true);
         setShowPreviewModal(true);
         setCompletionReview('正在等搭档写评语...');
-        trackEvent('完成乐谱并让搭档点评');
+        
 
         try {
             await injectMemoryPalace(
@@ -925,17 +924,17 @@ const SongwritingApp: React.FC = () => {
                 `${activeSong.title} ${activeSong.lines.map(line => line.content).join(' ')}`.trim(),
                 userProfile.name,
             );
-            const systemPrompt = SongPrompts.buildCompletionSystemPrompt(collaborator, userProfile);
+            const systemPrompt = (await SongPrompts.buildCompletionSystemPrompt(collaborator, userProfile));
             const prompt = SongPrompts.buildCompletionPrompt(collaborator, userProfile, activeSong);
             const response = await fetch(`${apiConfig.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiConfig.apiKey}` },
                 body: JSON.stringify({
                     model: apiConfig.model,
-                    messages: [
+                    messages: (await ContextBuilder.buildCharacterRequest({ char: collaborator, user: userProfile }, [
                         { role: 'system', content: systemPrompt },
                         { role: 'user', content: prompt },
-                    ],
+                    ])),
                     temperature: 0.7,
                     max_tokens: 500,
                 })
@@ -1022,7 +1021,7 @@ const SongwritingApp: React.FC = () => {
 
         setShowShareModal(false);
         addToast('乐谱已分享到聊天', 'success');
-        trackEvent('分享乐谱到聊天');
+        
     };
 
     // --- Pause (just go back) ---
@@ -1341,7 +1340,7 @@ const SongwritingApp: React.FC = () => {
         setPromptDraft(current);
         setPromptGuidance('');
         setShowCustomPrompt(true);
-        trackEvent('打开 AI 出歌引导弹窗');
+        
     };
 
     /**
@@ -1364,7 +1363,7 @@ const SongwritingApp: React.FC = () => {
         await updateSong(activeSong.id, { aceStepCustomTags: tags });
         setShowCustomPrompt(false);
         runSynth(provider, tags);
-        trackEvent('确认出歌并开始生成');
+        
     };
 
     const handleAiWritePrompt = async () => {
@@ -1374,7 +1373,7 @@ const SongwritingApp: React.FC = () => {
             return;
         }
         setIsAiWritingPrompt(true);
-        trackEvent('让 AI 帮写出歌提示词');
+        
         try {
             // MiniMax 是中文模型 → 输出中文 natural-language prompt
             // ACE-Step 国外模型 → 输出英文 comma-separated tags
@@ -1583,7 +1582,7 @@ const SongwritingApp: React.FC = () => {
             localLyrics: lyricsText,
         };
         addLocalSong(localSong);
-        trackEvent('把成品歌加进音乐 App 专辑');
+        
         setShowCoverConfirm(false);
         addToast(`已加入「一起写的歌」专辑 ❤︎`, 'success');
         playSong(localSong, { alsoSetQueue: true });
@@ -1642,7 +1641,7 @@ const SongwritingApp: React.FC = () => {
                             <p className="text-lg font-bold mt-0.5" style={{ color: MusicC.primary, fontFamily: 'Georgia, "Noto Serif SC", serif' }}>歌词手帖</p>
                         </div>
                         <button
-                            onClick={() => { trackEvent('开始新建乐谱'); setView('create'); }}
+                            onClick={() => {  setView('create'); }}
                             className="p-2.5 rounded-full active:scale-95 transition-all"
                             style={{
                                 background: `linear-gradient(135deg, ${MusicC.sakura}, ${MusicC.lavender})`,
@@ -1668,7 +1667,7 @@ const SongwritingApp: React.FC = () => {
                                 点击右上角的 +，开始第一本歌词手帖
                             </p>
                             <div className="w-20 h-[2px] bg-stone-300/60 mt-8" />
-                            <button onClick={() => { trackEvent('开始新建乐谱'); setView('create'); }} className="mt-8 px-6 py-2.5 border border-stone-300 rounded text-sm text-stone-600 hover:bg-stone-100 active:scale-[0.98] transition-all">
+                            <button onClick={() => {  setView('create'); }} className="mt-8 px-6 py-2.5 border border-stone-300 rounded text-sm text-stone-600 hover:bg-stone-100 active:scale-[0.98] transition-all">
                                 开始写歌
                             </button>
                         </div>
@@ -2805,7 +2804,7 @@ const SongwritingApp: React.FC = () => {
                                                 coverUploadRef.current?.click();
                                             } else {
                                                 setCoverMode(opt.id);
-                                                trackEvent('选择加入音乐 App 的封面样式', { coverMode: opt.id });
+                                                
                                             }
                                         }}
                                         className="rounded-xl p-2 border transition-all active:scale-95 flex flex-col items-center gap-1"
@@ -2986,7 +2985,7 @@ const SongwritingApp: React.FC = () => {
                                             return (
                                                 <button
                                                     key={opt.id}
-                                                    onClick={() => { setProvider(opt.id); trackEvent('切换出歌生成器', { provider: opt.id }); }}
+                                                    onClick={() => { setProvider(opt.id);  }}
                                                     disabled={!opt.available}
                                                     className="relative text-left p-2 rounded-xl border transition-all active:scale-95 disabled:cursor-not-allowed"
                                                     style={isActive ? {
@@ -3043,7 +3042,7 @@ const SongwritingApp: React.FC = () => {
                                     return (
                                         <button
                                             key={preset.id}
-                                            onClick={() => { applyVoicePreset(preset.id); trackEvent('选择声线预设', { preset: preset.id }); }}
+                                            onClick={() => { applyVoicePreset(preset.id);  }}
                                             className="text-[11px] py-2.5 rounded-xl border transition-all active:scale-95 flex flex-col items-center justify-center gap-1 relative overflow-hidden"
                                             style={isActive ? {
                                                 background: `linear-gradient(135deg, ${MusicC.primary}, ${MusicC.accent})`,
