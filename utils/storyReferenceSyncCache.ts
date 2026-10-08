@@ -30,9 +30,15 @@ const keyOf = async (target: StoryReferenceSyncTarget): Promise<string | null> =
     const slot = String(target.slotId || '').trim();
     const sha = String(target.sha256 || '').trim().toLowerCase();
     if (!base || !slot || !/^[0-9a-f]{64}$/.test(sha) || !globalThis.crypto?.subtle) return null;
-    const encoded = new TextEncoder().encode(JSON.stringify([base, target.token || '', slot, sha]));
-    const hash = await crypto.subtle.digest('SHA-256', encoded);
-    return Array.from(new Uint8Array(hash), byte => byte.toString(16).padStart(2, '0')).join('');
+    try {
+        const encoded = new TextEncoder().encode(JSON.stringify([base, target.token || '', slot, sha]));
+        const hash = await crypto.subtle.digest('SHA-256', encoded);
+        return Array.from(new Uint8Array(hash), byte => byte.toString(16).padStart(2, '0')).join('');
+    } catch {
+        // Crypto unavailable (old WebView/private mode): run the normal verification.
+        // Cache failures must never turn into a failed reference attachment.
+        return null;
+    }
 };
 
 export const isStoryReferenceSynced = async (target: StoryReferenceSyncTarget): Promise<boolean> => {
