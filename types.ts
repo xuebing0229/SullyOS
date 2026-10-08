@@ -3929,8 +3929,8 @@ export interface EmojiCategory {
     id: string;
     name: string;
     isSystem?: boolean;
-    allowedCharacterIds?: string[]; // If set, only these characters can see this category
-    /** false = this group stays available to the user, but roles cannot see/send its emojis. */
+    allowedCharacterIds?: string[]; // 指定聊天里可展示/可发送的角色范围，不影响对历史表情的理解
+    /** false = 这组表情仅用户可发，角色仍能识别用户发送的表情名称。 */
     roleUsable?: boolean;
 }
 

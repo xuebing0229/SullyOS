@@ -424,7 +424,7 @@ const Chat: React.FC = () => {
     const draftKey = `chat_draft_${activeCharacterId}`;
 
     // “聊天可见范围”只决定用户在当前聊天里能不能看到这个分组。
-    // “角色可用”是另一层权限：关闭后用户仍可手动查看/发送，但 AI 完全拿不到该组。
+    // “角色可用”是另一层发送权限：关闭后角色不能主动发这组，但仍能识别用户发来的表情。
     const visibleCategories = useMemo(() => categories.filter(cat => {
         if (!cat.allowedCharacterIds || cat.allowedCharacterIds.length === 0) return true;
         return cat.allowedCharacterIds.includes(activeCharacterId);
@@ -479,7 +479,8 @@ const Chat: React.FC = () => {
         apiConfig,
         groups,
         emojis: aiVisibleEmojis,
-        categories: aiVisibleCategories,
+        historyEmojis: emojis,
+        categories: aiVisibleCategories;
         addToast,
         showError,
         setMessages: setMessagesFromGen,

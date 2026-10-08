@@ -43,6 +43,15 @@ describe('ChatPrompts.filterVisibleEmojis', () => {
     expect(res.categories.map(c => c.id)).not.toContain('onlyA');
   });
 
+  it('用户专用表情不在角色的可发送范围', () => {
+    const res = ChatPrompts.filterVisibleEmojis(emojis, [
+      { id: 'public', name: '通用', roleUsable: false },
+      { id: 'onlyA', name: 'A专属' },
+    ], 'A');
+    expect(res.emojis.map(e => e.name)).not.toContain('通用表情');
+    expect(res.emojis.map(e => e.name)).toContain('A专属');
+  });
+
   it('没有任何受限分类时原样返回（短路）', () => {
     const openCats: EmojiCategory[] = [{ id: 'public', name: '通用' }];
     const res = ChatPrompts.filterVisibleEmojis(emojis, openCats, 'B');

@@ -14,6 +14,7 @@ import {
     makePacketMeta,
 } from './redpacket';
 import { extractHtmlBlocks } from '../htmlPrompt';
+import { filterGroupUsableEmojis } from './prompts';
 
 interface EmojiItem { name: string; url: string; categoryId?: string }
 
@@ -104,16 +105,8 @@ export async function dispatchMemberActions(actions: DirectorAction[], ctx: Disp
         if (!publicContent) continue;
 
         // 1. Check for Emoji Commands (handle multiple emojis)
-        // Filter emojis by character visibility to prevent using hidden emoji packs
-        const charVisibleEmojis = (() => {
-            const visibleCats = categories.filter(c => {
-                if (!c.allowedCharacterIds || c.allowedCharacterIds.length === 0) return true;
-                return c.allowedCharacterIds.includes(targetId);
-            });
-            const hiddenCatIds = new Set(categories.filter(c => !visibleCats.some(vc => vc.id === c.id)).map(c => c.id));
-            if (hiddenCatIds.size === 0) return emojis;
-            return emojis.filter(e => !e.categoryId || !hiddenCatIds.has(e.categoryId));
-        })();
+        // 生成时能识别用户发来的全部表情；真正落库发送仍须通过角色权限校验。
+        const charVisibleEmojis = filterGroupUsableEmojis(emojis, categories, [targetId]).emojis;
         const emojiRegex = /\[\[SEND_EMOJI:\s*(.*?)\]\]/g;
         let emojiMatch;
         while ((emojiMatch = emojiRegex.exec(publicContent)) !== null) {

@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest';
 import {
     buildDirectorInstruction,
     buildGroupHistoryBlock,
+    buildEmojiContextStr,
+    filterGroupUsableEmojis,
     buildRoundRobinInstruction,
     GROUP_HISTORY_GAP_THRESHOLD_MS,
 } from './prompts';
@@ -90,5 +92,33 @@ describe('群聊中的 U 与关系连续性', () => {
         expect(prompt).toContain('U 还是 U');
         expect(prompt).toContain('不能因进入群聊就重置关系');
         expect(prompt).toContain('按你自己和 U 的关系反应');
+    });
+});
+
+
+describe('群聊表情权限与理解分离', () => {
+    const emojis = [
+        { name: '比心', url: 'allowed-url', categoryId: 'allowed' },
+        { name: '泪目小狗', url: 'user-only-url', categoryId: 'user-only' },
+    ];
+    const categories = [
+        { id: 'allowed', name: '可用' },
+        { id: 'user-only', name: '用户专用', roleUsable: false },
+    ];
+
+    it('导演清单和实际发送校验都不允许角色使用禁用组', () => {
+        const typedCategories = categories as import('../../types').EmojiCategory[];
+        expect(buildEmojiContextStr(emojis, typedCategories, ['c1'])).toContain('比心');
+        expect(buildEmojiContextStr(emojis, typedCategories, ['c1'])).not.toContain('泪目小狗');
+        expect(filterGroupUsableEmojis(emojis, typedCategories, ['c1']).emojis.map(e => e.name)).toEqual(['比心']);
+    });
+
+    it('历史仍能知道用户发的是禁用组里的哪张表情', () => {
+        const history = buildGroupHistoryBlock([{
+            id: 8, role: 'user', type: 'emoji', charId: 'c1',
+            content: 'user-only-url', timestamp: Date.now(),
+        } as Message], [char('c1', '小夏')], emojis, '用户');
+        expect(history.text).toContain('表情包: 泪目小狗');
+        expect(history.text).not.toContain('未知表情');
     });
 });

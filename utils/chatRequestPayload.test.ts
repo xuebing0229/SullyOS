@@ -250,3 +250,29 @@ describe('volatileTailIndex —— 想插在钢印之前的块按它定位', () 
         expect(payload.fullMessages[payload.volatileTailIndex - 1]?.role).toBe('user');
     });
 });
+
+
+describe('角色禁用表情组——不可发送但仍可识别用户发来的表情', () => {
+    it('表情历史用全量字典还原名称，系统可用清单仍不包含禁用组', async () => {
+        const payload = await buildChatRequestPayload({
+            ...baseInput(),
+            emojis: [{ name: '挥手', url: 'available-url', categoryId: 'available' }],
+            historyEmojis: [
+                { name: '挥手', url: 'available-url', categoryId: 'available' },
+                { name: '想哭的猫', url: 'blocked-url', categoryId: 'user-only' },
+            ],
+            categories: [
+                { id: 'available', name: '可用' },
+                { id: 'user-only', name: '用户专用', roleUsable: false },
+            ],
+            historyMsgs: [{
+                id: 2, charId: 'char-timely', role: 'user', type: 'emoji',
+                content: 'blocked-url', timestamp: Date.now(),
+            }] as any[],
+        });
+        expect(joinMessages(payload.cleanedApiMessages)).toContain('用户 发送了表情包: 想哭的猫');
+        expect(payload.systemPrompt).toContain('挥手');
+        expect(payload.systemPrompt).not.toContain('想哭的猫');
+        expect(payload.systemPrompt).not.toContain('用户专用: [');
+    });
+});

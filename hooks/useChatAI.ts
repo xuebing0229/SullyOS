@@ -513,6 +513,8 @@ interface UseChatAIProps {
     apiConfig: any;
     groups: GroupProfile[];
     emojis: Emoji[];
+    /** 用户/历史表情的完整识别字典；与角色可发送列表分开。 */
+    historyEmojis?: Emoji[];
     categories: EmojiCategory[];
     addToast: (msg: string, type: 'info'|'success'|'error') => void;
     /** 长报错走弹窗 (toast 一行装不下), 手机用户能看清并复制反馈 */
@@ -539,6 +541,7 @@ export const useChatAI = ({
     apiConfig,
     groups,
     emojis,
+    historyEmojis,
     categories,
     addToast,
     showError,
@@ -700,7 +703,7 @@ export const useChatAI = ({
     // 用 ref 包高频变化的依赖 (music / userProfile / 等), 不在 dep 数组里 → effect 只在 char.id 变时
     // 重建 listener (切角色), 避免 music 每秒 tick 一次都 remove+addEventListener.
     const emotionEvalDepsRef = useRef({
-        userProfile, groups, emojis, categories, realtimeConfig, apiConfig,
+        userProfile, groups, emojis, historyEmojis, categories, realtimeConfig, apiConfig,
         translationConfig, music, mcdMiniAppRef, luckinMiniAppRef, luckinChatRef, evolvedNarrative,
     });
     emotionEvalDepsRef.current = {
@@ -751,6 +754,7 @@ export const useChatAI = ({
                     userProfile: deps.userProfile,
                     groups: deps.groups,
                     emojis: deps.emojis,
+                    historyEmojis: deps.historyEmojis,
                     categories: deps.categories,
                     historyMsgs: contextMsgs,
                     contextLimit: Math.max(1, contextMsgs.length),
@@ -1097,7 +1101,7 @@ export const useChatAI = ({
             });
 
             const payload = await stageT('payload', buildChatRequestPayload({
-                char: charForGen, userProfile, groups, emojis, categories,
+                char: charForGen, userProfile, groups, emojis, historyEmojis, categories,
                 historyMsgs: contextMsgs,
                 recentMsgsHint: currentMsgs,
                 contextLimit: limit,

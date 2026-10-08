@@ -58,6 +58,8 @@ export interface BuildChatPayloadInput {
     userProfile: UserProfile;
     groups: GroupProfile[];
     emojis: Emoji[];
+    /** 全量表情字典仅用于把历史消息中的图片 URL 还原成表情名称，不授予角色发送权限。 */
+    historyEmojis?: Emoji[];
     categories: EmojiCategory[];
     /** 给 buildMessageHistory 用的完整历史（≤ contextLimit） */
     historyMsgs: Message[];
@@ -238,6 +240,8 @@ export async function buildChatRequestPayload(input: BuildChatPayloadInput): Pro
         input.categories,
         char.id,
     );
+    // 发送权限只约束可用表情库，历史识别必须用完整字典，否则用户发禁用组表情会变「未知表情」。
+    const historyEmojis = input.historyEmojis ?? input.emojis;
     // 正文、召回、世界书扫描和识图共用可见范围；UI 近窗可能仍缓存着范围外旧消息。
     const selectedHistory = selectCharacterContextMessages(historyMsgs, char);
     const visibleIds = new Set(selectedHistory.map(message => message.id));
@@ -269,7 +273,7 @@ export async function buildChatRequestPayload(input: BuildChatPayloadInput): Pro
             contextLimit,
             char,
             userProfile,
-            emojis,
+            historyEmojis,
             undefined,
             { useVisionDescriptions },
         );
@@ -399,7 +403,7 @@ export async function buildChatRequestPayload(input: BuildChatPayloadInput): Pro
         contextLimit,
         char,
         userProfile,
-        emojis,
+        historyEmojis,
         undefined,
         { useVisionDescriptions },
     );
