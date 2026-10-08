@@ -480,7 +480,7 @@ const Chat: React.FC = () => {
         groups,
         emojis: aiVisibleEmojis,
         historyEmojis: emojis,
-        categories: aiVisibleCategories;
+        categories: aiVisibleCategories,
         addToast,
         showError,
         setMessages: setMessagesFromGen,
