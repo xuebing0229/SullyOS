@@ -102,7 +102,7 @@ async function compareMemoryAgainstDb(memChars: CharacterProfile[]): Promise<str
         lines.push(
             `${tail(mem.id)} 内存=${memOn ? '已接入' : '未接入'} 库里=${db ? (dbOn ? '已接入' : '未接入') : '库里没这个角色'}`
             + ` 间隔=${mem.vrState?.intervalMinutes ?? '—'}分 上次活动=${at(mem.vrState?.lastActiveAt)}`
-            + `${mem.vrState?.api?.baseUrl ? ' 角色自带API' : ''}${flag}`
+            + `${mem.dialogueApi?.baseUrl ? ' 角色默认API' : ''}${flag}`
         );
     }
     return lines;
@@ -181,7 +181,7 @@ export async function collectVRDiagnostics(memChars: CharacterProfile[], chatApi
         .map(c => `${tail(c.id)} 连续失败 ${VRScheduler.getFailStreak(c.id)} 次`);
 
     return [
-        '===== SullyOS 彼方排障快照 =====',
+        '===== SullyOS·糯米机 彼方排障快照 =====',
         `收集时间：${new Date().toLocaleString('zh-CN', { hour12: false })}`,
         `时区：${Intl.DateTimeFormat().resolvedOptions().timeZone}`,
         `独立窗口：${standalone}`,
@@ -207,7 +207,7 @@ export async function collectVRDiagnostics(memChars: CharacterProfile[], chatApi
         '--- API（不含 key 本身） ---',
         apiSummary('彼方独立', vrApi),
         apiSummary('聊天默认', chatApi),
-        `角色自带 API 的：${memChars.filter(c => c.vrState?.api?.baseUrl).length} 个`,
+        `设置了角色默认 API 的：${memChars.filter(c => c.dialogueApi?.baseUrl).length} 个`,
         '',
         '--- 主动消息任务 ---',
         ...describeAmsgTasks(memChars),

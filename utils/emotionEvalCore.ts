@@ -1,12 +1,11 @@
 /**
  * 云端情绪评估的共用内核：占位符还原 + 副 API 请求 + 失败文案（先打码后截断）。
  *
- * 两个 worker（amsg 的即时对话路径、instant-push 的 Instant 路径）吃的是前端同一个
- * `buildEmotionEvalPrompt(..., includeContext=false, ...)` 模板，还原与请求逻辑必须
- * **逐字同款**——过去是两份手工同步的副本，d92231a 给报错加 apiKey 打码时只落了一份，
- * 另一份就把副 API key 随 push 带出去了。收敛到这一份叶子后，改哪条规则两边一起动。
+ * amsg worker 的即时对话路径吃的是前端 `buildEmotionEvalPrompt(..., includeContext=false, ...)`
+ * 生成的模板，还原与请求逻辑必须跟模板约定**逐字同款**。报错文案里的 apiKey 一定要先打码
+ * 再截断，否则副 API key 会随 push 带出去。
  *
- * 零浏览器 / 零 worker 运行时依赖（两个 worker bundle 都会把这份代码打进去）。
+ * 零浏览器 / 零 worker 运行时依赖（会被打进 amsg worker bundle）。
  */
 
 /** 副 API 凭据（没单独配就是主 API 那一份）。 */
@@ -32,6 +31,12 @@ export const EMOTION_EVAL_TEMPERATURE = 0.2;
 
 /** OpenAI 兼容 JSON mode；不支持的中转会在请求层自动去掉后重试。 */
 export const EMOTION_EVAL_JSON_RESPONSE_FORMAT = { type: 'json_object' } as const;
+
+/** Trusted transport marker keeps the expected task ID even if the model omits its mandatory fields. */
+export const tagHomeSecretEval = (raw: string, requestId?: string): string =>
+  requestId && /^[\w-]+$/.test(requestId) ? `HOME_SECRET_REQUEST:${requestId}\n${raw}` : raw;
+export const homeSecretEvalRequestId = (raw: string): string | undefined =>
+  raw.match(/^HOME_SECRET_REQUEST:([\w-]+)\r?\n/)?.[1];
 
 /** 单次评估请求的上限；副 API 卡住的话，主流程不该跟着一起被扣在这儿。 */
 export const EMOTION_EVAL_TIMEOUT_MS = 120_000;
@@ -203,8 +208,12 @@ export const requestEmotionEval = async (
   api: EmotionEvalApi,
   promptContent: string | EmotionEvalRequestMessage[],
   timeoutMs: number = EMOTION_EVAL_TIMEOUT_MS,
+  signal?: AbortSignal,
 ): Promise<EmotionEvalOutcome> => {
   const controller = new AbortController();
+  const abort = () => controller.abort(signal?.reason);
+  if (signal?.aborted) return { raw: null, error: null };
+  signal?.addEventListener('abort', abort, { once: true });
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const baseUrl = String(api.baseUrl).replace(/\/+$/, '');
@@ -296,6 +305,7 @@ export const requestEmotionEval = async (
     }
     return { raw, error: null, failoverEligible: false };
   } catch (error) {
+    if (signal?.aborted) return { raw: null, error: null };
     console.warn('[emotion-eval] 评估失败（主流程不受影响）', error);
     // 只带异常名/消息，不带栈：这句要走 push 出门，短一点、也别把内部路径抖出去。
     // 异常消息同样过打码：fetch 异常一般不含请求头，但 URL 解析类错误会回显传入的
@@ -306,6 +316,7 @@ export const requestEmotionEval = async (
     return { raw: null, error: reason, failoverEligible: true };
   } finally {
     clearTimeout(timer);
+    signal?.removeEventListener('abort', abort);
   }
 };
 
@@ -319,6 +330,7 @@ export const requestEmotionEvalWithFailover = async (
   apis: EmotionEvalApi[],
   promptContent: string | EmotionEvalRequestMessage[],
   timeoutMs: number = EMOTION_EVAL_TIMEOUT_MS,
+  signal?: AbortSignal,
 ): Promise<EmotionEvalOutcome> => {
   const routes = (Array.isArray(apis) ? apis : []).filter((api) =>
     !!api?.baseUrl && !!api?.model
@@ -329,7 +341,7 @@ export const requestEmotionEvalWithFailover = async (
 
   let last: EmotionEvalOutcome | null = null;
   for (let i = 0; i < routes.length; i += 1) {
-    const outcome = await requestEmotionEval(routes[i], promptContent, timeoutMs);
+    const outcome = await requestEmotionEval(routes[i], promptContent, timeoutMs, signal);
     if (outcome.raw != null) return outcome;
     last = outcome;
     if (!outcome.failoverEligible) return outcome;

@@ -12,9 +12,6 @@ import type {
 } from '../types';
 import nightScreeningV627 from '../assets/presets/night-screening-v6.14.sully.json';
 import {
-    formatWorldbookSection,
-    resolveWorldbookEntries,
-    splitWorldbookSections,
     type WorldbookScanMessage,
 } from './worldbook';
 import { shareOrDownloadFile } from './shareExport';
@@ -1123,6 +1120,7 @@ const pushPromptMessage = (messages: StoryApiMessage[], role: StoryApiRole, cont
 export const compileStoryPreset = (input: {
     preset?: StoryTheaterPreset | null;
     slots: StoryPromptSlots;
+    historyMessages?: StoryApiMessage[];
     userName: string;
     characterNames: string[];
 }): { messages: StoryApiMessage[]; settings: StoryGenerationSettings; assistantPrefill?: StoryApiMessage } => {
@@ -1162,6 +1160,10 @@ export const compileStoryPreset = (input: {
         if (prompt.marker) {
             if (injectedMarkers.has(prompt.marker)) continue;
             injectedMarkers.add(prompt.marker);
+            if (prompt.marker === 'history' && input.historyMessages) {
+                messages.push(...input.historyMessages);
+                continue;
+            }
             raw = slotForMarker(prompt.marker, slots);
         }
         if (!raw.trim()) continue;
@@ -1262,26 +1264,6 @@ export const buildStoryWorldbookScanMessages = (
         ...(historyLimit > 0 ? history.slice(-historyLimit) : []),
         { role: 'user', content: current },
     ];
-};
-
-export const buildTheaterWorldbookSlots = (
-    books: MountedWorldbook[],
-    scanMessages: WorldbookScanMessage[],
-    userName: string,
-    characterNames: string[] = [],
-): { worldBefore: string; worldAfter: string } => {
-    const resolved = splitWorldbookSections(resolveWorldbookEntries(books, scanMessages, characterNames.join('、'), userName));
-    return {
-        worldBefore: formatWorldbookSection(resolved.beforeCharacter, '剧情沙盒世界书 · 角色设定前'),
-        worldAfter: [
-            formatWorldbookSection(resolved.afterCharacter, '剧情沙盒世界书'),
-            formatWorldbookSection(resolved.beforeExamples, '剧情沙盒世界书 · 示例前'),
-            formatWorldbookSection(resolved.afterExamples, '剧情沙盒世界书 · 示例后'),
-            formatWorldbookSection(resolved.authorsNoteTop, '剧情沙盒世界书 · 作者注释顶部'),
-            formatWorldbookSection(resolved.authorsNoteBottom, '剧情沙盒世界书 · 作者注释底部'),
-            formatWorldbookSection(resolved.atDepth, '剧情沙盒世界书 · 当前场景'),
-        ].filter(Boolean).join('\n'),
-    };
 };
 
 export const buildBareTheaterActorContext = (char: CharacterProfile): string => [
@@ -1656,8 +1638,9 @@ export const makeStoryPresetFileName = (name: string): string => {
     return `${safeName}.json`;
 };
 
-export const downloadStoryPreset = async (preset: StoryTheaterPreset): Promise<'shared' | 'downloaded'> => (
+export const downloadStoryPreset = async (preset: StoryTheaterPreset): Promise<'shared' | 'downloaded' | 'cancelled'> => (
     shareOrDownloadFile({
+        card: { kind: 'story', title: preset.name || '剧情预设' },
         content: JSON.stringify(preset.document, null, 2),
         fileName: makeStoryPresetFileName(preset.name),
         mimeType: 'application/json',

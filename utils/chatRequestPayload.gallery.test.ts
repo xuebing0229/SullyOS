@@ -67,11 +67,9 @@ const makeBaseInput = (overrides: Record<string, unknown> = {}) => ({
 describe('buildChatRequestPayload gallery extensions', () => {
     beforeEach(() => {
         vi.clearAllMocks();
-        buildSystemPromptParts.mockResolvedValue({
-            stable: 'BASE',
-            volatileState: 'STATE',
-            recencyTail: 'TAIL',
-        });
+        buildSystemPromptParts.mockImplementation(async (...args:any[]) => ({
+            stable: 'BASE', volatileState: 'STATE', recencyTail: 'TAIL', history: args.at(-1).history,
+        }));
         buildMessageHistory.mockImplementation((history: any[]) => ({
             apiMessages: history.map(message => ({
                 role: message.role,

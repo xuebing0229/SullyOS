@@ -58,7 +58,7 @@
 2. 选择 **Clone a public repository via Git URL**
 3. Git repository URL 填：
    ```
-   https://github.com/qegj567-cloud/SullyOS/tree/master/worker/instant-push
+   https://github.com/xuebing0229/SullyOS/tree/master/worker/instant-push
    ```
    （URL 末尾的 `worker/instant-push` 子目录路径必须保留，CF 才知道用哪一份 wrangler.toml）
 4. CF 会自动 `npm install` + `wrangler deploy`，部署成功后记录 Worker 地址：

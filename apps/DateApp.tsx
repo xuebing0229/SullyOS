@@ -1,9 +1,12 @@
+import { resolveDialogueApi } from '../utils/characterApi';
+import { useDateMessageHistory } from '../utils/useDateMessageHistory';
 import { loadCharacterContextMessages } from '../utils/chatContextRange';
 
+import type { DateState } from '../types';
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useOS } from '../context/OSContext';
 import { DB } from '../utils/db';
-import { CharacterProfile, Message, DateState, AppID } from '../types';
+import { CharacterProfile, Message, AppID } from '../types';
 import { DatePrompts, ApiMessage } from '../utils/datePrompts';
 import { processNewMessagesWithAutoArchive } from '../utils/memoryPalace/autoArchive';
 import type { PipelineResult } from '../utils/memoryPalace/pipeline';
@@ -14,16 +17,23 @@ import Modal from '../components/os/Modal';
 import TokenImg from '../components/os/TokenImg';
 import DateSession from '../components/date/DateSession';
 import DateSettings from '../components/date/DateSettings';
-import { armDateResumeAttempt, clearDateResumeAttempt, takeCrashedDateResume } from '../utils/dateSessionRecovery';
+import { clearDateResumeAttempt } from '../utils/dateSessionRecovery';
 import { BookOpen, Sparkle, CaretLeft, GearSix } from '@phosphor-icons/react';
 import { CharacterGroupFilterBar, filterCharactersByGroup, GROUP_FILTER_ALL } from '../components/character/CharacterGroupFilter';
 import { trimHistoryThrough } from '../utils/dateSessionHistory';
-import { trackEvent } from '../utils/analytics';
+
 import { markAmsgStateDirty } from '../utils/amsgStateSync';
 import { dateLaunch } from '../utils/dateLaunch';
 import { materializeVisionDescriptions } from '../utils/visionApi';
 import { shareOrDownloadFile } from '../utils/shareExport';
 import { buildInPersonContinueInstruction } from '../utils/meetingContinue';
+import {
+    advanceSARModuleAfterReply,
+    createSARModuleEventMeta,
+    createSARModuleSurfaceMeta,
+    getSARModuleRuntimePlan,
+    parseSARModuleReply,
+} from '../utils/vrWorld/sarModuleRuntime';
 import {
     buildDateHistoryGroups,
     formatDateHistoryDate,
@@ -36,7 +46,7 @@ import {
 } from '../utils/dateHistory';
 
 const DateApp: React.FC = () => {
-    const { closeApp, openApp, characters, activeCharacterId, setActiveCharacterId, apiConfig, addToast, updateCharacter, virtualTime, userProfile, memoryPalaceConfig, dateAutoStartCharId, consumeDateAutoStart, characterGroups, groups, realtimeConfig } = useOS();
+    const { closeApp, openApp, characters, activeCharacterId, setActiveCharacterId, apiConfig, addToast, updateCharacter, updateUserProfile, virtualTime, userProfile, memoryPalaceConfig, dateAutoStartCharId, consumeDateAutoStart, characterGroups, groups, realtimeConfig } = useOS();
 
     // 是否由聊天「见面」按钮进入：为真时，退出见面流程回到聊天而非见面选择页/桌面。
     // 用本地 state（而非 context）承载：DateApp 切走即卸载，标记随之消失，不会泄漏到
@@ -56,7 +66,7 @@ const DateApp: React.FC = () => {
     charactersRef.current = characters;
     
     // Modes: 'select' -> 'peek' -> 'session' | 'settings' | 'history'
-    const [mode, setMode] = useState<'select' | 'peek' | 'session' | 'settings' | 'history'>('select');
+    const [mode, setMode] = useState<'select' | 'entry' | 'peek' | 'session' | 'settings' | 'history'>('select');
     // Track previous mode for Settings back navigation
     const [previousMode, setPreviousMode] = useState<'select' | 'peek'>('select');
 
@@ -77,7 +87,7 @@ const DateApp: React.FC = () => {
 
     // 选择页分页（6 个角色一页，横向翻页）
     const SELECT_PAGE_SIZE = 6;
-    const DATE_SESSION_MESSAGE_LIMIT = 220;
+    const DATE_SESSION_MESSAGE_LIMIT = 50;
     const DATE_HISTORY_MESSAGE_LIMIT = 500;
     const pagerRef = useRef<HTMLDivElement>(null);
     const [selectPage, setSelectPage] = useState(0);
@@ -112,14 +122,24 @@ const DateApp: React.FC = () => {
     const [historyEditMsg, setHistoryEditMsg] = useState<Message | null>(null);
     const [historyEditContent, setHistoryEditContent] = useState('');
     
-    // Resume Logic State
-    const [pendingSessionChar, setPendingSessionChar] = useState<CharacterProfile | null>(null);
+    const encounterIdRef = useRef('');
+    const [openingMode, setOpeningMode] = useState<'approach' | 'invite'>('approach');
+    const [showEntryNotice, setShowEntryNotice] = useState(() => {
+        try { return localStorage.getItem('sully-date-entry-guide-v1') !== 'seen'; }
+        catch { return true; }
+    });
+    const dismissEntryNotice = () => {
+        setShowEntryNotice(false);
+        try { localStorage.setItem('sully-date-entry-guide-v1', 'seen'); } catch { /* 当前打开期间仍不重复提示 */ }
+    };
+    const peekRequestRef = useRef(0);
+    const enteringSessionRef = useRef(false);
 
     // --- NEW: Editing State lifted to here for DB sync ---
-    const [dateMessages, setDateMessages] = useState<Message[]>([]);
-    // 阅读模式「加载更早」用：当前查询 limit 与「库里已经没有更早的了」。
-    const [dateLoadLimit, setDateLoadLimit] = useState(DATE_SESSION_MESSAGE_LIMIT);
-    const [dateHistoryReachedEnd, setDateHistoryReachedEnd] = useState(false);
+    const { messages: dateMessages, setMessages: setDateMessages, refresh: loadDateMessages,
+        loadOlder: handleLoadMoreDateHistory, reachedEnd: dateHistoryReachedEnd,
+        loading: dateHistoryLoading, error: dateHistoryError } = useDateMessageHistory(
+            activeCharacterId || undefined, encounterIdRef.current, mode === 'session');
     const [hasSavedOpening, setHasSavedOpening] = useState(false);
 
     // Edit Modal State
@@ -146,58 +166,13 @@ const DateApp: React.FC = () => {
             .sort((a, b) => a.timestamp - b.timestamp);
     };
 
-    // --- Data Loading ---
-    const loadDateMessages = async (limit = dateLoadLimit) => {
-        if (char) {
-            // 见面记录只取最近窗口，不再把该角色全部聊天 getAll 进内存。
-            // TODO(date-assets): 后续把角色立绘/背景本体迁到 assets store 后，这里还能再把 limit 放宽。
-            const filtered = await loadRecentDateMessages(char.id, limit);
-            setDateMessages(filtered);
-            // 拿回来的比要的少 = 库里的见面记录已经取完，阅读模式不用再往前翻了。
-            setDateHistoryReachedEnd(filtered.length < limit);
-            
-            // 检查数据库中是否已经包含当前的 peekStatus（通过内容比对），避免重复保存
-            if (peekStatus && filtered.some(m => m.content === peekStatus && m.role === 'assistant')) {
-                setHasSavedOpening(true);
-            }
-        }
-    };
-
-    useEffect(() => {
-        if (char && mode === 'session') {
-            // 进会话 / 换角色都从初始窗口重来。limit 必须显式传：setState 是异步的，
-            // 靠 dateLoadLimit 闭包会读到上一个角色翻开的深度，和重置后的 state 对不上。
-            setDateLoadLimit(DATE_SESSION_MESSAGE_LIMIT);
-            setDateHistoryReachedEnd(false);
-            loadDateMessages(DATE_SESSION_MESSAGE_LIMIT);
-        }
-    }, [char, mode]);
-
-
-    /** 阅读模式要更早的记录：limit 递增重取（反向游标，limit 越大够得越远）。 */
-    const handleLoadMoreDateHistory = async (nextLimit: number) => {
-        setDateLoadLimit(nextLimit);
-        await loadDateMessages(nextLimit);
-    };
-
-    // 见面「继续上次」崩溃自愈：若上次恢复会话时把 iOS WebKit 内容进程撑崩了
-    // (表现为反复灰屏/白屏「此网页反复出现问题」，非可捕获的 JS 异常)，那份重快照
-    // 的哨兵会残留到本次进见面。这里检出后丢弃有毒的 savedDateState（仅清恢复快照，
-    // 消息历史不动），避免用户永久卡在闪退死循环里。只在 DateApp 挂载时跑一次。
-    useEffect(() => {
-        const crashedCharId = takeCrashedDateResume();
-        if (!crashedCharId) return;
-        const crashed = characters.find(c => c.id === crashedCharId);
-        trackEvent('检出见面存档崩溃并清理', { 处理结果: crashed?.savedDateState ? '已清理存档' : '无存档可清' });
-        if (crashed?.savedDateState) {
-            updateCharacter(crashedCharId, { savedDateState: undefined });
-            addToast('上次见面异常退出，已清理存档，可重新开始', 'info');
-        }
-    }, []); // 仅挂载时检查一次
+    useEffect(() => () => { peekRequestRef.current++; }, []);
 
     // --- Navigation Helpers ---
     const handleBack = () => {
-        if (mode === 'peek') {
+        if (mode === 'peek' || mode === 'entry') {
+            peekRequestRef.current++;
+            encounterIdRef.current = '';
             // 来自聊天：从感知页退出直接回聊天，不落在见面选择页
             if (cameFromChat) { returnToChat(); return; }
             setMode('select');
@@ -210,19 +185,20 @@ const DateApp: React.FC = () => {
     const formatTime = () => `${virtualTime.hours.toString().padStart(2, '0')}:${virtualTime.minutes.toString().padStart(2, '0')}`;
 
     // peek / send / reroll 共用的 LLM 调用（提示词构建统一在 utils/datePrompts.ts）
-    const callLLM = async (messages: ApiMessage[], temperature: number): Promise<string> => {
-        const response = await fetch(`${apiConfig.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
+    const callLLM = async (messages: ApiMessage[], temperature: number, speaker = char): Promise<string> => {
+        const dialogueApi = resolveDialogueApi(apiConfig, speaker);
+        const response = await fetch(`${dialogueApi.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiConfig.apiKey}` },
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${dialogueApi.apiKey}` },
             body: JSON.stringify({
-                model: apiConfig.model,
+                model: dialogueApi.model,
                 messages,
                 temperature,
                 // max_tokens 是 Claude 原生 API 的必填字段；缺了它，糯米机/Csy 等
                 // OpenAI→Claude 中转会被上游打回，再包成 502 / bad_response_status_code。
                 // 与私聊 (useChatAI.ts) 对齐，统一带 8000。
                 max_tokens: 8000,
-                stream: apiConfig.stream ?? false,
+                stream: dialogueApi.stream ?? false,
             })
         });
         if (!response.ok) throw new Error(`API Error ${response.status}`);
@@ -234,16 +210,19 @@ const DateApp: React.FC = () => {
         return content;
     };
 
-    // --- Resume / Start Logic ---
+    // 每次进入独立记次；模型上下文仍由共享管线决定。
     const handleCharClick = (c: CharacterProfile) => {
-        if (c.savedDateState) {
-            setPendingSessionChar(c);
-        } else {
-            startPeek(c);
-        }
+        clearDateResumeAttempt();
+        setActiveCharacterId(c.id);
+        encounterIdRef.current = crypto.randomUUID();
+        setDateMessages([]);
+        setPeekStatus('');
+        setHasSavedOpening(false);
+        if (c.savedDateState) updateCharacter(c.id, { savedDateState: undefined });
+        setMode('entry');
     };
 
-    // 从聊天「见面」按钮跳进来：等同于在选择页点击该角色（有存档则弹继续/新开，否则直接感知）
+    // 从聊天「见面」按钮跳进来，同样选择本次开场方式。
     // 并记住「来自聊天」，退出见面时回到聊天。
     useEffect(() => {
         if (!dateAutoStartCharId) return;
@@ -260,88 +239,76 @@ const DateApp: React.FC = () => {
         openApp(AppID.Chat);
     };
 
-    const handleResumeSession = () => {
-        if (!pendingSessionChar) return;
-        // 恢复尝试开始前先武装崩溃哨兵：若这份重快照在 iOS 上把内容进程撑崩，
-        // 哨兵会残留到下次进见面被检出并清理（见挂载时的自愈 effect）。
-        armDateResumeAttempt(pendingSessionChar.id);
-        setActiveCharacterId(pendingSessionChar.id);
-        setMode('session');
-        setPendingSessionChar(null);
-        addToast('已恢复上次进度', 'success');
-        trackEvent('选择见面存档处理方式', { choice: 'resume' });
-        trackEvent('恢复上次见面进度');
-    };
-
-    const handleStartNewSession = () => {
-        if (!pendingSessionChar) return;
-        // 新会话没有恢复快照可重放，撤销任何残留哨兵。
-        clearDateResumeAttempt();
-        updateCharacter(pendingSessionChar.id, { savedDateState: undefined });
-        trackEvent('选择见面存档处理方式', { choice: 'new' });
-        trackEvent('见面存档选重新开始');
-        startPeek(pendingSessionChar);
-        setPendingSessionChar(null);
-    };
-
     // --- 关键修复: 进入 Session 时立即归档开场白 ---
     const handleEnterSession = async () => {
-        if (!char) return;
+        if (!char || enteringSessionRef.current) return;
+        enteringSessionRef.current = true;
+        const enteringEncounterId = encounterIdRef.current;
+        try {
 
-        // 1. 如果有开场白且未保存，立即保存到数据库
-        // 这确保了 user 发送第一句话时，AI 能在历史记录里读到这个开场
-        // UPDATE: 添加 isOpening 标记，用于区分新会话
-        if (peekStatus && !hasSavedOpening) {
-            try {
-                await DB.saveMessage({
-                    charId: char.id,
-                    role: 'assistant',
-                    type: 'text',
-                    content: peekStatus,
-                    metadata: { source: 'date', isOpening: true } // Added Flag
-                });
-                setHasSavedOpening(true);
-            } catch (e) {
-                console.error("Failed to save opening", e);
-                // 落库失败不能静默：开场白进不了 DB，阅读模式/见面记录会缺这次开场，
-                // 表现和「阅读模式播旧剧情」一样，让用户知道出了什么事
-                addToast('开场白保存失败，本次开场可能不会出现在阅读模式', 'error');
+            // 1. 如果有开场白且未保存，立即保存到数据库
+            // 这确保了 user 发送第一句话时，AI 能在历史记录里读到这个开场
+            // UPDATE: 添加 isOpening 标记，用于区分新会话
+            if (peekStatus && !hasSavedOpening) {
+                try {
+                    await DB.saveMessage({
+                        charId: char.id,
+                        role: 'assistant',
+                        type: 'text',
+                        content: peekStatus,
+                        metadata: { source: 'date', isOpening: true, dateEncounterId: enteringEncounterId, dateOpeningMode: openingMode }
+                    });
+                    markDateTurnDirty(char);
+                    if (encounterIdRef.current !== enteringEncounterId) return;
+                    setHasSavedOpening(true);
+                } catch (e) {
+                    console.error("Failed to save opening", e);
+                    // 落库失败不能静默：开场白进不了 DB，阅读模式/见面记录会缺这次开场，
+                    // 表现和「阅读模式播旧剧情」一样，让用户知道出了什么事
+                    addToast('开场白保存失败，请重试', 'error');
+                    return;
+                }
             }
-        }
 
-        // 2. 切换模式并刷新数据
-        setMode('session');
-        trackEvent('走过去开始见面会话');
-        await loadDateMessages(DATE_SESSION_MESSAGE_LIMIT);
+            // 2. 切换模式并刷新数据
+            if (encounterIdRef.current !== enteringEncounterId) return;
+            setMode('session');
+            
+        } finally {
+            enteringSessionRef.current = false;
+        }
     };
 
     // --- Peek (Generation) Logic ---
-    const startPeek = async (c: CharacterProfile) => {
+    const startPeek = async (c: CharacterProfile, selectedOpening: 'approach' | 'invite' = openingMode) => {
+        const requestId = ++peekRequestRef.current;
+        setOpeningMode(selectedOpening);
         setActiveCharacterId(c.id);
         setMode('peek');
         setPeekLoading(true);
         setPeekStatus('');
         setHasSavedOpening(false);
-        trackEvent('进入见面感知页');
+        
 
         try {
             const msgs = await loadCharacterContextMessages(c);
             const preparedMsgs = await materializeVisionDescriptions(msgs, apiConfig.visionApi);
             const emojis = await DB.getEmojis();
-            const { messages } = DatePrompts.buildPeekPayload({
+            const { messages } = (await DatePrompts.buildPeekPayload({
                 char: c,
                 userProfile,
                 allMsgs: preparedMsgs,
                 emojis,
                 useVisionDescriptions: apiConfig.visionApi?.enabled === true,
-            });
-            const content = await callLLM(messages, apiConfig.temperature ?? 0.85);
-            setPeekStatus(content);
+                openingMode: selectedOpening,
+            }));
+            const content = await callLLM(messages, resolveDialogueApi(apiConfig, c).temperature ?? 0.85, c);
+            if (requestId === peekRequestRef.current) setPeekStatus(content);
 
         } catch (e: any) {
-            setPeekStatus(`(无法感知状态: ${e.message})`);
+            if (requestId === peekRequestRef.current) addToast(`开场生成失败：${e.message}`, 'error');
         } finally {
-            setPeekLoading(false);
+            if (requestId === peekRequestRef.current) setPeekLoading(false);
         }
     };
 
@@ -401,12 +368,15 @@ const DateApp: React.FC = () => {
 
     // --- Session API Logic ---
     const handleSendMessage = async (text: string, kind?: 'continue'): Promise<string> => {
+        const currentEncounterId = encounterIdRef.current;
         if (!char) throw new Error("No char");
+        const sarModulePlan = getSARModuleRuntimePlan(char, userProfile);
 
         // 重发场景：如果 DB 里最后一条已经是这条 user 消息（上一轮发送后 API 失败 / 网络抖动等），
         // 就跳过重复落库，直接走 API。与 chat app 行为对齐，让用户按发送键即可重新触发 LLM。
         const recentCheck = await DB.getRecentMessagesByCharIdAndSource(char.id, 'date', 1);
         const isRetry = recentCheck.length > 0
+            && recentCheck[0].metadata?.dateEncounterId === currentEncounterId
             && recentCheck[0].role === 'user'
             && recentCheck[0].content === text
             && recentCheck[0].metadata?.source === 'date';
@@ -414,14 +384,15 @@ const DateApp: React.FC = () => {
         const isContinueTurn = kind === 'continue'
             || (isRetry && recentCheck[0].metadata?.meetingContinue === true);
 
+        let userMessageId = isRetry ? recentCheck[0]?.id : undefined;
         if (!isRetry) {
             // 1. Save User Msg
-            await DB.saveMessage({
+            userMessageId = await DB.saveMessage({
                 charId: char.id,
                 role: 'user',
                 type: 'text',
                 content: text,
-                metadata: { source: 'date', ...(isContinueTurn ? { meetingContinue: true } : {}) },
+                metadata: { source: 'date', dateEncounterId: currentEncounterId, ...(isContinueTurn ? { meetingContinue: true } : {}) },
             });
             markDateTurnDirty(char);
         }
@@ -433,7 +404,7 @@ const DateApp: React.FC = () => {
         const preparedAllMsgs = await materializeVisionDescriptions(allMsgs, apiConfig.visionApi);
 
         // Update local state for display
-        setDateMessages(await loadRecentDateMessages(char.id));
+        if (encounterIdRef.current === currentEncounterId) await loadDateMessages();
 
         const emojis = await DB.getEmojis();
         const modelText = isContinueTurn
@@ -448,26 +419,52 @@ const DateApp: React.FC = () => {
             variant: 'send',
             useVisionDescriptions: apiConfig.visionApi?.enabled === true,
         });
-        const content = await callLLM(messages, apiConfig.temperature ?? 0.85);
+        const rawContent = await callLLM(messages, resolveDialogueApi(apiConfig, char).temperature ?? 0.85);
+        const parsed = parseSARModuleReply(rawContent, sarModulePlan);
+        const sarModuleEvents = createSARModuleEventMeta(sarModulePlan);
+        const userSurface = sarModulePlan.user?.phase === 'active' && parsed.userSurface
+            ? createSARModuleSurfaceMeta(sarModulePlan.user, parsed.userSurface)
+            : undefined;
+        if (userMessageId && (sarModuleEvents.length > 0 || userSurface)) {
+            await DB.updateMessageMetadata(userMessageId, previous => ({
+                ...(previous || {}),
+                ...(userSurface ? { sarModuleSurface: userSurface } : {}),
+                ...(sarModuleEvents.length > 0 ? { sarModuleEvents } : {}),
+            }));
+        }
+        const assistantSurface = sarModulePlan.character?.phase === 'active' && parsed.assistantSurface
+            ? createSARModuleSurfaceMeta(sarModulePlan.character, parsed.assistantSurface)
+            : undefined;
 
         // 3. Save AI Response
-        await DB.saveMessage({ charId: char.id, role: 'assistant', type: 'text', content: content, metadata: { source: 'date' } });
+        await DB.saveMessage({ charId: char.id, role: 'assistant', type: 'text', content: parsed.canonical, metadata: { source: 'date', dateEncounterId: currentEncounterId, ...(assistantSurface ? { sarModuleSurface: assistantSurface } : {}) } });
+        if (sarModulePlan.character) {
+            updateCharacter(char.id, previous => ({
+                vrState: { ...(previous.vrState || { enabled: false, intervalMinutes: 120 }), sarModule: advanceSARModuleAfterReply(previous.vrState?.sarModule, sarModulePlan.character) },
+            }));
+        }
+        if (sarModulePlan.user) {
+            updateUserProfile(previous => ({
+                vrState: { ...(previous.vrState || { enabled: false }), sarModule: advanceSARModuleAfterReply(previous.vrState?.sarModule, sarModulePlan.user) },
+            }));
+        }
         markDateTurnDirty(char);
 
         // Refresh local state
-        setDateMessages(await loadRecentDateMessages(char.id));
+        if (encounterIdRef.current === currentEncounterId) await loadDateMessages();
 
         // Memory Palace 后台流程（不阻塞返回，与聊天侧一致）
         runMemoryPalacePostHook(char);
 
-        return content;
+        return parsed.assistantSurface || parsed.canonical;
     };
 
     const handleReroll = async (): Promise<string> => {
+        const currentEncounterId = encounterIdRef.current;
         if (!char || dateMessages.length === 0) throw new Error("No context");
 
         const lastMsg = dateMessages[dateMessages.length - 1];
-        if (lastMsg.role !== 'assistant') throw new Error("Cannot reroll user message");
+        if (lastMsg.role !== 'assistant' || lastMsg.metadata?.dateEncounterId !== currentEncounterId) throw new Error("Cannot reroll user message");
 
         // Keep the old reply until the replacement request succeeds.
         const allMsgs = await loadCharacterContextMessages(char);
@@ -481,24 +478,26 @@ const DateApp: React.FC = () => {
         // 新消息也不带 isOpening，阅读模式会从上一次见面的开场开始切片，表现为
         // 「新见面只有立绘模式是新剧情，阅读模式全是旧剧情」。
         if (lastMsg.metadata?.isOpening === true) {
-            const { messages } = DatePrompts.buildPeekPayload({
+            const { messages } = (await DatePrompts.buildPeekPayload({
                 char,
                 userProfile,
                 allMsgs: preparedValidMsgs,
+                openingMode: lastMsg.metadata?.dateOpeningMode === 'invite' ? 'invite' : 'approach',
                 emojis,
                 useVisionDescriptions: apiConfig.visionApi?.enabled === true,
-            });
-            const content = await callLLM(messages, Math.max(apiConfig.temperature ?? 0.85, 0.9));
+            }));
+            const content = await callLLM(messages, Math.max(resolveDialogueApi(apiConfig, char).temperature ?? 0.85, 0.9));
             // 生成成功后才动库：先删旧开场、再带 isOpening 落新开场，请求失败时原剧情不丢
             await DB.deleteMessage(lastMsg.id);
-            await DB.saveMessage({ charId: char.id, role: 'assistant', type: 'text', content, metadata: { source: 'date', isOpening: true } });
+            await DB.saveMessage({ charId: char.id, role: 'assistant', type: 'text', content, metadata: { ...lastMsg.metadata, source: 'date', isOpening: true } });
             markDateTurnDirty(char);
-            trackEvent('重掷见面回复', { 目标: '开场白' });
+            
             // 阅读模式空会话时顶部渲染的开场 & 退出快照里的 peekStatus 同步成新开场
-            setPeekStatus(content);
-
-            const freshMsgs = await DB.getMessagesByCharId(char.id, true);
-            setDateMessages(freshMsgs.filter(m => m.metadata?.source === 'date').sort((a,b) => a.timestamp - b.timestamp));
+            if (encounterIdRef.current === currentEncounterId) {
+                setPeekStatus(content);
+                setDateMessages(previous => previous.filter(message => message.id !== lastMsg.id));
+                await loadDateMessages();
+            }
             return content;
         }
 
@@ -520,21 +519,37 @@ const DateApp: React.FC = () => {
             useVisionDescriptions: apiConfig.visionApi?.enabled === true,
         });
         // Reroll 略调高温度求多样性，但绝不低于用户配置的基线。
-        const content = await callLLM(messages, Math.max(apiConfig.temperature ?? 0.85, 0.9));
+        const rawContent = await callLLM(messages, Math.max(resolveDialogueApi(apiConfig, char).temperature ?? 0.85, 0.9));
+        const sarPlan = getSARModuleRuntimePlan(char, userProfile);
+        const parsed = parseSARModuleReply(rawContent, sarPlan);
+        const sarModuleEvents = createSARModuleEventMeta(sarPlan);
+        const userSurface = sarPlan.user?.phase === 'active' && parsed.userSurface
+            ? createSARModuleSurfaceMeta(sarPlan.user, parsed.userSurface)
+            : undefined;
+        if (sarModuleEvents.length > 0 || userSurface) {
+            await DB.updateMessageMetadata(lastUserMsg.id, previous => ({
+                ...(previous || {}),
+                ...(userSurface ? { sarModuleSurface: userSurface } : {}),
+                ...(sarModuleEvents.length > 0 ? { sarModuleEvents } : {}),
+            }));
+        }
+        const assistantSurface = sarPlan.character?.phase === 'active' && parsed.assistantSurface
+            ? createSARModuleSurfaceMeta(sarPlan.character, parsed.assistantSurface)
+            : undefined;
 
         // 生成成功后才删旧回复：以前先删后调 API，请求一失败上一条剧情就永久消失
         await DB.deleteMessage(lastMsg.id);
-        await DB.saveMessage({ charId: char.id, role: 'assistant', type: 'text', content: content, metadata: { source: 'date' } });
+        await DB.saveMessage({ charId: char.id, role: 'assistant', type: 'text', content: parsed.canonical, metadata: { source: 'date', dateEncounterId: currentEncounterId, ...(assistantSurface ? { sarModuleSurface: assistantSurface } : {}) } });
         markDateTurnDirty(char);
-        trackEvent('重掷见面回复', { 目标: '回复' });
+        
 
         // Sync
-        setDateMessages(await loadRecentDateMessages(char.id));
+        if (encounterIdRef.current === currentEncounterId) await loadDateMessages();
 
         // Memory Palace 后台流程（Reroll 也算一轮新输出）
         runMemoryPalacePostHook(char);
 
-        return content;
+        return parsed.assistantSurface || parsed.canonical;
     };
 
     // --- Editing & Deletion ---
@@ -544,7 +559,7 @@ const DateApp: React.FC = () => {
         await DB.deleteMessage(msg.id);
         setDateMessages(prev => prev.filter(m => m.id !== msg.id));
         markDateTurnDirty();
-        trackEvent('删除一条见面消息');
+        
     };
 
     const handleDeleteMessages = async (ids: number[]) => {
@@ -553,7 +568,7 @@ const DateApp: React.FC = () => {
         setDateMessages(prev => prev.filter(m => !ids.includes(m.id)));
         markDateTurnDirty();
         addToast(`已删除 ${ids.length} 条记录`, 'success');
-        trackEvent('批量删除见面消息');
+        
     };
 
     const confirmEditMessage = async () => {
@@ -564,7 +579,7 @@ const DateApp: React.FC = () => {
         setIsEditModalOpen(false);
         setEditTargetMsg(null);
         addToast('已修改', 'success');
-        trackEvent('编辑一条见面消息');
+        
     };
 
     // --- History Long Press ---
@@ -590,7 +605,7 @@ const DateApp: React.FC = () => {
         markDateTurnDirty();
         setHistoryMenuMsg(null);
         addToast('已删除', 'success');
-        trackEvent('删除见面记录里的一条消息');
+        
     };
 
     const handleHistoryEditOpen = (msg: Message) => {
@@ -608,16 +623,13 @@ const DateApp: React.FC = () => {
         markDateTurnDirty();
         setHistoryEditMsg(null);
         addToast('已修改', 'success');
-        trackEvent('编辑见面记录里的一条消息');
+        
     };
 
-    const onExitSession = (finalState: DateState) => {
-        // 用户主动保存并退出 = 干净退出，撤销恢复哨兵。
+    const onExitSession = (finalState?: DateState) => {
+        if (finalState && char) updateCharacter(char.id, { savedDateState: finalState });
         clearDateResumeAttempt();
-        if (char) {
-            updateCharacter(char.id, { savedDateState: finalState });
-            addToast('进度已保存', 'success');
-        }
+        encounterIdRef.current = '';
         // 来自聊天：退出见面回聊天
         if (cameFromChat) { returnToChat(); return; }
         setMode('select');
@@ -630,7 +642,7 @@ const DateApp: React.FC = () => {
         setActiveCharacterId(c.id);
         setPreviousMode('select');
         setMode('settings');
-        trackEvent('打开见面设置面板', { from: 'select' });
+        
     };
 
     const openHistory = async (c: CharacterProfile) => {
@@ -643,7 +655,7 @@ const DateApp: React.FC = () => {
         setHistoryLoadLimit(DATE_HISTORY_MESSAGE_LIMIT);
         setHistoryReachedEnd(msgs.length < DATE_HISTORY_MESSAGE_LIMIT);
         setMode('history');
-        trackEvent('打开见面记录');
+        
     };
 
     const handleLoadMoreHistory = async () => {
@@ -674,7 +686,7 @@ const DateApp: React.FC = () => {
                 shareTitle: `${char.name}的见面记录`,
             });
             addToast(result === 'shared' ? '已打开分享面板' : '见面记录已导出', 'success');
-            trackEvent('导出见面记录', { 范围: scope, 整理方式: historyView === 'encounter' ? '按次' : '按日期' });
+            
         } catch (error) {
             console.error('Export Date History Error', error);
             addToast('见面记录导出失败', 'error');
@@ -701,7 +713,7 @@ const DateApp: React.FC = () => {
                 shareTitle: `${char.name}的全部见面记录`,
             });
             addToast(result === 'shared' ? '已打开分享面板' : '全部见面记录已导出', 'success');
-            trackEvent('导出全部见面记录', { 整理方式: historyView === 'encounter' ? '按次' : '按日期' });
+            
         } catch (error) {
             console.error('Export All Date History Error', error);
             addToast('全部见面记录导出失败', 'error');
@@ -822,11 +834,6 @@ const DateApp: React.FC = () => {
                                                 <div className="w-[70px] h-[70px] rounded-full overflow-hidden" style={{ boxShadow: `0 0 18px ${th.avGlow}` }}>
                                                     <TokenImg value={c.avatar} className="w-full h-full object-cover" alt={c.name} />
                                                 </div>
-                                                {c.savedDateState && (
-                                                    <div title="有存档" className="absolute bottom-0 right-1.5 w-[22px] h-[22px] rounded-full flex items-center justify-center" style={{ background: '#fbbf24', boxShadow: '0 1px 5px rgba(180,120,20,0.4)' }}>
-                                                        <Sparkle size={12} weight="fill" className="text-white" />
-                                                    </div>
-                                                )}
                                             </div>
                                             {/* 名字 + 简介 */}
                                             <span className="mt-3 text-[14px] font-semibold tracking-wide truncate max-w-full" style={{ color: '#4b3b6b', fontFamily: `'Noto Serif SC',serif` }}>{c.name}</span>
@@ -850,10 +857,6 @@ const DateApp: React.FC = () => {
                         ))}
                     </div>
                 )}
-
-                <Modal isOpen={!!pendingSessionChar} title="发现进度" onClose={() => { setPendingSessionChar(null); if (cameFromChat) returnToChat(); }} footer={<div className="flex gap-3 w-full"><button onClick={handleStartNewSession} className="flex-1 py-3 bg-slate-100 rounded-2xl text-slate-600 font-bold">新的见面</button><button onClick={handleResumeSession} className="flex-1 py-3 bg-green-500 text-white rounded-2xl font-bold shadow-lg shadow-green-200">继续上次</button></div>}>
-                    <div className="text-center text-slate-500 text-sm py-4">检测到 {pendingSessionChar?.name} 有未结束的见面。<br/><span className="text-xs text-slate-400 mt-2 block">(存档时间: {pendingSessionChar?.savedDateState?.timestamp ? new Date(pendingSessionChar.savedDateState.timestamp).toLocaleString() : 'Unknown'})</span></div>
-                </Modal>
             </div>
         );
     }
@@ -907,7 +910,7 @@ const DateApp: React.FC = () => {
                                     <div className="text-[10px] text-slate-400 mt-1">
                                         {historyView === 'encounter'
                                             ? (group.hasOpeningAnchor ? '一次完整见面' : '旧记录 · 按日期兼容整理')
-                                            : (group.encounterCount > 0 ? `${group.encounterCount} 次开场` : '旧记录')}
+                                            : (group.encounterCount > 0 ? `${group.encounterCount} 次见面` : '旧记录')}
                                         {' · '}{group.messages.length} 句
                                     </div>
                                 </div>
@@ -998,9 +1001,41 @@ const DateApp: React.FC = () => {
         );
     }
 
+    if (mode === 'entry' && char) {
+        return (
+            <div className="h-full w-full bg-black text-white flex flex-col px-8 pb-12 pt-16">
+                <button onClick={handleBack} className="self-start p-3 text-neutral-400" aria-label="返回"><CaretLeft size={22} /></button>
+                <div className="flex-1 flex flex-col justify-center max-w-sm w-full mx-auto gap-4">
+                    <TokenImg value={char.avatar} className="w-20 h-20 rounded-full object-cover mb-3" alt={char.name} />
+                    <h2 className="text-3xl font-light mb-2">{char.name}</h2>
+                    <p className="text-sm text-neutral-400 mb-6">这次，怎样见面？</p>
+                    <button onClick={() => startPeek(char, 'approach')} className="text-left rounded-2xl border border-neutral-700 px-6 py-5 hover:bg-neutral-900">
+                        <span className="block text-lg">靠近他</span><span className="block text-xs text-neutral-400 mt-2">看看他此刻在做什么，再走过去</span>
+                    </button>
+                    <button onClick={() => startPeek(char, 'invite')} className="text-left rounded-2xl border border-neutral-700 px-6 py-5 hover:bg-neutral-900">
+                        <span className="block text-lg">让他靠近</span><span className="block text-xs text-neutral-400 mt-2">由他自然地来到你面前</span>
+                    </button>
+                    <button onClick={() => { setPeekStatus(''); setMode('session'); }} className="text-left rounded-2xl border border-neutral-700 px-6 py-5 hover:bg-neutral-900">
+                        <span className="block text-lg">直接见面</span><span className="block text-xs text-neutral-400 mt-2">不生成开场白，直接开始互动</span>
+                    </button>
+                </div>
+                <Modal isOpen={showEntryNotice} title="选择这次见面的开场方式" onClose={dismissEntryNotice}
+                    footer={<button onClick={dismissEntryNotice} className="w-full py-3 rounded-2xl bg-slate-800 text-white font-bold">知道了</button>}>
+                    <div className="space-y-4 text-sm leading-6 text-slate-600">
+                        <p><strong className="block text-slate-800">靠近他 · 你主动走过去</strong>先生成一段开场，看看他此刻在做什么，再由你走过去与他互动。</p>
+                        <p><strong className="block text-slate-800">让他靠近 · 他主动来见你</strong>由角色结合上下文，以合理的方式来到你面前并开场，接下来由你回应。</p>
+                        <p><strong className="block text-slate-800">直接见面 · 不生成开场白</strong>直接进入对话，你可以输入内容，也可以点“继续”让他先回应。</p>
+                        <p className="text-xs text-slate-400">三种方式都会参考已有上下文，只是开场方式不同，不会清空之前的互动。</p>
+                    </div>
+                </Modal>
+            </div>
+        );
+    }
+
     if (mode === 'peek') {
         return (
             <div className="h-full w-full bg-black relative flex flex-col font-sans overflow-hidden">
+                <button onClick={handleBack} className="absolute top-12 left-5 z-20 p-3 text-neutral-400" aria-label="返回"><CaretLeft size={22} /></button>
                 <div className="pt-24 flex flex-col items-center z-10 shrink-0">
                      <div className="text-xs font-mono text-neutral-500 mb-2 tracking-[0.2em] font-medium">{virtualTime.day.toUpperCase()} {formatTime()}</div>
                      <h2 className="text-4xl font-light text-white tracking-[0.3em] uppercase">{char.name}</h2>
@@ -1014,10 +1049,10 @@ const DateApp: React.FC = () => {
                         <div className="shrink-0 flex flex-col items-center gap-6">
                              <div className="w-full flex gap-3">
                                  {/* 修改这里：调用 handleEnterSession 确保开场白被保存 */}
-                                 <button onClick={handleEnterSession} className="flex-1 h-14 bg-white text-black rounded-full font-bold tracking-[0.1em] text-sm shadow-[0_0_20px_rgba(255,255,255,0.1)] active:scale-95 transition-transform hover:bg-neutral-200">走过去 (Approach)</button>
-                                 <button onClick={() => { trackEvent('重新感知一次角色状态'); startPeek(char); }} className="w-14 h-14 bg-neutral-800 text-white rounded-full flex items-center justify-center border border-neutral-700 shadow-lg active:scale-90 transition-transform"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6"><path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99" /></svg></button>
+                                 <button onClick={handleEnterSession} className="flex-1 h-14 bg-white text-black rounded-full font-bold tracking-[0.1em] text-sm shadow-[0_0_20px_rgba(255,255,255,0.1)] active:scale-95 transition-transform hover:bg-neutral-200">{openingMode === 'invite' ? '见到他' : '走过去'}</button>
+                                 <button onClick={() => {  startPeek(char); }} className="w-14 h-14 bg-neutral-800 text-white rounded-full flex items-center justify-center border border-neutral-700 shadow-lg active:scale-90 transition-transform"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6"><path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99" /></svg></button>
                              </div>
-                             <div className="flex flex-col items-center gap-3 text-[10px] text-neutral-600 font-medium tracking-wider"><button onClick={() => { setPreviousMode('peek'); setMode('settings'); trackEvent('打开见面设置面板', { from: 'peek' }); }} className="hover:text-neutral-400 transition-colors">布置场景 / 设定立绘</button><button onClick={handleBack} className="hover:text-neutral-400 transition-colors">悄悄离开</button></div>
+                             <div className="flex flex-col items-center gap-3 text-[10px] text-neutral-600 font-medium tracking-wider"><button onClick={() => { setPreviousMode('peek'); setMode('settings');  }} className="hover:text-neutral-400 transition-colors">布置场景 / 设定立绘</button><button onClick={handleBack} className="hover:text-neutral-400 transition-colors">悄悄离开</button></div>
                         </div>
                     </div>
                 )}
@@ -1026,7 +1061,7 @@ const DateApp: React.FC = () => {
                 {!peekLoading && !peekStatus && (
                     <div className="flex-1 flex flex-col items-center justify-center gap-8 -mt-20 z-10 animate-fade-in">
                         <p className="text-sm font-light text-neutral-500 italic tracking-widest">未能感知到 {char.name} 的状态</p>
-                        <button onClick={() => { trackEvent('重新感知一次角色状态'); startPeek(char); }} className="h-12 px-10 bg-white text-black rounded-full font-bold tracking-[0.1em] text-sm active:scale-95 transition-transform hover:bg-neutral-200">重新感知</button>
+                        <button onClick={() => {  startPeek(char); }} className="h-12 px-10 bg-white text-black rounded-full font-bold tracking-[0.1em] text-sm active:scale-95 transition-transform hover:bg-neutral-200">重新感知</button>
                         <button onClick={handleBack} className="text-[10px] text-neutral-600 font-medium tracking-wider hover:text-neutral-400 transition-colors">悄悄离开</button>
                     </div>
                 )}
@@ -1046,7 +1081,7 @@ const DateApp: React.FC = () => {
                     userProfile={userProfile}
                     messages={dateMessages}
                     peekStatus={peekStatus}
-                    initialState={char.savedDateState}
+                    encounterId={encounterIdRef.current}
                     onSendMessage={handleSendMessage}
                     onReroll={handleReroll}
                     onExit={onExitSession}
@@ -1055,7 +1090,8 @@ const DateApp: React.FC = () => {
                     onDeleteMessages={handleDeleteMessages}
                     onSettings={() => {}} // Removed parent state change, DateSession handles it internally now
                     onLoadMoreHistory={handleLoadMoreDateHistory}
-                    historyLoadLimit={dateLoadLimit}
+                    historyLoading={dateHistoryLoading}
+                    historyError={dateHistoryError}
                     historyReachedEnd={dateHistoryReachedEnd}
                 />
 

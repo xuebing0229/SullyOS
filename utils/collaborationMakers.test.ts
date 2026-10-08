@@ -9,6 +9,14 @@ import {
 } from '../features/collaboration/makers';
 
 describe('collaboration installable makers', () => {
+  it('whitebox defaults to core content while accepting optional card styles',()=>{
+    const css='.sully-psyche-body{color:#345!important}.sully-chat-card[data-card-kind="world_card"] .sully-chat-card-surface{border-radius:12px}';
+    expect(validateInstallableArtifact({kind:'whitebox-css',title:'完整白框',payload:{css}})).toEqual([]);
+    expect(COLLABORATION_MAKER_MAP['whitebox-css'].prompt).toContain('其他 App 卡片仅在用户明确点名时增加样式');
+    expect(COLLABORATION_MAKER_MAP['whitebox-css'].prompt).toContain('.sully-psyche-body');
+    expect(COLLABORATION_MAKER_MAP['whitebox-css'].prompt).toContain('diary_card');
+    expect(COLLABORATION_MAKER_MAP['whitebox-css'].prompt).toContain('完整接口清单不等于必须逐项输出');
+  });
   it('parses typed installable blocks without exposing the internal protocol', () => {
     const parsed = parseInstallableArtifactBlocks(`我按你的气质做了一版。\n\n\`\`\`sully-artifact
 kind: journal-css
@@ -109,6 +117,12 @@ title: 夜航日记
     expect(bubblePrompt).toContain('.sully-voice-bar-wave-segment');
     expect(whiteboxPrompt).toContain('.sully-chat-turn-avatar-slot');
     expect(whiteboxPrompt).toContain('.sully-collaboration-file-action');
+    for (const part of ['card', 'receipt', 'header', 'icon', 'brand', 'watermark', 'amount', 'note', 'recipient', 'status', 'overlay', 'dialog', 'accept', 'return']) {
+      expect(whiteboxPrompt).toContain(`.sully-chat-transfer-${part}`);
+    }
+    expect(whiteboxPrompt).toContain('.sully-chat-avatar-wrap');
+    expect(whiteboxPrompt).toContain('.sully-chat-avatar-frame');
+    expect(validateInstallableArtifact({ kind: 'whitebox-css', title: '转账和头像框', payload: { css: '.sully-chat-transfer-card[data-status="pending"]{color:red}.sully-chat-avatar-wrap::after{content:"";pointer-events:none}' } })).toEqual([]);
     expect(journalPrompt).toContain('.sully-journal-cursor-spark');
     expect(schedulePrompt).toContain('.sully-schedule-change-shine');
     expect(psychePrompt).toContain('.sully-psyche-body');

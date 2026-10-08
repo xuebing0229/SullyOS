@@ -1,6 +1,8 @@
+import { resolveDialogueApi } from '../utils/characterApi';
 import { loadCharacterContextMessages } from '../utils/chatContextRange';
+import { canAnalyzeVoiceSource, isVoiceAudioPriming, primeVoiceAudio, voicePlaybackErrorMessage } from '../utils/voicePlayback';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Microphone, SpeakerHigh, SpeakerSlash, PhoneDisconnect, Translate, Gear, Clock, CaretLeft, CaretRight, Phone, VideoCamera, VideoCameraSlash, Cube, FolderOpen, FileZip, Moon, Sun, Check } from '@phosphor-icons/react';
+import { Microphone, SpeakerHigh, SpeakerSlash, PhoneDisconnect, Translate, Gear, Clock, CaretLeft, CaretRight, Phone, VideoCamera, VideoCameraSlash, Cube, FolderOpen, FileZip, Moon, Sun, Check, ArrowsClockwise } from '@phosphor-icons/react';
 import { useOS } from '../context/OSContext';
 import { extractContent, safeFetchJson } from '../utils/safeApi';
 import { minimaxFetch } from '../utils/minimaxEndpoint';
@@ -98,13 +100,13 @@ import {
   type UserCameraEmotionResult,
 } from '../utils/userCameraEmotion';
 import {
-  attachSnapshotToLatestUserMessage,
+  prepareUserCameraSnapshot,
   captureUserCameraSnapshot,
   isVisionInputUnsupportedError,
   USER_CAMERA_SNAPSHOT_SYSTEM_NOTE,
 } from '../utils/userCameraSnapshot';
 import { markAmsgStateDirty } from '../utils/amsgStateSync';
-import { trackEvent } from '../utils/analytics';
+
 import { fetchBlobForShare, shareOrDownloadBlob } from '../utils/shareExport';
 import { getPendingReplyText } from '../utils/pendingReply';
 import { findExpiredCallSnapshots } from '../utils/callSnapshotRetention';
@@ -608,11 +610,16 @@ const CallApp: React.FC = () => {
     audioRef.current = new Audio();
     audioRef.current.preload = 'auto';
   }
-  const audioPrimingRef = useRef(false);
+  // Keep a separate native element for CORS-blocked remote fallbacks. Once a media
+  // element has entered WebAudio it cannot be detached to restore native output.
+  const localCallAudioRef = useRef(audioRef.current);
+  const remoteCallAudioRef = useRef<HTMLAudioElement | null>(null);
+  if (!remoteCallAudioRef.current && typeof Audio !== 'undefined') remoteCallAudioRef.current = new Audio();
   const nativeCallAudioOnly = useMemo(() => shouldKeepNativeCallAudio(), []);
   const userCameraVideoRef = useRef<HTMLVideoElement | null>(null);
   const userCameraStreamRef = useRef<MediaStream | null>(null);
   const userCameraRequestRef = useRef(0);
+  const [userCameraFacing, setUserCameraFacing] = useState<'user' | 'environment'>('user');
   const detectedUserEmotionTimerRef = useRef<number | null>(null);
   const callSetupGuideOpenRef = useRef(false);
   useEffect(() => {
@@ -648,7 +655,7 @@ const CallApp: React.FC = () => {
     clearDetectedUserEmotion();
     releaseUserCameraEmotionDetector();
   };
-  const startUserCamera = async (nextMode: Extract<UserCameraMode, 'emotion' | 'snapshot'>) => {
+  const startUserCamera = async (nextMode: Extract<UserCameraMode, 'emotion' | 'snapshot'>, facing = userCameraFacing) => {
     if (userCameraLoading) return;
     if (!navigator.mediaDevices?.getUserMedia) {
       addToast('当前浏览器不支持摄像头，或页面不是安全连接', 'error');
@@ -656,9 +663,15 @@ const CallApp: React.FC = () => {
     }
     const requestId = ++userCameraRequestRef.current;
     setUserCameraLoading(true);
+    // Mobile devices often cannot open the opposite camera until the old one is released.
+    const previousStream = userCameraStreamRef.current;
+    userCameraStreamRef.current = null;
+    previousStream?.getTracks().forEach(track => track.stop());
+    if (userCameraVideoRef.current) userCameraVideoRef.current.srcObject = null;
+    clearDetectedUserEmotion();
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'user', width: { ideal: 480 }, height: { ideal: 640 }, frameRate: { ideal: 15, max: 24 } },
+        video: { facingMode: { ideal: facing }, width: { ideal: 480 }, height: { ideal: 640 }, frameRate: { ideal: 15, max: 24 } },
         audio: false,
       });
       if (requestId !== userCameraRequestRef.current) {
@@ -671,6 +684,8 @@ const CallApp: React.FC = () => {
         if (userCameraStreamRef.current === stream) stopUserCamera();
       }, { once: true });
       userCameraStreamRef.current = stream;
+      const actualFacing = track.getSettings().facingMode;
+      setUserCameraFacing(actualFacing === 'user' || actualFacing === 'environment' ? actualFacing : facing);
       setUserCameraMode(nextMode);
       setShowUserCameraModePicker(false);
       if (nextMode === 'emotion') {
@@ -684,6 +699,7 @@ const CallApp: React.FC = () => {
         releaseUserCameraEmotionDetector();
       }
     } catch (error: any) {
+      if (requestId !== userCameraRequestRef.current) return;
       const denied = error?.name === 'NotAllowedError' || error?.name === 'PermissionDeniedError';
       addToast(denied ? '没有获得摄像头权限' : (error?.message || '摄像头开启失败'), 'error');
       stopUserCamera();
@@ -735,11 +751,7 @@ const CallApp: React.FC = () => {
     addToast('已移除假摄像头图片', 'success');
   };
   const selectUserCameraMode = (nextMode: UserCameraMode) => {
-    trackEvent('选择用户摄像头模式', {
-      模式: nextMode === 'off'
-        ? '关闭'
-        : nextMode === 'fake' ? '假摄像头' : nextMode === 'emotion' ? '本地情绪' : '每轮快照',
-    });
+    
     if (nextMode === 'off') {
       stopUserCamera();
       setShowUserCameraModePicker(false);
@@ -776,7 +788,7 @@ const CallApp: React.FC = () => {
     try {
       const result = await detectUserCameraEmotion(video);
       // Camera may have been turned off while the three-frame sample was running.
-      if (!result || !userCameraStreamRef.current?.active || userCameraMode !== 'emotion') return '';
+      if (!result || userCameraStreamRef.current !== stream || !stream.active || userCameraMode !== 'emotion') return '';
       revealDetectedUserEmotion(result);
       return buildUserCameraEmotionPrompt(result);
     } catch (error) {
@@ -801,7 +813,7 @@ const CallApp: React.FC = () => {
     if (!video || !userCameraEnabled || !stream) return;
     video.srcObject = stream;
     void video.play().catch(() => { /* muted inline preview can retry after the next user gesture */ });
-  }, [userCameraEnabled, userCameraMode]);
+  }, [userCameraEnabled, userCameraMode, userCameraLoading]);
   useEffect(() => {
     if (viewMode === 'in-call' && callMode === 'video') return;
     if (userCameraMode !== 'off' || userCameraLoading) stopUserCamera();
@@ -909,7 +921,7 @@ const CallApp: React.FC = () => {
   useEffect(() => {
     // The analyser is a video-only enhancement. Voice calls stay entirely on the
     // browser's native audio path, and iOS always uses the synthetic lip fallback.
-    audioFeedRef.current?.setActive(callMode === 'video' && isAudioPlaying);
+    audioFeedRef.current?.setActive(callMode === 'video' && isAudioPlaying && audioRef.current === localCallAudioRef.current);
   }, [callMode, isAudioPlaying]);
 
   useEffect(() => () => {
@@ -988,7 +1000,7 @@ const CallApp: React.FC = () => {
         });
         setCallMode('video');
         if (callSetupGuideOpenRef.current) setCallSetupGuideStep('camera');
-        trackEvent('导入桌面静态形象', { 格式: file.type === 'image/gif' ? 'GIF' : 'PNG' });
+        
         addToast(`${file.name} 已设为桌面与视频通话形象`, 'success');
       } catch (error: any) {
         addToast(error?.message || '静态形象导入失败', 'error');
@@ -1065,7 +1077,7 @@ const CallApp: React.FC = () => {
     const character = selectedChar;
     const input = document.createElement('input');
     input.type = 'file';
-    input.accept = '.vrm,.vroid,.zip,model/gltf-binary,application/zip';
+    // iOS 可能无法识别 .vrm 的系统文件类型；不设 accept，选中后再校验扩展名和文件头。
     input.style.display = 'none';
     document.body.appendChild(input);
     const removeInput = () => { if (input.parentElement) input.remove(); };
@@ -1080,38 +1092,38 @@ const CallApp: React.FC = () => {
       try {
         if (/\.zip$/i.test(file.name)) {
           if (file.size > 200 * 1024 * 1024) {
-            trackEvent('导入通话形象', { 来源: source, 结果: '体积超限' });
+            
             addToast('Live2D ZIP 超过 200 MB，移动端很可能无法稳定解压加载', 'error');
             return;
           }
           void preloadLive2DRuntime().catch(() => { /* loading UI will surface a retryable error */ });
           setAvatarImportStatus('正在打开 Live2D ZIP，请耐心等待…');
           bindVideoAvatar(character, await saveLive2DModelFromZip(file, setAvatarImportStatus));
-          trackEvent('导入通话形象', { 来源: source, 结果: '成功' });
+          
           return;
         }
         setAvatarImportStatus('正在检查 VRM 模型…');
         const inspection = await inspectAvatarFile(file);
         if (inspection.kind === 'vroid-project') {
           // .vroid 工程文件只弹说明、不导入，跟「文件坏了」是两回事，单独占一档。
-          trackEvent('导入通话形象', { 来源: source, 结果: '要先导出VRM' });
+          
           setPendingVRoidImport({ file, characterId: character.id, projectFile: true });
           return;
         }
         if (inspection.kind === 'unsupported') {
-          trackEvent('导入通话形象', { 来源: source, 结果: '格式不支持' });
+          
           addToast(inspection.reason, 'error');
           return;
         }
         if (file.size > 80 * 1024 * 1024) {
-          trackEvent('导入通话形象', { 来源: source, 结果: '体积超限' });
+          
           addToast('模型超过 80 MB，移动端通话可能无法稳定加载，请在导出时降低纹理尺寸', 'error');
           return;
         }
         // VRM 到这里只是通过体检，真正落库在确认 beta 提示之后，成功与否由 confirmVRoidImport 记。
         setPendingVRoidImport({ file, characterId: character.id, projectFile: false });
       } catch (error: any) {
-        trackEvent('导入通话形象', { 来源: source, 结果: '失败' });
+        
         addToast(error?.message || '模型导入失败', 'error');
       } finally {
         setAvatarImportStatus('');
@@ -1135,10 +1147,10 @@ const CallApp: React.FC = () => {
     try {
       const videoAvatar = await saveAvatarModel(pending.file);
       bindVideoAvatar(character, videoAvatar);
-      trackEvent('导入通话形象', { 来源: 'VRM', 结果: '成功' });
+      
       setPendingVRoidImport(null);
     } catch (error: any) {
-      trackEvent('导入通话形象', { 来源: 'VRM', 结果: '失败' });
+      
       addToast(error?.message || 'VRM 测试模型导入失败；原模型未被覆盖', 'error');
     } finally {
       setAvatarImportStatus('');
@@ -1166,7 +1178,7 @@ const CallApp: React.FC = () => {
         const files = selection.files || [];
         if (!files.length) throw new Error('选择的文件夹是空的。');
         if ((selection.totalBytes || 0) > 250 * 1024 * 1024) {
-          trackEvent('导入通话形象', { 来源: 'Live2D 文件夹', 结果: '体积超限' });
+          
           addToast('Live2D 文件夹超过 250 MB，请先压缩纹理尺寸或删掉无关文件', 'error');
           return;
         }
@@ -1177,9 +1189,9 @@ const CallApp: React.FC = () => {
           selection.directoryName || '',
           setAvatarImportStatus,
         ));
-        trackEvent('导入通话形象', { 来源: 'Live2D 文件夹', 结果: '成功' });
+        
       } catch (error: any) {
-        trackEvent('导入通话形象', { 来源: 'Live2D 文件夹', 结果: '失败' });
+        
         addToast(error?.message || 'Live2D 文件夹导入失败', 'error');
       } finally {
         setAvatarImportStatus('');
@@ -1204,15 +1216,15 @@ const CallApp: React.FC = () => {
       try {
         const totalSize = files.reduce((sum, file) => sum + file.size, 0);
         if (totalSize > 250 * 1024 * 1024) {
-          trackEvent('导入通话形象', { 来源: 'Live2D 文件夹', 结果: '体积超限' });
+          
           addToast('Live2D 文件夹超过 250 MB，请先压缩纹理尺寸或删掉无关文件', 'error');
           return;
         }
         setAvatarImportStatus(`已选择 ${files.length} 个文件，正在扫描模型…`);
         bindVideoAvatar(character, await saveLive2DModelFromFiles(files, setAvatarImportStatus));
-        trackEvent('导入通话形象', { 来源: 'Live2D 文件夹', 结果: '成功' });
+        
       } catch (error: any) {
-        trackEvent('导入通话形象', { 来源: 'Live2D 文件夹', 结果: '失败' });
+        
         addToast(error?.message || 'Live2D 文件夹导入失败', 'error');
       } finally {
         setAvatarImportStatus('');
@@ -1507,11 +1519,11 @@ const CallApp: React.FC = () => {
   }, []);
   // Voice input: toggle speech-to-text into the draft input box.
   const toggleStt = async () => {
-    if (isListening) { sttSessionRef.current?.stop(); trackEvent('切换语音输入', { action: 'stop' }); return; }
+    if (isListening) { sttSessionRef.current?.stop();  return; }
     if (!sttSupported) { addToast('当前环境不支持语音输入', 'info'); return; }
     try {
       setIsListening(true);
-      trackEvent('切换语音输入', { action: 'start' });
+      
       sttSessionRef.current = await startStt('zh-CN', {
         onPartial: (t) => setDraftInput(t),
         onFinal: (t) => setDraftInput(t),
@@ -1533,7 +1545,7 @@ const CallApp: React.FC = () => {
       const result = await shareOrDownloadBlob({ blob, fileName: fname, shareTitle: `${selectedChar?.name || '通话'}的语音` });
       if (result === 'cancelled') return;
       addToast(result === 'shared' ? '已打开系统保存/分享' : '语音已开始下载', 'success');
-      trackEvent('下载一条通话语音');
+      
     } catch (error) {
       console.error('[Call] download audio failed', error);
       addToast('语音文件已失效或无法读取，请重新生成后再下载', 'error');
@@ -1630,7 +1642,7 @@ const CallApp: React.FC = () => {
       });
       await deleteBlobRef(snapshot.ref);
     }
-    trackEvent('淘汰旧视频通话快照');
+    
     const expiredIds = new Set(expired.map(snapshot => snapshot.messageId));
     setBubbles(previous => previous.map(bubble => (
       bubble.dbId && expiredIds.has(bubble.dbId)
@@ -1674,13 +1686,13 @@ const CallApp: React.FC = () => {
   const dismissCallUpdateAnnouncement = () => {
     markCallUpdateAnnouncementSeen();
     setShowCallUpdateAnnouncement(false);
-    trackEvent('关闭通话功能更新提示');
+    
   };
   const openCallPreferencesPanel = () => {
     markCallUpdateAnnouncementSeen();
     setShowCallUpdateAnnouncement(false);
     setShowCallPreferences(true);
-    trackEvent('打开通话偏好');
+    
   };
   const primeCallAudioFromGesture = (forceManualPlayback = false) => {
     if (!forceManualPlayback && (!callPreferences.voiceAutoPlay || !isSpeakerOn)) return;
@@ -1693,22 +1705,10 @@ const CallApp: React.FC = () => {
     // directly in the click stack; never wait for React onPlay/useEffect.
     if (!nativeCallAudioOnly) void getAudioFeed().unlock();
 
-    audioPrimingRef.current = true;
-    audio.muted = false;
-    audio.src = SILENT_CALL_AUDIO_DATA_URL;
-    audio.currentTime = 0;
-    const finishPrime = () => {
-      audio.pause();
-      audio.removeAttribute('src');
-      audio.load();
-      window.setTimeout(() => { audioPrimingRef.current = false; }, 0);
-    };
-    try {
-      const attempt = audio.play();
-      if (attempt) void attempt.then(finishPrime).catch(() => { audioPrimingRef.current = false; });
-      else finishPrime();
-    } catch {
-      audioPrimingRef.current = false;
+    for (const element of [localCallAudioRef.current, remoteCallAudioRef.current]) {
+      if (!element) continue;
+      element.muted = false;
+      primeVoiceAudio(element, SILENT_CALL_AUDIO_DATA_URL);
     }
   };
   const beginSelectedCall = (cameraMode: UserCameraMode = 'off') => {
@@ -1718,7 +1718,7 @@ const CallApp: React.FC = () => {
     setViewMode('in-call');
     setCallStartedAt(Date.now());
     setCallState('listening');
-    trackEvent('发起通话');
+    
     if (callMode !== 'video' || cameraMode === 'off') {
       stopUserCamera();
       return;
@@ -1767,7 +1767,7 @@ const CallApp: React.FC = () => {
         metadata: { source: 'call-end-popup', callSessionId: currentSessionId, ...payload },
       });
       await loadCallRecords(selectedChar.id);
-      trackEvent('结束一通通话', { 模式: callMode === 'video' ? '视频' : '语音' });
+      
       // 挂断这一下最要紧：用户多半接着就把 App 关了，得把这最后一条也打脏——
       // 打脏即传，微任务内就会冲刷上传。
       markCallTurnDirty();
@@ -1871,21 +1871,23 @@ const CallApp: React.FC = () => {
     performancePersonaAttemptedRef.current.add(character.id);
 
     const task = (async (): Promise<string | null> => {
+
       try {
         const directorApi = resolvePerformanceDirectorApi(character);
         const baseUrl = directorApi.baseUrl?.replace(/\/+$/, '');
         if (!baseUrl) return null;
-        const coreContext = ContextBuilder.buildCoreContext(character, userProfile, true);
+        const characterContextInput = { char: character, user: userProfile, includeDetailedMemories: true };
+
         const prompt = buildAvatarPerformancePersonaPrompt({
           characterName: character.name,
-          coreContext,
+          coreContext: '',
         });
         const data = await safeFetchJson(`${baseUrl}/chat/completions`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${directorApi.apiKey || 'sk-none'}` },
           body: JSON.stringify({
             model: directorApi.model,
-            messages: [{ role: 'user', content: prompt }],
+            messages: (await ContextBuilder.buildCharacterRequest(characterContextInput, [{ role: 'user', content: prompt }])),
             temperature: 0.25,
             max_tokens: AVATAR_PERFORMANCE_PERSONA_MAX_TOKENS,
             stream: false,
@@ -1994,24 +1996,18 @@ ${sentencePlan}`;
     includeUserCameraContext = false,
     userCameraSnapshotForTurn?: string,
   ): Promise<ParsedCallReply> => {
-    const baseUrl = apiConfig.baseUrl?.replace(/\/+$/, '');
+    const dialogueApi = resolveDialogueApi(apiConfig, selectedChar);
+    const baseUrl = dialogueApi.baseUrl?.replace(/\/+$/, '');
     if (!baseUrl) throw new Error('请先在设置里配置聊天 API URL');
     const userName = userProfile?.name?.trim() || '用户';
     if (selectedChar) {
       const callMsgs = await loadCharacterContextMessages(selectedChar);
       await injectMemoryPalace(selectedChar, callMsgs);
     }
-    const baseCallPrompt = selectedChar
-      ? buildCallPrompt(
-          userName,
-          selectedChar.name,
-          // conversational：通话是实时对话，时间块补那句语境框定（见 buildTimeAwarenessBlock）
-          ContextBuilder.buildCoreContext(selectedChar, userProfile, true, undefined, undefined, { conversational: true }),
-          voiceLang || undefined,
-          callMode,
-          resolveCharTimeZone(selectedChar),
-        )
-      : buildCallPrompt(userName, undefined, undefined, voiceLang || undefined, callMode);
+    const touchContext = selectedChar
+      ? buildPendingAvatarTouchContext(pendingTouches, selectedChar.name, userName)
+      : '';
+    const messages = await buildHistoryMessages(input, skipDbId, touchContext);
     const thinkingPrompt = selectedChar?.showThinkingChain
       ? [
           buildThinkingChainPrompt(selectedChar.name, userName),
@@ -2038,6 +2034,14 @@ ${sentencePlan}`;
     if (includeUserCameraContext && callMode === 'video' && userCameraMode === 'snapshot' && !userCameraSnapshot && userCameraSnapshotForTurn === undefined) {
       addToast('摄像头画面还没准备好，本轮已只发送文字', 'info');
     }
+    const snapshotHistory = prepareUserCameraSnapshot(messages, userCameraSnapshot);
+    const characterContext = selectedChar ? (await ContextBuilder.buildCharacterContext({
+      char: selectedChar, user: userProfile, history: snapshotHistory.messages,
+      timeOptions: { conversational: true },
+      instructions: core => buildCallPrompt(userName, selectedChar.name, core, voiceLang || undefined, callMode, resolveCharTimeZone(selectedChar)),
+    })) : null;
+    const baseCallPrompt = characterContext?.coreContext
+      ?? buildCallPrompt(userName, undefined, undefined, voiceLang || undefined, callMode);
     const baseSystemPrompt = [
       baseCallPrompt,
       callMode === 'video' && !highQualityPerformance ? buildAvatarPerformancePrompt(allowedModelActions) : '',
@@ -2047,17 +2051,8 @@ ${sentencePlan}`;
     const systemPrompt = [baseSystemPrompt, userCameraSnapshot ? USER_CAMERA_SNAPSHOT_SYSTEM_NOTE : '']
       .filter(Boolean)
       .join('\n\n');
-    const touchContext = selectedChar
-      ? buildPendingAvatarTouchContext(
-          pendingTouches,
-          selectedChar.name,
-          userName,
-        )
-      : '';
-    const messages = await buildHistoryMessages(input, skipDbId, touchContext);
-    const requestMessages = userCameraSnapshot
-      ? attachSnapshotToLatestUserMessage(messages, userCameraSnapshot)
-      : messages;
+    const requestMessages = characterContext?.history ?? snapshotHistory.messages;
+    const textOnlyMessages = snapshotHistory.restoreTextMessages(requestMessages);
     const sendChatRequest = (
       nextMessages: any[],
       nextSystemPrompt: string,
@@ -2065,15 +2060,15 @@ ${sentencePlan}`;
       purpose: string,
     ) => safeFetchJson(`${baseUrl}/chat/completions`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiConfig.apiKey || 'sk-none'}` },
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${dialogueApi.apiKey || 'sk-none'}` },
       body: JSON.stringify({
-        model: apiConfig.model,
+        model: dialogueApi.model,
         messages: [{ role: 'system', content: nextSystemPrompt }, ...nextMessages],
-        temperature: 0.85,
+        temperature: dialogueApi.temperature ?? 0.85,
         // max_tokens 是 Claude 原生 API 的必填字段；缺了它，OpenAI→Claude 中转会被
         // 上游打回，包成 502 / bad_response_status_code。与私聊 (useChatAI.ts) 对齐。
         max_tokens: 8000,
-        stream: false,
+        stream: dialogueApi.stream ?? false,
       }),
     }, maxRetries, 0, { appName: '电话', charId: selectedChar?.id, charName: selectedChar?.name, purpose });
     let chatData: any;
@@ -2090,7 +2085,7 @@ ${sentencePlan}`;
       if (!userCameraSnapshot || !isVisionInputUnsupportedError(error)) throw error;
       console.warn('[camera-snapshot] provider rejected vision input; retrying text-only:', error);
       addToast('当前模型不支持图片；本轮已自动改为只发文字', 'info');
-      chatData = await sendChatRequest(messages, baseSystemPrompt, 2, '视频通话·快照降级为文字');
+      chatData = await sendChatRequest(textOnlyMessages, baseSystemPrompt, 2, '视频通话·快照降级为文字');
     }
     const parsed = parseCallAssistantMessage(
       chatData?.choices?.[0]?.message,
@@ -2163,10 +2158,10 @@ ${sentencePlan}`;
   }, []);
 
   useEffect(() => {
-    const audio = audioRef.current;
-    if (!audio) return;
-    const handlePlay = () => {
-      if (audioPrimingRef.current) return;
+    const elements = [localCallAudioRef.current, remoteCallAudioRef.current].filter((audio): audio is HTMLAudioElement => !!audio);
+    const handlePlay = (event: Event) => {
+      const audio = event.currentTarget as HTMLAudioElement;
+      if (audio !== audioRef.current || isVoiceAudioPriming(audio)) return;
       clearSilentSpeechTimer();
       setIsAudioPlaying(true);
       setCallState('speaking');
@@ -2179,22 +2174,29 @@ ${sentencePlan}`;
         : pending.fallbackMs;
       schedulePerformanceCues(pending.cues, durationMs);
     };
-    const handleStop = () => {
-      if (audioPrimingRef.current) return;
+    const handleStop = (event: Event) => {
+      const audio = event.currentTarget as HTMLAudioElement;
+      if (audio !== audioRef.current || isVoiceAudioPriming(audio)) return;
       setIsAudioPlaying(false);
       clearPerformanceCueTimers();
       setCallState(previous => (previous === 'speaking' ? 'listening' : previous));
     };
-    audio.addEventListener('play', handlePlay);
-    audio.addEventListener('pause', handleStop);
-    audio.addEventListener('ended', handleStop);
+    for (const audio of elements) {
+      audio.addEventListener('play', handlePlay);
+      audio.addEventListener('pause', handleStop);
+      audio.addEventListener('ended', handleStop);
+      audio.addEventListener('error', handleStop);
+    }
     return () => {
-      audio.removeEventListener('play', handlePlay);
-      audio.removeEventListener('pause', handleStop);
-      audio.removeEventListener('ended', handleStop);
-      audio.pause();
-      audio.removeAttribute('src');
-      audio.load();
+      for (const audio of elements) {
+        audio.removeEventListener('play', handlePlay);
+        audio.removeEventListener('pause', handleStop);
+        audio.removeEventListener('ended', handleStop);
+        audio.removeEventListener('error', handleStop);
+        audio.pause();
+        audio.removeAttribute('src');
+        audio.load();
+      }
     };
   }, []);
 
@@ -2204,12 +2206,14 @@ ${sentencePlan}`;
 
   const startCallAudioElement = (audio: HTMLAudioElement, forceAudible = false): Promise<void> => {
     audio.muted = forceAudible ? false : !isSpeakerOn;
-    const feed = callMode === 'video' && !nativeCallAudioOnly ? getAudioFeed() : null;
+    const feed = callMode === 'video' && !nativeCallAudioOnly && audio === localCallAudioRef.current ? getAudioFeed() : null;
     // Both calls are made immediately in the originating click stack. The graph
     // is attached only after both succeeded, so a suspended context can never
     // steal otherwise-audible native media output.
     const unlockAttempt = feed?.unlock();
-    const playbackAttempt = audio.play();
+    let playbackAttempt: Promise<void>;
+    try { playbackAttempt = Promise.resolve(audio.play()); }
+    catch (error) { return Promise.reject(error); }
     if (feed && unlockAttempt) {
       void Promise.allSettled([unlockAttempt, playbackAttempt]).then(([unlockResult, playbackResult]) => {
         if (unlockResult.status === 'fulfilled' && unlockResult.value && playbackResult.status === 'fulfilled') {
@@ -2231,14 +2235,21 @@ ${sentencePlan}`;
     if (audioUrl !== targetUrl) setAudioUrl(targetUrl);
     // 时间轴在 onPlay 时用真实音频时长调度；拿不到时长再用估计值。
     pendingCueScheduleRef.current = cues?.length ? { cues, fallbackMs: estimatedDurationMs } : null;
-    const audio = audioRef.current;
+    const audio = canAnalyzeVoiceSource(targetUrl) ? localCallAudioRef.current! : remoteCallAudioRef.current!;
+    if (audioRef.current !== audio) {
+      const previousAudio = audioRef.current;
+      audioRef.current = audio;
+      previousAudio.pause();
+    }
+    audioFeedRef.current?.setActive(callMode === 'video' && audio === localCallAudioRef.current);
     audio.src = targetUrl;
     audio.currentTime = 0;
-    startCallAudioElement(audio, forceAudible).catch(() => {
+    startCallAudioElement(audio, forceAudible).catch(error => {
+      if (audioRef.current !== audio || audio.src !== targetUrl) return;
       pendingCueScheduleRef.current = null;
       if (callMode === 'video') playSilentAvatarSpeech('', cues, estimatedDurationMs);
       else setCallState('listening');
-      addToast(forceAudible ? '播放失败，请再点一次“重播语音”' : '浏览器拦截了本次自动播放；点“重播语音”即可恢复', 'info');
+      addToast(voicePlaybackErrorMessage(error, '重播语音'), 'info');
     });
     setCallState('speaking');
   };
@@ -2281,7 +2292,7 @@ ${sentencePlan}`;
     if (bubble.audioUrl) {
       if (!isSpeakerOn) setIsSpeakerOn(true);
       playAudio(bubble.audioUrl, bubble.performanceTimeline, estimateSpeechMs(bubble.text), true);
-      trackEvent('重播一条通话语音');
+      
       return;
     }
     // The click itself unlocks the persistent media element. TTS happens only
@@ -2292,7 +2303,7 @@ ${sentencePlan}`;
     if (!url) return;
     if (!isSpeakerOn) setIsSpeakerOn(true);
     playAudio(url, bubble.performanceTimeline, estimateSpeechMs(bubble.text), true);
-    trackEvent('按需生成并播放通话语音');
+    
   };
   const callFavoriteSourceKey = (charId: string, bubble: CallBubble) => `${charId}:${bubble.dbId || bubble.id}`;
   const openCallVoiceFavorite = async (bubble: CallBubble, charId = selectedChar?.id || '', charName = selectedChar?.name || '未知角色') => {
@@ -2350,7 +2361,7 @@ ${sentencePlan}`;
       }
       setVoiceFavoriteSaved(true);
       addToast('已收藏通话语音', 'success');
-      trackEvent('收藏通话语音');
+      
     } catch (error: any) {
       addToast(error?.message || '收藏失败，请检查浏览器存储空间', 'error');
     } finally {
@@ -2585,7 +2596,7 @@ ${sentencePlan}`;
     if (userCameraSnapshotForTurn) {
       try {
         newSnapshotRef = await putImageBlob(dataUrlToBlob(userCameraSnapshotForTurn));
-        trackEvent('保存视频通话单帧快照');
+        
       } catch (error) {
         console.warn('[camera-snapshot] failed to save the local call-record frame:', error);
         addToast('快照仍会交给角色，但未能写入本地通话记录', 'info');
@@ -2798,7 +2809,7 @@ ${sentencePlan}`;
     }
     await loadCallRecords(record.characterId);
     addToast('通话记录已删除', 'success');
-    trackEvent('删除一条通话记录');
+    
   };
   const startEditBubble = (bubble: CallBubble) => {
     if (bubble.role !== 'user') return;
@@ -2814,7 +2825,7 @@ ${sentencePlan}`;
     setEditingBubble(null);
     setEditingText('');
     addToast('已更新发言', 'success');
-    trackEvent('修改自己的通话发言');
+    
   };
   const handleRerollAssistant = async (bubble: CallBubble) => {
     if (!selectedChar || bubble.role !== 'assistant') return;
@@ -2825,7 +2836,7 @@ ${sentencePlan}`;
     try {
       setRerollingBubbleId(bubble.id);
       setCallState('thinking');
-      trackEvent('重掷角色的通话台词');
+      
       const rerollReply = prepareCallAssistantReply(
         await requestAssistantReply(prevUser.text, bubble.dbId),
         callMode === 'video' && selectedChar?.videoCallPerformanceQuality !== 'high',
@@ -3113,11 +3124,7 @@ ${sentencePlan}`;
             lightTheme={lightTheme}
             onChange={next => {
               setCallPreferences(next);
-              trackEvent('设置通话偏好', {
-                谁先开口: next.characterInitiative ? '角色' : '用户',
-                自动生成并播放语音: next.voiceAutoPlay ? '开启' : '关闭',
-                沉默后主动接话: next.idleNudgeEnabled ? '开启' : '关闭',
-              });
+              
             }}
             onOpenSystemSettings={() => {
               setShowCallPreferences(false);
@@ -3361,7 +3368,7 @@ ${sentencePlan}`;
                 {selectedChar ? <>{callMode === 'video' ? '视频接通 ' : '拨给 '}<span className="font-serif italic text-xl align-baseline" style={{ textShadow: `0 0 12px ${accentColor}` }}>{selectedChar.name}</span></> : '开始通话'}
               </span>
             </button>
-            <button onClick={() => { setViewMode('history'); trackEvent('打开通话记录'); }}
+            <button onClick={() => { setViewMode('history');  }}
               className="relative w-full py-3 rounded-2xl border border-white/15 bg-white/[0.04] backdrop-blur-md text-white/80 flex items-center justify-center gap-2 transition active:scale-[0.98] hover:bg-white/[0.08]">
               <Clock size={16} weight="bold" style={{ color: accentColor }} /> 通话记录
             </button>
@@ -3509,7 +3516,7 @@ ${sentencePlan}`;
                   onClick={() => {
                     if (callLongPressTriggeredRef.current) { callLongPressTriggeredRef.current = false; return; }
                     void handlePlayBubbleAudio(item);
-                    trackEvent('播放通话记录里的语音');
+                    
                   }}
                   disabled={!!generatingAudioBubbleId}
                   className="mt-2 text-xs px-2.5 py-1 rounded-full bg-white/8 border border-white/15 text-white/60 transition hover:bg-white/15 disabled:opacity-40"
@@ -3528,7 +3535,7 @@ ${sentencePlan}`;
             setCallStartedAt(Date.now());
             setCallState('listening');
             setViewMode('in-call');
-            trackEvent('再打一通电话');
+            
           }}
           className="keep-white w-full py-3 rounded-2xl mt-4 font-medium text-white transition active:scale-[0.98]"
           style={{ backgroundColor: accentColor }}
@@ -3605,7 +3612,7 @@ ${sentencePlan}`;
       {/* top channel bar */}
       <div className="relative shrink-0 px-5" style={{ paddingTop: 'max(2.25rem, var(--safe-top))' }}>
         <div className="absolute left-5 leading-tight" style={{ top: 'max(2.25rem, var(--safe-top))' }}>
-          <div className="text-[9px] tracking-[0.28em] text-white/45 font-semibold">{callMode === 'video' ? 'SULLYOS · VIDEO DATE' : 'PRIVATE CHANNEL'}</div>
+          <div className="text-[9px] tracking-[0.28em] text-white/45 font-semibold">{callMode === 'video' ? 'SullyOS·糯米机 · VIDEO DATE' : 'PRIVATE CHANNEL'}</div>
           <div className="mt-1.5 flex items-center gap-1.5 text-[8px] tracking-[0.22em] text-white/35">
             {callMode === 'video' ? 'CHARACTER LINK' : 'VOICE SYNC'}
             <span className="flex items-center gap-[2px] h-2">
@@ -3709,7 +3716,13 @@ ${sentencePlan}`;
                   ? fakeUserCameraUrl
                     ? <img src={fakeUserCameraUrl} alt="用户静态画面" className="h-full w-full object-cover" />
                     : <div className="flex h-full w-full items-center justify-center text-[8px] text-white/35">NO IMAGE</div>
-                  : <video ref={userCameraVideoRef} muted playsInline autoPlay className="h-full w-full scale-x-[-1] object-cover" />}
+                  : <video ref={userCameraVideoRef} muted playsInline autoPlay className="h-full w-full object-cover" style={{ transform: userCameraFacing === 'user' ? 'scaleX(-1)' : undefined }} />}
+                {(userCameraMode === 'emotion' || userCameraMode === 'snapshot') && <button
+                  type="button" aria-label="切换前后摄像头" title="切换前后摄像头"
+                  disabled={userCameraLoading}
+                  onClick={() => void startUserCamera(userCameraMode, userCameraFacing === 'user' ? 'environment' : 'user')}
+                  className="absolute right-1 top-1 z-20 flex h-9 w-9 items-center justify-center rounded-full bg-black/50 text-white disabled:opacity-40"
+                ><ArrowsClockwise size={19} /></button>}
                 <div className="pointer-events-none absolute inset-x-0 bottom-0 h-10 bg-gradient-to-t from-black/70 to-transparent" aria-hidden />
                 <span
                   className={`absolute left-2 top-2 rounded-full border border-white/15 bg-black/50 px-1.5 py-0.5 text-[6px] font-semibold tracking-[0.14em] backdrop-blur-md ${userCameraMode === 'emotion' ? 'text-emerald-200' : userCameraMode === 'snapshot' ? 'text-violet-200' : 'text-white/70'}`}
@@ -4061,7 +4074,7 @@ ${sentencePlan}`;
             <p className="text-xs text-white/40">选择后，角色会用中文回复，语音则用对应语种朗读</p>
             <div className="flex flex-wrap gap-2 pt-1">
               {VOICE_LANGUAGE_OPTIONS.map(opt => (
-                <button key={opt.value} onClick={() => { setVoiceLang(opt.value); if (selectedChar) updateCharacter(selectedChar.id, { callVoiceLang: opt.value }); setShowLangPicker(false); trackEvent('设置通话语音语种', { 语种: voiceLanguageAnalyticsValue(opt.value) }); }}
+                <button key={opt.value} onClick={() => { setVoiceLang(opt.value); if (selectedChar) updateCharacter(selectedChar.id, { callVoiceLang: opt.value }); setShowLangPicker(false);  }}
                   className={`text-xs px-3 py-2 rounded-full font-medium transition-colors text-white ${voiceLang === opt.value ? 'keep-white' : ''}`}
                   style={voiceLang === opt.value ? { backgroundColor: accentColor } : lightTheme ? { background: 'rgba(38,34,57,0.08)' } : { background: 'rgba(255,255,255,0.1)' }}>
                   {opt.label}
@@ -4093,7 +4106,7 @@ ${sentencePlan}`;
                     pendingAvatarTouches: pendingAvatarTouchesRef.current,
                   });
                   addToast('通话已挂起，点击顶部绿色条可随时回来', 'success');
-                  trackEvent('挂起通话到后台');
+                  
                 }
               }} className="keep-white w-full py-2.5 rounded-2xl bg-emerald-500/80 text-white font-semibold transition active:scale-[0.97] flex items-center justify-center gap-2">
                 <span>先忙别的</span><span className="text-xs opacity-70">（挂起通话）</span>

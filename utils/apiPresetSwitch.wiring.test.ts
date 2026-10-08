@@ -10,10 +10,14 @@
 //      → 用户以为预设已更新，刷新后却仍是旧配置
 //   3. 点预设绕开 commitApiConfig 自己写配置
 //      → 聊天换了 API，后台已排程的主动消息还拿旧 Key 打请求，到点一片 401
+//   4. 模型弹窗的「确定」又退回成只关弹窗
+//      → 用户以为换好了，离开设置页再回来，模型「自己跳回」旧的
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
+const modelPicker = readFileSync(fileURLToPath(new URL('../components/settings/ModelPicker.tsx', import.meta.url)), 'utf8');
+const stateSync = readFileSync(fileURLToPath(new URL('./amsgStateSync.ts', import.meta.url)), 'utf8');
 const settings = readFileSync(fileURLToPath(new URL('../apps/Settings.tsx', import.meta.url)), 'utf8');
 
 /** 截出某个顶层箭头函数的函数体（这些函数在文件里都是两空格缩进 + `};` 收尾）。 */
@@ -87,6 +91,31 @@ describe('换 API 一定连着换云端凭据', () => {
     const commitApiConfig = bodyOf('commitApiConfig');
     expect(commitApiConfig).toMatch(/updateApiConfig\(patch\)/);
     expect(commitApiConfig).toMatch(/syncAmsgLlmCredentials\(\{ \.\.\.apiConfig, \.\.\.patch \}\)/);
-    expect(commitApiConfig).toMatch(/refreshApiCredentialsForPendingTasks\(\{ \.\.\.apiConfig, \.\.\.patch \}\)/);
+    expect(stateSync).toMatch(/refreshApiCredentialsForPendingTasks\(snapshot\)/);
+  });
+});
+
+describe('模型弹窗选定即生效', () => {
+  it('「确定」和点列表项都走 confirmModelPicker，它会直接保存', () => {
+    expect(bodyOf('confirmModelPicker')).toMatch(/handleSaveApi\(model\)/);
+    expect(settings).toContain('confirmModelPicker(localModel)');
+    expect(modelPicker).toMatch(/onClick=\{\(\) => confirmModelPicker\(localModel\)\}/);
+    expect(modelPicker).toMatch(/onClick=\{\(\) => confirmModelPicker\(m\)\}/);
+  });
+
+  it('刚选的模型直接递给保存，不等 setLocalModel 下一轮渲染', () => {
+    expect(bodyOf('handleSaveApi')).toMatch(/model: normalizeApiModel\(modelOverride \?\? localModel\)/);
+  });
+
+  it('× 关弹窗 = 放弃，退回打开前的模型名', () => {
+    expect(settings).toContain('onClose={closeModelPicker}');
+    expect(bodyOf('closeModelPicker')).toContain('cancelModelPicker()');
+    expect(bodyOf('cancelModelPicker')).toMatch(/setLocalModel\(modelBeforePickerRef\.current\)/);
+  });
+
+  it('刷新模型列表不覆盖已经填好的模型名', () => {
+    const fetchModels = bodyOf('fetchModels');
+    expect(fetchModels).not.toMatch(/!models\.includes\(localModel\)/);
+    expect(fetchModels).toMatch(/if \(!localModel\.trim\(\)\) setLocalModel\(models\[0\]\)/);
   });
 });

@@ -4,14 +4,21 @@ import Modal from '../os/Modal';
 import { CharacterProfile, Message, EmojiCategory, DailySchedule, ScheduleSlot, ApiPreset, APIConfig } from '../../types';
 import ScheduleCard from '../schedule/ScheduleCard';
 import EmotionSettingsPanel from './EmotionSettingsPanel';
+import ChatInputSettings from './ChatInputSettings';
+import ChatSettingsSection from './ChatSettingsSection';
+import SecretNote from './SecretNote';
+import type { ChatInputPreferences } from '../../utils/chatInputPreferences';
 import { isTranslationLangPreset, normalizeTranslationLangLabel, TRANSLATION_LANG_MAX_LENGTH, TRANSLATION_LANG_PRESETS } from '../../utils/translationLang';
 import type { ContextRangeMode, ContextRangeSnapshot } from '../../utils/chatContextRange';
 import type { PendingEmojiImportItem } from '../../utils/emojiImport';
 import TokenImg from '../os/TokenImg';
-import { trackEvent } from '../../utils/analytics';
+
 import { CANTONESE_VOICE_SUPPORT_NOTE, VOICE_LANGUAGE_OPTIONS } from '../../utils/voiceLanguage';
 import { chatMessageFuzzyMatchesKeyword } from '../../utils/chatMessageSearch';
 interface ChatModalsProps {
+    onBgUpload: (file: File) => Promise<void>;
+    onRemoveBg: () => void;
+    compactHome?: boolean;
     modalType: string;
     setModalType: (v: any) => void;
     // Data Props
@@ -27,6 +34,8 @@ interface ChatModalsProps {
     setSettingsContextRangeMode: (v: ContextRangeMode) => void;
     settingsHideSysLogs: boolean;
     setSettingsHideSysLogs: (v: boolean) => void;
+    settingsInputPreferences: ChatInputPreferences;
+    setSettingsInputPreferences: (value: ChatInputPreferences) => void;
     contextSuiteAnyEnabled: boolean;
     contextSuiteAllEnabled: boolean;
     onToggleContextSuite: () => void;
@@ -73,8 +82,6 @@ interface ChatModalsProps {
     isPreparingEmojiFiles?: boolean;
     isSavingEmojiFiles?: boolean;
     onSaveSettings: () => void;
-    onBgUpload: (file: File) => void;
-    onRemoveBg: () => void;
     onOpenHistoryCleanup?: () => void;
     onArchive: () => void;
     onCreatePrompt: () => void;
@@ -94,6 +101,8 @@ interface ChatModalsProps {
     messageFavorited?: boolean;
     onDeleteEmoji: () => void;
     onDeleteCategory: () => void;
+    onRenameCategory: () => void;
+    onDownloadCategory: () => void;
     // Category Visibility
     allCharacters?: CharacterProfile[];
     onSaveCategoryVisibility?: (categoryId: string, allowedCharacterIds: string[] | undefined) => void;
@@ -244,13 +253,15 @@ const TranslationLanguagePicker: React.FC<TranslationLanguagePickerProps> = ({
 };
 
 const ChatModals: React.FC<ChatModalsProps> = ({
-    modalType, setModalType,
+    modalType, setModalType, compactHome=false,
+    retainRecentForVectorize, setRetainRecentForVectorize, vectorizeResult, chatVoiceAutoPlay, onToggleChatVoiceAutoPlay,
     transferAmt, setTransferAmt,
     transferNote, setTransferNote,
     emojiImportText, setEmojiImportText,
     settingsContextLimit, setSettingsContextLimit,
     settingsContextRangeMode, setSettingsContextRangeMode,
     settingsHideSysLogs, setSettingsHideSysLogs,
+    settingsInputPreferences, setSettingsInputPreferences,
     contextSuiteAnyEnabled, contextSuiteAllEnabled, onToggleContextSuite,
     editContent, setEditContent,
     newCategoryName, setNewCategoryName, onAddCategory,
@@ -268,7 +279,7 @@ const ChatModals: React.FC<ChatModalsProps> = ({
     isSavingEmojiFiles = false,
     onBgUpload, onRemoveBg, onOpenHistoryCleanup,
     onArchive, onCreatePrompt, onEditPrompt, onSavePrompt, onDeletePrompt,
-    onSetHistoryStart, onRestoreAdaptiveContext, onJumpToMessageInChat, onEnterSelectionMode, onReplyMessage, onEditMessageStart, onConfirmEditMessage, onDeleteMessage, onCopyMessage, onDeleteEmoji, onDeleteCategory,
+    onSetHistoryStart, onRestoreAdaptiveContext, onJumpToMessageInChat, onEnterSelectionMode, onReplyMessage, onEditMessageStart, onConfirmEditMessage, onDeleteMessage, onCopyMessage, onToggleMessageFavorite, messageFavorited, onDeleteEmoji, onDeleteCategory, onRenameCategory, onDownloadCategory,
     allCharacters = [], onSaveCategoryVisibility, onSaveCategoryRoleUsable,
     translationEnabled, onToggleTranslation, translationExpanded, onToggleTranslationExpanded, translateSourceLang, translateTargetLang, onSetTranslateSourceLang, onSetTranslateLang,
     xhsEnabled, onToggleXhs,
@@ -297,6 +308,8 @@ const ChatModals: React.FC<ChatModalsProps> = ({
         if (longPressTimerRef.current) window.clearTimeout(longPressTimerRef.current);
         longPressTimerRef.current = window.setTimeout(() => {
             longPressTriggeredRef.current = true;
+            // Paper notes already show their original text here; never expose them in normal chat.
+            if (allHistoryMessages.some(m => m.id === msgId && m.type === 'secret_note')) return;
             if (onJumpToMessageInChat) {
                 setModalType('none');
                 setHistoryPage(0);
@@ -510,7 +523,8 @@ const ChatModals: React.FC<ChatModalsProps> = ({
                 isOpen={modalType === 'chat-settings'} title="聊天设置" onClose={() => setModalType('none')}
                 footer={<button onClick={onSaveSettings} className="w-full py-3 bg-primary text-white font-bold rounded-2xl">保存设置</button>}
             >
-                <div className="space-y-6">
+                <div className="space-y-3">
+                    <ChatSettingsSection title="聊天背景" summary="独立聊天背景">
                      <div>
                          <label className="text-xs font-bold text-slate-400 uppercase mb-2 block">聊天背景</label>
                          <div onClick={() => bgInputRef.current?.click()} className="h-24 bg-slate-100 rounded-xl border-2 border-dashed border-slate-200 flex items-center justify-center cursor-pointer hover:border-primary/50 overflow-hidden relative">
@@ -520,102 +534,186 @@ const ChatModals: React.FC<ChatModalsProps> = ({
                          <input type="file" ref={bgInputRef} className="hidden" accept="image/*" onChange={(e) => e.target.files?.[0] && onBgUpload(e.target.files[0])} />
                          {activeCharacter.chatBackground && <button onClick={onRemoveBg} className="text-[10px] text-red-400 mt-1">移除背景</button>}
                      </div>
-                     <div>
-                         {activeCharacter.autoArchiveEnabled && settingsContextRangeMode === 'adaptive' ? (
-                             <div className="rounded-2xl border border-violet-200 bg-violet-50 p-3.5">
-                                 <div className="flex items-start justify-between gap-3">
-                                     <div>
-                                         <div className="text-xs font-bold text-violet-700">自适应全自动记忆中</div>
-                                         <p className="text-[10px] text-violet-600/80 mt-1 leading-relaxed">
-                                             原文范围自动跟随记忆宫殿水位线，更早内容通过向量记忆召回。非特殊需求请勿调整。
-                                         </p>
-                                         {activeCharacter.contextUserStartMessageId && (
-                                             <p className="text-[10px] text-sky-700 mt-1.5 leading-relaxed">
-                                                 当前另有用户断点，实际原文范围会在自适应上限内进一步缩小。
-                                             </p>
-                                         )}
-                                     </div>
-                                     <div className="shrink-0 flex flex-col gap-1.5">
-                                         <button
-                                             type="button"
-                                             onClick={() => setSettingsContextRangeMode('manual')}
-                                             className="px-3 py-1.5 rounded-xl bg-white border border-violet-200 text-[11px] font-bold text-violet-700"
-                                         >
-                                             自定义范围
-                                         </button>
-                                         {activeCharacter.contextUserStartMessageId && (
-                                             <button
-                                                 type="button"
-                                                 onClick={onRestoreAdaptiveContext}
-                                                 className="px-3 py-1.5 rounded-xl bg-violet-600 text-[11px] font-bold text-white"
-                                             >
-                                                 一键还原
-                                             </button>
-                                         )}
-                                     </div>
-                                 </div>
-                             </div>
-                         ) : (
-                             <>
-                                 <div className="flex items-center justify-between gap-2 mb-2">
-                                     <label className="text-xs font-bold text-slate-400 uppercase">上下文最大条数 ({settingsContextLimit})</label>
-                                     {activeCharacter.autoArchiveEnabled && (
-                                         <button
-                                             type="button"
-                                             onClick={onRestoreAdaptiveContext}
-                                             className="text-[10px] font-bold text-violet-600 bg-violet-50 border border-violet-100 rounded-full px-2.5 py-1"
-                                         >
-                                             一键恢复自适应
-                                         </button>
-                                     )}
-                                 </div>
-                                 <input
-                                     type="range"
-                                     min="20"
-                                     max="5000"
-                                     step="10"
-                                     value={settingsContextLimit}
-                                     onChange={e => {
-                                         setSettingsContextRangeMode('manual');
-                                         setSettingsContextLimit(parseInt(e.target.value));
-                                     }}
-                                     className="w-full h-2 bg-slate-200 rounded-full appearance-none accent-primary"
-                                 />
-                                 <div className="flex justify-between text-[10px] text-slate-400 mt-1"><span>20 (省流)</span><span>5000 (最大范围)</span></div>
-                                 {activeCharacter.autoArchiveEnabled && (
-                                     <p className="text-[10px] text-amber-600 mt-2 leading-relaxed">
-                                         自定义只改变 AI 可直接读取的原文范围，不会回退记忆宫殿水位线，也不会让旧消息重新向量化。
-                                     </p>
-                                 )}
-                             </>
-                         )}
-                     </div>
+                    </ChatSettingsSection>
+                    <ChatSettingsSection title="输入与发送" summary="表情联想、回车与自动回复">
+                        <ChatInputSettings value={settingsInputPreferences} onChange={setSettingsInputPreferences} />
+                    </ChatSettingsSection>
+                    <ChatSettingsSection title="消息显示" summary="系统日志显示设置">
+                        <div className="pt-2 border-t border-slate-100">
+                            <div className="flex justify-between items-center cursor-pointer" onClick={() => setSettingsHideSysLogs(!settingsHideSysLogs)}>
+                                <label className="text-xs font-bold text-slate-400 uppercase pointer-events-none">隐藏系统日志</label>
+                                <div className={`w-10 h-6 rounded-full p-1 transition-colors flex items-center ${settingsHideSysLogs ? 'bg-primary' : 'bg-slate-200'}`}>
+                                    <div className={`w-4 h-4 bg-white rounded-full shadow-sm transition-transform ${settingsHideSysLogs ? 'translate-x-4' : ''}`}></div>
+                                </div>
+                            </div>
+                            <p className="text-[10px] text-slate-400 mt-2 leading-relaxed">
+                                开启后隐藏见面/小程序等自动产生的灰色提示（转账、戳一戳、发图提示除外）。
+                            </p>
+                        </div>
+                    </ChatSettingsSection>
+                    <ChatSettingsSection title="上下文与记忆" summary="智能语境、原文范围与记忆整理">
+                        <div className="rounded-2xl border border-violet-200 bg-violet-50 p-3.5">
+                            <div className="flex items-center gap-3">
+                                <div className="min-w-0 flex-1">
+                                    <div className="text-xs font-bold text-violet-700">智能语境</div>
+                                    <p className="mt-1 text-[10px] leading-relaxed text-violet-600/90">
+                                        更准确地承接上下文、跟随交流节奏，并持续关注正在展开的事情。对所有私聊生效，本地完成，不增加 API 调用。
+                                    </p>
+                                    <p className="mt-1.5 text-[10px] font-bold text-violet-600">
+                                        {contextSuiteAllEnabled
+                                            ? '已开启'
+                                            : contextSuiteAnyEnabled
+                                                ? '旧版的部分能力仍在运行；关闭后可统一重新开启'
+                                                : '已关闭，回复保持原有行为'}
+                                    </p>
+                                </div>
+                                <button
+                                    type="button"
+                                    onClick={onToggleContextSuite}
+                                    aria-pressed={contextSuiteAnyEnabled}
+                                    className={`shrink-0 rounded-full px-3.5 py-2 text-[11px] font-extrabold transition-colors ${contextSuiteAnyEnabled
+                                        ? 'bg-white text-violet-700 ring-1 ring-violet-200'
+                                        : 'bg-violet-600 text-white'}`}
+                                >
+                                    {contextSuiteAnyEnabled ? '关闭' : '开启'}
+                                </button>
+                            </div>
+                        </div>
 
-                     <div className="pt-2 border-t border-slate-100">
-                         <div className="flex justify-between items-center cursor-pointer" onClick={() => setSettingsHideSysLogs(!settingsHideSysLogs)}>
-                             <label className="text-xs font-bold text-slate-400 uppercase pointer-events-none">隐藏系统日志</label>
-                             <div className={`w-10 h-6 rounded-full p-1 transition-colors flex items-center ${settingsHideSysLogs ? 'bg-primary' : 'bg-slate-200'}`}>
-                                 <div className={`w-4 h-4 bg-white rounded-full shadow-sm transition-transform ${settingsHideSysLogs ? 'translate-x-4' : ''}`}></div>
-                             </div>
-                         </div>
-                         <p className="text-[10px] text-slate-400 mt-2 leading-relaxed">
-                             开启后隐藏见面/小程序等自动产生的灰色提示（转账、戳一戳、发图提示除外）。
-                         </p>
-                     </div>
+                        <div>
+                            {(activeCharacter.autoArchiveEnabled || activeCharacter.contextFollowsMemoryPalaceHwm) && settingsContextRangeMode === 'adaptive' ? (
+                                <div className="rounded-2xl border border-violet-200 bg-violet-50 p-3.5">
+                                    <div className="flex items-start justify-between gap-3">
+                                        <div>
+                                            <div className="text-xs font-bold text-violet-700">
+                                                {activeCharacter.autoArchiveEnabled ? '自适应全自动记忆中' : '原文范围跟随记忆水位线'}
+                                            </div>
+                                            <p className="text-[10px] text-violet-600/80 mt-1 leading-relaxed">
+                                                已处理原文不再重复注入，更早内容通过向量记忆召回。非特殊需求请勿调整。
+                                            </p>
+                                            {activeCharacter.contextUserStartMessageId && (
+                                                <p className="text-[10px] text-sky-700 mt-1.5 leading-relaxed">
+                                                    当前另有用户断点，实际原文范围会在自适应上限内进一步缩小。
+                                                </p>
+                                            )}
+                                        </div>
+                                        <div className="shrink-0 flex flex-col gap-1.5">
+                                            <button
+                                                type="button"
+                                                onClick={() => setSettingsContextRangeMode('manual')}
+                                                className="px-3 py-1.5 rounded-xl bg-white border border-violet-200 text-[11px] font-bold text-violet-700"
+                                            >
+                                                自定义范围
+                                            </button>
+                                            {activeCharacter.contextUserStartMessageId && (
+                                                <button
+                                                    type="button"
+                                                    onClick={onRestoreAdaptiveContext}
+                                                    className="px-3 py-1.5 rounded-xl bg-violet-600 text-[11px] font-bold text-white"
+                                                >
+                                                    一键还原
+                                                </button>
+                                            )}
+                                        </div>
+                                    </div>
+                                </div>
+                            ) : (
+                                <>
+                                    <div className="flex items-center justify-between gap-2 mb-2">
+                                        <label className="text-xs font-bold text-slate-400 uppercase">上下文最大条数 ({settingsContextLimit})</label>
+                                        {(activeCharacter.autoArchiveEnabled || activeCharacter.contextFollowsMemoryPalaceHwm) && (
+                                            <button
+                                                type="button"
+                                                onClick={onRestoreAdaptiveContext}
+                                                className="text-[10px] font-bold text-violet-600 bg-violet-50 border border-violet-100 rounded-full px-2.5 py-1"
+                                            >
+                                                {activeCharacter.autoArchiveEnabled ? '一键恢复自适应' : '恢复水位跟随'}
+                                            </button>
+                                        )}
+                                    </div>
+                                    <input
+                                        type="range"
+                                        min="10"
+                                        max="5000"
+                                        step="10"
+                                        value={settingsContextLimit}
+                                        onChange={e => {
+                                            setSettingsContextRangeMode('manual');
+                                            setSettingsContextLimit(parseInt(e.target.value));
+                                        }}
+                                        className="w-full h-2 bg-slate-200 rounded-full appearance-none accent-primary"
+                                    />
+                                    <div className="flex justify-between text-[10px] text-slate-400 mt-1"><span>10 (省流)</span><span>5000 (最大范围)</span></div>
+                                    {(activeCharacter.autoArchiveEnabled || activeCharacter.contextFollowsMemoryPalaceHwm) && (
+                                        <p className="text-[10px] text-amber-600 mt-2 leading-relaxed">
+                                            自定义只改变 AI 可直接读取的原文范围，不会回退记忆宫殿水位线，也不会让旧消息重新向量化。
+                                        </p>
+                                    )}
+                                </>
+                            )}
+                        </div>
 
-                     {/* Translation Settings */}
-                     <div className="pt-2 border-t border-slate-100">
-                         <div className="flex justify-between items-center cursor-pointer" onClick={onToggleTranslation}>
-                             <label className="text-xs font-bold text-slate-400 uppercase pointer-events-none">消息翻译</label>
-                             <div className={`w-10 h-6 rounded-full p-1 transition-colors flex items-center ${translationEnabled ? 'bg-primary' : 'bg-slate-200'}`}>
-                                 <div className={`w-4 h-4 bg-white rounded-full shadow-sm transition-transform ${translationEnabled ? 'translate-x-4' : ''}`}></div>
-                             </div>
-                         </div>
-                         <p className="text-[10px] text-slate-400 mt-1 leading-relaxed">
-                             开启后，AI 消息自动翻译为「选」的语言显示，点「译」切换到目标语言。
-                         </p>
-                         {translationEnabled && (
-                             <div className="mt-3 space-y-3">
+                        {/* 时间感知 / 自定义时区 / 线下时间感知 已统一迁移至「神经链接」角色设定页 */}
+
+                        <div className="pt-2 border-t border-slate-100">
+                            <button onClick={() => setModalType('history-manager')} className="w-full py-3 bg-slate-50 text-slate-600 font-bold rounded-2xl border border-slate-200 active:scale-95 transition-transform flex items-center justify-center gap-2">
+                                查看原文范围 / 设置用户断点
+                            </button>
+                            <p className="text-[10px] text-slate-400 mt-2 text-center">查看拉杆上限、记忆水位线，并可在最大范围内进一步缩小 AI 原文范围。</p>
+                        </div>
+
+                        {/* 记忆宫殿：一键向量化所有聊天记录 */}
+                        {isMemoryPalaceEnabled && <p className="mt-3 rounded-xl bg-violet-50 p-3 text-xs leading-relaxed text-violet-700">
+                            全自动记忆用户大部分时候无需操作下方的一键向量化等手动工具。日常聊天会按条件自动整理；这些不是常规必点按钮，仅在明确了解用途与影响时使用。查看和修改记忆可前往「神经链接」中的角色记忆页。
+                        </p>}
+                        {isMemoryPalaceEnabled && onForceVectorize && (
+                            <div className="pt-2 border-t border-slate-100">
+                                <button
+                                    type="button"
+                                    onClick={() => setRetainRecentForVectorize?.(!retainRecentForVectorize)}
+                                    className={`w-full mb-2.5 rounded-2xl border p-3 text-left transition-colors ${retainRecentForVectorize ? 'bg-amber-50 border-amber-200' : 'bg-slate-50 border-slate-200'}`}
+                                >
+                                    <span className="flex items-center gap-2.5">
+                                        <span className={`w-5 h-5 rounded-full border flex items-center justify-center shrink-0 ${retainRecentForVectorize ? 'bg-amber-500 border-amber-500' : 'bg-white border-slate-300'}`}>
+                                            {retainRecentForVectorize && <span className="text-white text-[11px] font-bold">✓</span>}
+                                        </span>
+                                        <span>
+                                            <span className="block text-xs font-bold text-slate-700">为我保留最近 10 条注入到上下文</span>
+                                            <span className="block text-[10px] text-slate-400 mt-0.5 leading-relaxed">不开启则处理到当前最后一条，已处理原文不再直接发送给模型。</span>
+                                        </span>
+                                    </span>
+                                </button>
+                                <button
+                                    onClick={() => { setModalType('memory-vectorize-confirm');  }}
+                                    disabled={isVectorizing}
+                                    className="w-full py-3 bg-emerald-50 text-emerald-600 font-bold rounded-2xl border border-emerald-200 active:scale-95 transition-transform flex items-center justify-center gap-2 disabled:opacity-70"
+                                >
+                                    {(vectorizePendingCount != null && vectorizePendingCount > 0)
+                                        ? `🏰 一键存进记忆宫殿 · 待处理 ${vectorizePendingCount} 条`
+                                        : (vectorizePendingCount === 0)
+                                            ? '🏰 同步原文范围 · 当前无待处理'
+                                            : '🏰 一键把所有聊天存进记忆宫殿'}
+                                </button>
+                                <p className="text-[10px] text-slate-400 mt-2 text-center leading-relaxed">
+                                    使用副 API 分批整理。正式开始前会再次说明影响，不会直接执行。
+                                </p>
+                            </div>
+                        )}
+                    </ChatSettingsSection>
+                    <ChatSettingsSection title="翻译与语音" summary="消息语言、语音与自动播放">
+                        {/* Translation Settings */}
+                        <div className="pt-2 border-t border-slate-100">
+                            <div className="flex justify-between items-center cursor-pointer" onClick={onToggleTranslation}>
+                                <label className="text-xs font-bold text-slate-400 uppercase pointer-events-none">消息翻译</label>
+                                <div className={`w-10 h-6 rounded-full p-1 transition-colors flex items-center ${translationEnabled ? 'bg-primary' : 'bg-slate-200'}`}>
+                                    <div className={`w-4 h-4 bg-white rounded-full shadow-sm transition-transform ${translationEnabled ? 'translate-x-4' : ''}`}></div>
+                                </div>
+                            </div>
+                            <p className="text-[10px] text-slate-400 mt-1 leading-relaxed">
+                                开启后，AI 消息自动翻译为「选」的语言显示，点「译」切换到目标语言。
+                            </p>
+                            {translationEnabled && (
+                                <div className="mt-3 space-y-3">
                                  <button
                                      type="button"
                                      onClick={onToggleTranslationExpanded}
@@ -624,138 +722,198 @@ const ChatModals: React.FC<ChatModalsProps> = ({
                                      <span className="font-bold">原文与译文同时展开</span>
                                      <span className="block mt-0.5 text-[10px] opacity-75">{translationExpanded ? '已开启：气泡同时显示两种语言' : '已关闭：点“译”在两种语言间切换'}</span>
                                  </button>
-                                 <TranslationLanguagePicker
-                                     label="选（气泡显示语言）"
-                                     value={translateSourceLang}
-                                     tone="source"
-                                     inputPlaceholder="自定义，如 粤语"
-                                     onSelect={onSetTranslateSourceLang}
-                                 />
-                                 <TranslationLanguagePicker
-                                     label="译（翻译目标语言）"
-                                     value={translateTargetLang}
-                                     tone="target"
-                                     inputPlaceholder="自定义，如 中文（繁體）"
-                                     onSelect={onSetTranslateLang}
-                                 />
-                                 {/* Preview */}
-                                 <div className="text-[11px] text-center text-slate-500 bg-slate-50 rounded-lg py-2">
-                                     选<span className="font-bold text-slate-700">{translateSourceLang || '?'}</span> 译<span className="font-bold text-primary">{translateTargetLang || '?'}</span>
-                                 </div>
-                             </div>
-                         )}
-                     </div>
+                                    <TranslationLanguagePicker
+                                        label="选（气泡显示语言）"
+                                        value={translateSourceLang}
+                                        tone="source"
+                                        inputPlaceholder="自定义，如 粤语"
+                                        onSelect={onSetTranslateSourceLang}
+                                    />
+                                    <TranslationLanguagePicker
+                                        label="译（翻译目标语言）"
+                                        value={translateTargetLang}
+                                        tone="target"
+                                        inputPlaceholder="自定义，如 中文（繁體）"
+                                        onSelect={onSetTranslateLang}
+                                    />
+                                    <button
+                                        type="button"
+                                        onClick={onToggleTranslationExpanded}
+                                        className="w-full flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-left active:bg-slate-50"
+                                    >
+                                        <span>
+                                            <span className="block text-[11px] font-bold text-slate-600">原文与译文同时展开</span>
+                                            <span className="block mt-0.5 text-[9px] leading-relaxed text-slate-400">开启后不再逐条点击切换，双语气泡会直接上下显示两种语言。</span>
+                                        </span>
+                                        <span className={`shrink-0 w-10 h-6 rounded-full p-1 transition-colors flex items-center ${translationExpanded ? 'bg-primary' : 'bg-slate-200'}`}>
+                                            <span className={`w-4 h-4 bg-white rounded-full shadow-sm transition-transform ${translationExpanded ? 'translate-x-4' : ''}`} />
+                                        </span>
+                                    </button>
+                                    {/* Preview */}
+                                    <div className="text-[11px] text-center text-slate-500 bg-slate-50 rounded-lg py-2">
+                                        选<span className="font-bold text-slate-700">{translateSourceLang || '?'}</span> 译<span className="font-bold text-primary">{translateTargetLang || '?'}</span>
+                                    </div>
+                                </div>
+                            )}
+                        </div>
 
-                     {/* XHS Toggle */}
-                     <div className="pt-2 border-t border-slate-100">
-                         <div className="flex justify-between items-center cursor-pointer" onClick={onToggleXhs}>
-                             <label className="text-xs font-bold text-slate-400 uppercase pointer-events-none">小红书</label>
-                             <div className={`w-10 h-6 rounded-full p-1 transition-colors flex items-center ${xhsEnabled ? 'bg-red-400' : 'bg-slate-200'}`}>
-                                 <div className={`w-4 h-4 bg-white rounded-full shadow-sm transition-transform ${xhsEnabled ? 'translate-x-4' : ''}`}></div>
-                             </div>
-                         </div>
-                         <p className="text-[10px] text-slate-400 mt-2 leading-relaxed">
-                             开启后，角色在聊天中可以搜索、浏览、发帖、评论小红书。需要在全局设置中配置 MCP 或 Cookie。
-                         </p>
-                     </div>
+                        {/* Voice TTS */}
+                        <div className="pt-2 border-t border-slate-100">
+                            <div className="flex justify-between items-center cursor-pointer" onClick={onToggleChatVoice}>
+                                <label className="text-xs font-bold text-slate-400 uppercase pointer-events-none">语音消息</label>
+                                <div className={`w-10 h-6 rounded-full p-1 transition-colors flex items-center ${chatVoiceEnabled ? 'bg-emerald-400' : 'bg-slate-200'}`}>
+                                    <div className={`w-4 h-4 bg-white rounded-full shadow-sm transition-transform ${chatVoiceEnabled ? 'translate-x-4' : ''}`}></div>
+                                </div>
+                            </div>
+                            <p className="text-[10px] text-slate-400 mt-1 leading-relaxed">
+                                开启后，AI 回复里会出现语音条（需配置 MiniMax 和角色语音）。
+                            </p>
+                            {chatVoiceEnabled && (
+                                <div className="mt-3 pt-3 border-t border-slate-100">
+                                    <div className="flex justify-between items-center cursor-pointer" onClick={onToggleChatVoiceAutoPlay}>
+                                        <label className="text-[10px] font-bold text-slate-400 uppercase pointer-events-none">收到就自动播放</label>
+                                        <div className={`w-9 h-5 rounded-full p-1 transition-colors flex items-center ${chatVoiceAutoPlay ? 'bg-emerald-400' : 'bg-slate-200'}`}>
+                                            <div className={`w-3 h-3 bg-white rounded-full shadow-sm transition-transform ${chatVoiceAutoPlay ? 'translate-x-4' : ''}`}></div>
+                                        </div>
+                                    </div>
+                                    <p className="text-[10px] text-slate-400 mt-1 leading-relaxed">
+                                        开启后收到消息就合成语音并播放。关闭时语音条照常出现，点一下才合成并播放，不听就不消耗语音额度（也可以点「转文字」直接看内容）。
+                                    </p>
+                                </div>
+                            )}
+                            {chatVoiceEnabled && (
+                                <div className="mt-3">
+                                    <label className="text-[10px] font-bold text-slate-400 mb-1.5 block">语音语种</label>
+                                    <div className="flex flex-wrap gap-1.5">
+                                        {VOICE_LANGUAGE_OPTIONS.map(opt => (
+                                            <button key={opt.value} onClick={() => onSetChatVoiceLang?.(opt.value)}
+                                                className={`px-2.5 py-1 rounded-full text-[11px] font-bold transition-all ${chatVoiceLang === opt.value ? 'bg-emerald-500 text-white' : 'bg-slate-100 text-slate-500'}`}>
+                                                {opt.label}
+                                            </button>
+                                        ))}
+                                    </div>
+                                    {chatVoiceLang === 'yue' && <p className="text-[10px] text-amber-600/80 mt-1.5">{CANTONESE_VOICE_SUPPORT_NOTE}</p>}
+                                    {chatVoiceLang && <p className="text-[10px] text-emerald-600/70 mt-1.5">选择非默认语种时，AI 台词会先翻译再生成语音。</p>}
+                                </div>
+                            )}
+                        </div>
+                    </ChatSettingsSection>
+                    <ChatSettingsSection title="扩展功能" summary="小红书与 HTML 卡片">
+                        {/* XHS Toggle */}
+                        <div className="pt-2 border-t border-slate-100">
+                            <div className="flex justify-between items-center cursor-pointer" onClick={onToggleXhs}>
+                                <label className="text-xs font-bold text-slate-400 uppercase pointer-events-none">小红书</label>
+                                <div className={`w-10 h-6 rounded-full p-1 transition-colors flex items-center ${xhsEnabled ? 'bg-red-400' : 'bg-slate-200'}`}>
+                                    <div className={`w-4 h-4 bg-white rounded-full shadow-sm transition-transform ${xhsEnabled ? 'translate-x-4' : ''}`}></div>
+                                </div>
+                            </div>
+                            <p className="text-[10px] text-slate-400 mt-2 leading-relaxed">
+                                开启后，角色在聊天中可以搜索、浏览、发帖、评论小红书。需要在全局设置中配置 MCP 或 Cookie。
+                            </p>
+                        </div>
 
-                     {/* HTML 模块模式 */}
-                     <div className="pt-2 border-t border-slate-100">
-                         <div className="flex justify-between items-center cursor-pointer" onClick={onToggleHtmlMode}>
-                             <label className="text-xs font-bold text-slate-400 uppercase pointer-events-none">HTML 模块模式</label>
-                             <div className={`w-10 h-6 rounded-full p-1 transition-colors flex items-center ${htmlModeEnabled ? 'bg-fuchsia-500' : 'bg-slate-200'}`}>
-                                 <div className={`w-4 h-4 bg-white rounded-full shadow-sm transition-transform ${htmlModeEnabled ? 'translate-x-4' : ''}`}></div>
-                             </div>
-                         </div>
-                         <p className="text-[10px] text-slate-400 mt-2 leading-relaxed">
-                             开启后注入"用 [html]...[/html] 包裹的精美卡片"提示词，AI 会在合适场景输出邀请函 / 票据 / 通知等可视化模块。
-                         </p>
-                         {htmlModeEnabled && (
-                             <div className="mt-3">
-                                 <label className="text-[10px] font-bold text-slate-400 mb-1.5 block">自定义提示词补充（追加在内置提示词之后，不会覆盖）</label>
-                                 <textarea
-                                     value={htmlModeCustomPrompt || ''}
-                                     onChange={e => setHtmlModeCustomPrompt?.(e.target.value)}
-                                     placeholder="比如：偏好暖色调 / 默认风格走 minimal 杂志感 / 票据类必须含二维码占位…"
-                                     className="w-full h-28 bg-slate-50 rounded-2xl p-3 text-[12px] resize-none border border-slate-200 focus:outline-none focus:border-fuchsia-300"
-                                 />
-                                 <p className="text-[10px] text-slate-400 mt-1">留空则只使用内置提示词。</p>
-                             </div>
-                         )}
-                     </div>
+                        {/* HTML 模块模式 */}
+                        <div className="pt-2 border-t border-slate-100">
+                            <div className="flex justify-between items-center cursor-pointer" onClick={onToggleHtmlMode}>
+                                <label className="text-xs font-bold text-slate-400 uppercase pointer-events-none">HTML 模块模式</label>
+                                <div className={`w-10 h-6 rounded-full p-1 transition-colors flex items-center ${htmlModeEnabled ? 'bg-fuchsia-500' : 'bg-slate-200'}`}>
+                                    <div className={`w-4 h-4 bg-white rounded-full shadow-sm transition-transform ${htmlModeEnabled ? 'translate-x-4' : ''}`}></div>
+                                </div>
+                            </div>
+                            <p className="text-[10px] text-slate-400 mt-2 leading-relaxed">
+                                开启后注入"用 [html]...[/html] 包裹的精美卡片"提示词，AI 会在合适场景输出邀请函 / 票据 / 通知等可视化模块。
+                            </p>
+                            {htmlModeEnabled && (
+                                <div className="mt-3">
+                                    <label className="text-[10px] font-bold text-slate-400 mb-1.5 block">自定义提示词补充（追加在内置提示词之后，不会覆盖）</label>
+                                    <textarea
+                                        value={htmlModeCustomPrompt || ''}
+                                        onChange={e => setHtmlModeCustomPrompt?.(e.target.value)}
+                                        placeholder="比如：偏好暖色调 / 默认风格走 minimal 杂志感 / 票据类必须含二维码占位…"
+                                        className="w-full h-28 bg-slate-50 rounded-2xl p-3 text-[12px] resize-none border border-slate-200 focus:outline-none focus:border-fuchsia-300"
+                                    />
+                                    <p className="text-[10px] text-slate-400 mt-1">留空则只使用内置提示词。</p>
+                                </div>
+                            )}
+                        </div>
+                    </ChatSettingsSection>
+                    <ChatSettingsSection title="聊天记录" summary="按范围清理或保留最近消息">
+                        {onOpenHistoryCleanup && <div>
+                            <button type="button" onClick={onOpenHistoryCleanup} className="w-full rounded-2xl border border-red-100 bg-red-50 py-3 text-sm font-bold text-red-600">清理指定范围 / 保留最近 N 条</button>
+                            <p className="mt-2 text-center text-[10px] text-slate-400">按页选择记录，永久删除前需要两次确认。</p>
+                        </div>}
+                    </ChatSettingsSection>
+                </div>
+            </Modal>
 
-                     {/* Voice TTS */}
-                     <div className="pt-2 border-t border-slate-100">
-                         <div className="flex justify-between items-center cursor-pointer" onClick={onToggleChatVoice}>
-                             <label className="text-xs font-bold text-slate-400 uppercase pointer-events-none">语音消息</label>
-                             <div className={`w-10 h-6 rounded-full p-1 transition-colors flex items-center ${chatVoiceEnabled ? 'bg-emerald-400' : 'bg-slate-200'}`}>
-                                 <div className={`w-4 h-4 bg-white rounded-full shadow-sm transition-transform ${chatVoiceEnabled ? 'translate-x-4' : ''}`}></div>
-                             </div>
-                         </div>
-                         <p className="text-[10px] text-slate-400 mt-1 leading-relaxed">
-                             开启后，AI 回复自动生成语音条（需配置 MiniMax 和角色语音）。
-                         </p>
-                         {chatVoiceEnabled && (
-                             <div className="mt-3">
-                                 <label className="text-[10px] font-bold text-slate-400 mb-1.5 block">语音语种</label>
-                                 <div className="flex flex-wrap gap-1.5">
-                                     {VOICE_LANGUAGE_OPTIONS.map(opt => (
-                                         <button key={opt.value} onClick={() => onSetChatVoiceLang?.(opt.value)}
-                                             className={`px-2.5 py-1 rounded-full text-[11px] font-bold transition-all ${chatVoiceLang === opt.value ? 'bg-emerald-500 text-white' : 'bg-slate-100 text-slate-500'}`}>
-                                             {opt.label}
-                                         </button>
-                                     ))}
-                                 </div>
-                                 {chatVoiceLang === 'yue' && <p className="text-[10px] text-amber-600/80 mt-1.5">{CANTONESE_VOICE_SUPPORT_NOTE}</p>}
-                                 {chatVoiceLang && <p className="text-[10px] text-emerald-600/70 mt-1.5">选择非默认语种时，AI 台词会先翻译再生成语音。</p>}
-                             </div>
-                         )}
-                     </div>
+            <Modal
+                isOpen={modalType === 'memory-vectorize-confirm'}
+                title="确认存进记忆宫殿"
+                onClose={() => { if (!isVectorizing) setModalType('chat-settings'); }}
+                footer={isVectorizing ? (
+                    <div className="w-full py-3 rounded-2xl bg-emerald-50 text-emerald-700 text-center text-sm font-bold flex items-center justify-center gap-2">
+                        <span className="w-4 h-4 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin" />
+                        {vectorizeProgress || '正在处理...'}
+                    </div>
+                ) : (
+                    <div className="w-full flex gap-2">
+                        <button type="button" onClick={() => setModalType('chat-settings')} className="flex-1 py-3 rounded-2xl bg-slate-100 text-slate-600 font-bold">取消</button>
+                        <button type="button" onClick={onForceVectorize} className="flex-1 py-3 rounded-2xl bg-emerald-500 text-white font-bold">确认开始</button>
+                    </div>
+                )}
+            >
+                <div className="space-y-3 text-sm text-slate-600 leading-relaxed">
+                    <div className="rounded-2xl bg-emerald-50 border border-emerald-100 p-4">
+                        <p className="font-bold text-emerald-800 mb-2">按下确认后：</p>
+                        <ul className="space-y-1.5 text-xs text-emerald-900/80 list-disc pl-4">
+                            <li>当前可处理的聊天内容会全部完成记忆整理。</li>
+                            <li>{retainRecentForVectorize ? '最近 10 条原文继续注入聊天上下文。' : '已处理原文不再直接注入聊天上下文。'}</li>
+                            <li>紫色水位线与橙色原文范围会同步，待处理统计从新水位重新开始。</li>
+                            <li className="font-bold text-red-600">该功能非常规使用功能，全自动模式下记忆宫殿会自己处理，如您确认确实需要使用该功能，请点击“确认开始”</li>
+                        </ul>
+                    </div>
+                    <p className="text-[11px] text-slate-400">处理期间请保持应用打开，不要清空聊天。任何一批失败都不会移动水位线，可安全重试。</p>
+                </div>
+            </Modal>
 
-                     {/* 时间感知 / 自定义时区 / 线下时间感知 已统一迁移至「神经链接」角色设定页 */}
-
-                     <div className="pt-2 border-t border-slate-100">
-                         <button onClick={() => setModalType('history-manager')} className="w-full py-3 bg-slate-50 text-slate-600 font-bold rounded-2xl border border-slate-200 active:scale-95 transition-transform flex items-center justify-center gap-2">
-                             查看原文范围 / 设置用户断点
-                         </button>
-                         <p className="text-[10px] text-slate-400 mt-2 text-center">查看拉杆上限、记忆水位线，并可在最大范围内进一步缩小 AI 原文范围。</p>
-                     </div>
-                     
-                     {/* 记忆宫殿：一键向量化所有聊天记录 */}
-                     {isMemoryPalaceEnabled && onForceVectorize && (
-                         <div className="pt-2 border-t border-slate-100">
-                             <button
-                                 onClick={onForceVectorize}
-                                 disabled={isVectorizing}
-                                 className="w-full py-3 bg-emerald-50 text-emerald-600 font-bold rounded-2xl border border-emerald-200 active:scale-95 transition-transform flex items-center justify-center gap-2 disabled:opacity-70"
-                             >
-                                 {isVectorizing
-                                     ? `🏰 ${vectorizeProgress || '存进记忆宫殿中...'}`
-                                     : (vectorizePendingCount != null && vectorizePendingCount > 0)
-                                         ? `🏰 一键存进记忆宫殿 · 待处理 ${vectorizePendingCount} 条`
-                                         : (vectorizePendingCount === 0)
-                                             ? '🏰 记忆宫殿已同步 · 无待处理'
-                                             : '🏰 一键把所有聊天存进记忆宫殿'}
-                             </button>
-                             <p className="text-[10px] text-slate-400 mt-2 text-center leading-relaxed">
-                                 {isVectorizing
-                                     ? '正在分批交给副 API 处理，保持应用打开、先别切走～完成前请勿清空聊天。'
-                                     : <>将所有未处理的聊天记录交给记忆宫殿处理，完成后可安全清空聊天。<br/><span className="text-slate-300">看不懂这是什么的话不需要操作此按钮。</span></>}
-                             </p>
-                         </div>
-                     )}
-
-                     <div className="pt-2 border-t border-slate-100">
-                         <label className="text-xs font-bold text-red-400 uppercase mb-3 block">危险区域 (Danger Zone)</label>
-                         {onOpenHistoryCleanup && <div className="mb-4">
-                             <button type="button" onClick={onOpenHistoryCleanup} className="w-full rounded-2xl border border-red-100 bg-red-50 py-3 text-sm font-bold text-red-600">清理指定范围 / 保留最近 N 条</button>
-                             <p className="mt-2 text-center text-[10px] text-slate-400">按页选择记录，永久删除前需要两次确认。</p>
-                         </div>}
-                     </div>
+            <Modal
+                isOpen={modalType === 'memory-vectorize-result'}
+                title="记忆处理完成"
+                onClose={() => { setModalType('none'); }}
+                footer={<button type="button" onClick={() => setModalType('none')} className="w-full py-3 rounded-2xl bg-emerald-500 text-white font-bold">知道了</button>}
+            >
+                <div className="space-y-3">
+                    <div className="rounded-2xl bg-emerald-50 border border-emerald-100 p-4 text-center">
+                        <div className="text-2xl mb-1">✓</div>
+                        <p className="text-sm font-bold text-emerald-800">当前聊天的记忆处理边界已同步</p>
+                        <p className="text-[11px] text-emerald-700/70 mt-1">
+                            处理 {vectorizeResult?.processedMessages || 0} 条内容 · 新增 {vectorizeResult?.storedMemories || 0} 条长期记忆
+                        </p>
+                    </div>
+                    <div className="rounded-2xl border border-slate-200 bg-white p-3.5 text-xs text-slate-600 leading-relaxed">
+                        {(vectorizeResult?.retainedMessages || 0) > 0
+                            ? <>最近 <b>{vectorizeResult?.retainedMessages}</b> 条原文会继续注入聊天上下文；更早的已处理原文不再重复注入。</>
+                            : <>已处理原文不会再直接注入聊天上下文，更早内容改由记忆宫殿按需召回。</>}
+                    </div>
+                    <p className="text-[11px] text-slate-400 text-center">向量化待处理统计已经从新的水位线重新开始。</p>
+                    {vectorizeResult?.waterlineAlreadyAhead && (
+                        <p className="text-[10px] text-amber-700 bg-amber-50 border border-amber-100 rounded-xl p-2.5 leading-relaxed">
+                            最近 10 条此前已经处理过。为避免重复向量化，水位线没有回退，但这 10 条原文仍已按你的选择保留在上下文中。
+                        </p>
+                    )}
                 </div>
             </Modal>
 
             {/* Archive Settings Modal */}
+            <Modal isOpen={modalType === 'archive-legacy-warning'} title="旧版记忆归档" onClose={() => setModalType('none')} footer={
+                <div className="flex w-full flex-col gap-2">
+                    <button type="button" onClick={() => setModalType('none')} className="w-full py-3 bg-primary text-white font-bold rounded-2xl">确定</button>
+                    <button type="button" onClick={() => setModalType('archive-settings')} className="w-full px-3 py-3 bg-slate-100 text-slate-600 font-bold rounded-2xl">我有必须使用的原因</button>
+                </div>
+            }>
+                <p className="text-sm leading-relaxed text-slate-600">您已启用记忆宫殿，该功能为旧版记忆系统，无需使用。</p>
+            </Modal>
+
             <Modal isOpen={modalType === 'archive-settings'} title="记忆归档设置" onClose={() => { if (!isSummarizing) setModalType('none'); }} footer={
                 isSummarizing ?
                 <div className="w-full py-3 bg-slate-100 text-indigo-600 font-bold rounded-2xl text-center flex items-center justify-center gap-2"><div className="w-4 h-4 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin"></div>{archiveProgress || '归档中...'}</div> :
@@ -847,7 +1005,7 @@ const ChatModals: React.FC<ChatModalsProps> = ({
                 footer={<><button onClick={() => onSetHistoryStart(undefined)} className="flex-1 py-3 bg-slate-100 text-slate-600 font-bold rounded-2xl">清除用户断点</button><button onClick={() => { setModalType('none'); setHistoryPage(0); setHistorySearch(''); }} className="flex-1 py-3 bg-primary text-white font-bold rounded-2xl">完成</button></>}
             >
                 <div className="space-y-2 max-h-[50vh] overflow-y-auto no-scrollbar p-1">
-                    <p className="text-xs text-slate-400 text-center mb-2"><b>短按</b>消息 = 设置用户断点（只能缩小范围） · <b>长按</b>消息 = 跳转查看原文</p>
+                    <p className="text-xs text-slate-400 text-center mb-2"><b>短按</b>记录 = 设置用户断点（只能缩小范围） · <b>长按</b>普通消息 = 跳转查看原文。秘密小纸条在此查看，每张占一条上下文。</p>
                     <div className="grid gap-2 mb-2">
                         <div className="bg-violet-50 border border-violet-200 rounded-xl p-2.5 text-[11px] text-violet-800 leading-relaxed">
                             <b>紫色 · 记忆宫殿水位线</b>：此前消息已经处理，不会因调整上下文再次向量化。
@@ -939,8 +1097,8 @@ const ChatModals: React.FC<ChatModalsProps> = ({
                                     >
                                         <span className="text-slate-400 font-mono whitespace-nowrap pt-0.5">[{new Date(m.timestamp).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}]</span>
                                         <div className="flex-1 min-w-0">
-                                            <div className="font-bold text-slate-600 mb-0.5">{m.role === 'user' ? '我' : activeCharacter.name}</div>
-                                            <div className="truncate">{renderHighlighted(m.content || '', query, contentClass)}</div>
+                                            <div className="font-bold text-slate-600 mb-0.5">{m.type === 'secret_note' ? `${activeCharacter.name} · ${m.metadata?.source === 'home' ? '3D 小屋' : '聊天'}` : m.role === 'user' ? '我' : activeCharacter.name}</div>
+                                            {m.type === 'secret_note' ? <SecretNote text={m.content}/> : <div className="truncate">{renderHighlighted(m.content || '', query, contentClass)}</div>}
                                         </div>
                                         <div className="flex flex-wrap justify-end gap-1 max-w-[42%]">
                                             {isWatermark && <span className="text-violet-600 font-bold text-[9px] bg-white px-1.5 rounded-full border border-violet-200">水位线</span>}
@@ -963,7 +1121,7 @@ const ChatModals: React.FC<ChatModalsProps> = ({
             </Modal>
 
             <Modal isOpen={modalType === 'message-options'} title="消息操作" onClose={() => setModalType('none')}>
-                <div className="space-y-3">
+                <div className="space-y-3">{compactHome?<button className="w-full py-3 rounded-2xl bg-amber-50 text-amber-800" onClick={()=>{onToggleMessageFavorite?.();setModalType('none');}}>{messageFavorited?'取消收藏':'收藏这条消息'}</button>:<>
                     <button onClick={onEnterSelectionMode} className="w-full py-3 bg-slate-50 text-slate-700 font-medium rounded-2xl active:bg-slate-100 transition-colors flex items-center justify-center gap-2">
                         多选 / 批量删除
                     </button>
@@ -995,7 +1153,7 @@ const ChatModals: React.FC<ChatModalsProps> = ({
                     <button onClick={onDeleteMessage} className="w-full py-3 bg-red-50 text-red-500 font-medium rounded-2xl active:bg-red-100 transition-colors flex items-center justify-center gap-2">
                         删除消息
                     </button>
-                </div>
+                </>}</div>
             </Modal>
             
              <Modal
@@ -1075,6 +1233,10 @@ const ChatModals: React.FC<ChatModalsProps> = ({
                 </div>
             </Modal>
 
+            <Modal isOpen={modalType === 'rename-category'} title="重命名分类" onClose={() => setModalType('none')}
+                footer={<button onClick={onRenameCategory} className="w-full py-3 bg-primary text-white rounded-2xl">保存</button>}>
+                <input value={newCategoryName} onChange={e => setNewCategoryName(e.target.value)} placeholder="输入分类名称" autoFocus className="w-full p-3 bg-slate-50 rounded-xl" />
+            </Modal>
             {/* Category Options Modal (shown on long-press) */}
             <Modal isOpen={modalType === 'category-options'} title="分类操作" onClose={() => setModalType('none')}>
                 <div className="space-y-3">
@@ -1097,6 +1259,8 @@ const ChatModals: React.FC<ChatModalsProps> = ({
                             <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-all ${selectedCategory?.roleUsable === false ? 'left-0.5' : 'left-[22px]'}`} />
                         </button>
                     </div>
+                    <button onClick={onDownloadCategory} className="w-full py-3 bg-slate-50 text-slate-700 rounded-2xl">下载分类全部原图</button>
+                    {selectedCategory && !selectedCategory.isSystem && selectedCategory.id !== 'default' && <button onClick={() => { setNewCategoryName(selectedCategory.name); setModalType('rename-category'); }} className="w-full py-3 bg-slate-50 text-slate-700 rounded-2xl">重命名分类</button>}
                     <button onClick={openVisibilityModal} className="w-full py-3 bg-slate-50 text-slate-700 font-medium rounded-2xl active:bg-slate-100 transition-colors flex items-center justify-center gap-2">
                         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5">
                             <path strokeLinecap="round" strokeLinejoin="round" d="M2.036 12.322a1.012 1.012 0 0 1 0-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178Z" />

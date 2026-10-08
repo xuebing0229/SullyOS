@@ -9,6 +9,7 @@
 export function stripEmotionReasoningMarkup(text: string): string {
     if (typeof text !== 'string' || !text) return text;
     return text
+        .replace(/((?:<|＜)\s*(?:\/|／)?\s*(?:think|thinking|thought|reasoning|analysis)\b[^>＞]*(?:>|＞))[ \t]+(?=(?:<|＜)\s*(?:\/|／)?\s*(?:think|thinking|thought|reasoning|analysis)\b)/giu, '$1')
         .replace(/(?:<|＜)\s*(?:\/|／)?\s*(?:think|thinking|thought|reasoning|analysis)\b[^>＞]*(?:>|＞)/giu, '')
         .replace(/[ \t]{2,}/g, ' ')
         .replace(/[ \t]+\n/g, '\n')

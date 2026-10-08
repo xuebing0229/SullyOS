@@ -237,6 +237,11 @@ describe('彼方房间选择运行器入口', () => {
         const char = { vrState: { enabled: true, intervalMinutes: 120, autonomousRoomMode: 'selected', autonomousRoomIds: ['library'] } } as any;
         expect(rollRoom(char, [], null, 'postoffice')).toBe('postoffice');
     });
+
+    it('SAR 活动空间可以手动选择，也进入角色自主活动随机池', () => {
+        expect(rollRoom({} as any, [], null, 'sar')).toBe('sar');
+        expect(rollRoom({} as any, [], null, undefined, () => 0.999)).toBe('sar');
+    });
 });
 
 describe('彼方图书馆自动选书', () => {

@@ -14,7 +14,7 @@
 import React from 'react';
 import { loadInstantConfig } from '../utils/instantPushClient';
 import { getLocalDateKey } from '../utils/localDate';
-import { trackEvent } from '../utils/analytics';
+
 
 /** Instant Push 停止维护的日子。文案里所有出现的日期都从这里来，别各写各的。 */
 export const INSTANT_PUSH_SUNSET_DATE = '2026-08-27';
@@ -53,7 +53,7 @@ interface InstantPushSunsetPopupProps {
 
 export const InstantPushSunsetPopup: React.FC<InstantPushSunsetPopupProps> = ({ onClose }) => {
   React.useEffect(() => {
-    trackEvent('弹出 Instant Push 下线通知');
+    
   }, []);
 
   const dismiss = () => {
@@ -62,7 +62,7 @@ export const InstantPushSunsetPopup: React.FC<InstantPushSunsetPopupProps> = ({ 
   };
 
   const handleOpenGuide = () => {
-    trackEvent('打开 Instant Push 迁移教程');
+    
     window.open(INSTANT_PUSH_MIGRATION_GUIDE_URL, '_blank', 'noopener,noreferrer');
     dismiss();
   };

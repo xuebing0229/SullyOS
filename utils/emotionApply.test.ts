@@ -18,6 +18,7 @@ const saveCharacter = vi.fn(async (_char: any) => {});
 const getAllCharacters = vi.fn(async () => [] as any[]);
 vi.mock('./db', () => ({ DB: {
     saveCharacter: (c: any) => saveCharacter(c),
+    saveCharacterEmotion: async (id: string, activeBuffs: any, buffInjection: string) => saveCharacter({...((await getAllCharacters()).find(c=>c.id===id)||{}),id,activeBuffs,buffInjection}),
     getAllCharacters: () => getAllCharacters(),
 } }));
 
@@ -482,3 +483,5 @@ describe('applyEmotionEvalRaw — 失败可见性 (chat-gen-emotion-failed)', ()
         }
     });
 });
+
+it('preserves validated home behavior from the same emotion evaluation and assigns a local timestamp',async()=>{await applyEmotionEvalRaw(JSON.stringify({...VALID,buffs:[{...VALID.buffs[0],homeBehavior:{energy:-.4,approach:.5,interaction:-.5},homeBehaviorAt:1}]}),makeChar());const buff=saveCharacter.mock.calls.at(-1)![0].activeBuffs[0];expect(buff.homeBehavior).toEqual({energy:-.4,approach:.5,interaction:-.5});expect(buff.homeBehaviorAt).toBeGreaterThan(1);});

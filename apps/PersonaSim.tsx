@@ -9,7 +9,7 @@ import { injectMemoryPalace } from '../utils/memoryPalace/pipeline';
 import { isScheduleFeatureOn } from '../utils/scheduleGenerator';
 import { safeResponseJson } from '../utils/safeApi';
 import { parsePersonaScriptApiResponse } from '../utils/personaSimParser';
-import { trackEvent } from '../utils/analytics';
+
 import { useBlobRefUrl } from '../utils/blobRef';
 import {
     CaretLeft, Play, Pause, FastForward, Lock, MagnifyingGlass, MusicNotes,
@@ -87,9 +87,11 @@ export async function generatePersonaScript(opts: {
     mode: 'daily' | 'event'; theme: string; userPresence?: 'default' | 'light' | 'none';
     tone?: 'mix' | 'depressive' | 'darkhumor' | 'cute';
 }): Promise<SimScript> {
+
     const { char, userProfile, apiConfig, mode, theme, userPresence = 'default', tone = 'mix' } = opts;
     await injectMemoryPalace(char, undefined, theme, userProfile.name);
-    const context = ContextBuilder.buildCoreContext(char, userProfile, true, char.memoryPalaceInjection);
+    const characterContextInput = { char, user: userProfile, includeDetailedMemories: true, memoryPalaceContext: char.memoryPalaceInjection };
+
     const msgs = await loadCharacterContextMessages(char);
     // 跟随用户为该角色设置的最大上下文（没设则默认 500）——避免「吵完架来看 if 线，结果 char 不记得吵什么」
     const ctxLimit = Math.max(1, msgs.length);
@@ -100,11 +102,11 @@ export async function generatePersonaScript(opts: {
     }).join('\n');
     const firstTs = msgs.find(m => typeof m.timestamp === 'number')?.timestamp;
     const acquaintance = describeAcquaintance(firstTs, userProfile.name, char.name);
-    const prompt = buildDirectorPrompt(context, recent, mode, theme, char.name, acquaintance, userProfile.name, userPresence, tone);
+    const prompt = buildDirectorPrompt('', recent, mode, theme, char.name, acquaintance, userProfile.name, userPresence, tone);
     const res = await fetch(`${apiConfig.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiConfig.apiKey}` },
-        body: JSON.stringify({ model: apiConfig.model, messages: [{ role: 'user', content: prompt }], temperature: 0.98, max_tokens: 24000 }),
+        body: JSON.stringify({ model: apiConfig.model, messages: (await ContextBuilder.buildCharacterRequest(characterContextInput, [{ role: 'user', content: prompt }])), temperature: 0.98, max_tokens: 24000 }),
     });
     if (!res.ok) throw new Error('API');
     const data = await safeResponseJson(res);
@@ -305,7 +307,7 @@ const PersonaSim: React.FC<Props> = ({ targetChar, onExit, openLifeLog, sim, onS
         return (
             <Shell wallpaper={wallpaper}>
                 <TopBar onBack={onExit} right={
-                    <button onClick={() => { openLifeLog(); trackEvent('打开生活记录'); }} className="flex items-center gap-1 text-[11px] text-white/60 active:scale-95 transition">
+                    <button onClick={() => { openLifeLog();  }} className="flex items-center gap-1 text-[11px] text-white/60 active:scale-95 transition">
                         <ClockCounterClockwise size={15} /> 生活记录
                     </button>
                 } />
@@ -339,7 +341,7 @@ const PersonaSim: React.FC<Props> = ({ targetChar, onExit, openLifeLog, sim, onS
                     {/* mode tabs */}
                     <div className="flex gap-2 mb-4 p-1 rounded-2xl bg-white/[0.04] border border-white/[0.06]">
                         {(['daily', 'event'] as const).map(m => (
-                            <button key={m} onClick={() => { setMode(m); trackEvent('切换人格模拟类型', { mode: m }); }}
+                            <button key={m} onClick={() => { setMode(m);  }}
                                 className="flex-1 py-2.5 rounded-xl text-[12px] font-semibold transition"
                                 style={mode === m ? { background: ACCENT, color: '#1a1530' } : { color: 'rgba(255,255,255,0.5)' }}>
                                 {m === 'daily' ? '日常模拟' : '事件模拟'}
@@ -360,7 +362,7 @@ const PersonaSim: React.FC<Props> = ({ targetChar, onExit, openLifeLog, sim, onS
                         ] as const).map(o => {
                             const active = presence === o.id;
                             return (
-                                <button key={o.id} onClick={() => { setPresence(o.id); trackEvent('选择你的存在感', { presence: o.id }); }}
+                                <button key={o.id} onClick={() => { setPresence(o.id);  }}
                                     className="rounded-2xl py-2.5 border transition active:scale-[0.98] text-center"
                                     style={active
                                         ? { background: ACCENT, color: '#1a1530', borderColor: 'transparent' }
@@ -383,7 +385,7 @@ const PersonaSim: React.FC<Props> = ({ targetChar, onExit, openLifeLog, sim, onS
                         ] as const).map(o => {
                             const active = tone === o.id;
                             return (
-                                <button key={o.id} onClick={() => { setTone(o.id); trackEvent('选择演出基调', { tone: o.id }); }}
+                                <button key={o.id} onClick={() => { setTone(o.id);  }}
                                     className="rounded-2xl py-2.5 border transition active:scale-[0.98] text-center"
                                     style={active
                                         ? { background: ACCENT, color: '#1a1530', borderColor: 'transparent' }
@@ -546,7 +548,7 @@ const PersonaSim: React.FC<Props> = ({ targetChar, onExit, openLifeLog, sim, onS
                 <div className="flex items-center justify-between">
                     <button onClick={(e) => { e.stopPropagation(); onExit(); }} className="text-[11px] text-white/35">退出</button>
                     <span className="text-[10px] text-white/30">轻触继续 · 长按快进</span>
-                    <button onClick={(e) => { e.stopPropagation(); setAutoplay(a => !a); trackEvent('切换演出自动播放'); }}
+                    <button onClick={(e) => { e.stopPropagation(); setAutoplay(a => !a);  }}
                         className="w-9 h-9 rounded-full flex items-center justify-center border border-white/[0.1] text-white/70 active:scale-90 transition"
                         style={autoplay ? { background: ACCENT, color: '#1a1530', borderColor: 'transparent' } : undefined}>
                         {autoplay ? <Pause size={16} weight="fill" /> : <Play size={16} weight="fill" />}

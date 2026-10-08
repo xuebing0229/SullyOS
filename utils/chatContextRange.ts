@@ -85,7 +85,7 @@ export const migrateCharacterContextRange = (
     return { character: next, migrated: true, resetAutoContext };
 };
 
-const chronologicalPrivateMessages = (messages: Message[]): Message[] =>
+const chronologicalPrivateMessages = <T extends Pick<Message, 'id' | 'groupId'>>(messages: T[]): T[] =>
     messages
         .filter(message => !message.groupId)
         .slice()
@@ -97,11 +97,11 @@ const chronologicalPrivateMessages = (messages: Message[]): Message[] =>
  * - 用户断点只能 >= 最大范围起点；
  * - 最终起点永远取两者中更大的 id，绝不会越过最大范围向旧消息扩张。
  */
-export const computeContextRangeSnapshot = (
-    sourceMessages: Message[],
+const computeContextRangeFromRefs = <T extends Pick<Message, 'id' | 'groupId'>>(
+    sourceMessages: T[],
     char: CharacterProfile,
     hwm: number,
-): ContextRangeSnapshot => {
+): Omit<ContextRangeSnapshot, 'messages'> & { messages: T[] } => {
     const allMessages = chronologicalPrivateMessages(sourceMessages);
     const mode = resolveContextRangeMode(char);
     const maxRangeMessages = mode === 'adaptive'
@@ -139,6 +139,15 @@ export const computeContextRangeSnapshot = (
     };
 };
 
+export const computeContextRangeSnapshot = (
+    sourceMessages: Message[], char: CharacterProfile, hwm: number,
+): ContextRangeSnapshot => {
+    const snapshot = computeContextRangeFromRefs(sourceMessages, char, hwm);
+    // Boundary-only references have no timestamp. Sort actual dialogue after ID filtering.
+    snapshot.messages.sort((a, b) => a.timestamp - b.timestamp || a.id - b.id);
+    return snapshot;
+};
+
 /**
  * AI 上下文读取：
  * - adaptive 读取水位线后的完整原文（全自动记忆或一键存入后的水位跟随）；
@@ -147,7 +156,12 @@ export const computeContextRangeSnapshot = (
  */
 export const loadCharacterContextRange = async (
     char: CharacterProfile,
+    onTiming?: (stage: string, ms: number) => void,
 ): Promise<ContextRangeSnapshot> => {
+    let started = performance.now();
+    await DB.ensureHomeContextMessages(char.id);
+    onTiming?.("家园历史同步检查", Math.round(performance.now()-started));
+    started = performance.now();
     const hwm = getMemoryPalaceHighWaterMarkForContext(char.id);
     const mode = resolveContextRangeMode(char);
     const sourceMessages = mode === 'adaptive'
@@ -157,7 +171,11 @@ export const loadCharacterContextRange = async (
             clampManualContextLimit(char.contextLimit),
             true,
         );
-    return computeContextRangeSnapshot(sourceMessages, char, hwm);
+    onTiming?.('读取范围内原文', Math.round(performance.now()-started));
+    started = performance.now();
+    const snapshot = computeContextRangeSnapshot(sourceMessages, char, hwm);
+    onTiming?.('计算上下文边界', Math.round(performance.now()-started));
+    return snapshot;
 };
 
 export const countMessagesFrom = (messages: Message[], messageId: number): number =>
@@ -172,8 +190,23 @@ export const loadCharacterContextMessages = async (
     return (await loadCharacterContextRange(char)).messages;
 };
 
+/** 浏览界面只判断可见性，不加载聊天正文；沿用同一断点失效与范围规则。 */
+export const loadCharacterContextMessageIds = async (char: CharacterProfile, candidates: Pick<Message, 'id'>[]): Promise<Set<number>> => {
+    const hwm = getMemoryPalaceHighWaterMarkForContext(char.id);
+    if (resolveContextRangeMode(char) === 'adaptive') {
+        // 自适应没有条数窗口：只验证断点是否仍是该角色水位线后的私聊消息。
+        // 不为几十条动态扫描几万条原文。
+        const requested = positiveMessageId(char.contextUserStartMessageId);
+        const breakpoint = requested && requested > hwm ? await DB.getMessageById(requested) : null;
+        const start = breakpoint && breakpoint.charId === char.id && !breakpoint.groupId ? breakpoint.id : hwm + 1;
+        return new Set(candidates.filter(message => message.id >= start).map(message => message.id));
+    }
+    const refs = await DB.getPrivateMessageRefs(char.id, clampManualContextLimit(char.contextLimit));
+    return new Set(computeContextRangeFromRefs(refs, char, hwm).messages.map(message => message.id));
+};
+
 /** 已有消息快照的入口也遵守同一边界，不能用残留的手动条数截断自适应范围。 */
-export const selectCharacterContextMessages = (messages: Message[], char: CharacterProfile): Message[] =>
+export const selectCharacterContextMessages = (messages: Message[], char: CharacterProfile, hwm = getMemoryPalaceHighWaterMarkForContext(char.id)): Message[] =>
     computeContextRangeSnapshot(messages, (char.contextRangePolicyVersion || 0) >= 1 ? char : {
         ...char, contextUserStartMessageId: char.contextUserStartMessageId ?? char.hideBeforeMessageId,
-    }, getMemoryPalaceHighWaterMarkForContext(char.id)).messages;
+    }, hwm).messages;

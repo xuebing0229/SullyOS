@@ -244,30 +244,15 @@ export function trackEvent(
  */
 const reportedScales = new Set<string>();
 
-/** 四组快照事件的槽位名。顺序无所谓，只是给下面那个随机数一个可枚举的集合。 */
-const SNAPSHOT_SLOTS = ['data-scale', 'appearance', 'char-settings', 'features'] as const;
-
-/** 快照槽位。四组各自对应一条事件。 */
+/** 每次冷启动只选一组，新增 SAR 槽位也参与同一次选择。 */
+const SNAPSHOT_SLOTS = ['data-scale', 'appearance', 'char-settings', 'features', 'sar'] as const;
 export type SnapshotSlot = (typeof SNAPSHOT_SLOTS)[number];
 
 /**
- * 本次页面加载轮到报哪一组快照——四组里随机挑一组，另外三组这次直接不报。
- *
- * 为什么要轮：这四条事件本身次数不多（一次冷启动各一条），但它们是全仓库唯一带几十个
- * 属性的事件——外观 36 个、角色设置 36 个、功能启用 33 个、数据规模最多 8 个。umami 把
- * 每个属性存成 event_data 的一行，所以一次冷启动就是 113 行。乘上所有人的启动次数，
- * 这四条占了 event_data 九成的体积，其余五百多个事件加起来不到一成。四组轮流报之后，
- * 一次冷启动平均 28 行，同样的问题照样答得出来，账少了四分之三。
- *
- * 为什么用随机数而不是「记住上次报的是哪组」：轮转状态一旦要跨页面加载保留，就得往用户
- * 设备上写东西，那是文件头第 3 条明令禁止的——统计不给自己记账。随机数不留痕，样本量
- * 一大，四组的分布自然就均了。
- *
- * 对查询侧的影响：每组的样本量降到原来的四分之一，算「多少人开了 X」这类比例完全够用。
- * 会变差的是跨事件关联——以前四条事件在同一次冷启动里发出，现在一次只有一条，
- * 「开了 MCP 的人数据规模多大」这种交叉问题得靠同一个 session 里的多次冷启动凑齐，
- * 覆盖率不如从前。真要做这类分析就单独想办法，别把四条又合回去：合回去只是让事件数
- * 从四条变一条，属性还是那 113 个，event_data 一行都不会少。
+ * 五组快照随机选一组：数据规模最多 8、外观 36、角色设置 36、功能 33、SAR 10 个属性。
+ * 每次平均约 24 行，避免加宽已有功能事件；未选中的组也不读取数据。
+ * 轮转与上报标记只留在内存，不在用户设备保存统计账本。样本量足够时各组均匀出现；
+ * 跨组关联仍需要同一 session 多次冷启动，不把多组重新合成一条事件。
  */
 const activeSnapshotSlot: SnapshotSlot =
   SNAPSHOT_SLOTS[Math.floor(Math.random() * SNAPSHOT_SLOTS.length)];
@@ -473,6 +458,14 @@ export function trackCurrentFeaturesOnce(params: Record<string, string>): void {
   if (reportedScales.has('features')) return;
   reportedScales.add('features');
   trackEvent('当前功能启用', params);
+}
+
+/** SAR / 私聊输入 / 周年赠礼，与其他快照互斥，每会话最多一次。 */
+export function trackCurrentSARFeaturesOnce(params: Record<string, string>): void {
+  if (!shouldReportSnapshot('sar')) return;
+  if (reportedScales.has('sar')) return;
+  reportedScales.add('sar');
+  trackEvent('当前SAR与聊天输入', params);
 }
 
 // ===== 本次会话聊了多少 =====

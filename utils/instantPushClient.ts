@@ -911,6 +911,7 @@ export async function sendInstantPushAndAwaitReply(
   charId: string,
   timeoutMs: number = DEFAULT_INSTANT_TIMEOUT_MS,
   onPosted?: () => void,
+  signal?: AbortSignal,
 ): Promise<InstantAwaitResult> {
   // Phase 2 Round 1: 预分配 sessionId, 把 outbound session (messages + apiCredentials) 写到
   // IndexedDB 后传给 worker. amsg-instant 0.6.x 忽略该字段, 0.8+ 用作 agentic-loop /continue
@@ -996,6 +997,10 @@ export async function sendInstantPushAndAwaitReply(
   const sendStartedAt = Date.now();
   const abortCtrl = new AbortController();
   const cleanups: Array<() => void> = [];
+  const abortOnSignal = () => abortCtrl.abort(signal?.reason);
+  if (signal?.aborted) abortOnSignal();
+  signal?.addEventListener('abort', abortOnSignal, { once: true });
+  cleanups.push(() => signal?.removeEventListener('abort', abortOnSignal));
 
   // observed signal: SW broadcast → resolve 一个带 sessionId 的 receipt。identity 优先用 sessionId 严格匹配,
   // 杜绝同 char 多轮并发 / 上一轮延迟到达的旧 push 把新一轮 send 误判成 delivered。老 inbox 残留消息可能不带

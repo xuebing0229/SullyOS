@@ -1,4 +1,9 @@
+import ApiPresetGroups from '../components/settings/ApiPresetGroups';
+import DialogueApiFields from '../components/settings/DialogueApiFields';
+import ModelPicker from '../components/settings/ModelPicker';
+import { buildModelPickerView } from '../utils/modelPickerView';
 
+import { useFirstUseGuideStep } from '../utils/firstUseGuide';
 import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import SensitiveTextInput from '../components/SensitiveTextInput';
 import { useOS } from '../context/OSContext';
@@ -6,8 +11,10 @@ import { Capacitor } from '@capacitor/core';
 import { extractContent, safeResponseJson } from '../utils/safeApi';
 import { extractModelIds, normalizeModelIds } from '../utils/modelList';
 import { shareOrDownloadBlob } from '../utils/shareExport';
-import { bucketRetryCount, isAnalyticsConfigured, isAnalyticsEnabled, setAnalyticsEnabled, trackEvent } from '../utils/analytics';
+import { bucketRetryCount, isAnalyticsConfigured, isAnalyticsEnabled, setAnalyticsEnabled } from '../utils/analytics';
 import Modal from '../components/os/Modal';
+import UserHolidaySettings from '../components/settings/UserHolidaySettings';
+import { consumeHolidaySettings, hasHolidaySettingsRequest, type UserHolidayConfig } from '../utils/userHolidays';
 import { NotionManager, FeishuManager, RealtimeContextManager, fetchOwmWeather, fetchOpenMeteoWeather } from '../utils/realtimeContext';
 import { XhsMcpClient } from '../utils/xhsMcpClient';
 import { resolveXhsDeploymentMode } from '../utils/xhsMcpConfig';
@@ -31,6 +38,7 @@ import { ProactiveChat } from '../utils/proactiveChat';
 import { InstantPushSettingsModal } from '../components/settings/InstantPushSettingsModal';
 import ActiveMsgGlobalSettingsModal from '../components/settings/ActiveMsgGlobalSettingsModal';
 import { PushVapidSettingsModal } from '../components/settings/PushVapidSettingsModal';
+import AmsgCloudDataModal from '../components/settings/AmsgCloudDataModal';
 import PushSubscriptionPanel from '../components/settings/PushSubscriptionPanel';
 import { syncAmsgLlmCredentials, syncAmsgToolConfig, syncAmsgToolConfigAndPrompts } from '../utils/amsgStateSync';
 import { ActiveMsgClient } from '../utils/activeMsgClient';
@@ -56,6 +64,7 @@ import {
 } from '../utils/apiPresetModels';
 import ImageGenerationSettings from '../components/settings/ImageGenerationSettings';
 import OrphanImageCleanupCard from '../components/settings/OrphanImageCleanupCard';
+import WebCacheControl from '../components/settings/WebCacheControl';
 import McpConnectionConsole from '../components/settings/McpConnectionConsole';
 import { DB } from '../utils/db';
 import { getBackupReminderState, setBackupReminderIntervalDays, daysSinceLastBackup, BACKUP_REMINDER_MIN_DAYS, BACKUP_REMINDER_MAX_DAYS } from '../utils/backupReminder';
@@ -67,7 +76,8 @@ import {
     type AvatarModelBackupProgress,
 } from '../utils/avatarModelBackup';
 import { normalizeApiBaseUrl, normalizeApiCredential, normalizeApiModel } from '../utils/apiConfigNormalize';
-import { describeImageWithVisionApi, VISION_API_TEST_IMAGE_DATA_URL } from '../utils/visionApi';
+import { describeImageWithVisionApi, VISION_API_TEST_IMAGE_DATA_URL, visionApiConfigFromPreset } from '../utils/visionApi';
+import { presetDiffersFromConfig } from '../utils/apiPresetSwitch';
 import {
     FIRECRAWL_API_KEYS_URL,
     getFirecrawlApiKey,
@@ -116,27 +126,6 @@ const readStoredVisionModels = (): string[] => {
     }
 };
 
-const buildModelPickerView = (models: unknown[], filter: string) => {
-    const q = filter.trim().toLowerCase();
-    const safeModels = normalizeModelIds(models);
-    const filtered = q ? safeModels.filter(model => model.toLowerCase().includes(q)) : safeModels;
-    let commonPrefix = '';
-    if (filtered.length >= 2) {
-        let prefix = filtered[0];
-        for (let index = 1; index < filtered.length; index += 1) {
-            const candidate = filtered[index];
-            let cursor = 0;
-            while (cursor < prefix.length && cursor < candidate.length && prefix[cursor] === candidate[cursor]) cursor += 1;
-            prefix = prefix.slice(0, cursor);
-            if (!prefix) break;
-        }
-        const cut = Math.max(prefix.lastIndexOf('/'), prefix.lastIndexOf('-'));
-        if (cut > 3) prefix = prefix.slice(0, cut + 1);
-        if (prefix.length >= 4) commonPrefix = prefix;
-    }
-    return { filtered, commonPrefix };
-};
-
 const DiagRow: React.FC<{ label: string; value: string; bad?: boolean }> = ({ label, value, bad }) => (
     <div className="flex items-start justify-between gap-3">
         <span className="text-slate-500 shrink-0">{label}</span>
@@ -167,7 +156,14 @@ const SettingsSection: React.FC<{
     sectionProps?: Record<string, any>;
     children: React.ReactNode;
 }> = ({ icon, title, badge, actions, sectionProps, children }) => {
-    const [open, setOpen] = useState(false);
+    const guideStep = useFirstUseGuideStep();
+    const [open, setOpen] = useState(() => title === 'API 配置' && guideStep === 0);
+    useEffect(() => {
+        const reveal = () => { if (title === 'API 配置' && guideStep === 0) setOpen(true); };
+        reveal();
+        window.addEventListener('sully:guide-navigate', reveal);
+        return () => window.removeEventListener('sully:guide-navigate', reveal);
+    }, [guideStep, title]);
     return (
         <section {...sectionProps} className="bg-[#fffefe] rounded-3xl p-5 shadow-[0_8px_24px_rgba(15,23,42,0.05)] border border-slate-200/80">
             <div className={`flex items-center justify-between gap-2 ${open ? 'mb-4' : ''}`}>
@@ -265,7 +261,7 @@ const McpServersCard: React.FC<{
             setTestStatus(prev => ({ ...prev, [server.id]: r.ok ? `✅ ${r.message}` : `❌ ${r.message}` }));
             // 失败原因只上报归类后的固定枚举：原始报错里可能带服务器地址和返回内容，不能外发
             if (r.ok) {
-                trackEvent('测试 MCP 服务器连接', { result: r.tools?.length ? 'connected' : 'connected-no-tools' });
+                
             } else {
                 const msg = r.message || '';
                 const failureKind =
@@ -274,7 +270,7 @@ const McpServersCard: React.FC<{
                     : /请求失败/.test(msg) ? 'fetch-failed'
                     : /MCP HTTP/.test(msg) ? 'http-error'
                     : 'other';
-                trackEvent('测试 MCP 服务器连接', { result: 'failed', failureKind });
+                
             }
             if (r.ok && r.tools) {
                 update(server.id, { tools: r.tools });
@@ -314,7 +310,7 @@ const McpServersCard: React.FC<{
                         setUseNativeToolsState(next);
                         setMcpUseNativeTools(next);
                         onMcpConfigChanged?.();
-                        trackEvent('切换原生工具调用', { state: next ? 'on' : 'off' });
+                        
                     }} className="sr-only peer" />
                     <div className="w-11 h-6 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-violet-500"></div>
                 </label>
@@ -340,7 +336,7 @@ const McpServersCard: React.FC<{
                             <input type="checkbox" checked={server.enabled} onChange={e => {
                                 if (e.target.checked && !(server.tools?.length)) {
                                     addToast('先点「测试连接」拿到工具清单再启用', 'error');
-                                    trackEvent('启用未测通的 MCP 服务器被拦下');
+                                    
                                     return;
                                 }
                                 update(server.id, { enabled: e.target.checked });
@@ -483,7 +479,7 @@ const McpServersCard: React.FC<{
                 </div>
             ))}
             <p className="text-[10px] text-violet-700/60 leading-relaxed bg-violet-100/40 rounded-lg px-2 py-1.5">
-                开启 MCP 工具后，聊天会改用本地工具请求（跳过 Instant Push），本轮思考链会让位给工具调用；发布、下单、删除等操作仍会先征得你的确认。Token、自定义请求头与配置保存在本机；若配置了代理，请求会按你的设置经该代理转发。
+                开启 MCP 工具后，聊天会改用本地工具请求，本轮思考链会让位给工具调用；发布、下单、删除等操作仍会先征得你的确认。Token、自定义请求头与配置保存在本机；若配置了代理，请求会按你的设置经该代理转发。
             </p>
         </div>
     );
@@ -492,7 +488,7 @@ const McpServersCard: React.FC<{
 const Settings: React.FC = () => {
   const {
       apiConfig, updateApiConfig, closeApp, availableModels, setAvailableModels,
-      theme, updateTheme,
+      theme, updateTheme, resetAppearance,
       exportSystem, importSystem, addToast, showError, resetSystem, updateCharacter,
       apiPresets, activeApiPresetId, activateApiPreset, addApiPreset, updateApiPreset, removeApiPreset,
       sysOperation, // Get progress state
@@ -549,7 +545,6 @@ const Settings: React.FC = () => {
   const [showAceStepGuide, setShowAceStepGuide] = useState(false);
   const [otherStatusMsg, setOtherStatusMsg] = useState('');
   // 高级设置（流式/温度）默认折叠 — 大多数用户不需要碰
-  const [showApiAdvanced, setShowApiAdvanced] = useState(false);
   const [isLoadingModels, setIsLoadingModels] = useState(false);
   const [isLoadingVisionModels, setIsLoadingVisionModels] = useState(false);
   const [newPresetName, setNewPresetName] = useState('');
@@ -561,7 +556,12 @@ const Settings: React.FC = () => {
   const [selectedPresetName, setSelectedPresetName] = useState('');
   const [addingModelPresetId, setAddingModelPresetId] = useState<string | null>(null);
   const [addingModelDraft, setAddingModelDraft] = useState('');
+  const [newPresetGroup, setNewPresetGroup] = useState('');
+  const [editPresetGroup, setEditPresetGroup] = useState('');
+  // 就地编辑某条预设：只改预设本身；改的正好是当前生效那条时，生效配置一并跟着走
   const [editingPresetId, setEditingPresetId] = useState<string | null>(null);
+  // 保存前在用某条预设、保存后跟它对不上了：记下是哪条和刚存的配置，弹窗问要不要存回去
+  const [presetWriteback, setPresetWriteback] = useState<{ presetId: string; config: PresetSwitchPatch } | null>(null);
   const [editPresetName, setEditPresetName] = useState('');
   const [editPresetUrl, setEditPresetUrl] = useState('');
   const [editPresetKey, setEditPresetKey] = useState('');
@@ -573,14 +573,20 @@ const Settings: React.FC = () => {
   
   // UI States
   const [showModelModal, setShowModelModal] = useState(false);
-  const [modelFilter, setModelFilter] = useState('');
+  // 打开模型弹窗那一刻的模型名：点 × 关掉时退回它，只有「确定」/点选列表才算数。
+  const modelBeforePickerRef = useRef('');
   const [showVisionModelModal, setShowVisionModelModal] = useState(false);
   const [visionModelFilter, setVisionModelFilter] = useState('');
   const [showExportModal, setShowExportModal] = useState(false); // Used for completion now
   const [showResetConfirm, setShowResetConfirm] = useState(false);
+  const [resetting, setResetting] = useState(false);
+  /** 云端没清干净时停在这里：本地还一个字节都没动，等用户决定重试还是照样重置。 */
+  const [resetCloudFailure, setResetCloudFailure] = useState<{ workerUrl: string; detail: string } | null>(null);
   const [showPresetModal, setShowPresetModal] = useState(false);
   const [showApiCallLog, setShowApiCallLog] = useState(false);
-  const [showRealtimeModal, setShowRealtimeModal] = useState(false);
+  const [holidaySettingsFocus] = useState(hasHolidaySettingsRequest);
+  useEffect(() => { if (holidaySettingsFocus) consumeHolidaySettings(); }, [holidaySettingsFocus]);
+  const [showRealtimeModal, setShowRealtimeModal] = useState(holidaySettingsFocus);
   const [showMcpModal, setShowMcpModal] = useState(false);
   const [showMcpHelp, setShowMcpHelp] = useState(false);
   const [showCloudModal, setShowCloudModal] = useState(false);
@@ -603,6 +609,24 @@ const Settings: React.FC = () => {
     && ((theme.journalAppearance.preset || 'original') !== 'original'
       || theme.journalAppearance.customCss?.trim())
   );
+
+  const [confirmAppearanceReset, setConfirmAppearanceReset] = useState(false);
+  const [resettingAppearance, setResettingAppearance] = useState(false);
+  const handleAppearanceEmergencyReset = async () => {
+    setResettingAppearance(true);
+    try { await resetAppearance(); }
+    finally { setResettingAppearance(false); setConfirmAppearanceReset(false); }
+  };
+  // 一键还原全部「聊天白框自定义 CSS」：清掉全局 + 每个角色自带的。
+  // 兼作救援：单角色的坏 CSS 把聊天界面整崩、进不去该角色设置时，从这里一键全清即可恢复。
+  const resetAllChromeCss = () => {
+    let n = 0;
+    if (theme.chatChromeCustomCss) { updateTheme({ chatChromeCustomCss: '' }); n++; }
+    (characters || []).forEach((c: any) => {
+      if (c?.chromeCustomCss) { updateCharacter(c.id, { chromeCustomCss: '' } as any); n++; }
+    });
+    addToast(n ? `已还原 ${n} 处聊天白框美化` : '没有需要还原的白框美化', n ? 'success' : 'info');
+  };
 
   const handleJournalAppearanceEmergencyReset = async () => {
     await updateTheme({ journalAppearance: undefined });
@@ -671,6 +695,7 @@ const Settings: React.FC = () => {
 
   // 实时感知配置的本地状态
   const [rtWeatherEnabled, setRtWeatherEnabled] = useState(realtimeConfig.weatherEnabled);
+  const [rtUserHolidays, setRtUserHolidays] = useState<UserHolidayConfig>(() => ({ ...(realtimeConfig.userHolidays || { enabled: false, countryCode: '' }), ...(holidaySettingsFocus ? { enabled: true } : {}) }));
   const [rtWeatherKey, setRtWeatherKey] = useState(realtimeConfig.weatherApiKey);
   const [rtWeatherCity, setRtWeatherCity] = useState(realtimeConfig.weatherCity);
   const [rtNewsEnabled, setRtNewsEnabled] = useState(realtimeConfig.newsEnabled);
@@ -714,7 +739,11 @@ const Settings: React.FC = () => {
   const [rtXhsCookie, setRtXhsCookie] = useState(realtimeConfig.xhsMcpConfig?.cookie || '');
   const [rtXhsPlatform, setRtXhsPlatform] = useState<'xhs' | 'rednote' | undefined>(realtimeConfig.xhsMcpConfig?.platform);
   const [rtXhsGuideOpen, setRtXhsGuideOpen] = useState(false);
-  const [rtTestStatus, setRtTestStatus] = useState('');
+  const [rtTestStatuses, setRtTestStatuses] = useState<Record<string, string>>({});
+  const renderRtTestStatus = (key: string) => {
+      const status = rtTestStatuses[key];
+      return status ? <div role="status" aria-live="polite" className={`p-3 rounded-xl text-xs font-medium whitespace-pre-wrap break-words [overflow-wrap:anywhere] ${status.includes('成功') ? 'bg-emerald-100 text-emerald-700' : status.includes('失败') || status.includes('错误') ? 'bg-red-100 text-red-600' : 'bg-slate-100 text-slate-600'}`}>{status}</div> : null;
+  };
 
   // 麦当劳 MCP (token / 启用态都直接存 localStorage, 不进 realtimeConfig)
   const [mcdToken, setMcdTokenState] = useState(() => getMcdToken());
@@ -744,14 +773,20 @@ const Settings: React.FC = () => {
   const [ppZombieStreak, setPpZombieStreak] = useState(0);
   const [showInstantModal, setShowInstantModal] = useState(false);
   const [showActiveMsg2GlobalModal, setShowActiveMsg2GlobalModal] = useState(false);
+  const [showAmsg2Modal, setShowAmsg2Modal] = useState(false);
+  const [showAmsgCloudData, setShowAmsgCloudData] = useState(false);
+  /**
+   * 导出时带不带主动消息 2.0 的后端连接（Worker 地址 + 密钥 + 用户 id）。
+   *
+   * 默认不带。备份是会被分享出去的，带上就等于把自己那台 Worker 的钥匙一起发了：
+   * 对方的 App 会静默连上来，把 ta 的 API 凭据和聊天上下文写进你的 D1，而 ta 手里的
+   * 主密钥能解开你那台机器上所有的密文。换设备恢复自己的备份才需要它。
+   */
+  const [exportBackendConnection, setExportBackendConnection] = useState(false);
   const [showVapidModal, setShowVapidModal] = useState(false);
   const [vapidReadyTick, setVapidReadyTick] = useState(0); // 关闭 VAPID 弹窗后刷新顶层徽标
 
   // 模型选择 Modal 的过滤 + 公共前缀（memo 掉，避免每次 Settings 重渲染都重算）
-  const modelPickerView = useMemo(
-      () => buildModelPickerView(availableModels, modelFilter),
-      [modelFilter, availableModels],
-  );
   const visionModelPickerView = useMemo(
       () => buildModelPickerView(availableVisionModels, visionModelFilter),
       [visionModelFilter, availableVisionModels],
@@ -768,13 +803,13 @@ const Settings: React.FC = () => {
       try {
           const res = await fetch(`${initialPushCfg.workerUrl}/health`);
           if (!res.ok) {
-              trackEvent('启用主动消息 Push 加速', { result: 'fail', failStage: 'worker_health' });
-              trackEvent('启用 Push 加速器的结果', { result: 'worker-unreachable' });
+              
+              
               setPpStatus(`失败：Worker HTTP ${res.status}`); setPpBusy(false); return;
           }
       } catch (e: any) {
-          trackEvent('启用主动消息 Push 加速', { result: 'fail', failStage: 'network' });
-          trackEvent('启用 Push 加速器的结果', { result: 'worker-unreachable' });
+          
+          
           setPpStatus(`失败：${e?.message || '网络错误'}`); setPpBusy(false); return;
       }
 
@@ -784,8 +819,8 @@ const Settings: React.FC = () => {
       setPpStatus('正在请求通知权限并创建订阅…');
       const sub = await ensureSubscribed();
       if (!sub.ok) {
-          trackEvent('启用主动消息 Push 加速', { result: 'fail', failStage: 'subscribe' });
-          trackEvent('启用 Push 加速器的结果', { result: 'subscribe-failed' });
+          
+          
           setPpStatus(`失败：${sub.reason || '订阅创建失败'}`);
           setPpBusy(false);
           await refreshPpDiag();
@@ -805,16 +840,16 @@ const Settings: React.FC = () => {
       }
 
       if (schedules.length === 0) {
-          trackEvent('启用主动消息 Push 加速', { result: 'success' });
-          trackEvent('启用 Push 加速器的结果', { result: 'ok-no-schedule' });
+          
+          
           setPpStatus('已启用（订阅已建立。暂无主动消息定时，下次开启角色主动消息时会自动注册）');
       } else if (okCount < schedules.length) {
-          trackEvent('启用主动消息 Push 加速', { result: 'partial' });
-          trackEvent('启用 Push 加速器的结果', { result: 'ok-partial-schedule' });
+          
+          
           setPpStatus(`已启用：${okCount}/${schedules.length} 个定时注册成功`);
       } else {
-          trackEvent('启用主动消息 Push 加速', { result: 'success' });
-          trackEvent('启用 Push 加速器的结果', { result: 'ok' });
+          
+          
           setPpStatus(`已启用，${okCount} 个主动消息定时已注册`);
       }
       setPpBusy(false);
@@ -822,7 +857,7 @@ const Settings: React.FC = () => {
   };
 
   const doDisablePushAccelerator = async () => {
-      trackEvent('关闭主动消息 Push 加速');
+      
       savePushConfig(false);
       setPpEnabled(false);
       stopHeartbeat();
@@ -836,16 +871,16 @@ const Settings: React.FC = () => {
       setPpStatus('正在让 Worker 发一条测试推送…');
       const res = await sendTestPush();
       if (res.ok) {
-          trackEvent('发送测试推送（主动消息加速）', { result: 'sent' });
-          trackEvent('发一条测试推送', { result: 'sent' });
+          
+          
           setPpStatus('测试推送已发出。如果 5 秒内系统通知里没出现"推送测试成功"，说明送达环节有问题——看下方诊断面板。');
       } else if (res.deadSubscription) {
-          trackEvent('发送测试推送（主动消息加速）', { result: 'dead_subscription' });
-          trackEvent('发一条测试推送', { result: 'dead-subscription' });
+          
+          
           setPpStatus('订阅已被浏览器吊销（zombie endpoint）。请点下方"重置订阅"重建一次再测。');
       } else {
-          trackEvent('发送测试推送（主动消息加速）', { result: 'fail' });
-          trackEvent('发一条测试推送', { result: 'failed' });
+          
+          
           setPpStatus(`测试失败：${res.reason || '未知错误'}${res.status ? `（HTTP ${res.status}）` : ''}`);
       }
       setPpTestBusy(false);
@@ -858,7 +893,7 @@ const Settings: React.FC = () => {
       setPpStatus('正在重置订阅…');
       const res = await resetSubscription();
       if (res.ok) {
-          trackEvent('重置推送订阅', { result: 'success', attempt: bucketRetryCount(ppZombieStreak) });
+          
           setPpZombieStreak(0);
           setPpStatus('订阅已重建。可以再点"发一条测试推送"试一下。');
       } else {
@@ -868,10 +903,7 @@ const Settings: React.FC = () => {
               setPpZombieStreak(c => c + 1);
           }
           // 只上报归类后的固定枚举，失败原文一个字都不带；重试次数同样先分桶
-          trackEvent('重置推送订阅', {
-              result: /permanently-removed|zombie/i.test(reason) ? 'fail_zombie' : 'fail_other',
-              attempt: bucketRetryCount(ppZombieStreak),
-          });
+          
           setPpStatus(`重置失败：${reason || '未知错误'}`);
       }
       setPpResetBusy(false);
@@ -889,10 +921,10 @@ const Settings: React.FC = () => {
           // ProactiveChat.resume() 把所有 schedule 推回新 SW. deepResetSubscription 内部
           // 不调它是为了避免循环依赖 (ProactiveChat 反向依赖 proactivePushConfig).
           try { ProactiveChat.resume(); } catch (e) { console.warn('[Settings] ProactiveChat.resume failed', e); }
-          trackEvent('深度重置推送订阅', { result: 'success' });
+          
           setPpStatus('订阅已重建。可以再点"发一条测试推送"试一下。');
       } else {
-          trackEvent('深度重置推送订阅', { result: 'fail' });
+          
           setPpStatus(`深度重置失败：${res.reason || '未知错误'}`);
       }
       setPpDeepResetBusy(false);
@@ -955,10 +987,12 @@ const Settings: React.FC = () => {
 
   useEffect(() => {
       setLocalVisionEnabled(apiConfig.visionApi?.enabled === true);
+  }, [apiConfig.visionApi?.enabled]);
+  useEffect(() => {
       setLocalVisionUrl(apiConfig.visionApi?.baseUrl || '');
       setLocalVisionKey(apiConfig.visionApi?.apiKey || '');
       setLocalVisionModel(apiConfig.visionApi?.model || '');
-  }, [apiConfig.visionApi?.enabled, apiConfig.visionApi?.baseUrl, apiConfig.visionApi?.apiKey, apiConfig.visionApi?.model]);
+  }, [apiConfig.visionApi?.baseUrl || '', apiConfig.visionApi?.apiKey || '', apiConfig.visionApi?.model || '']);
 
   useEffect(() => {
       setLocalMiniMaxKey(apiConfig.minimaxApiKey || '');
@@ -1042,6 +1076,7 @@ const Settings: React.FC = () => {
   };
 
   const closeModelPicker = () => {
+      if (!addingModelPresetId) cancelModelPicker();
       setShowModelModal(false);
       setAddingModelPresetId(null);
       setAddingModelDraft('');
@@ -1165,6 +1200,7 @@ const Settings: React.FC = () => {
       const isActive = activePresetId === preset.id;
       setEditingPresetId(preset.id);
       setEditPresetName(preset.name);
+      setEditPresetGroup(preset.group || '');
       setEditPresetUrl(preset.config.baseUrl || '');
       setEditPresetKey(preset.config.apiKey || '');
       setEditPresetModel(preset.config.model || '');
@@ -1200,7 +1236,7 @@ const Settings: React.FC = () => {
           nextConfig.model,
       );
       updateApiPreset(preset.id, {
-          name,
+          name, group: editPresetGroup.trim(),
           config: updatedPreset.config,
           models: updatedPreset.models,
       });
@@ -1253,10 +1289,11 @@ const Settings: React.FC = () => {
           addToast('请输入预设名称', 'error');
           return;
       }
-      const preset = addApiPreset(name, buildCurrentApiPresetConfig(), newPresetPricing);
+      const preset = addApiPreset(name, buildCurrentApiPresetConfig(), newPresetPricing, newPresetGroup);
       setSelectedPresetId(preset.id);
       setSelectedPresetName(preset.name);
       setNewPresetName('');
+      setNewPresetGroup('');
       setShowPresetModal(false);
       addToast(`已创建并启用预设「${name}」`, 'success');
   };
@@ -1264,9 +1301,13 @@ const Settings: React.FC = () => {
   /**
    * 保存下面这份表单 = 改「当前生效的配置」，**不会**顺手覆盖任何一条预设。
    * 想把改动存回预设，走预设那排的铅笔（弹窗里可一键填入当前配置）。
+   *
+   * modelOverride：模型弹窗里刚选定的模型。setLocalModel 要到下一次渲染才生效，
+   * 选完立刻保存时得把它直接递进来，不然存进去的还是选之前那个。
    */
-  const handleSaveApi = () => {
-    const nextConfig = buildCurrentApiPresetConfig();
+  const handleSaveApi = (modelOverride?: string) => {
+    const sourcePreset = selectedApiPreset ? undefined : apiPresets.find(preset => preset.id === activePresetId);
+    const nextConfig = { ...buildCurrentApiPresetConfig(), model: normalizeApiModel(modelOverride ?? localModel) };
     if (selectedApiPreset) {
       const presetName = selectedPresetName.trim();
       if (!presetName) {
@@ -1292,6 +1333,37 @@ const Settings: React.FC = () => {
       setStatusMsg('配置已保存');
     }
     setTimeout(() => setStatusMsg(''), 2000);
+    if (sourcePreset && presetDiffersFromConfig(sourcePreset, nextConfig)) {
+      setPresetWriteback({ presetId: sourcePreset.id, config: nextConfig });
+    }
+  };
+
+  // 把刚保存的当前配置写回它原来那条预设。当前配置已经生效了，这里只动预设。
+  const confirmPresetWriteback = () => {
+    setPresetWriteback(null);
+    if (!presetWriteback) return;
+    const preset = apiPresets.find(item => item.id === presetWriteback.presetId);
+    if (!preset) return;  // 弹窗开着的时候这条被删了
+    updateApiPreset(preset.id, { config: { ...preset.config, ...presetWriteback.config } });
+    addToast(`已存回预设「${preset.name}」`, 'success');
+  };
+
+  // 模型弹窗：选定即保存生效（连同表单里的 URL / Key 一起，跟「保存配置」同一条路），
+  // 不留「弹窗里点了确定、其实还没保存」的中间状态。× 关掉 = 放弃这次挑选。
+  const openModelPicker = () => {
+    modelBeforePickerRef.current = localModel;
+    setShowModelModal(true);
+  };
+
+  const cancelModelPicker = () => {
+    setLocalModel(modelBeforePickerRef.current);
+    setShowModelModal(false);
+  };
+
+  const confirmModelPicker = (model: string) => {
+    setLocalModel(model);
+    setShowModelModal(false);
+    handleSaveApi(model);
   };
 
   const buildVisionApiConfig = (): NonNullable<APIConfig['visionApi']> => ({
@@ -1301,8 +1373,8 @@ const Settings: React.FC = () => {
     model: normalizeApiModel(localVisionModel),
   });
 
-  const handleSaveVisionApi = () => {
-    const next = buildVisionApiConfig();
+  const handleSaveVisionApi = (enabled = localVisionEnabled) => {
+    const next = { ...buildVisionApiConfig(), enabled };
     if (next.enabled && (!next.baseUrl || !next.apiKey || !next.model)) {
       addToast('请先填写完整的识图 API 配置', 'error');
       return;
@@ -1315,6 +1387,34 @@ const Settings: React.FC = () => {
   const formatApiLatency = (elapsedMs: number) => {
       if (elapsedMs < 1000) return `${Math.max(0, Math.round(elapsedMs))}ms`;
       return `${(elapsedMs / 1000).toFixed(elapsedMs < 10000 ? 2 : 1)}s`;
+  };
+  const handleToggleVisionApi = () => {
+    const enabled = !localVisionEnabled;
+    setLocalVisionEnabled(enabled);
+    if (!enabled) {
+      // 关闭立即落盘；保留已保存的凭据，未保存的输入仍留在表单里。
+      updateApiConfig({ visionApi: {
+        baseUrl: '', apiKey: '', model: '', ...apiConfig.visionApi, enabled: false,
+      } });
+      setVisionStatusMsg('已关闭，沿用原有识图方式');
+    } else if (normalizeApiBaseUrl(localVisionUrl) && normalizeApiCredential(localVisionKey) && normalizeApiModel(localVisionModel)) {
+      handleSaveVisionApi(true);
+    } else {
+      setVisionStatusMsg('请填写 URL、Key 和 Model，保存后接入');
+    }
+  };
+
+  const loadVisionApiPreset = (preset: typeof apiPresets[0]) => {
+    const next = visionApiConfigFromPreset(preset);
+    setSelectedVisionPresetId(preset.id);
+    setLocalVisionEnabled(true);
+    setLocalVisionUrl(next.baseUrl);
+    setLocalVisionKey(next.apiKey);
+    setLocalVisionModel(next.model);
+    setVisionTestResult(null);
+    setVisionStatusMsg(`已载入预设：${preset.name}`);
+    setTimeout(() => setVisionStatusMsg(''), 2200);
+    addToast(`已把「${preset.name}」填入识图 API；保存后生效`, 'info');
   };
 
   const runApiLatencyTest = async (config: {
@@ -1427,11 +1527,11 @@ const Settings: React.FC = () => {
     try {
       const description = await describeImageWithVisionApi(VISION_API_TEST_IMAGE_DATA_URL, config);
       setVisionTestResult(`✅ 识图成功 — ${description.slice(0, 80)}`);
-      trackEvent('测试识图 API', { result: '成功' });
+      
     } catch (error: any) {
       console.error('Test Vision API Error', error);
       setVisionTestResult(`❌ 识图失败：${error?.message || '未知错误'}`);
-      trackEvent('测试识图 API', { result: '失败' });
+      
     } finally {
       setTestingVisionApi(false);
     }
@@ -1569,6 +1669,8 @@ const Settings: React.FC = () => {
     }
   };
 
+  const [modelFilter, setModelFilter] = useState('');
+  const modelPickerView = useMemo(() => buildModelPickerView(availableModels, modelFilter), [availableModels, modelFilter]);
   const fetchModels = async () => {
     const baseUrl = normalizeApiBaseUrl(localUrl);
     const apiKey = normalizeApiCredential(localKey);
@@ -1586,9 +1688,11 @@ const Settings: React.FC = () => {
         const models = extractModelIds(data);
         if (models.length > 0) {
             setAvailableModels(models);
-            if (models.length > 0 && !models.includes(localModel)) setLocalModel(models[0]);
+            openModelPicker();
+            // 还没填过模型才顺手预选第一个；手填的名字不在列表里也照样保留
+            //（不少中转的 /models 列不全），换不换由用户在弹窗里定。
+            if (!localModel.trim()) setLocalModel(models[0]);
             setStatusMsg(`获取到 ${models.length} 个模型`);
-            setShowModelModal(true); // Open selector immediately
         } else { setStatusMsg('模型列表为空或格式不兼容'); }
     } catch (error: any) {
         console.error(error);
@@ -1629,23 +1733,26 @@ const Settings: React.FC = () => {
   };
 
   const handleExport = async (mode: 'text_only' | 'media_only' | 'full') => {
-      trackEvent('导出本地备份', { scope: mode });
+      
       try {
           // 二次确认：整包备份（full / text_only）本就包含你的 API 密钥等设置——这是预期行为，
           // 但绝不能发给别人。media_only 只有媒体、不含密钥，视为可分享。
           if (typeof window !== 'undefined' && typeof window.confirm === 'function') {
               const includesSettings = mode !== 'media_only';
-              const msg = includesSettings
+              const includesBackend = includesSettings && exportBackendConnection;
+              const msg = includesBackend
+                  ? '该导出数据包含了明文密钥，以及主动消息 2.0 的后端连接（Worker 地址与主密钥）。拿到这个文件的人可以连上你那台 Worker，请不要发送给任何人'
+                  : includesSettings
                   ? '该导出数据包含了明文密钥，请不要发送给任何人'
                   : '该导出内容安全，可以用于分享';
               if (!window.confirm(`${msg}\n\n点「确定」继续导出，「取消」中止。`)) {
-                  trackEvent('取消导出前的密钥确认', { mode });
+                  
                   return;
               }
           }
 
           // Trigger export (Context handles loading state UI)
-          const blob = await exportSystem(mode);
+          const blob = await exportSystem(mode, { includeBackendConnection: exportBackendConnection });
           
           const fileName = `Sully_Backup_${mode}_${new Date().toISOString().slice(0, 10)}.zip`;
           if (!Capacitor.isNativePlatform()) {
@@ -1666,7 +1773,7 @@ const Settings: React.FC = () => {
           if (result === 'cancelled') return;
       } catch (e: any) {
           // 只报导出档位，错误文案是动态串不能进属性
-          trackEvent('导出备份失败', { mode });
+          
           addToast(e.message, 'error');
       }
   };
@@ -1676,19 +1783,20 @@ const Settings: React.FC = () => {
       if (!file) return;
 
       // Pass the File object directly to importSystem
-      importSystem(file).catch(err => {
+      importSystem(file, {
+          // 备份里带着 Worker 后端连接时问一句。程序分不清这份文件是自己的还是别人的
+          // （换新设备时用户 id 本来就对不上），只有拿着文件的人知道，所以把话问出去。
+          confirmBackendRestore: (workerUrl) => window.confirm(
+              `这份备份里带着一个主动消息 2.0 的后端连接：\n\n${workerUrl}\n\n`
+              + '如果这是你自己导出的备份，点「确定」连上它。\n\n'
+              + '如果是别人给你的，点「取消」——连上去的话，你的 API 密钥和聊天记录会被写进对方那台服务器。\n\n'
+              + '（不连也不影响其它数据导入，之后可以在设置里手动填。）',
+          ),
+      }).catch(err => {
           console.error(err);
           // 只上报归类后的固定枚举：报错原文（可能含文件路径/内容片段）只留在 console
           const rawMessage = String(err?.message || '');
-          trackEvent('导入备份失败', {
-              source: file.name.toLowerCase().endsWith('.zip') ? 'zip' : 'json',
-              reason:
-                  /无效的文件格式/.test(rawMessage) ? 'invalid_file_format'
-                  : /缺少 data\.json/.test(rawMessage) ? 'missing_data_json'
-                  : /manifest\.json 解析失败/.test(rawMessage) ? 'bad_manifest'
-                  : /JSON 格式错误/.test(rawMessage) ? 'json_syntax'
-                  : 'other',
-          });
+          
           const details = err?.stack || err?.message || String(err || '未知错误');
           showError('导入失败', details);
           addToast('导入失败，错误信息已展开', 'error');
@@ -1780,20 +1888,13 @@ const Settings: React.FC = () => {
           setCloudTestResult(result.ok ? `✓ ${result.message}` : `✗ ${result.message}`);
           // 失败原因收敛成固定几类，地址/账号/密码与原始报错都不上报
           if (result.ok) {
-              trackEvent('测试 WebDAV 连接', { result: '成功' });
+              
           } else {
               const m = result.message || '';
-              trackEvent('测试 WebDAV 连接', {
-                  result: '失败',
-                  failure_kind:
-                      /认证失败/.test(m) ? 'auth_401'
-                      : /无法创建/.test(m) ? 'dir_missing_uncreatable'
-                      : /服务器返回/.test(m) ? 'http_status'
-                      : 'network_error',
-              });
+              
           }
       } catch (e: any) {
-          trackEvent('测试 WebDAV 连接', { result: '失败', failure_kind: 'network_error' });
+          
           setCloudTestResult(`✗ ${e.message}`);
       }
       setCloudTesting(false);
@@ -1817,7 +1918,7 @@ const Settings: React.FC = () => {
       const raw = proxyWorkerInput.trim();
       if (raw && !/^https?:\/\//i.test(raw)) {
           addToast('地址必须以 http:// 或 https:// 开头', 'error');
-          trackEvent('代理地址格式被拒');
+          
           return;
       }
       setProxyWorkerUrl(raw);                 // 传空 / 默认地址 → 自动回落默认
@@ -1825,7 +1926,7 @@ const Settings: React.FC = () => {
       setProxyWorkerInput(applied);
       // 上云那份的 proxyWorkerUrl 是现算的（读 getProxyWorkerUrl），所以要在生效之后再传。
       syncAmsgToolConfig(realtimeConfig);
-      if (applied === DEFAULT_PROXY_WORKER) trackEvent('恢复默认代理 Worker', { via: 'save-empty' });
+      if (applied === DEFAULT_PROXY_WORKER) {}
       addToast(applied === DEFAULT_PROXY_WORKER ? '已恢复为默认 Worker' : 'Worker 地址已保存', 'success');
   };
 
@@ -1833,7 +1934,7 @@ const Settings: React.FC = () => {
       setProxyWorkerUrl('');
       setProxyWorkerInput(getProxyWorkerUrl());
       syncAmsgToolConfig(realtimeConfig);
-      trackEvent('恢复默认代理 Worker', { via: 'reset-button' });
+      
       addToast('已恢复为默认 Worker', 'info');
   };
 
@@ -1883,12 +1984,12 @@ const Settings: React.FC = () => {
           const files = await listCloudBackups();
           setCloudBackupFiles(files);
           setCloudBackupListState('ready');
-          trackEvent('加载云端备份列表', { provider: cloudBackupConfig.provider === 'github' ? 'github' : 'webdav', result: '成功' });
+          
       } catch (error: any) {
           const message = error?.message || '获取云端备份列表失败';
           setCloudBackupListError(message);
           setCloudBackupListState('error');
-          trackEvent('加载云端备份列表', { provider: cloudBackupConfig.provider === 'github' ? 'github' : 'webdav', result: '失败' });
+          
           addToast(message, 'error');
       }
   };
@@ -1903,10 +2004,7 @@ const Settings: React.FC = () => {
           await cloudRestoreFromWebDAV(file);
       } catch (err: any) {
           // 只区分「下载阶段」还是「导入阶段」，报错原文只进 showError / console
-          trackEvent('从云端恢复失败', {
-              provider: cloudBackupConfig.provider === 'github' ? 'github' : 'webdav',
-              stage: /^恢复失败/.test(String(err?.message || '')) ? 'import' : 'download',
-          });
+          
           const details = err?.stack || err?.message || String(err || '未知错误');
           showError('云端恢复失败', details);
       }
@@ -1916,7 +2014,7 @@ const Settings: React.FC = () => {
   // ensure-repo, persists owner/login on success so users never type 'owner'.
   const handleTestGithub = async () => {
       if (!ghToken.trim()) {
-          trackEvent('测试并连接 GitHub', { result: '失败', failure_stage: 'no_token' });
+          
           setGhTestResult('✗ 请先粘贴 Token');
           return;
       }
@@ -1933,9 +2031,7 @@ const Settings: React.FC = () => {
           });
           setGhTestResult(result.ok ? `✓ ${result.message}` : `✗ ${result.message}`);
           // 失败时只报卡在哪一步：token 校验没过 → 没有 login，仓库准备没过 → 有 login
-          trackEvent('测试并连接 GitHub', result.ok
-              ? { result: '成功' }
-              : { result: '失败', failure_stage: result.login ? 'ensure_repo' : 'verify_token' });
+          
           if (result.ok && result.login) {
               updateCloudBackupConfig({
                   enabled: true,
@@ -1948,7 +2044,7 @@ const Settings: React.FC = () => {
               });
           }
       } catch (e: any) {
-          trackEvent('测试并连接 GitHub', { result: '失败', failure_stage: 'exception' });
+          
           setGhTestResult(`✗ ${e?.message || '连接失败'}`);
       }
       setGhTesting(false);
@@ -1962,7 +2058,7 @@ const Settings: React.FC = () => {
           githubUseProxy: enabled,
           githubProxyConsentVersion: enabled ? 1 : undefined,
       });
-      trackEvent('切换 GitHub 备份线路', { route: enabled ? 'cloudflare_worker' : 'direct' });
+      
       addToast(
           enabled ? '已改用应用内 Cloudflare 中转，下次备份立即生效' : '已改为直连 GitHub 附件域名',
           'info',
@@ -1970,7 +2066,7 @@ const Settings: React.FC = () => {
   };
 
   const handleDisableCloud = () => {
-      trackEvent('关闭云端备份', { provider: cloudBackupConfig.provider === 'github' ? 'github' : 'webdav' });
+      
       updateCloudBackupConfig({ enabled: false });
       setShowCloudModal(false);
       setShowGithubModal(false);
@@ -1983,7 +2079,7 @@ const Settings: React.FC = () => {
   // saved credentials, so old WebDAV users keep their old backups visible
   // when they switch back.
   const switchToGithub = () => {
-      trackEvent('切换云端备份服务商', { to: 'github' });
+      
       if (cloudBackupConfig.githubToken && cloudBackupConfig.githubOwner) {
           updateCloudBackupConfig({ provider: 'github' });
           addToast(`已切换到 GitHub @${cloudBackupConfig.githubOwner}`, 'success');
@@ -1992,7 +2088,7 @@ const Settings: React.FC = () => {
       }
   };
   const switchToWebDAV = () => {
-      trackEvent('切换云端备份服务商', { to: 'webdav' });
+      
       if (cloudBackupConfig.webdavUrl && cloudBackupConfig.username) {
           updateCloudBackupConfig({ provider: 'webdav' });
           addToast('已切换回 WebDAV，旧备份依旧在', 'success');
@@ -2001,15 +2097,40 @@ const Settings: React.FC = () => {
       }
   };
 
-  const confirmReset = () => {
-      resetSystem();
-      setShowResetConfirm(false);
+  // 重置会先清云端再删本地，清云端要发几个请求，所以按钮得自己顶着「进行中」。
+  // 顺利的话页面直接刷新，下面这些 setState 都执行不到。
+  const confirmReset = async () => {
+      setResetting(true);
+      try {
+          const result = await resetSystem();
+          if (result.status === 'cloud-cleanup-failed') {
+              setShowResetConfirm(false);
+              setResetCloudFailure({ workerUrl: result.workerUrl, detail: result.detail });
+          } else if (result.status === 'failed') {
+              setShowResetConfirm(false);
+          }
+      } finally {
+          setResetting(false);
+      }
+  };
+
+  /** 云端没清干净，用户仍然要重置：这一次不再拦，能清多少算多少。 */
+  const confirmResetAnyway = async () => {
+      setResetting(true);
+      try {
+          setResetCloudFailure(null);
+          await resetSystem({ force: true });
+      } finally {
+          setResetting(false);
+      }
   };
 
   // 保存实时感知配置
   const handleSaveRealtimeConfig = () => {
+      if (rtUserHolidays.enabled && !rtUserHolidays.countryCode) { addToast('请选择生活所在的国家／地区，或关闭节假日感知', 'error'); return; }
       const updates = {
           weatherEnabled: rtWeatherEnabled,
+          userHolidays: { ...rtUserHolidays, introChoice: rtUserHolidays.enabled ? 'configured' as const : 'declined' as const },
           weatherApiKey: rtWeatherKey,
           weatherCity: rtWeatherCity,
           newsEnabled: rtNewsEnabled,
@@ -2047,6 +2168,7 @@ const Settings: React.FC = () => {
 
   // 测试天气API连接：填了 key 测 OpenWeatherMap，没填测免费的 Open-Meteo
   const testWeatherApi = async () => {
+      const setRtTestStatus = (value: string) => setRtTestStatuses(previous => ({ ...previous, weather: value }));
       if (!rtWeatherCity) {
           setRtTestStatus('请先填写城市');
           return;
@@ -2058,16 +2180,17 @@ const Settings: React.FC = () => {
               : await fetchOpenMeteoWeather(rtWeatherCity);
           const source = rtWeatherKey ? 'OpenWeatherMap' : 'Open-Meteo';
           // 刻意不带数据源名：那等价于「有没有填天气 key」，属于配置状态
-          trackEvent('测试天气数据源连接', { result: 'ok' });
+          
           setRtTestStatus(`连接成功！(${source}) ${weather.city}: ${weather.description}, ${weather.temp}°C`);
       } catch (e: any) {
-          trackEvent('测试天气数据源连接', { result: 'failed' });
+          
           setRtTestStatus(`连接失败: ${e.message}`);
       }
   };
 
   // 测试Notion连接
   const testNotionApi = async () => {
+      const setRtTestStatus = (value: string) => setRtTestStatuses(previous => ({ ...previous, notion: value }));
       if (!rtNotionKey || !rtNotionDbId) {
           setRtTestStatus('请填写 Notion API Key 和 Database ID');
           return;
@@ -2075,16 +2198,17 @@ const Settings: React.FC = () => {
       setRtTestStatus('正在测试 Notion 连接...');
       try {
           const result = await NotionManager.testConnection(rtNotionKey, rtNotionDbId);
-          trackEvent('测试 Notion 连接', { result: result.success ? 'ok' : 'failed' });
+          
           setRtTestStatus(result.message);
       } catch (e: any) {
-          trackEvent('测试 Notion 连接', { result: 'network-error' });
+          
           setRtTestStatus(`网络错误: ${e.message}`);
       }
   };
 
   // 测试飞书连接
   const testFeishuApi = async () => {
+      const setRtTestStatus = (value: string) => setRtTestStatuses(previous => ({ ...previous, feishu: value }));
       if (!rtFeishuAppId || !rtFeishuAppSecret || !rtFeishuBaseId || !rtFeishuTableId) {
           setRtTestStatus('请填写飞书 App ID、App Secret、多维表格 ID 和数据表 ID');
           return;
@@ -2092,16 +2216,18 @@ const Settings: React.FC = () => {
       setRtTestStatus('正在测试飞书连接...');
       try {
           const result = await FeishuManager.testConnection(rtFeishuAppId, rtFeishuAppSecret, rtFeishuBaseId, rtFeishuTableId);
-          trackEvent('测试飞书连接', { result: result.success ? 'ok' : 'failed' });
+          
           setRtTestStatus(result.message);
       } catch (e: any) {
-          trackEvent('测试飞书连接', { result: 'network-error' });
+          
           setRtTestStatus(`网络错误: ${e.message}`);
       }
   };
 
   // 测试小红书 Bridge 连接
   const testXhsMcp = async () => {
+      const statusKey = rtXhsMode === 'lite' ? 'xhs-lite' : 'xhs-local';
+      const setRtTestStatus = (value: string) => setRtTestStatuses(previous => ({ ...previous, [statusKey]: value }));
       const urlToUse = rtXhsMode === 'lite' ? XHS_LITE_URL : rtXhsLocalUrl;
       const cookieToUse = rtXhsMode === 'lite' ? (rtXhsCookie.trim() || undefined) : undefined;
       if (!urlToUse) {
@@ -2120,7 +2246,7 @@ const Settings: React.FC = () => {
           );
           if (result.connected) {
               // 昵称 / 用户 ID / xsecToken 一律不带
-              trackEvent('测试小红书桥接连接', { mode: rtXhsMode === 'lite' ? 'lite' : 'local', result: 'connected' });
+              
               const toolCount = result.tools?.length || 0;
               const tokenInfo = result.xsecToken ? ' | xsecToken 已获取' : '';
               const platformInfo = result.platform ? ` | 平台: ${result.platform === 'rednote' ? 'RedNote' : '小红书'}` : '';
@@ -2148,11 +2274,11 @@ const Settings: React.FC = () => {
               const nextConfig = { ...realtimeConfig, ...xhsUpdates };
               syncAmsgToolConfigAndPrompts(nextConfig, { characters, userProfile, groups });
           } else {
-              trackEvent('测试小红书桥接连接', { mode: rtXhsMode === 'lite' ? 'lite' : 'local', result: 'failed' });
+              
               setRtTestStatus(`连接失败: ${result.error}`);
           }
       } catch (e: any) {
-          trackEvent('测试小红书桥接连接', { mode: rtXhsMode === 'lite' ? 'lite' : 'local', result: 'network-error' });
+          
           setRtTestStatus(`网络错误: ${e.message}`);
       }
   };
@@ -2176,15 +2302,15 @@ const Settings: React.FC = () => {
       try {
           const r = await testMcdConnection();
           if (r.ok) {
-              trackEvent('测试点单 MCP 连接', { provider: 'mcdonalds', result: 'ok' });
+              
               const names = (r.tools || []).map(t => t.name).slice(0, 6).join(', ');
               setMcdTestStatus(`✅ ${r.message}${names ? `\n工具: ${names}${(r.tools || []).length > 6 ? ' ...' : ''}` : ''}`);
           } else {
-              trackEvent('测试点单 MCP 连接', { provider: 'mcdonalds', result: 'failed' });
+              
               setMcdTestStatus(`❌ ${r.message}`);
           }
       } catch (e: any) {
-          trackEvent('测试点单 MCP 连接', { provider: 'mcdonalds', result: 'exception' });
+          
           setMcdTestStatus(`❌ ${e?.message || String(e)}`);
       } finally {
           setMcdTesting(false);
@@ -2210,15 +2336,15 @@ const Settings: React.FC = () => {
       try {
           const r = await testLuckinConnection();
           if (r.ok) {
-              trackEvent('测试点单 MCP 连接', { provider: 'luckin', result: 'ok' });
+              
               const names = (r.tools || []).map(t => t.name).slice(0, 6).join(', ');
               setLuckinTestStatus(`✅ ${r.message}${names ? `\n工具: ${names}${(r.tools || []).length > 6 ? ' ...' : ''}` : ''}`);
           } else {
-              trackEvent('测试点单 MCP 连接', { provider: 'luckin', result: 'failed' });
+              
               setLuckinTestStatus(`❌ ${r.message}`);
           }
       } catch (e: any) {
-          trackEvent('测试点单 MCP 连接', { provider: 'luckin', result: 'exception' });
+          
           setLuckinTestStatus(`❌ ${e?.message || String(e)}`);
       } finally {
           setLuckinTesting(false);
@@ -2259,7 +2385,7 @@ const Settings: React.FC = () => {
 
       <div className="flex-1 overflow-y-auto p-5 space-y-6 no-scrollbar pb-20">
 
-        {/* 美化入口本身被错误 CSS 盖住时，必须有一个完全不经过日记 App 的急救通道。 */}
+        {/* 外观救急入口统一放在设置顶部，无需进入已被错误 CSS 遮住的聊天或日记。 */}
         <SettingsSection
             title="外观急救"
             badge={hasJournalAppearanceOverride
@@ -2282,6 +2408,42 @@ const Settings: React.FC = () => {
             >
                 {hasJournalAppearanceOverride ? '重置交换日记美化' : '交换日记当前为原版'}
             </button>
+            <div className="mt-4 border-t border-slate-100 pt-4">
+                <p className="text-xs text-slate-500 leading-relaxed">聊天白框 CSS 导致界面异常、无法进入角色设置时，还原全局及全部角色的白框美化，其他聊天外观设置不受影响。</p>
+                <button type="button"
+                    onClick={() => { if (window.confirm('确定还原全部聊天白框美化？将清空「全局」以及「每个角色」的自定义 CSS（其它聊天外观设置不受影响）。')) resetAllChromeCss(); }}
+                    className="mt-3 w-full rounded-xl bg-amber-600 px-4 py-3 text-xs font-bold text-white shadow-sm transition active:scale-[.98]">
+                    一键还原全部聊天白框美化（救援）
+                </button>
+            </div>
+            <div className="mt-4 border-t border-slate-100 pt-4">
+                <div className="flex items-center gap-2 mb-2">
+                    <h2 className="text-sm font-bold text-rose-500 uppercase tracking-widest">一键还原外观</h2>
+                </div>
+                <p className="text-[10px] text-slate-500 mb-3 leading-relaxed">
+                    把主题色、壁纸、字体、应用图标、桌面小组件、装饰贴纸全部还原成最初始状态。在不同版本之间反复导入预设导致图标错乱时使用。<br/>
+                    <span className="text-slate-400">已保存的外观预设不会被删除，随时还能切回去。</span>
+                </p>
+                {!confirmAppearanceReset ? (
+                    <button onClick={() => setConfirmAppearanceReset(true)}
+                        className="w-full py-2.5 bg-white text-rose-500 font-bold text-xs rounded-xl border border-rose-200 active:scale-95 transition-transform flex items-center justify-center gap-2">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-4 h-4"><path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99" /></svg>
+                        还原为初始外观
+                    </button>
+                ) : (
+                    <div className="flex gap-2">
+                        <button onClick={handleAppearanceEmergencyReset} disabled={resettingAppearance}
+                            className="flex-1 py-2.5 bg-rose-500 text-white font-bold text-xs rounded-xl shadow-sm active:scale-95 transition-transform disabled:opacity-50">
+                            {resettingAppearance ? '正在还原...' : '确认还原'}
+                        </button>
+                        <button onClick={() => setConfirmAppearanceReset(false)} disabled={resettingAppearance}
+                            className="flex-1 py-2.5 bg-white text-slate-500 font-bold text-xs rounded-xl border border-slate-200 active:scale-95 transition-transform disabled:opacity-50">
+                            取消
+                        </button>
+                    </div>
+                )}
+            </div>
+
         </SettingsSection>
         
         {/* 数据备份区域 */}
@@ -2294,6 +2456,24 @@ const Settings: React.FC = () => {
             }
         >
             <StorageUsagePanel />
+            <WebCacheControl />
+
+            <label className="mb-3 flex items-start gap-2 rounded-xl border border-slate-200 bg-white p-3 cursor-pointer">
+                <input
+                    type="checkbox"
+                    checked={exportBackendConnection}
+                    onChange={(e) => setExportBackendConnection(e.target.checked)}
+                    className="mt-0.5 shrink-0"
+                />
+                <span className="text-[11px] leading-relaxed text-slate-600">
+                    <span className="font-bold">包含主动消息 2.0 的后端连接</span>
+                    <span className="block text-slate-400">
+                        换设备恢复时勾上，Worker 地址和密钥会一起带走。
+                        <span className="font-bold text-rose-500">勾着导出的备份不要分享给别人</span>
+                        ——拿到文件的人能连上你那台 Worker，也能解开里面的聊天记录。
+                    </span>
+                </span>
+            </label>
 
             <div className="mb-3">
                 <button onClick={() => handleExport('full')} className="w-full py-4 bg-gradient-to-r from-violet-500 to-purple-600 border border-violet-300 rounded-xl text-xs font-bold text-white shadow-sm active:scale-95 transition-all flex flex-col items-center gap-2 relative overflow-hidden mb-3">
@@ -2328,6 +2508,8 @@ const Settings: React.FC = () => {
                 • <b>整合导出</b>: 一次性导出文字与图片媒体；VRM / Live2D 模型请使用下方独立备份。<br/>
                 • <b>纯文字备份</b>: 包含所有聊天记录、角色设定、剧情数据。所有图片会被移除（减小体积）。<br/>
                 • <b>媒体与美化素材</b>: 导出相册、表情包、聊天图片、头像、主题气泡、壁纸、图标等图片资源和外观配置。<br/>
+                • <b>装扮与搭配</b>: 整合/媒体备份包含桌面主题、聊天装扮、搭配收藏、旧气泡及实际素材，并保留来源权限、角色搭配和投稿更新绑定。纯文字备份不能完整恢复美化。<br/>
+                • <b>作者搬家</b>: 整合备份还包含 Repo 状态、美化偏好和引导记录；已在作者页开启“记住作者身份”时，也携带作者码与密码。导入后恢复这些数据，不会自动登录或投稿。<br/>
                 • <b>语音范围</b>: 整合/媒体备份仅包含已收藏语音，以及 Live2D 开机、触摸预设实际引用的语音；未收藏的聊天、通话等临时语音不会导出。<br/>
                 • 兼容旧版 JSON 备份文件的导入。
             </p>
@@ -2478,7 +2660,7 @@ const Settings: React.FC = () => {
                     </p>
                     <div className="grid grid-cols-2 gap-2">
                         <button
-                            onClick={() => { trackEvent('连接云端备份服务商', { provider: 'github' }); setShowGithubModal(true); }}
+                            onClick={() => {  setShowGithubModal(true); }}
                             className="py-3 px-2 bg-gradient-to-br from-slate-800 to-slate-900 text-white rounded-xl text-xs font-bold shadow-sm active:scale-95 transition-all flex flex-col items-center gap-1.5 relative"
                         >
                             <span className="absolute top-1 right-1.5 text-[8px] bg-amber-300 text-slate-800 px-1.5 py-0.5 rounded-full font-bold">推荐</span>
@@ -2487,7 +2669,7 @@ const Settings: React.FC = () => {
                             <span className="text-[9px] text-slate-300 font-normal">大文件自动分片</span>
                         </button>
                         <button
-                            onClick={() => { trackEvent('连接云端备份服务商', { provider: 'webdav' }); setShowCloudModal(true); }}
+                            onClick={() => {  setShowCloudModal(true); }}
                             className="py-3 px-2 bg-gradient-to-br from-sky-500 to-blue-600 text-white rounded-xl text-xs font-bold shadow-sm active:scale-95 transition-all flex flex-col items-center gap-1.5"
                         >
                             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-5 h-5"><path strokeLinecap="round" strokeLinejoin="round" d="M2.25 15a4.5 4.5 0 004.5 4.5H18a3.75 3.75 0 001.332-7.257 3 3 0 00-3.758-3.848 5.25 5.25 0 00-10.233 2.33A4.502 4.502 0 002.25 15z" /></svg>
@@ -2599,6 +2781,7 @@ const Settings: React.FC = () => {
         {/* AI 连接设置区域 */}
         <SettingsSection
             title="API 配置"
+            sectionProps={{ 'data-guide': 'api' }}
             icon={
                 <div className="p-2 bg-emerald-100/50 rounded-xl text-emerald-600">
                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-4 h-4">
@@ -2616,11 +2799,10 @@ const Settings: React.FC = () => {
             {apiPresets.length > 0 && (
                 <div className="mb-4">
                     <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2 block pl-1">我的预设 (Presets)</label>
-                    <div className="space-y-2">
-                        {apiPresets.map(preset => {
+                    <ApiPresetGroups presets={apiPresets}>{preset => {
                             const presetModels = getApiPresetModelEntries(preset);
                             return (
-                                <div key={preset.id} className={`rounded-xl px-3 py-2.5 shadow-sm border transition-colors ${
+                                <div key={preset.id} className={`w-full rounded-xl px-3 py-2.5 shadow-sm border transition-colors ${
                                     activePresetId === preset.id
                                         ? 'bg-primary/5 border-primary/30'
                                         : 'bg-white border-slate-200'
@@ -2784,8 +2966,7 @@ const Settings: React.FC = () => {
                                     </button>
                                 </div>
                             );
-                        })}
-                    </div>
+                        }}</ApiPresetGroups>
                     <p className="text-[9px] text-slate-300 mt-1.5 pl-1 leading-relaxed">
                         一条预设共用 URL / Key；点模型直接切换。“测速”会发一个极短请求并把本次耗时标在模型旁边，不会切换当前模型。价格只属于对应模型，不会串到同预设里的其它模型。
                     </p>
@@ -2793,89 +2974,22 @@ const Settings: React.FC = () => {
             )}
 
             <div className="space-y-4">
-                <div className="group">
-                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 block pl-1">URL</label>
-                    <input type="text" value={localUrl} onChange={(e) => setLocalUrl(e.target.value)} placeholder="https://..." className="w-full bg-white/50 border border-slate-200/60 rounded-xl px-4 py-2.5 text-sm font-mono focus:bg-white transition-all" />
-                </div>
-
-                <div className="group">
-                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 block pl-1">Key</label>
-                    <SensitiveTextInput value={localKey} onChange={(e) => setLocalKey(e.target.value)} placeholder="sk-..." className="w-full bg-white/50 border border-slate-200/60 rounded-xl px-4 py-2.5 text-sm font-mono focus:bg-white transition-all" />
-                </div>
-
-                {/* 高级（流式 / 温度）— 默认折叠，灰色低调，明确写"不建议修改" */}
-                <div className="pt-1">
-                    <button
-                        type="button"
-                        onClick={() => setShowApiAdvanced(v => !v)}
-                        className="text-[10px] text-slate-300 hover:text-slate-400 transition-colors flex items-center gap-1 pl-1 active:scale-95"
-                    >
-                        <span>高级（不建议修改）</span>
-                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className={`w-2.5 h-2.5 transition-transform ${showApiAdvanced ? 'rotate-180' : ''}`}>
-                            <path fillRule="evenodd" d="M5.22 8.22a.75.75 0 0 1 1.06 0L10 11.94l3.72-3.72a.75.75 0 1 1 1.06 1.06l-4.25 4.25a.75.75 0 0 1-1.06 0L5.22 9.28a.75.75 0 0 1 0-1.06Z" clipRule="evenodd" />
-                        </svg>
-                    </button>
-                    {showApiAdvanced && (
-                        <div className="mt-2 pl-2 border-l-2 border-slate-100 space-y-3 py-2">
-                            <p className="text-[10px] text-slate-300 leading-relaxed">
-                                这两项绝大多数用户保持默认即可。除非接口报错"only stream supported"或对回复风格有强需求，否则不建议改。
-                            </p>
-                            <div className="flex items-center justify-between">
-                                <div>
-                                    <span className="text-[10px] text-slate-400">流式输出 (Stream)</span>
-                                    <p className="text-[9px] text-slate-300 mt-0.5">仅在你的 API 强制要求时打开</p>
-                                </div>
-                                <button
-                                    type="button"
-                                    onClick={() => setLocalStream(v => !v)}
-                                    className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${localStream ? 'bg-slate-400' : 'bg-slate-200'}`}
-                                >
-                                    <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${localStream ? 'translate-x-4' : 'translate-x-0.5'}`} />
-                                </button>
-                            </div>
-                            <div>
-                                <div className="flex items-center justify-between">
-                                    <span className="text-[10px] text-slate-400">温度 (Temperature)</span>
-                                    <span className="text-[10px] font-mono text-slate-400">{localTemperature.toFixed(2)}</span>
-                                </div>
-                                <input
-                                    type="range"
-                                    min="0"
-                                    max="2"
-                                    step="0.05"
-                                    value={localTemperature}
-                                    onChange={(e) => setLocalTemperature(parseFloat(e.target.value))}
-                                    className="w-full accent-slate-400 mt-1"
-                                />
-                                <p className="text-[9px] text-slate-300 mt-0.5">默认 0.85；只作用于聊天和约会的主回复</p>
-                            </div>
-                        </div>
-                    )}
-                </div>
-
-                <div className="pt-2">
-                     <div className="flex justify-between items-center mb-1.5 pl-1">
-                        <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Model</label>
-                        <button onClick={fetchModels} disabled={isLoadingModels} className="text-[10px] text-primary font-bold">{isLoadingModels ? 'Fetching...' : '刷新模型列表'}</button>
-                    </div>
-                    
-                    <button
-                        onClick={() => setShowModelModal(true)}
-                        title={localModel || 'Select Model...'}
-                        className="w-full bg-white/50 border border-slate-200/60 rounded-xl px-4 py-3 text-sm text-slate-700 flex justify-between items-center gap-2 active:bg-white transition-all shadow-sm"
-                    >
-                        <span
-                            className="font-mono overflow-hidden whitespace-nowrap min-w-0 flex-1 text-left"
-                            style={{ direction: 'rtl', textOverflow: 'ellipsis' }}
-                        >
-                            <bdi style={{ direction: 'ltr' }}>{localModel || 'Select Model...'}</bdi>
-                        </span>
-                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4 text-slate-400 flex-shrink-0"><path fillRule="evenodd" d="M5.22 8.22a.75.75 0 0 1 1.06 0L10 11.94l3.72-3.72a.75.75 0 1 1 1.06 1.06l-4.25 4.25a.75.75 0 0 1-1.06 0L5.22 9.28a.75.75 0 0 1 0-1.06Z" clipRule="evenodd" /></svg>
-                    </button>
-                </div>
+                <DialogueApiFields
+                    value={{ baseUrl: localUrl, apiKey: localKey, model: localModel, stream: localStream, temperature: localTemperature }}
+                    onChange={patch => {
+                        if (patch.baseUrl !== undefined) setLocalUrl(patch.baseUrl);
+                        if (patch.apiKey !== undefined) setLocalKey(patch.apiKey);
+                        if (patch.stream !== undefined) setLocalStream(patch.stream);
+                        if (patch.temperature !== undefined) setLocalTemperature(patch.temperature);
+                    }}
+                    fetchModels={fetchModels} isLoadingModels={isLoadingModels} openModelPicker={openModelPicker}
+                />
+                <p className="text-xs text-slate-500 leading-relaxed break-words">
+                    当前使用独立模型的角色为：{characters.filter(c => c.dialogueApi).map(c => c.name).join('、') || '暂无'}
+                </p>
 
                 <button
-                    onClick={handleSaveApi}
+                    onClick={() => handleSaveApi()}
                     title={selectedApiPreset ? `保存到预设「${selectedPresetName.trim() || selectedApiPreset.name}」` : '保存当前 API 配置'}
                     className="w-full py-3 rounded-2xl font-bold text-white shadow-lg shadow-primary/20 bg-primary active:scale-95 transition-all mt-2"
                 >
@@ -2915,6 +3029,7 @@ const Settings: React.FC = () => {
 
         <SettingsSection
             title="识图 API"
+            badge={<span className="text-[10px] text-violet-600">{localVisionEnabled && normalizeApiBaseUrl(localVisionUrl) && normalizeApiCredential(localVisionKey) && normalizeApiModel(localVisionModel) ? '已接入' : '未接入'}</span>}
             icon={
                 <div className="p-2 bg-violet-100/60 rounded-xl text-violet-600">
                     <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-4 h-4">
@@ -2925,26 +3040,24 @@ const Settings: React.FC = () => {
             }
         >
             <div className="space-y-4">
-                <div className="flex items-center justify-between gap-4">
-                    <div className="min-w-0">
-                        <p className="text-sm font-semibold text-slate-600">独立识图中转</p>
-                        <p className="text-[10px] text-slate-400 mt-1 leading-relaxed">
-                            开启后，聊天图片先由这里的视觉模型识别成文字，再交给主聊天模型；同一张图的描述会写回消息并持续复用，不会每轮重新识图。
-                        </p>
+                <div className="rounded-2xl border border-violet-100 bg-violet-50/60 p-3.5">
+                    <div className="flex items-center justify-between gap-3">
+                        <div>
+                            <div className="text-xs font-bold text-slate-600">接入独立识图 API</div>
+                            <p className="text-[10px] text-slate-400 mt-1 leading-relaxed">
+                                适合 DeepSeek 等不能直接看图的主模型。
+                            </p>
+                        </div>
+                        <button
+                            type="button"
+                            role="switch"
+                            aria-checked={localVisionEnabled}
+                            onClick={handleToggleVisionApi}
+                            className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ${localVisionEnabled ? 'bg-violet-500' : 'bg-slate-200'}`}
+                        >
+                            <span className={`inline-block h-5 w-5 rounded-full bg-white shadow transition-transform ${localVisionEnabled ? 'translate-x-5' : 'translate-x-0.5'}`} />
+                        </button>
                     </div>
-                    <label className="relative inline-flex items-center cursor-pointer shrink-0">
-                        <input
-                            type="checkbox"
-                            checked={localVisionEnabled}
-                            onChange={e => {
-                                setLocalVisionEnabled(e.target.checked);
-                                setVisionTestResult(null);
-                                setVisionStatusMsg('');
-                            }}
-                            className="sr-only peer"
-                        />
-                        <div className="w-11 h-6 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-violet-500"></div>
-                    </label>
                 </div>
 
                 {localVisionEnabled && (
@@ -3045,7 +3158,7 @@ const Settings: React.FC = () => {
                             </button>
                             <button
                                 type="button"
-                                onClick={handleSaveVisionApi}
+                                onClick={() => handleSaveVisionApi()}
                                 className="py-2.5 rounded-2xl font-bold text-xs text-white bg-violet-500 active:scale-95 transition-all shadow-sm"
                             >
                                 {visionStatusMsg === '已保存' ? '已保存' : '保存识图配置'}
@@ -3068,8 +3181,9 @@ const Settings: React.FC = () => {
                 {!localVisionEnabled && (
                     <button
                         type="button"
-                        onClick={handleSaveVisionApi}
-                        className="w-full py-2.5 rounded-2xl font-bold text-xs text-slate-500 bg-slate-100 active:scale-95 transition-all"
+                        onClick={() => handleSaveVisionApi()}
+                        disabled={isLoadingVisionModels || testingVisionApi}
+                        className="py-3 rounded-2xl font-bold text-white shadow-lg shadow-violet-500/20 bg-violet-500 active:scale-95 transition-all disabled:opacity-50"
                     >
                         {visionStatusMsg === '已保存' ? '已关闭并保存' : '保存关闭状态'}
                     </button>
@@ -3466,7 +3580,7 @@ const Settings: React.FC = () => {
                 </div>
             }
             actions={
-                <button onClick={() => { trackEvent('打开实时感知配置'); setShowRealtimeModal(true); }} className="text-[10px] bg-violet-100 text-violet-600 px-3 py-1.5 rounded-full font-bold shadow-sm active:scale-95 transition-transform">
+                <button onClick={() => {  setShowRealtimeModal(true); }} className="text-[10px] bg-violet-100 text-violet-600 px-3 py-1.5 rounded-full font-bold shadow-sm active:scale-95 transition-transform">
                     配置
                 </button>
             }
@@ -3526,11 +3640,11 @@ const Settings: React.FC = () => {
             actions={
                 <>
                     <button
-                        onClick={() => { trackEvent('打开「MCP 是什么」说明弹窗'); setShowMcpHelp(true); }}
+                        onClick={() => {  setShowMcpHelp(true); }}
                         aria-label="MCP 是什么？"
                         className="w-7 h-7 rounded-full border border-slate-200 bg-white text-[12px] font-bold text-slate-400 active:scale-90 transition-all"
                     >?</button>
-                    <button onClick={() => { trackEvent('打开MCP工具服务器配置'); setShowMcpModal(true); }} className="text-[10px] bg-violet-100 text-violet-600 px-3 py-1.5 rounded-full font-bold shadow-sm active:scale-95 transition-transform">
+                    <button onClick={() => {  setShowMcpModal(true); }} className="text-[10px] bg-violet-100 text-violet-600 px-3 py-1.5 rounded-full font-bold shadow-sm active:scale-95 transition-transform">
                         管理
                     </button>
                 </>
@@ -3556,8 +3670,7 @@ const Settings: React.FC = () => {
         </SettingsSection>
 
         {/* ───────── 推送凭据 (VAPID) ───────── */}
-        {/* VAPID 公私钥, 与 Proactive / Instant Push 共用一份 — 独立成块, 避免再被当成 */}
-        {/* Instant Push 的子配置, 也避免两边 key 不一致互相抢同一个 pushManager 订阅. */}
+        {/* VAPID 公私钥：主动消息 2.0 部署 Worker 时用的就是这一对（一键部署自动沿用，手动部署照着填 env）。 */}
         {/* vapidReadyTick: VAPID 弹窗关闭后 +1, 让本节点 re-render 重读 isPushVapidReady(). */}
         <SettingsSection
             title="推送凭据 (VAPID)"
@@ -3576,7 +3689,7 @@ const Settings: React.FC = () => {
             }
         >
             <p className="text-xs text-slate-500 mb-3 leading-relaxed">
-                Proactive Push 和 Instant Push <b>共用同一份 VAPID 密钥对</b>。重新生成会让已开的推送失效，需要重新开启。
+                主动消息 2.0 的 Worker 用这对密钥签推送：一键部署会自动沿用，手动部署时把它们填进 Worker 的环境变量。重新生成之后要重新部署 Worker 才能生效。
             </p>
             <button
                 type="button"
@@ -3639,7 +3752,7 @@ const Settings: React.FC = () => {
                     disabled={ppBusy}
                     onClick={() => {
                         if (ppBusy) return;
-                        trackEvent('切换主动消息Push加速', { action: ppEnabled ? 'disable' : 'enable' });
+                        
                         if (ppEnabled) {
                             void doDisablePushAccelerator();
                         } else {
@@ -3659,12 +3772,7 @@ const Settings: React.FC = () => {
                     <button
                         onClick={() => {
                             // 全部是浏览器/设备状态的固定枚举，不含端点地址、也不含任何用户配置值
-                            trackEvent('刷新 Web Push 诊断', ppDiag ? {
-                                permission: ppDiag.permission,
-                                subscription: !ppDiag.endpoint ? 'none' : ppDiag.endpointDead ? 'dead' : 'active',
-                                swState: ppDiag.swState === 'activated' ? 'activated' : ppDiag.swState === 'none' ? 'none' : 'other',
-                                platform: ppDiag.capacitorNative ? 'capacitor_native' : ppDiag.iosNeedsPwa ? 'ios_needs_pwa' : 'normal',
-                            } : undefined);
+                            
                             void refreshPpDiag();
                         }}
                         className="text-[10px] px-2.5 py-1 rounded-full bg-white border border-slate-200 text-slate-500 hover:bg-slate-50"
@@ -3799,7 +3907,7 @@ const Settings: React.FC = () => {
             }
             actions={
                 <button
-                    onClick={() => { trackEvent('打开主动消息2.0配置'); setShowActiveMsg2GlobalModal(true); }}
+                    onClick={() => {  setShowActiveMsg2GlobalModal(true); }}
                     className="text-[10px] bg-violet-100 text-violet-600 px-3 py-1.5 rounded-full font-bold shadow-sm active:scale-95 transition-transform"
                 >
                     部署 / 配置
@@ -3809,6 +3917,7 @@ const Settings: React.FC = () => {
             <p className="text-xs text-slate-500 leading-relaxed">
                 把定时生成和推送放到你自己的 Cloudflare Worker。关掉网页或锁屏后，角色仍能按计划主动找你；支持一键部署、状态诊断和云端数据清理。
             </p>
+            <button type="button" onClick={() => setShowAmsgCloudData(true)} className="mt-3 w-full rounded-2xl border border-violet-100 bg-violet-50/60 px-4 py-3 text-left text-xs text-violet-700">云端数据管理</button>
         </SettingsSection>
 
         {/* ───────── Instant Push ───────── */}
@@ -3823,7 +3932,7 @@ const Settings: React.FC = () => {
             }
             actions={
                 <button
-                    onClick={() => { trackEvent('打开Instant Push配置'); setShowInstantModal(true); }}
+                    onClick={() => {  setShowInstantModal(true); }}
                     className="text-[10px] bg-indigo-100 text-indigo-600 px-3 py-1.5 rounded-full font-bold shadow-sm active:scale-95 transition-transform"
                 >
                     配置
@@ -3930,7 +4039,7 @@ const Settings: React.FC = () => {
                     不碰你和角色的任何对话、记忆、设定，不碰你输入的任何文字，不碰 API 和 MCP 配置。
                 </p>
                 <p className="text-xs text-slate-500 leading-relaxed">
-                    SullyOS 的功能已经多到我们自己也扫不完，但「哪些真的有人用、大家配置时卡在哪一步」
+                    SullyOS·糯米机 的功能已经多到我们自己也扫不完，但「哪些真的有人用、大家配置时卡在哪一步」
                     基本靠猜。留着这个开关开着能帮我们看清这些，好把精力放在有人用的地方。
                     不想参与就关掉，功能一点不受影响。
                 </p>
@@ -3955,14 +4064,14 @@ const Settings: React.FC = () => {
           footer={
               <div className="flex gap-2 w-full">
                   <button
-                      onClick={() => { trackEvent('在 Push 加速启用确认弹窗做出选择', { choice: 'cancel' }); setShowPpConfirm(false); }}
+                      onClick={() => {  setShowPpConfirm(false); }}
                       className="flex-1 py-3 bg-slate-100 text-slate-600 font-bold rounded-2xl"
                   >
                       取消
                   </button>
                   <button
                       onClick={() => {
-                          trackEvent('在 Push 加速启用确认弹窗做出选择', { choice: 'confirm' });
+                          
                           setShowPpConfirm(false);
                           void doEnablePushAccelerator();
                       }}
@@ -4057,7 +4166,7 @@ const Settings: React.FC = () => {
                   <button onClick={handleSaveCloudConfig} disabled={!cbUrl || !cbUsername || !cbPassword} className="py-2.5 bg-sky-500 rounded-xl text-xs font-bold text-white disabled:opacity-40">保存配置</button>
               </div>
               {cloudBackupConfig.enabled && (
-                  <button onClick={() => { trackEvent('关闭云端备份', { provider: cloudBackupConfig.provider === 'github' ? 'github' : 'webdav' }); updateCloudBackupConfig({ enabled: false }); setShowCloudModal(false); addToast('云端备份已关闭', 'info'); }} className="w-full py-2 text-[11px] text-red-400 font-medium">关闭云端备份</button>
+                  <button onClick={() => {  updateCloudBackupConfig({ enabled: false }); setShowCloudModal(false); addToast('云端备份已关闭', 'info'); }} className="w-full py-2 text-[11px] text-red-400 font-medium">关闭云端备份</button>
               )}
           </div>
       </Modal>
@@ -4095,7 +4204,7 @@ const Settings: React.FC = () => {
               <a
                   href="https://github.com/settings/tokens/new?scopes=repo&description=Sully%20%E5%A4%87%E4%BB%BD"
                   target="_blank" rel="noopener noreferrer"
-                  onClick={() => trackEvent('跳去 GitHub 创建 Token')}
+
                   className="block w-full py-3 bg-gradient-to-br from-slate-800 to-slate-900 text-white rounded-xl text-xs font-bold text-center shadow-sm active:scale-95 transition-all"
               >
                   ① 去 GitHub 创建 Token ↗
@@ -4146,7 +4255,7 @@ const Settings: React.FC = () => {
               )}
 
               <button
-                  onClick={() => { if (!ghShowAdvanced) trackEvent('展开 GitHub 高级选项'); setGhShowAdvanced(v => !v); }}
+                  onClick={() => { if (!ghShowAdvanced) {} setGhShowAdvanced(v => !v); }}
                   className="w-full text-[10px] text-slate-400 underline-offset-2 hover:underline"
               >
                   {ghShowAdvanced ? '收起高级选项 ▲' : '高级选项 ▼'}
@@ -4277,7 +4386,7 @@ const Settings: React.FC = () => {
                             className="flex-1 bg-white/50 border border-slate-200/60 rounded-xl px-4 py-2.5 text-sm font-mono focus:outline-primary focus:bg-white transition-all"
                         />
                         <button
-                            onClick={() => addingModelPreset ? saveModelToPreset(addingModelPreset, addingModelDraft) : closeModelPicker()}
+                            onClick={() => addingModelPreset ? saveModelToPreset(addingModelPreset, addingModelDraft) : confirmModelPicker(localModel)}
                             className="px-4 py-2.5 bg-primary text-white text-sm font-bold rounded-xl active:scale-95 transition-all"
                         >
                             {addingModelPreset ? '添加' : '确定'}
@@ -4445,6 +4554,10 @@ const Settings: React.FC = () => {
               <input value={newPresetName} onChange={e => setNewPresetName(e.target.value)} className="w-full bg-slate-100 rounded-xl px-4 py-3 text-sm focus:outline-primary" autoFocus placeholder="Name..." />
               <p className="text-[10px] text-slate-400">当前模型：<span className="font-mono text-slate-600">{localModel || '未填写'}</span></p>
               <ApiPricingEditor value={newPresetPricing} onChange={setNewPresetPricing} compact />
+              <label className="text-[10px] font-bold text-slate-400 block">API 预设分组（选填）</label>
+              <input aria-label="API 预设分组" value={newPresetGroup} onChange={e => setNewPresetGroup(e.target.value)} list="newPresetGroup-options" placeholder="例如：日常聊天 / 写作" className="w-full bg-slate-100 rounded-xl px-4 py-2.5 text-sm focus:outline-primary" />
+              <datalist id="newPresetGroup-options">{[...new Set(apiPresets.map(p => p.group).filter(Boolean))].map(group => <option key={group} value={group} />)}</datalist>
+              <p className="text-[10px] text-slate-400 leading-relaxed pt-1">会保存上面表单里的 URL / Key / Model，以及高级设置中的流式与温度。</p>
           </div>
       </Modal>
 
@@ -4519,6 +4632,9 @@ const Settings: React.FC = () => {
               <input value={editPresetUrl} onChange={event => setEditPresetUrl(event.target.value)} placeholder="https://..." className="w-full bg-slate-100 rounded-xl px-4 py-2.5 text-sm font-mono focus:outline-primary" />
               <SensitiveTextInput value={editPresetKey} onChange={event => setEditPresetKey(event.target.value)} placeholder="sk-..." className="w-full bg-slate-100 rounded-xl px-4 py-2.5 text-sm font-mono focus:outline-primary" />
               <input value={editPresetModel} onChange={event => setEditPresetModel(event.target.value)} placeholder="默认模型（保存时会加入模型列表）" className="w-full bg-slate-100 rounded-xl px-4 py-2.5 text-sm font-mono focus:outline-primary" />
+                  <label className="text-[10px] font-bold text-slate-400 block">API 预设分组（选填）</label>
+              <input aria-label="API 预设分组" value={editPresetGroup} onChange={e => setEditPresetGroup(e.target.value)} list="editPresetGroup-options" placeholder="例如：日常聊天 / 写作" className="w-full bg-slate-100 rounded-xl px-4 py-2.5 text-sm focus:outline-primary" />
+              <datalist id="editPresetGroup-options">{[...new Set(apiPresets.map(p => p.group).filter(Boolean))].map(group => <option key={group} value={group} />)}</datalist>
               <div className="rounded-xl border border-slate-100 bg-slate-50/70 px-3 py-3 space-y-3">
                   <button type="button" aria-pressed={editPresetStream} onClick={() => setEditPresetStream(value => !value)} className="w-full flex items-center justify-between text-xs font-bold text-slate-500">
                       <span>流式输出（随预设保存）</span><span>{editPresetStream ? '开启' : '关闭'}</span>
@@ -4535,6 +4651,28 @@ const Settings: React.FC = () => {
               <p className="text-[10px] text-slate-400">
                   URL / Key / 流式 / 温度由这条预设下的所有模型共用；只有价格按模型分别保存。
                   {editingPresetId === activePresetId ? ' 这条正在使用中，保存后当前配置会同步更新。' : ''}
+              </p>
+          </div>
+      </Modal>
+
+      {/* 保存后问要不要存回预设 */}
+      <Modal
+          isOpen={!!presetWriteback}
+          title="存回预设？"
+          onClose={() => setPresetWriteback(null)}
+          footer={
+              <>
+                  <button onClick={() => setPresetWriteback(null)} className="flex-1 py-3 bg-slate-100 text-slate-500 font-bold rounded-2xl active:scale-95 transition-transform">不保存</button>
+                  <button onClick={confirmPresetWriteback} className="flex-1 py-3 bg-primary text-white font-bold rounded-2xl active:scale-95 transition-transform">保存</button>
+              </>
+          }
+      >
+          <div className="space-y-2 text-sm text-slate-600 leading-relaxed">
+              <p>
+                  当前配置已经和预设「{apiPresets.find(item => item.id === presetWriteback?.presetId)?.name ?? ''}」不一样了。
+              </p>
+              <p className="text-xs text-slate-400">
+                  若不保存，当前配置为临时配置，切换预设后消失。若保存，则用当前配置覆盖这条预设原来的内容。
               </p>
           </div>
       </Modal>
@@ -4563,6 +4701,7 @@ const Settings: React.FC = () => {
           footer={<button onClick={handleSaveRealtimeConfig} className="w-full py-3 bg-violet-500 text-white font-bold rounded-2xl shadow-lg">保存配置</button>}
       >
           <div className="space-y-5 max-h-[60vh] overflow-y-auto no-scrollbar">
+              <UserHolidaySettings value={rtUserHolidays} onChange={setRtUserHolidays} />
               {/* 天气配置 */}
               <div className="bg-emerald-50/50 p-4 rounded-2xl space-y-3">
                   <div className="flex items-center justify-between">
@@ -4585,7 +4724,8 @@ const Settings: React.FC = () => {
                               <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1">城市</label>
                               <input type="text" value={rtWeatherCity} onChange={e => setRtWeatherCity(e.target.value)} className="w-full bg-white/80 border border-emerald-200 rounded-xl px-3 py-2 text-sm" placeholder="北京 / Beijing / Shanghai" />
                           </div>
-                          <button onClick={testWeatherApi} className="w-full py-2 bg-emerald-100 text-emerald-600 text-xs font-bold rounded-xl active:scale-95 transition-transform">测试天气API</button>
+<button onClick={testWeatherApi} className="w-full py-2 bg-emerald-100 text-emerald-600 text-xs font-bold rounded-xl active:scale-95 transition-transform">测试天气API</button>
+                          {renderRtTestStatus('weather')}
                       </div>
                   )}
               </div>
@@ -4751,6 +4891,7 @@ const Settings: React.FC = () => {
                               <input type="text" value={rtNotionDbId} onChange={e => setRtNotionDbId(e.target.value)} className="w-full bg-white/80 border border-orange-200 rounded-xl px-3 py-2 text-sm font-mono" placeholder="从数据库URL复制" />
                           </div>
                           <button onClick={testNotionApi} className="w-full py-2 bg-orange-100 text-orange-600 text-xs font-bold rounded-xl active:scale-95 transition-transform">测试Notion连接</button>
+                          {renderRtTestStatus('notion')}
                           <div className="border-t border-orange-200/50 pt-2 mt-2">
                               <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1">笔记数据库 ID（可选）</label>
                               <input type="text" value={rtNotionNotesDbId} onChange={e => setRtNotionNotesDbId(e.target.value)} className="w-full bg-white/80 border border-orange-200 rounded-xl px-3 py-2 text-sm font-mono" placeholder="用户日常笔记的数据库ID" />
@@ -4803,6 +4944,7 @@ const Settings: React.FC = () => {
                               <input type="text" value={rtFeishuTableId} onChange={e => setRtFeishuTableId(e.target.value)} className="w-full bg-white/80 border border-indigo-200 rounded-xl px-3 py-2 text-sm font-mono" placeholder="tblxxxxxxxx" />
                           </div>
                            <button onClick={testFeishuApi} className="w-full py-2 bg-indigo-100 text-indigo-600 text-xs font-bold rounded-xl active:scale-95 transition-transform">测试读取连接</button>
+                          {renderRtTestStatus('feishu')}
                            <p className="rounded-xl bg-amber-50 px-3 py-2 text-[10px] leading-relaxed text-amber-700">
                                测试不会新增记录，只验证凭据、读取权限和 Table ID。读取成功但写入提示 Forbidden，说明还缺新增记录权限。
                            </p>
@@ -4841,6 +4983,7 @@ const Settings: React.FC = () => {
                               <input value={rtXhsLocalUrl} onChange={e => setRtXhsLocalUrl(e.target.value)} className="w-full bg-white/80 border border-red-200 rounded-xl px-3 py-2 text-[11px] font-mono" placeholder="http://localhost:18060/mcp" />
                           </div>
                           <button onClick={testXhsMcp} className="w-full py-2 bg-red-100 text-red-600 text-xs font-bold rounded-xl active:scale-95 transition-transform">测试连接</button>
+                          {renderRtTestStatus('xhs-local')}
                           <div className="grid grid-cols-2 gap-2">
                               <div>
                                   <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1">小红书昵称</label>
@@ -4884,6 +5027,7 @@ const Settings: React.FC = () => {
                               <textarea value={rtXhsCookie} onChange={e => { setRtXhsCookie(e.target.value); setRtXhsPlatform(undefined); }} rows={2} className="w-full bg-white/80 border border-rose-200 rounded-xl px-3 py-2 text-[10px] font-mono resize-y" placeholder="a1=...; web_session=...; （从浏览器登录后复制完整 cookie）" />
                           </div>
                           <button onClick={testXhsMcp} className="w-full py-2 bg-rose-100 text-rose-600 text-xs font-bold rounded-xl active:scale-95 transition-transform">测试连接</button>
+                          {renderRtTestStatus('xhs-lite')}
                           <div className="grid grid-cols-2 gap-2">
                               <div>
                                   <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1">小红书昵称</label>
@@ -4895,11 +5039,11 @@ const Settings: React.FC = () => {
                               </div>
                           </div>
                           <div>
-                              <button type="button" onClick={() => { if (!rtXhsGuideOpen) trackEvent('展开获取 cookie 教程'); setRtXhsGuideOpen(v => !v); }} className="text-[11px] font-bold text-rose-600 underline">📖 点击获取 cookie 教程 {rtXhsGuideOpen ? '▲' : '▼'}</button>
+                              <button type="button" onClick={() => { if (!rtXhsGuideOpen) {} setRtXhsGuideOpen(v => !v); }} className="text-[11px] font-bold text-rose-600 underline">📖 点击获取 cookie 教程 {rtXhsGuideOpen ? '▲' : '▼'}</button>
                               {rtXhsGuideOpen && (
                                   <div className="mt-1 bg-white/70 rounded-lg p-2 space-y-1.5">
                                       <pre className="text-[10px] text-slate-600 whitespace-pre-wrap font-sans leading-relaxed">{XHS_COOKIE_GUIDE}</pre>
-                                      <button type="button" onClick={async () => { try { await navigator.clipboard.writeText(XHS_COOKIE_GUIDE); trackEvent('复制 cookie 教程文本', { result: 'copied' }); addToast('教程已复制，可粘贴去问别的 AI', 'success'); } catch { trackEvent('复制 cookie 教程文本', { result: 'clipboard-failed' }); addToast('复制失败，请长按手动选择', 'error'); } }} className="w-full py-1.5 bg-rose-100 text-rose-600 text-[11px] font-bold rounded-lg active:scale-95 transition-transform">复制教程</button>
+                                      <button type="button" onClick={async () => { try { await navigator.clipboard.writeText(XHS_COOKIE_GUIDE);  addToast('教程已复制，可粘贴去问别的 AI', 'success'); } catch {  addToast('复制失败，请长按手动选择', 'error'); } }} className="w-full py-1.5 bg-rose-100 text-rose-600 text-[11px] font-bold rounded-lg active:scale-95 transition-transform">复制教程</button>
                                   </div>
                               )}
                           </div>
@@ -4990,12 +5134,6 @@ const Settings: React.FC = () => {
                   )}
               </div>
 
-              {/* 测试状态 */}
-              {rtTestStatus && (
-                  <div className={`p-3 rounded-xl text-xs font-medium text-center ${rtTestStatus.includes('成功') ? 'bg-emerald-100 text-emerald-700' : rtTestStatus.includes('失败') || rtTestStatus.includes('错误') ? 'bg-red-100 text-red-600' : 'bg-slate-100 text-slate-600'}`}>
-                      {rtTestStatus}
-                  </div>
-              )}
           </div>
       </Modal>
 
@@ -5026,7 +5164,7 @@ const Settings: React.FC = () => {
               <div className="bg-sky-50/60 rounded-xl p-3 space-y-1.5">
                   <p className="font-bold text-sky-700">🏠 为什么服务器要自己准备？</p>
                   <p>
-                      SullyOS 的核心前端可以静态部署，也没有强制所有 MCP 流量经过项目方的中央代理。
+                      SullyOS·糯米机 的核心前端可以静态部署，也没有强制所有 MCP 流量经过项目方的中央代理。
                       URL 和凭据默认留在本机，工具服务器需要你自己准备，三选一：
                   </p>
                   <p>
@@ -5049,15 +5187,15 @@ const Settings: React.FC = () => {
                       href={MCP_USER_GUIDE_URL}
                       target="_blank"
                       rel="noopener noreferrer"
-                      onClick={() => trackEvent('跳转 MCP 完整教程')}
+
                       className="block w-full py-2.5 bg-violet-500 text-white text-center text-xs font-bold rounded-xl active:scale-95 transition-transform"
                   >📖 打开完整教程（含部署示例）</a>
                   <button
                       type="button"
                       onClick={async () => {
-                          const text = `请阅读这份教程，然后一步一步教我把 MCP 工具服务器接入 SullyOS。先问清楚我想接什么工具、准备部署在哪（云端/本地电脑/本地+内网穿透），再给对应路线的步骤：\n${MCP_USER_GUIDE_URL}`;
-                          try { await navigator.clipboard.writeText(text); trackEvent('复制 MCP 部署指引给 AI', { result: 'copied' }); addToast('已复制，去粘贴给你的 AI 吧', 'success'); }
-                          catch { trackEvent('复制 MCP 部署指引给 AI', { result: 'clipboard-failed' }); addToast('复制失败，请手动复制教程链接', 'error'); }
+                          const text = `请阅读这份教程，然后一步一步教我把 MCP 工具服务器接入 SullyOS·糯米机。先问清楚我想接什么工具、准备部署在哪（云端/本地电脑/本地+内网穿透），再给对应路线的步骤：\n${MCP_USER_GUIDE_URL}`;
+                          try { await navigator.clipboard.writeText(text);  addToast('已复制，去粘贴给你的 AI 吧', 'success'); }
+                          catch {  addToast('复制失败，请手动复制教程链接', 'error'); }
                       }}
                       className="w-full py-2.5 bg-violet-100 text-violet-700 text-xs font-bold rounded-xl active:scale-95 transition-transform"
                   >🤖 复制链接给你的 AI，让它带你部署</button>
@@ -5073,8 +5211,8 @@ const Settings: React.FC = () => {
           onClose={() => setShowResetConfirm(false)}
           footer={
               <div className="flex gap-2 w-full">
-                  <button onClick={() => setShowResetConfirm(false)} className="flex-1 py-3 bg-slate-100 text-slate-600 font-bold rounded-2xl">取消</button>
-                  <button onClick={confirmReset} className="flex-1 py-3 bg-red-500 text-white font-bold rounded-2xl shadow-lg shadow-red-200">确认格式化</button>
+                  <button onClick={() => setShowResetConfirm(false)} disabled={resetting} className="flex-1 py-3 bg-slate-100 text-slate-600 font-bold rounded-2xl disabled:opacity-50">取消</button>
+                  <button onClick={confirmReset} disabled={resetting} className="flex-1 py-3 bg-red-500 text-white font-bold rounded-2xl shadow-lg shadow-red-200 disabled:opacity-60">{resetting ? '清理中…' : '确认格式化'}</button>
               </div>
           }
       >
@@ -5082,6 +5220,32 @@ const Settings: React.FC = () => {
               <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-12 h-12 text-red-500"><path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z" /></svg>
               <p className="text-center text-sm text-slate-600 font-medium">
                   这将<span className="text-red-500 font-bold">永久删除</span>所有角色、聊天记录和设置，且无法恢复！
+              </p>
+              <p className="text-center text-xs text-slate-400">
+                  主动消息 2.0 在云端存的定时任务、角色上下文和 API 凭据也会一起清掉。
+              </p>
+          </div>
+      </Modal>
+
+      {/* 云端没清干净：本地还一个字节都没动，让用户决定 */}
+      <Modal
+          isOpen={!!resetCloudFailure}
+          title="云端还没清干净"
+          onClose={() => setResetCloudFailure(null)}
+          footer={
+              <div className="flex gap-2 w-full">
+                  <button onClick={() => setResetCloudFailure(null)} disabled={resetting} className="flex-1 py-3 bg-slate-100 text-slate-600 font-bold rounded-2xl disabled:opacity-50">先不重置</button>
+                  <button onClick={confirmResetAnyway} disabled={resetting} className="flex-1 py-3 bg-red-500 text-white font-bold rounded-2xl shadow-lg shadow-red-200 disabled:opacity-60">{resetting ? '清理中…' : '仍然重置'}</button>
+              </div>
+          }
+      >
+          <div className="flex flex-col gap-3 py-2 text-sm text-slate-600">
+              <p>{resetCloudFailure?.detail}。本地数据一个字节都还没动，你可以检查一下网络和 Worker 连接再试一次。</p>
+              <p className="text-xs text-slate-400 break-all">
+                  Worker 地址：{resetCloudFailure?.workerUrl}
+              </p>
+              <p className="text-xs text-rose-500">
+                  仍然重置的话，本地会归零，而云端那些没清掉的定时任务还会到点运行、消耗你的 API 额度。重置之后本地不再保存连接信息，只能去 Cloudflare 后台手动删掉那个 D1 数据库。
               </p>
           </div>
       </Modal>
@@ -5096,8 +5260,10 @@ const Settings: React.FC = () => {
         onClose={() => setShowActiveMsg2GlobalModal(false)}
         addToast={addToast}
         realtimeConfig={realtimeConfig}
+        onOpenCloudData={() => { setShowActiveMsg2GlobalModal(false); setShowAmsgCloudData(true); }}
         onOpenVapid={() => { setShowActiveMsg2GlobalModal(false); setShowVapidModal(true); }}
       />
+      <AmsgCloudDataModal isOpen={showAmsgCloudData} onClose={() => setShowAmsgCloudData(false)} characters={characters} addToast={addToast} />
       <PushVapidSettingsModal
         open={showVapidModal}
         onClose={() => { setShowVapidModal(false); setVapidReadyTick((n) => n + 1); }}

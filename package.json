@@ -4,8 +4,8 @@
   "type": "module",
   "license": "SEE LICENSE IN LICENSE",
   "scripts": {
-    "dev": "vite",
-    "build": "pnpm run build:workers && vite build",
+    "dev": "node scripts/build-chat-preview-css.mjs && vite",
+    "build": "node scripts/build-chat-preview-css.mjs && pnpm run build:workers && vite build",
     "build:capacitor": "powershell -ExecutionPolicy Bypass -File scripts/sync-tiao-capacitor.ps1",
     "preview": "vite preview",
     "cap:sync": "cap sync",
@@ -15,7 +15,9 @@
     "build:workers": "node scripts/build-workers.mjs",
     "test": "vitest",
     "test:run": "vitest run",
-    "verify:upstream-merge": "node scripts/verify-upstream-merge.mjs"
+    "verify:upstream-merge": "node scripts/verify-upstream-merge.mjs",
+    "wardrobe:check": "node art/chibi/check-wardrobe.mjs",
+    "build:chat-preview": "node scripts/build-chat-preview-css.mjs"
   },
   "dependencies": {
     "@capacitor-community/speech-recognition": "^6.0.1",
@@ -36,9 +38,9 @@
     "@phosphor-icons/react": "^2.1.10",
     "@pixi/sound": "^6.0.1",
     "@pixiv/three-vrm": "3.5.3",
-    "@rei-standard/amsg-client": "2.9.0-next.14",
+    "@rei-standard/amsg-client": "2.9.0-next.15",
     "@rei-standard/amsg-instant": "0.11.0-next.6",
-    "@rei-standard/amsg-shared": "0.4.0-next.8",
+    "@rei-standard/amsg-shared": "0.4.0-next.11",
     "@rei-standard/amsg-sw": "2.4.0-next.6",
     "@rei-standard/blob-store": "0.1.0-next.2",
     "@zip.js/zip.js": "^2.8.43",
@@ -53,11 +55,16 @@
     "react-dom": "^18.2.0",
     "three": "^0.185.1",
     "untitled-pixi-live2d-engine": "^1.3.5",
-    "web-push": "^3.6.7"
+    "web-push": "^3.6.7",
+    "animal-island-ui": "2.1.0",
+    "classnames": "^2.5.1",
+    "html2canvas": "1.4.1",
+    "pixi-filters": "6.1.5",
+    "three-mesh-bvh": "0.9.15"
   },
   "devDependencies": {
     "@capacitor/cli": "^6.0.0",
-    "@rei-standard/amsg-server": "2.6.0-next.27",
+    "@rei-standard/amsg-server": "2.6.0-next.34",
     "@types/qrcode": "^1.5.6",
     "@types/react": "^18.2.43",
     "@types/react-dom": "^18.2.17",
@@ -68,6 +75,8 @@
     "jsdom": "^30.0.1",
     "typescript": "^5.3.3",
     "vite": "^5.0.10",
-    "vitest": "^2.1.9"
+    "vitest": "^2.1.9",
+    "mmd-parser": "1.0.4",
+    "tailwindcss": "3.4.17"
   }
 }

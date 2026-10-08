@@ -1,6 +1,6 @@
 import React from 'react';
 import { WarningCircle, X } from '@phosphor-icons/react';
-import { trackEvent } from '../../utils/analytics';
+
 
 const ResetCityDialog: React.FC<{
     participantCount: number;
@@ -72,7 +72,7 @@ const ResetCityDialog: React.FC<{
                         取消
                     </button>
                     <button
-                        onClick={() => { onArchiveAndReset(); trackEvent('重置城市', { mode: 'archive' }); }}
+                        onClick={() => { onArchiveAndReset();  }}
                         disabled={processing}
                         className="retro-btn retro-btn-primary w-full"
                         style={{ padding: '7px 12px', opacity: processing ? 0.6 : 1 }}
@@ -80,7 +80,7 @@ const ResetCityDialog: React.FC<{
                         {processing ? '正在生成小结...' : '确定'}
                     </button>
                     <button
-                        onClick={() => { onDirectReset(); trackEvent('重置城市', { mode: 'direct' }); }}
+                        onClick={() => { onDirectReset();  }}
                         disabled={processing}
                         className="retro-btn w-full"
                         style={{

@@ -7,7 +7,7 @@ describe('DateSession CG architecture contract', () => {
 
     it('routes generation through the hidden planner and removes the chat-message relay', () => {
         expect(source).toContain('generateMeetingCgViaChatPlanner({');
-        expect(source).toContain('meetingMessages: sessionMessages');
+        expect(source).toContain('meetingMessages: messages');
         expect(source).not.toContain('buildMeetingCgPrompt(');
         expect(source).not.toContain('persistMcpGeneratedImages({');
         expect(source).not.toContain('getRecentMessagesByCharId(char.id, 200, true)');

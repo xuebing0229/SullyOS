@@ -1,3 +1,4 @@
+import { ContextBuilder, type CharacterContextInput } from '../utils/context';
 import { loadCharacterContextMessages } from '../utils/chatContextRange';
 /**
  * LifeSimApp — 都市模拟人生 · 2026现代版
@@ -26,7 +27,7 @@ import { buildFallbackLifeSimSessionSummary, buildLifeSimSessionSummaryPrompt } 
 import { getLifeSimToneEmoji } from '../utils/lifeSimTone';
 // Offline simulation removed — random events didn't match the theme
 import { extractJson, safeFetchJson } from '../utils/safeApi';
-import { trackEvent } from '../utils/analytics';
+
 import TokenImg from '../components/os/TokenImg';
 import { DB } from '../utils/db';
 import { injectMemoryPalace } from '../utils/memoryPalace/pipeline';
@@ -75,7 +76,8 @@ const AI_MAX_RETRIES = 2;
 
 async function callCharAI(
     apiConfig: { baseUrl: string; apiKey: string; model: string },
-    systemPrompt: string
+    systemPrompt: string,
+    characterContext?: CharacterContextInput,
 ): Promise<string> {
     let lastError: Error | null = null;
 
@@ -88,7 +90,9 @@ async function callCharAI(
                     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiConfig.apiKey}` },
                     body: JSON.stringify({
                         model: apiConfig.model,
-                        messages: [{ role: 'user', content: systemPrompt }],
+                        messages: characterContext
+                            ? (await ContextBuilder.buildCharacterRequest(characterContext, [{ role: 'user', content: systemPrompt }]))
+                            : [{ role: 'user', content: systemPrompt }],
                         temperature: 0.85, max_tokens: 8192, stream: false,
                         response_format: { type: 'json_object' },
                     }),
@@ -207,8 +211,7 @@ const LifeSimApp: React.FC = () => {
             const canUseApi = !!(resolvedApiConfig?.baseUrl && resolvedApiConfig?.apiKey && resolvedApiConfig?.model);
 
             if (canUseApi) {
-                const raw = await callCharAI(
-                    { baseUrl: resolvedApiConfig.baseUrl, apiKey: resolvedApiConfig.apiKey, model: resolvedApiConfig.model },
+                const raw = await callCharAI({ baseUrl: resolvedApiConfig.baseUrl, apiKey: resolvedApiConfig.apiKey, model: resolvedApiConfig.model },
                     buildWorldDramaPlannerPrompt(userProfile, state, state.actionLog)
                 );
                 let rawJson = extractJson(raw);
@@ -419,6 +422,7 @@ const LifeSimApp: React.FC = () => {
     // ── CHAR回合引擎 ──────────────────────────────────────────
 
     const runCharTurns = useCallback(async (initialState: LifeSimState, seededReplayActions: SimAction[] = []) => {
+
         if (!userProfile) return;
         let s = deepClone(initialState);
         const replayActions: SimAction[] = [...seededReplayActions];
@@ -445,7 +449,7 @@ const LifeSimApp: React.FC = () => {
                     const systemPrompt = buildCharTurnSystemPrompt(char, userProfile, chatHistory, s, s.actionLog);
                     const raw = await callCharAI(
                         { baseUrl: resolvedApiConfig.baseUrl, apiKey: resolvedApiConfig.apiKey, model: resolvedApiConfig.model },
-                        systemPrompt
+                        systemPrompt, { char, user: userProfile }
                     );
 
                     rawJson = extractJson(raw);
@@ -593,7 +597,7 @@ const LifeSimApp: React.FC = () => {
     const handleWatch = useCallback(async () => {
         if (!gameState) return;
 
-        trackEvent('吃瓜围观推进一轮');
+        
 
         const userActor = userProfile?.name || '你';
         const actionDesc = buildUserActionDescription('DO_NOTHING', userActor, {});
@@ -777,8 +781,7 @@ const LifeSimApp: React.FC = () => {
             const canUseApi = !!(userProfile && resolvedApiConfig?.baseUrl && resolvedApiConfig?.apiKey && resolvedApiConfig?.model);
 
             if (canUseApi && userProfile) {
-                const raw = await callCharAI(
-                    { baseUrl: resolvedApiConfig.baseUrl, apiKey: resolvedApiConfig.apiKey, model: resolvedApiConfig.model },
+                const raw = await callCharAI({ baseUrl: resolvedApiConfig.baseUrl, apiKey: resolvedApiConfig.apiKey, model: resolvedApiConfig.model },
                     buildLifeSimSessionSummaryPrompt(userProfile, participantNames, gameState.actionLog)
                 );
                 let rawJson = extractJson(raw);
@@ -1005,7 +1008,7 @@ const LifeSimApp: React.FC = () => {
                             R{gameState.turnNumber} D{gameState.day ?? 1}
                         </span>
                         <button
-                            onClick={() => { trackEvent('打开城市设置面板'); setShowSettings(true); }}
+                            onClick={() => {  setShowSettings(true); }}
                             className="flex items-center justify-center relative"
                             style={{
                                 width: 44, height: 44, borderRadius: 7,
@@ -1186,7 +1189,7 @@ const LifeSimApp: React.FC = () => {
                         ['drama', '动态', MaskSad],
                         ['relations', '关系', HeartHalf],
                     ] as const).map(([tab, label, Icon]) => (
-                        <button key={tab} onClick={() => { trackEvent('切换城市面板标签', { tab }); setActiveTab(tab as any); }}
+                        <button key={tab} onClick={() => {  setActiveTab(tab as any); }}
                             className="flex items-center gap-1 px-3 py-1"
                             style={{
                                 fontSize: 10, fontWeight: 700,

@@ -18,7 +18,7 @@ import {
     type BreakdownProgress,
 } from '../../utils/storageStats';
 import { optimizeResourceStorage, type OptimizeProgress, type OptimizeResult } from '../../utils/storageOptimize';
-import { trackEvent } from '../../utils/analytics';
+
 
 /**
  * 算好的结果放模块级缓存：SettingsSection 收起时会把子树整个卸载，
@@ -134,7 +134,7 @@ const StorageUsagePanel: React.FC = () => {
     const handleToggle = useCallback(() => {
         const next = !expanded;
         setExpanded(next);
-        if (next) trackEvent('查看存储占用明细');
+        if (next) {}
         if (next && !cachedBreakdown && !computing) void runBreakdown();
     }, [expanded, computing, runBreakdown]);
 
@@ -169,7 +169,7 @@ const StorageUsagePanel: React.FC = () => {
         try {
             const granted = await requestPersistentStorage();
             // 成败都记一笔：要是这个按钮的通过率常年是 0，那它就是个摆设，得换做法。
-            trackEvent('申请持久化存储许可', { 结果: granted ? '通过' : '没通过' });
+            
             if (!aliveRef.current) return;
             setAttempt(granted ? 'granted' : 'denied');
             await refreshOverview();
@@ -252,8 +252,8 @@ const StorageUsagePanel: React.FC = () => {
                     {persisted === true
                         ? '系统清理存储空间时不会动你的数据。'
                         : attempt === 'denied'
-                            ? '浏览器这次没批准。把 SullyOS 装到主屏、或者允许通知之后再点一次，通过的概率会明显变高。'
-                            : '存储吃紧时系统可能把你的数据一起清掉。把 SullyOS 装到主屏、或者允许通知，能提高申请成功率。'}
+                            ? '浏览器这次没批准。把 SullyOS·糯米机 装到主屏、或者允许通知之后再点一次，通过的概率会明显变高。'
+                            : '存储吃紧时系统可能把你的数据一起清掉。把 SullyOS·糯米机 装到主屏、或者允许通知，能提高申请成功率。'}
                 </p>
             </div>
 

@@ -11,6 +11,7 @@ import { loadCharacterContextRange } from './chatContextRange';
 import { ChatPrompts } from './chatPrompts';
 import { cleanApiMessages, flattenImageContentParts } from './promptMessageCleanup';
 import { getFlowNarrativeKey, isScheduleFeatureOn } from './scheduleFeature';
+import {buildHomeSchedulePrompt, hasHomeSchedulePositions, parseHomePosition} from './homeSchedule';
 
 export { getFlowNarrativeKey, isScheduleFeatureOn } from './scheduleFeature';
 
@@ -251,6 +252,7 @@ export async function generateDailyScheduleForChar(
     apiConfig: APIConfig,
     forceRegenerate: boolean = false
 ): Promise<DailySchedule | null> {
+
     // 总开关关闭时直接短路，避免副 API / 兜底调用
     if (!isScheduleFeatureOn(char)) return null;
 
@@ -290,23 +292,18 @@ export async function generateDailyScheduleForChar(
     }
 
     // 含详细记忆，并让关键词世界书使用与私聊相同的消息窗口激活。
-    const baseContext = ContextBuilder.buildCoreContext(
-        char,
-        userProfile,
-        true,
-        undefined,
-        undefined,
-        { worldbookMessages: historyMessages },
-    );
+    const characterContextInput = { char, user: userProfile, includeDetailedMemories: true, timeOptions: { worldbookMessages: historyMessages } };
+
 
     const chatHistoryBlock = formatChatHistoryForSchedule(historyMessages, char, userProfile, emojis);
 
     const dayOfWeek = ['日', '一', '二', '三', '四', '五', '六'][now.getDay()];
 
     const style = char.scheduleStyle || 'lifestyle';
-    const prompt = style === 'mindful'
-        ? buildMindfulPrompt(baseContext, char, userProfile, today, dayOfWeek, chatHistoryBlock)
-        : buildLifestylePrompt(baseContext, char, userProfile, today, dayOfWeek, chatHistoryBlock);
+    const homePrompt = buildHomeSchedulePrompt(char);
+    const prompt = (style === 'mindful'
+        ? buildMindfulPrompt('', char, userProfile, today, dayOfWeek, chatHistoryBlock)
+        : buildLifestylePrompt('', char, userProfile, today, dayOfWeek, chatHistoryBlock)) + homePrompt;
 
     try {
         const data = await executeScheduleChatCompletion(
@@ -315,7 +312,7 @@ export async function generateDailyScheduleForChar(
             '生成当日日程',
             {
                 model: apiConfig.model,
-                messages: [{ role: 'user', content: prompt }],
+                messages: (await ContextBuilder.buildCharacterRequest(characterContextInput, [{ role: 'user', content: prompt }])),
                 temperature: 0.85,
                 max_tokens: 8000,
                 stream: false,
@@ -330,14 +327,17 @@ export async function generateDailyScheduleForChar(
             console.error('[Schedule] Generation failed: 无法从模型输出解析出JSON:', content.slice(0, 200));
             return null;
         }
-        const slots: ScheduleSlot[] = (parsed.slots || []).map((s: any) => ({
+        const slots: ScheduleSlot[] = (parsed.slots || []).map((s: any) => {
+            const homePosition = parseHomePosition(s.homePosition, char);
+            return {
             startTime: s.startTime || '00:00',
             activity: s.activity || '',
             description: s.description,
             emoji: s.emoji,
-            location: s.location,
+            location: homePosition?.kind === 'home' ? char.home3D?.rooms.find(room => room.id === homePosition.roomId)?.name : typeof s.location === 'string' ? s.location : homePosition?.kind === 'away' ? '外出' : undefined,
+            homePosition,
             innerThought: s.innerThought,
-        })).filter((s: ScheduleSlot) => s.activity);
+        };}).filter((s: ScheduleSlot) => s.activity);
 
         if (slots.length === 0) return null;
 
@@ -366,6 +366,8 @@ export async function generateDailyScheduleForChar(
             flowNarrative,
         };
 
+        // Missing or stale room IDs must not overwrite a usable old schedule.
+        if (homePrompt && !hasHomeSchedulePositions(schedule, char)) return null;
         await DB.saveDailySchedule(schedule);
         return schedule;
     } catch (e) {

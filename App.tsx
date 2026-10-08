@@ -1,3 +1,4 @@
+import Amsg2DebugPanel from './components/Amsg2DebugPanel';
 
 import './utils/configCheckFetchGuard';
 import GameHallAutoplayHost from './components/GameHallAutoplayHost';
@@ -11,6 +12,7 @@ import DevDebugPanel from './components/DevDebugPanel';
 import VRBroadcast from './components/VRBroadcast';
 import WorldBroadcast from './components/WorldBroadcast';
 import ChatBroadcast from './components/ChatBroadcast';
+import WebUpdateNotice from './components/WebUpdateNotice';
 import { isIOSStandaloneWebApp } from './utils/iosStandalone';
 import { installDevDebugLifecycleCapture } from './utils/devDebug';
 
@@ -45,6 +47,10 @@ const App: React.FC = () => {
             </MusicProvider>
             <EatAppHost />
             <ChatImageViewerHost />
+            {/* 挂在 Provider 里面才能直接读 characters（省掉轮询 IndexedDB），
+                面板自身用 portal 渲染到 body，绕开上面那层 transform 对 fixed 定位的影响。 */}
+            <Amsg2DebugPanel />
+            <WebUpdateNotice />
           </OSProvider>
         </div>
       </div>

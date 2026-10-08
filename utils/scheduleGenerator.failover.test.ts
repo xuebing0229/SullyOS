@@ -24,7 +24,7 @@ vi.mock('./apiFailover', () => ({
     executeOpenAiChatPlan: mocks.executeOpenAiChatPlan,
 }));
 vi.mock('./context', () => ({
-    ContextBuilder: { buildCoreContext: mocks.buildCoreContext },
+    ContextBuilder: { buildCoreContext: mocks.buildCoreContext, buildCharacterRequest: async (_input:any, messages:any[])=>[{role:'system',content:await mocks.buildCoreContext()},...messages] },
 }));
 vi.mock('./db', () => ({
     DB: {

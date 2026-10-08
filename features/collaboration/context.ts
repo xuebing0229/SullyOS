@@ -123,7 +123,7 @@ export const buildCollaborationContextSnapshot = async ({
   if (mode === 'focused') {
     return [
       '[System: Focused Collaboration Character Context]\n',
-      ContextBuilder.buildRoleSettingsContext(char, { skipMemories: true }),
+      await ContextBuilder.buildRoleSettingsContext(char, { skipMemories: true }),
       char.description?.trim() ? `### 用户对你的备注/称呼\n${char.description.trim()}\n\n` : '',
       `### 互动对象\n- 名字: ${user.name}\n- 设定/备注: ${user.bio || '无'}\n\n`,
       `### 当前模式\n用户选择了“中度协同”：保留完整核心人格、世界观和用户设定；不载入世界书、用户印象或其它协同窗口。任务相关记忆会在每一次发送时重新召回，最多 5 条。\n\n`,
@@ -144,7 +144,7 @@ export const buildCollaborationContextSnapshot = async ({
     roomPlatesInjection: '',
   };
   return [
-    ContextBuilder.buildCoreContext(staticChar, user, true, undefined, undefined, {
+    await ContextBuilder.buildCoreContext(staticChar, user, true, undefined, undefined, {
       conversational: true,
       skipTimeAwareness: false,
     }),
@@ -240,7 +240,13 @@ export const buildLiveCollaborationChatContext = async ({
       COLLABORATION_PROTOCOL,
       collaborationRichOutputPrompt(char, emojis, categories),
     ].join(''),
-    chatContextSnapshot,
+    chatContextSnapshot: [
+      { role: 'system', content: history.length > 0
+        ? '### ChatApp 私聊记录开始\n以下是已读取的当前角色私聊记录，可以用于本次任务；它们不是本协同窗口的历史。只能引用实际提供的内容，范围以外的对话未提供。'
+        : '### ChatApp 私聊记录\n本次未带入私聊原文（用户关闭读取，或当前设定范围内无记录）。不要声称看到了未提供的对话。' },
+      ...chatContextSnapshot,
+      { role: 'system', content: '### ChatApp 私聊记录结束\n下方进入当前协同窗口；用户提及 ChatApp 时，请先查阅上方已提供的私聊记录，而不是仅凭窗口独立就判定不可见。' },
+    ],
   };
 };
 
@@ -409,7 +415,7 @@ export const buildCollaborationModelMessages = (
   return [
     ...(cleanChatContextSnapshot.length > 0 ? cleanChatContextSnapshot : [{ role: 'system' as const, content: cleanContextSnapshot }]),
     ...(cleanChatContextSnapshot.length > 0 ? [{ role: 'system' as const, content: cleanContextSnapshot }] : []),
-    ...(makerPrompt ? [{ role: 'system' as const, content: makerPrompt }] : []),
+    ...(makerPrompt ? [{ role: 'system' as const, content: makerPrompt }] : [{ role: 'system' as const, content: '当前未选择专用制作类型。按用户本轮明确需求协作；不要仅因历史消息中选过某种制作类型，就额外生成该类作品。用户说明误触或取消时，遵从其最新要求。' }]),
     ...omitted,
     ...(turnContext.trim() ? [{ role: 'system' as const, content: turnContext.trim() }] : []),
     ...kept,

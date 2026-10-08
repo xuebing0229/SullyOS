@@ -58,7 +58,7 @@ describe('collaboration sidecar wiring', () => {
     expect(store).not.toContain("from '../../utils/db'");
   });
 
-  it('reports collaboration adoption without reading titles, messages, filenames or blobs', () => {
+  it('does not report collaboration adoption', () => {
     const windowSource = read('features/collaboration/CollaborationWindow.tsx');
     const store = read('features/collaboration/store.ts');
     for (const event of [
@@ -67,7 +67,7 @@ describe('collaboration sidecar wiring', () => {
       '归档协同窗口', '打开协同文件库', '删除协同文件', '切换日常聊天协同',
       '重新生成协同回复', '删除协同消息', '复制协同消息', '编辑协同消息',
     ]) {
-      expect(windowSource).toContain(`trackEvent('${event}'`);
+      expect(windowSource).not.toContain(`trackEvent('${event}'`);
     }
     expect(store).toContain('getUsageCounts');
     expect(store).toContain('transaction.objectStore(storeName).count()');
@@ -164,8 +164,8 @@ describe('collaboration sidecar wiring', () => {
     expect(context).toContain('selectRecentCollaborationChatMessages(recentChatMessages, chatContextLimit)');
     expect(chat).toContain('recentChatMessages={messages}');
     expect(windowSource).toContain("const chatContextChoice = settings.recentChatContextCount ?? 'configured'");
-    expect(windowSource).toContain('await loadCharacterContextRange(character)');
-    expect(windowSource).toContain('configuredRange.messages');
+    expect(windowSource).toContain('await loadCollaborationChatHistory(character, chatContextChoice)');
+    expect(read('features/collaboration/chatBridge.ts')).toContain('await loadCharacterContextRange(current)');
     expect(windowSource).toContain('chatContextSnapshot: liveChatContext');
     expect(windowSource).toContain('chatContextSnapshot: undefined');
     expect(windowSource).toContain('ChatApp 最近聊天');

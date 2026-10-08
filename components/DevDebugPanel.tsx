@@ -1,3 +1,4 @@
+import HomeCompanionDebug from './HomeCompanionDebug';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowsClockwise, Broom, Check, ClipboardText, DownloadSimple, Power, Trash, Wrench, X } from '@phosphor-icons/react';
 import {
@@ -15,7 +16,7 @@ import {
     writeDevDebugFlags,
 } from '../utils/devDebug';
 import { BUILD_LABEL } from '../utils/buildInfo';
-import { trackEvent } from '../utils/analytics';
+
 import { runBlobGc } from '../utils/blobGc';
 import type { DevDebugCaptureCategory, DevDebugFlags, DevDebugFloatingPosition } from '../utils/devDebug';
 import { shareOrDownloadFile } from '../utils/shareExport';
@@ -79,6 +80,7 @@ const ToggleRow: React.FC<{
         <button
             type="button"
             role="switch"
+            aria-label={title}
             aria-checked={checked}
             onClick={() => onChange(!checked)}
             className={`relative h-6 w-11 shrink-0 rounded-full border transition-colors ${
@@ -178,7 +180,7 @@ const DevDebugPanel: React.FC = () => {
         if (next) setFlags(readDevDebugFlags());
     }), []);
     // logCount 只在面板展开时才用得到（复制 (N) 按钮），收起 / 不可用都不订阅——
-    // 避免 instant-push 高频 append 时每条都触发整个 panel re-render。
+    // 避免主动消息链路高频 append 时每条都触发整个 panel re-render。
     useEffect(() => {
         if (!open) return;
         setLogCount(readDevDebugLog().length); // open 时拉一次最新值
@@ -208,6 +210,7 @@ const DevDebugPanel: React.FC = () => {
     const activeCount = useMemo(
         () => (flags.skipPromptBuild ? 1 : 0)
             + (flags.skipEmotionEval ? 1 : 0)
+            + (flags.forceHomeSecretRoll ? 1 : 0)
             + (flags.mergeSystemMessages ? 1 : 0)
             // 「在录」= 总开关开 且 至少勾了一类——否则浮球红点会骗人「在录」其实 isCaptureEnabled
             // 任何类别都返 false。
@@ -234,7 +237,7 @@ const DevDebugPanel: React.FC = () => {
                 : current.captureLogs.filter((item) => item !== category),
         };
         setFlags(writeDevDebugFlags(next));
-        trackEvent('勾选调试日志类别', { 类别: category, 状态: checked ? '勾选' : '取消' });
+        
     };
     const resetFlags = () => {
         // 重置 = 回默认（总开关关 + 清空勾选）+ 清空所有日志，比「全不勾」更彻底。
@@ -242,14 +245,14 @@ const DevDebugPanel: React.FC = () => {
         // 是为了「即便上次就是 false」时也保证清干净（重置语义包含清理日志）。
         setFlags(writeDevDebugFlags(DEFAULT_DEV_DEBUG_FLAGS));
         clearDevDebugLog();
-        trackEvent('重置调试面板', { 范围: '开关与日志' });
+        
     };
     const handleForceClose = () => {
         // 「关闭」= 收起 + 位置回默认（纯内存）+ 强制关掉；任意分支生效，里面的开关另存不动。
         setOpen(false);
         setFloatingPosition(getDefaultFloatingPosition());
         closeDevDebug();
-        trackEvent('强制关闭调试面板');
+        
     };
     const handleBlobGc = async () => {
         if (blobGcRunning) return;
@@ -270,7 +273,7 @@ const DevDebugPanel: React.FC = () => {
         if (!text) return;
         await navigator.clipboard.writeText(text);
         setCopied(true);
-        trackEvent('导出调试日志', { 方式: '复制' });
+        
         window.setTimeout(() => setCopied(false), 1200);
     };
     const downloadLog = async () => {
@@ -281,9 +284,9 @@ const DevDebugPanel: React.FC = () => {
             content: text,
             fileName: `devdebug-log-${__BUILD_BRANCH__}-${stamp}.json`,
             mimeType: 'application/json;charset=utf-8',
-            shareTitle: 'SullyOS 调试日志',
+            shareTitle: 'SullyOS·糯米机 调试日志',
         });
-        trackEvent('导出调试日志', { 方式: result === 'shared' ? '分享' : '下载' });
+        
     };
     const handlePointerDown = (event: React.PointerEvent<HTMLButtonElement>) => {
         if (open || (event.pointerType === 'mouse' && event.button !== 0)) return;
@@ -345,7 +348,7 @@ const DevDebugPanel: React.FC = () => {
             return;
         }
         setOpen(true);
-        trackEvent('打开调试面板');
+        
     };
 
     if (!available) return null;
@@ -412,6 +415,7 @@ const DevDebugPanel: React.FC = () => {
                     </div>
 
                     <div className="flex-1 overflow-y-auto px-4">
+                        <HomeCompanionDebug />
                         <ToggleRow
                             title="跳过 Prompt Build"
                             detail="只发送聊天历史。"
@@ -421,9 +425,16 @@ const DevDebugPanel: React.FC = () => {
                         <div className="h-px bg-white/10" />
                         <ToggleRow
                             title="暂停情绪副评估"
-                            detail="主回复仍照常发送，但不启动本地或 Instant Push 的 emotion eval。"
+                            detail="主回复仍照常发送，但不启动情绪副评估（本地和即时对话都不跑）。"
                             checked={flags.skipEmotionEval}
                             onChange={(checked) => updateFlag('skipEmotionEval', checked)}
+                        />
+                        <div className="h-px bg-white/10" />
+                        <ToggleRow
+                            title="秘密必定命中"
+                            detail="仍需开启情绪评估、有小屋及已完成的对话；同一段不重复生成。"
+                            checked={flags.forceHomeSecretRoll}
+                            onChange={(checked) => updateFlag('forceHomeSecretRoll', checked)}
                         />
                         <div className="h-px bg-white/10" />
                         <ToggleRow
@@ -433,6 +444,10 @@ const DevDebugPanel: React.FC = () => {
                             onChange={(checked) => updateFlag('mergeSystemMessages', checked)}
                         />
                         <div className="h-px bg-white/10" />
+                        {import.meta.env.DEV && <>
+                            <ToggleRow title="SAR 剧情与表情校对" detail="临时开放名册回顾，不改变真实星级或奖励。" checked={flags.sarExpressionReview} onChange={checked => updateFlag('sarExpressionReview', checked)} />
+                            <div className="h-px bg-white/10" />
+                        </>}
                         {/* 只是入口：打开后由 Amsg2DebugPanel 自己在页面上挂小窗，本面板不渲染它的内容。 */}
                         <ToggleRow
                             title="amsg2 任务观察窗"
@@ -449,7 +464,7 @@ const DevDebugPanel: React.FC = () => {
                             checked={flags.captureEnabled}
                             onChange={(checked) => {
                                 updateFlag('captureEnabled', checked);
-                                trackEvent('切换调试日志录制', { 状态: checked ? '开' : '关' });
+                                
                             }}
                         />
                         {flags.captureEnabled && (
@@ -481,7 +496,7 @@ const DevDebugPanel: React.FC = () => {
                                     <LogActionButton
                                         onClick={() => {
                                             clearDevDebugLog();
-                                            trackEvent('重置调试面板', { 范围: '仅日志' });
+                                            
                                         }}
                                         disabled={logCount === 0}
                                         icon={<Trash size={13} weight="bold" />}

@@ -9,10 +9,9 @@
  * system prompt 留成占位符，由本次请求已有的 system 消息恢复；真实对话则保持原本的
  * user / assistant API role 直接交给评估模型，不再拍平成带姓名标签的一大段文本。
  *
- * 还原规则与 instant push worker 的 `runEmotionEval`（worker/instant-push/src/index.ts）
- * **逐字同款**——两边吃的是同一个模板，格式一漂输出就变味。所以内核收敛在
- * utils/emotionEvalCore.ts 这份零依赖叶子里，两个 worker bundle 共用；这里只留
- * amsg 侧特有的部分（评估配置的摘取与红线处理、旁路存储键）。
+ * 还原规则必须与前端生成模板时的约定**逐字同款**——格式一漂输出就变味。内核放在
+ * utils/emotionEvalCore.ts 这份零依赖叶子里；这里只留 amsg 侧特有的部分（评估配置的
+ * 摘取与红线处理、旁路存储键）。
  *
  * 失败绝不连累主回复——用户等的是那句话，情绪只是附赠；跑挂了就带一句短原因回去，
  * 让客户端能照实说明白，而不是丢一句「可查 worker 日志」。
@@ -25,6 +24,7 @@ import {
   buildEmotionEvalRequestMessages,
   requestEmotionEvalWithFailover,
   type EmotionEvalOutcome,
+  tagHomeSecretEval,
 } from '../../../utils/emotionEvalCore';
 
 /** 副 API 凭据的两种长相：任务里内联的 { baseUrl, apiKey, model }，或凭据表里的三件套。 */
@@ -38,6 +38,7 @@ export interface AmsgEmotionEvalApi {
 export interface AmsgEmotionEvalSpec {
   /** 带两个占位符的评估提示词模板。 */
   prompt: string;
+  homeSecretRequestId?: string;
   /**
    * 副 API 凭据（没单独配就是主 API 那一份）。
    *
@@ -207,9 +208,12 @@ export const runAmsgEmotionEval = async (
   chatMessages: Array<{ role: string; content: unknown }>,
   charName: string,
   timeoutMs: number = EMOTION_EVAL_TIMEOUT_MS,
-): Promise<AmsgEmotionEvalOutcome> =>
-  requestEmotionEvalWithFailover(
+  signal?: AbortSignal,
+): Promise<AmsgEmotionEvalOutcome> => {
+  const result = await requestEmotionEvalWithFailover(
     [api, ...(Array.isArray(spec.fallbackApis) ? spec.fallbackApis : [])],
     buildEmotionEvalRequestMessages(spec.prompt, chatMessages, charName),
-    timeoutMs,
+    timeoutMs, signal,
   );
+  return result.raw ? { ...result, raw: tagHomeSecretEval(result.raw, spec.homeSecretRequestId) } : result;
+};

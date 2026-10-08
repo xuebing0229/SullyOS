@@ -14,7 +14,7 @@ describe('MCP 生图状态消息契约', () => {
             "const rawAiContent = suppressMcpImageStatusMessage",
         );
         expect(source).toContain(
-            'if (!suppressMcpImageStatusMessage) await applyAssistantPostProcessing',
+            'if (!suppressMcpImageStatusMessage) await replyStep(async () => applyAssistantPostProcessing',
         );
     });
 

@@ -1,3 +1,7 @@
+import { stageStoppedReplyReceipt } from './amsgStoppedReplyClient';
+import { amsgStateNamespace } from './amsgFirePack';
+import { stoppedReplyKey } from './amsgStoppedReply';
+import { getReplyDisplayIds, isReplyStopped, markReplyStopped, replyAbortError } from './chatReplyCancellation';
 /**
  * 即时对话（instant chat）的客户端这一半。
  *
@@ -22,12 +26,14 @@
 import { ActiveMsg2InboxMessage, CharacterProfile, GroupProfile, RealtimeConfig, UserProfile } from '../types';
 import { ActiveMsgClient, type AmsgOutboxEntry, type InstantChatProbeOutcome } from './activeMsgClient';
 import { ActiveMsgStore } from './activeMsgStore';
-import { trackEvent } from './analytics';
+
 import { cloudApiCallLogId, recordCloudApiCall, settleCloudApiCall } from './apiCallLog';
 import { announceEmotionDone } from './chatGenEvents';
 import { dispatchAmsgResult } from './amsgResults';
 import { DB } from './db';
 import type { AmsgEmotionEvalSpec } from '../worker/amsg/src/emotionEval';
+import { AMSG_BUNDLE_VERSION } from './amsgBundleVersion';
+import type { AmsgSarModuleSnapshot } from './vrWorld/sarEnvelopeCore';
 
 const HEADER = '[AmsgInstantChat]';
 
@@ -245,7 +251,31 @@ export type InstantChatReadinessReason =
 export interface InstantChatReadiness {
   ready: boolean;
   reason?: InstantChatReadinessReason;
+  /**
+   * 那台 Worker 贴的是不是本 App 认的这一版 bundle（存量 workerBundleVersion 与
+   * AMSG_BUNDLE_VERSION 相等）。只在 ready 时给：true / false 是探到过的结论，
+   * undefined = 不知道。不传 ensureBundleVersion 时它就是「还没探过」；传了的话
+   * 存量为空会当场现探一次，那时 undefined 意味着「现探也没问到」。
+   *
+   * 能不能上云不看它——那是 instantChatSupported 的事。它只给「这一轮要用到新协议」
+   * 的调用方做额外否决（SAR 模块生效期的信封回复，旧 bundle 会把信封当正文切碎）。
+   */
+  workerBundleCurrent?: boolean;
 }
+
+/** 存量里那台 Worker 的 bundle 版本是不是当前这一版；没探过（undefined）返回 undefined。 */
+const resolveWorkerBundleCurrent = (
+  config: { workerBundleVersion?: string | null },
+): boolean | undefined => (
+  config.workerBundleVersion === undefined
+    ? undefined
+    : config.workerBundleVersion === AMSG_BUNDLE_VERSION
+);
+
+/** ready 的那一档带上 bundle 结论；不知道就不带这个键。 */
+const readyWithBundle = (workerBundleCurrent: boolean | undefined): InstantChatReadiness => (
+  workerBundleCurrent === undefined ? { ready: true } : { ready: true, workerBundleCurrent }
+);
 
 // ─── 存量说「跑不动」时的现探 ───
 //
@@ -272,7 +302,10 @@ let reprobeInFlight: Promise<InstantChatProbeOutcome> | null = null;
  * 把冷却清零，让下一条消息立刻重探。
  * 网络刚恢复时调（online 事件），换 Worker / 改配置的地方也可以调。
  */
-export const resetInstantChatReprobeCooldown = (): void => { lastReprobeAt = 0; };
+export const resetInstantChatReprobeCooldown = (): void => {
+  lastReprobeAt = 0;
+  lastBundleProbeAt = 0;
+};
 
 // 切代理节点不会触发 online，所以这个监听只是「便宜的加速」，不是恢复的唯一指望——
 // 真正兜底的是上面那道冷却到期后的现探。
@@ -306,6 +339,50 @@ const reprobeInstantChatSupport = async (): Promise<InstantChatProbeOutcome> => 
   }
 };
 
+// ─── bundle 版本没探过时的现探（ensureBundleVersion）───
+//
+// 存量 workerBundleVersion 只在握手 / 设置页探测时写。老用户刚更新 App、握手那次探测还没
+// 回来就发了一条要信封的消息（SAR 模块生效期），存量是空的——这时放行等于赌那台 Worker
+// 认得信封，赌输了信封整段切碎上屏。所以这类回合当场问一次，问不到就不上云。
+// 跟上面的懒重探一样带超时、冷却、并发合并：只在「存量为空 + 这一轮需要新协议」时付这点延迟，
+// 探到了会存下来，之后的回合一次都不再探。
+
+let lastBundleProbeAt = 0;
+let lastBundleProbeResult: boolean | undefined;
+let bundleProbeInFlight: Promise<boolean | undefined> | null = null;
+
+const probeBundleCurrentNow = async (): Promise<boolean | undefined> => {
+  if (bundleProbeInFlight) return bundleProbeInFlight;
+  if (Date.now() - lastBundleProbeAt < INSTANT_CHAT_REPROBE_COOLDOWN_MS) return lastBundleProbeResult;
+  lastBundleProbeAt = Date.now();
+  const task = (async () => {
+    try {
+      // 问到答案时 probeWorkerVersion 会顺手把版本存进 workerBundleVersion。
+      const { state } = await ActiveMsgClient.probeWorkerVersion({ timeoutMs: INSTANT_CHAT_REPROBE_TIMEOUT_MS });
+      return state === 'current' ? true : state === 'outdated' ? false : undefined;
+    } catch {
+      return undefined;
+    }
+  })();
+  bundleProbeInFlight = task;
+  try {
+    lastBundleProbeResult = await task;
+    return lastBundleProbeResult;
+  } finally {
+    bundleProbeInFlight = null;
+  }
+};
+
+/** 存量优先；存量为空且调用方要求时，当场现探一次。 */
+const resolveBundleCurrent = async (
+  config: { workerBundleVersion?: string | null },
+  ensureBundleVersion: boolean,
+): Promise<boolean | undefined> => {
+  const stored = resolveWorkerBundleCurrent(config);
+  if (stored !== undefined || !ensureBundleVersion) return stored;
+  return probeBundleCurrentNow();
+};
+
 /**
  * 即时对话此刻走不走得通，外加「走不通是因为什么」。
  *
@@ -329,10 +406,17 @@ const reprobeInstantChatSupport = async (): Promise<InstantChatProbeOutcome> => 
  * 锁屏，本地 fetch 被系统掐掉，回来时既没有回复也没有报错，设置页还写着「已开启」。
  * 所以这里就地 warn 一声，调用方按这个 reason 单独收场（useChatAI 里这一档会留一条
  * trace，并且明确报错等用户重发，不发起本地生成）。
+ *
+ * ready 时顺带给出 workerBundleCurrent（那台 Worker 是不是当前 bundle，平时读存量，
+ * 不多探一次）。它不参与这里的放行判断，留给「这一轮要用新协议」的调用方自己否决。
+ * 这类调用方传 `ensureBundleVersion: true`：存量为空时当场现探一次（带超时与冷却），
+ * 探不到就给 undefined，由调用方决定怎么处理（useChatAI 里是否决这一轮上云）。
  */
 export const resolveInstantChatReadiness = async (
   char?: Pick<CharacterProfile, 'activeMsg2Config'>,
+  options?: { ensureBundleVersion?: boolean },
 ): Promise<InstantChatReadiness> => {
+  const ensureBundleVersion = !!options?.ensureBundleVersion;
   // 角色自己关了 → 这一轮回到本地前台生成。这是用户的主动选择，跟「全局没开」同一
   // 待遇：静默走本地，不 warn 不留 trace。undefined = 跟随全局默认开，只认显式 false；
   // 全局配置都不用读——读出什么这一轮都不上云。
@@ -359,7 +443,10 @@ export const resolveInstantChatReadiness = async (
     const outcome = await reprobeInstantChatSupport();
     if (outcome === 'supported') {
       console.info(`${HEADER} 重探到那台 Worker 现在跑得动即时对话（存量是过期结论），这一轮照常上云`);
-      return { ready: true };
+      // 现探会顺手刷新 bundle 版本的存量，重读一次拿新结论；读不出来就用探测前那份。
+      let refreshed: typeof config = config;
+      try { refreshed = await ActiveMsgStore.getGlobalConfig(); } catch { /* 沿用旧存量 */ }
+      return readyWithBundle(await resolveBundleCurrent(refreshed, ensureBundleVersion));
     }
     // 静默让位正是「静默分流」那个老坑，所以两档都就地 warn 一声，调用方还会额外留一条
     // trace——用户至少查得到「为什么开了却走本地」。两档的去向不同，别混：
@@ -371,7 +458,7 @@ export const resolveInstantChatReadiness = async (
     console.warn(`${HEADER} 开关是开的，但这一刻够不着云端（问不出新结论）：这一轮本地生成，连上了会自己回到云端`);
     return { ready: false, reason: 'worker-unreachable' };
   }
-  return { ready: true };
+  return readyWithBundle(await resolveBundleCurrent(config, ensureBundleVersion));
 };
 
 /** 只关心「走不走得通」的调用点用这个（设置页的互斥门）。要区分原因走上面那个。 */
@@ -389,8 +476,11 @@ export const AMSG_INSTANT_CHAT_ROUTE_EVENT = 'amsg-instant-chat-route';
 
 export interface InstantChatRouteDetail {
   charId: string;
-  /** null = 这一轮走的云端（界面上把提示收起来）；否则是让位给本地生成的原因。 */
-  reason: InstantChatReadinessReason | null;
+  /**
+   * null = 这一轮走的云端（界面上把提示收起来）；否则是让位给本地生成的原因：readiness 的
+   * reason，或 useChatAI 路由段的否决名（如 'sar-module-worker-outdated'）。提示条只认名单里的。
+   */
+  reason: InstantChatReadinessReason | string | null;
 }
 
 export const announceInstantChatRoute = (detail: InstantChatRouteDetail): void => {
@@ -406,7 +496,7 @@ export const announceInstantChatRoute = (detail: InstantChatRouteDetail): void =
 // 那几秒里，别处打脏触发的常规包（没有 chat 段）可能晚于 POST 内部那次 client-state
 // 写入落地，把带 chat 段的包盖掉，worker 到点只会硬失败。所以从按下发送那一刻起就
 // 占位，挡板认「占位或待收」，202 后由待收记录接棒，失败则释放。
-const inFlightSends = new Set<string>();
+const inFlightSends = new Map<string, symbol>();
 
 /** POST /instant-chat 正在飞（还没等到 202/失败）吗。amsgStateSync 的挂起挡板用。 */
 export const isInstantChatSendInFlight = (charId: string): boolean => inFlightSends.has(charId);
@@ -426,6 +516,7 @@ export interface InstantChatSendResult {
  * 一次回复。上一条已经在跑了（取消不掉）也不影响这一条，最多两句相近的回复。
  */
 export const sendInstantChatTurn = async (params: {
+  signal?: AbortSignal;
   char: CharacterProfile;
   chatMessages: Array<{ role: string; content: unknown }>;
   /** 本地生成这一轮会用的凭据（effectiveApi），云端必须用同一份。 */
@@ -448,9 +539,26 @@ export const sendInstantChatTurn = async (params: {
    * 不传就是这一轮不评估（角色没开情绪评估 / 本轮跳过）。
    */
   emotionEval?: AmsgEmotionEvalSpec;
+  /**
+   * SAR 临时模块的请求时快照（buildAmsgSarModuleSnapshot 组的那份）。只在角色或用户
+   * 身上有模块时传；worker 拆信封、落库侧收尾都只认它，不在回程时现算。
+   */
+  sarModule?: AmsgSarModuleSnapshot;
 }): Promise<InstantChatSendResult> => {
   const supersedes = getInstantChatPending(params.char.id);
-  inFlightSends.add(params.char.id);
+  const requestedUuid = crypto.randomUUID();
+  const stopSending = () => {
+    markReplyStopped(requestedUuid);
+    const receipt = stageStoppedReplyReceipt(params.char.id, requestedUuid, Promise.resolve(''));
+    void Promise.allSettled([
+      ActiveMsgClient.cancelTask(requestedUuid),
+      receipt.then(text => ActiveMsgClient.writeClientStateValue(amsgStateNamespace(params.char.id),
+        stoppedReplyKey(requestedUuid), JSON.stringify({ text }))),
+    ]);
+  };
+  params.signal?.addEventListener('abort', stopSending, { once: true });
+  const sendToken = Symbol('instant-send');
+  inFlightSends.set(params.char.id, sendToken);
   // 这一轮在「API 调用记录」里的那一笔：本地这条路只经手一个 POST，真正的模型请求
   // 是云端发的，日志的全局拦截器够不着——不在这儿记，用户就会看到聊天从记录里消失。
   // meta 跟本地生成那条路对齐（useChatAI 传给 safeFetchJson 的那份），两条路在列表里
@@ -462,7 +570,10 @@ export const sendInstantChatTurn = async (params: {
     purpose: '聊天回复',
   };
   try {
+    params.signal?.throwIfAborted();
     const { uuid } = await ActiveMsgClient.sendInstantChat({
+      uuid: requestedUuid,
+      signal: params.signal,
       char: params.char,
       chatMessages: params.chatMessages,
       api: params.api,
@@ -473,8 +584,15 @@ export const sendInstantChatTurn = async (params: {
       groups: params.groups,
       realtimeConfig: params.realtimeConfig,
       ...(params.emotionEval ? { emotionEval: params.emotionEval } : {}),
+      ...(params.sarModule ? { sarModule: params.sarModule } : {}),
       ...(supersedes ? { supersedesUuid: supersedes.uuid } : {}),
     });
+    // A stop during POST still needs the accepted UUID so the remote task can be cancelled.
+    if (params.signal?.aborted) {
+      markReplyStopped(uuid);
+      await ActiveMsgClient.cancelTask(uuid);
+      throw replyAbortError();
+    }
     // 先记待收再释放占位（finally），挡板的两个信号无缝交接，不留「都不认」的空窗。
     setInstantChatPending(params.char.id, uuid, Date.now(), params.char.name);
     recordCloudApiCall({
@@ -493,9 +611,14 @@ export const sendInstantChatTurn = async (params: {
     }
     return { ok: true, uuid };
   } catch (error: any) {
+    if (params.signal?.aborted) {
+      // A response can be lost after the task was created. We still know which task to cancel.
+      await ActiveMsgClient.cancelTask(requestedUuid).catch(() => {});
+      throw error;
+    }
     // 只报失败、只有事件名（跟送达端那几条同一条口径）：失败原因里带着 HTTP 状态和
     // 上游报文，不进上报。用户侧同一时刻已经有明确的报错提示，这里只记「发生过」。
-    trackEvent('即时对话发送失败');
+    
     // 没交上去的这一轮同样进记录：界面上那句报错关掉就没了，而日志里留得住——
     // 交不上去往往跟这次要发的东西有多大有关，输入构成就在这条记录里。
     recordCloudApiCall({
@@ -509,7 +632,8 @@ export const sendInstantChatTurn = async (params: {
     });
     return { ok: false, error: error?.message || String(error) };
   } finally {
-    inFlightSends.delete(params.char.id);
+    params.signal?.removeEventListener('abort', stopSending);
+    if (inFlightSends.get(params.char.id) === sendToken) inFlightSends.delete(params.char.id);
   }
 };
 
@@ -531,7 +655,7 @@ export const settleInstantChatApiLog = (uuid: string, metadata?: Record<string, 
   const toolTrace = metadata?.amsgToolTrace;
   settleCloudApiCall({
     id: cloudApiCallLogId(uuid),
-    ok: true,
+    ok: !isReplyStopped(uuid),
     promptTokens: num(usage?.promptTokens),
     completionTokens: num(usage?.completionTokens),
     tokensPartial: Array.isArray(toolTrace) && toolTrace.length > 0,
@@ -909,7 +1033,7 @@ export const failInstantChatPending = async (
   announceEmotionDone(charId);
   // 只报失败、只有事件名：云端点名说这一轮没成（或回复取不回来）。这一格涨起来说明
   // 云端生成或推送链路在掉队，比用户来报「一直在输入」早得多。
-  trackEvent('即时对话云端任务失败');
+  
   // 「API 调用记录」里那笔挂着的也收尾，否则它会一直写着「云端生成中」直到被裁掉。
   settleCloudApiCall({ id: cloudApiCallLogId(uuid), ok: false });
   try {
@@ -925,4 +1049,32 @@ export const failInstantChatPending = async (
   } catch (error) {
     console.warn(`${HEADER} 失败说明写入失败`, { charId, error });
   }
+};
+
+/** Stop locally first; a failed remote request must never let late content reappear. */
+export const stopInstantChat = async (charId: string): Promise<void> => {
+  const pending = getInstantChatPending(charId);
+  if (!pending) return;
+  const visibleIds = getReplyDisplayIds(charId);
+  markReplyStopped(pending.uuid);
+  clearInstantChatPending(charId);
+  discardInstantChatExpiredNotices(charId, pending.uuid);
+  announceEmotionDone(charId);
+  settleCloudApiCall({ id: cloudApiCallLogId(pending.uuid), ok: false });
+  // Issue cancellation immediately; history reconciliation must not delay the remote abort.
+  const cancel = ActiveMsgClient.cancelTask(pending.uuid);
+  const keptText = stageStoppedReplyReceipt(charId, pending.uuid, (async () => {
+    const messages = (await DB.getMessagesByCharId(charId)).filter(message =>
+      (message.metadata as any)?.activeMsg2?.taskUuid === pending.uuid);
+    const kept = messages.filter(message => !visibleIds || visibleIds.has(message.id));
+    const unseen = messages.filter(message => visibleIds && !visibleIds.has(message.id));
+    if (unseen.length) await DB.deleteMessages(unseen.map(message => message.id));
+    window.dispatchEvent(new CustomEvent('active-msg-progress', { detail: { charId } }));
+    return kept.map(message => message.content).join('\n');
+  })());
+  const reconcile = keptText.then(text => ActiveMsgClient.writeClientStateValue(
+    amsgStateNamespace(charId), stoppedReplyKey(pending.uuid), JSON.stringify({ text })));
+  const results = await Promise.allSettled([cancel, reconcile]);
+  const failed = results.find(result => result.status === 'rejected');
+  if (failed?.status === 'rejected') throw failed.reason;
 };

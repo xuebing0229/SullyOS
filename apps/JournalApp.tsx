@@ -15,7 +15,7 @@ import { injectMemoryPalace, ingestDiaryToPalace, type DiaryIngestResult } from 
 import { getRoomLabel } from '../utils/memoryPalace/types';
 import { Sparkle, Archive } from '@phosphor-icons/react';
 import { CharacterGroupFilterBar, filterCharactersByGroup, GROUP_FILTER_ALL } from '../components/character/CharacterGroupFilter';
-import { trackEvent } from '../utils/analytics';
+
 import JournalAppearanceButton, { JournalAppearanceStyle } from '../components/journal/JournalAppearanceEditor';
 import JournalThemeArtwork from '../components/journal/JournalThemeArtwork';
 
@@ -179,7 +179,7 @@ const JournalApp: React.FC = () => {
         setMode('write');
         setSelectedDate(date);
         setSelectedStickerId(null); // Reset selection
-        trackEvent('进入日记书写页');
+        
     };
 
     // --- Editor Logic ---
@@ -217,7 +217,7 @@ const JournalApp: React.FC = () => {
         const currentStickers = targetPage?.stickers || [];
         updatePage({ stickers: [...currentStickers, newSticker] }, side);
         setShowStickerPanel(false);
-        trackEvent('往日记页贴一张贴纸', { kind: DEFAULT_STICKERS.includes(url) ? 'default' : 'custom' });
+        
     };
 
     const handleImportStickers = async () => {
@@ -239,7 +239,7 @@ const JournalApp: React.FC = () => {
         setImportText('');
         setShowImportModal(false);
         addToast(`成功添加 ${count} 个贴纸`, 'success');
-        trackEvent('导入自定义贴纸');
+        
     };
 
     const handleDeleteStickerAsset = async () => {
@@ -248,7 +248,7 @@ const JournalApp: React.FC = () => {
             setCustomStickers(prev => prev.filter(s => s.name !== deletingSticker.name));
             setDeletingSticker(null);
             addToast('贴纸已删除', 'success');
-            trackEvent('删除一个自定义贴纸');
+            
         }
     };
 
@@ -329,7 +329,7 @@ const JournalApp: React.FC = () => {
         await loadDiaries(selectedChar.id);
         setDeletingDiary(null);
         addToast('日记已删除', 'success');
-        trackEvent('删除一篇日记');
+        
     };
 
     // --- Interaction Logic (Move, Resize, Delete) ---
@@ -347,7 +347,7 @@ const JournalApp: React.FC = () => {
         const updated = targetPage.stickers.filter(s => s.id !== id);
         updatePage({ stickers: updated }, activeTab);
         setSelectedStickerId(null);
-        trackEvent('从日记页撕掉一张贴纸');
+        
     };
 
     // 3. Pointer Handlers (Move & Resize)
@@ -433,6 +433,7 @@ const JournalApp: React.FC = () => {
     // --- AI Interaction ---
 
     const handleExchange = async () => {
+
         if (!currentEntry || !selectedChar || !apiConfig.apiKey) {
             addToast('配置错误或内容为空', 'error');
             return;
@@ -445,14 +446,15 @@ const JournalApp: React.FC = () => {
         const isRewrite = Boolean(currentEntry.charPage);
         setIsThinking(true);
         addToast(isRewrite ? `正在请 ${selectedChar.name} 重新写这篇日记…` : `正在请 ${selectedChar.name} 写交换日记…`, 'info');
-        trackEvent(isRewrite ? '重新生成角色日记' : '邀请角色交换日记');
+        
 
         try {
             // 生成前仍要把用户页草稿落库，但这是重写流程的内部步骤，不能冒充用户
             // 主动点了“保存”。旧代码在这里直接 saveEntry()，于是循环按钮先弹“日记已保存”。
             await saveEntry({ silent: true });
             await injectMemoryPalace(selectedChar, undefined, currentEntry.userPage.text);
-            let systemPrompt = ContextBuilder.buildCoreContext(selectedChar, userProfile);
+            const characterContextInput = { char: selectedChar, user: userProfile };
+            let systemPrompt = '';
 
             const styleOptions = PAPER_STYLES.map(p => p.id).join(', ');
             const defaultStickers = DEFAULT_STICKERS.join(' ');
@@ -509,10 +511,10 @@ Structure:
                 headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiConfig.apiKey}` },
                 body: JSON.stringify({
                     model: apiConfig.model,
-                    messages: [
+                    messages: (await ContextBuilder.buildCharacterRequest(characterContextInput, [
                         { role: 'system', content: systemPrompt },
                         { role: 'user', content: `Users Diary:\n${currentEntry.userPage.text}` }
-                    ],
+                    ])),
                     temperature: 0.85
                 })
             });
@@ -583,13 +585,14 @@ Structure:
         }
 
         setArchivingId(diary.id);
-        trackEvent('归档日记进神经链接');
+        
 
         // 主 API 散文式总结 — 当宫殿没开 / 副 API 缺失 / 提取为空时的 fallback
         const generateProseSummary = async (): Promise<string> => {
-            const baseContext = ContextBuilder.buildCoreContext(selectedChar, userProfile);
+            const characterContextInput = { char: selectedChar, user: userProfile };
+
             const charPart = diary.charPage?.text?.trim() || '(对方没有回复)';
-            const prompt = `${baseContext}
+            const prompt = `
 
 ### [系统指令: 交换日记归档]
 当前任务: 把这篇【交换日记】(日期 ${diary.date}) 总结成一段对你 (${selectedChar.name}) 长期有效的记忆。
@@ -620,7 +623,7 @@ ${charPart}
                 headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiConfig.apiKey}` },
                 body: JSON.stringify({
                     model: apiConfig.model,
-                    messages: [{ role: 'user', content: prompt }],
+                    messages: (await ContextBuilder.buildCharacterRequest(characterContextInput, [{ role: 'user', content: prompt }])),
                     temperature: 0.4,
                     max_tokens: 1200,
                 }),
@@ -1140,7 +1143,7 @@ ${charPart}
                                 )}
                             </button>
                         )}
-                        <button onClick={() => { saveEntry(); trackEvent('保存日记'); }} className="px-4 py-1.5 bg-white/10 rounded-full text-xs font-bold hover:bg-white/20 active:scale-95 transition-transform">
+                        <button onClick={() => { saveEntry();  }} className="px-4 py-1.5 bg-white/10 rounded-full text-xs font-bold hover:bg-white/20 active:scale-95 transition-transform">
                             保存
                         </button>
                     </div>
@@ -1180,13 +1183,13 @@ ${charPart}
             <div className="sully-journal-bottom-controls shrink-0 bg-[#222] border-t border-white/5 pb-safe pt-2 z-30">
                 <div className="sully-journal-tabs flex justify-center gap-4 mb-4 px-4">
                     <button 
-                        onClick={() => { setActiveTab('user'); setSelectedStickerId(null); trackEvent('切换日记页标签', { page: 'user' }); }}
+                        onClick={() => { setActiveTab('user'); setSelectedStickerId(null);  }}
                         className={`sully-journal-tab ${activeTab === 'user' ? 'sully-journal-tab-active' : ''} flex-1 py-3 rounded-2xl text-xs font-bold uppercase tracking-wider transition-all duration-300 relative overflow-hidden ${activeTab === 'user' ? 'bg-white text-black shadow-lg' : 'bg-white/5 text-white/40 hover:bg-white/10'}`}
                     >
                         My Diary
                     </button>
                     <button 
-                        onClick={() => { setActiveTab('char'); setSelectedStickerId(null); trackEvent('切换日记页标签', { page: 'char' }); }}
+                        onClick={() => { setActiveTab('char'); setSelectedStickerId(null);  }}
                         className={`sully-journal-tab ${activeTab === 'char' ? 'sully-journal-tab-active' : ''} flex-1 py-3 rounded-2xl text-xs font-bold uppercase tracking-wider transition-all duration-300 relative overflow-hidden ${activeTab === 'char' ? 'bg-amber-500 text-white shadow-lg shadow-amber-900/50' : 'bg-white/5 text-white/40 hover:bg-white/10'}`}
                     >
                         {selectedChar?.name || 'Partner'}
@@ -1199,7 +1202,7 @@ ${charPart}
                         {PAPER_STYLES.slice(0, 4).map(s => (
                             <button 
                                 key={s.id} 
-                                onClick={() => { updatePage({ paperStyle: s.id }, activeTab); trackEvent('切换日记纸张样式', { paperStyle: s.id }); }}
+                                onClick={() => { updatePage({ paperStyle: s.id }, activeTab);  }}
                                 className={`sully-journal-paper-swatch w-8 h-8 rounded-full border border-white/10 transition-transform active:scale-90 ${s.css}`}
                                 title={s.name}
                             />
@@ -1220,7 +1223,7 @@ ${charPart}
                         )}
                         
                         <button 
-                            onClick={() => { setShowStickerPanel(!showStickerPanel); if (!showStickerPanel) trackEvent('打开贴纸面板'); }}
+                            onClick={() => { setShowStickerPanel(!showStickerPanel); if (!showStickerPanel) {} }}
                             className={`sully-journal-sticker-button w-11 h-11 rounded-full flex items-center justify-center text-xl shadow-lg active:scale-90 transition-transform ${showStickerPanel ? 'bg-white text-black' : 'bg-gradient-to-br from-amber-400 to-orange-500 text-white'}`}
                         >
                             <Sparkle size={24} weight="fill" />
@@ -1231,7 +1234,7 @@ ${charPart}
                 {showStickerPanel && (
                     <div className="sully-journal-sticker-panel bg-[#1a1a1a] border-t border-white/10 p-4 animate-slide-up h-48 overflow-y-auto no-scrollbar">
                         <div className="grid grid-cols-6 gap-3">
-                            <button onClick={() => { setShowImportModal(true); trackEvent('打开自定义贴纸导入弹窗'); }} className="flex items-center justify-center bg-white/10 rounded-xl border-2 border-dashed border-white/20 text-white/50 text-xl font-bold hover:bg-white/20 hover:text-white transition-all aspect-square">
+                            <button onClick={() => { setShowImportModal(true);  }} className="flex items-center justify-center bg-white/10 rounded-xl border-2 border-dashed border-white/20 text-white/50 text-xl font-bold hover:bg-white/20 hover:text-white transition-all aspect-square">
                                 +
                             </button>
                             {DEFAULT_STICKERS.map((s, i) => (

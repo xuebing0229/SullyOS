@@ -105,24 +105,23 @@ const extractVoiceBody = (raw: string): string => {
  */
 export const cleanTextForTtsElevenLabs = (raw: string, model?: string | null): string => {
   const supportsAudioTags = isElevenLabsV4Model(model);
-  let text = extractVoiceBody(raw)
-    .replace(/\[\[.*?\]\]/g, '')
-    .replace(/%%BILINGUAL%%[\s\S]*/i, '')
-    .replace(/<字幕>[\s\S]*?<\/字幕>/g, '')
-    .replace(/<#\s*[\d.]+\s*#>/g, '')
-    .replace(/（[^）]{0,80}）/g, '')
-    .replace(/\(([^)]{1,60})\)/g, (_match, inner: string) => {
-      const cue = normalizeElevenLabsCue(inner);
-      return supportsAudioTags && cue ? `[${cue}]` : '';
-    })
-    .replace(/\[[^\[\]]*\]/g, (match: string) => supportsAudioTags ? match : '');
-
-  text = text
-    .replace(/\n{2,}/g, supportsAudioTags ? ' [pause] ' : '……')
-    .replace(/\n+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .replace(/\s+([，。！？、；：,.!?…])/g, '$1')
-    .trim();
+  const text = extractVoiceBody(raw).replace(/\[\[.*?\]\]/g, '')
+    .split(/(\[[^\[\]]*\])/g)
+    .map(part => {
+      if (/^\[[^\[\]]*\]$/.test(part)) return supportsAudioTags ? part : '';
+      return part
+        .replace(/%%BILINGUAL%%[\s\S]*/i, '')
+        .replace(/<字幕>[\s\S]*?<\/字幕>/g, '')
+        .replace(/<#\s*[\d.]+\s*#>/g, '')
+        .replace(/（[^）]{0,80}）/g, '')
+        .replace(/\(([^)]{1,60})\)/g, (_match, inner:string) => {
+          const cue = normalizeElevenLabsCue(inner);
+          return supportsAudioTags && cue ? '[' + cue + ']' : '';
+        })
+        .replace(/\n{2,}/g, supportsAudioTags ? ' [pause] ' : '……')
+        .replace(/\n+/g, ' ').replace(/\s+/g, ' ')
+        .replace(/\s+([，。！？、；：,.!?…])/g, '$1');
+    }).join('').trim();
   return text;
 };
 
@@ -191,7 +190,7 @@ const useStaticWorker = (): boolean => {
   return isStaticWebDeployment(window.location.protocol, window.location.hostname);
 };
 
-const base64ToBytes = (base64: string): Uint8Array => {
+const base64ToBytes = (base64: string): Uint8Array<ArrayBuffer> => {
   const binary = atob(base64);
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
@@ -216,7 +215,7 @@ const elevenLabsFetchTurboAudio = async (
 
   return await new Promise<Blob>((resolve, reject) => {
     const ws = new WebSocket(`wss://api.elevenlabs.io/v1/text-to-dialogue/stream-input?${params.toString()}`);
-    const chunks: Uint8Array[] = [];
+    const chunks: Uint8Array<ArrayBuffer>[] = [];
     let settled = false;
     const timeoutId = setTimeout(() => {
       if (settled) return;

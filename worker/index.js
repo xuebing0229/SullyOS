@@ -2620,7 +2620,7 @@ export default {
     }
 
     // ========== 短链展开 (/expand-url) ==========
-    // 跟随 HTTP 重定向返回最终 URL。小红书短链 xhslink.com 不含 note id/xsec_token，
+    // 逐跳展开；拿到小红书笔记 URL 即返回，避免再访问正文被重定向到验证码页。
     // 前端展开后才能提取，再走小红书 Lite 抓详情。见 utils/webpageExtractor.ts expandShortUrl。
     if (url.pathname === '/expand-url') {
       if (request.method !== 'POST') {
@@ -2638,15 +2638,32 @@ export default {
       const c = new AbortController();
       const t = setTimeout(() => c.abort(), 8000);
       try {
-        const res = await fetch(target.toString(), {
-          method: 'GET',
-          redirect: 'follow',
-          headers: { 'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1' },
-          signal: c.signal,
-        });
-        const finalUrl = res.url || target.toString();
-        console.log('expand-url', target.toString(), '→', finalUrl);
-        return jsonResponse({ success: true, data: { finalUrl } }, { origin });
+        let current = target;
+        for (let hop = 0; hop < 10; hop++) {
+          if (isUnsafeFetchTarget(current)) throw new Error('重定向目标不是公网 http(s) 链接');
+          const host = current.hostname.toLowerCase().replace(/\.$/, '');
+          const isNoteHost = ['xiaohongshu.com', 'rednote.com']
+            .some(domain => host === domain || host.endsWith(`.${domain}`));
+          if (isNoteHost && /^\/(?:discovery\/item|explore|item)\/[a-f0-9]{24}(?:\/|$)/i.test(current.pathname)) {
+            return jsonResponse({ success: true, data: { finalUrl: current.toString() } }, { origin });
+          }
+          const res = await fetch(current.toString(), {
+            method: 'GET',
+            redirect: 'manual',
+            headers: { 'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1' },
+            signal: c.signal,
+          });
+          // 只需要响应头，不下载短链/正文页面。
+          if (res.body) await res.body.cancel();
+          const location = res.headers.get('location');
+          if ([301, 302, 303, 307, 308].includes(res.status) && location) {
+            current = new URL(location, current);
+            continue;
+          }
+          if (!res.ok) throw new Error(`短链服务返回 HTTP ${res.status}`);
+          return jsonResponse({ success: true, data: { finalUrl: current.toString() } }, { origin });
+        }
+        throw new Error('短链重定向次数过多');
       } catch (e) {
         const aborted = e && e.name === 'AbortError';
         return jsonResponse({ error: aborted ? '展开超时' : `展开失败: ${String((e && e.message) || e)}` }, { status: aborted ? 504 : 502, origin });

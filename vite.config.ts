@@ -1,7 +1,26 @@
-import { defineConfig } from 'vite';
+import { defineConfig, type ProxyOptions } from 'vite';
 import react from '@vitejs/plugin-react';
 import { execSync } from 'node:child_process';
 import { bakeVoiceMiddleware } from './server/bake-voice-middleware';
+import { staticCachePlugin } from './scripts/static-cache-build';
+import { startupRecoveryPlugin } from './scripts/startup-recovery-plugin';
+import { APP_VERSION_TAG } from './utils/appVersion';
+
+// MiniMax 国服 / 海外是两套域名，前端每个请求都带 X-MiniMax-Region 头说明走哪边。
+// Vite 的开发代理底层是 http-proxy，不认 router 选项，所以在 configure 里包一层 proxy.web，
+// 按请求头给每个请求单独指定 target。
+const minimaxTargetFor = (headers: Record<string, string | string[] | undefined>): string => {
+  const region = String(headers['x-minimax-region'] || '').toLowerCase();
+  return region === 'overseas' ? 'https://api.minimax.io' : 'https://api.minimaxi.com';
+};
+const routeMinimaxByRegion: ProxyOptions['configure'] = (proxy) => {
+  const forward = proxy.web.bind(proxy);
+  // callback 为空时不能往下传 undefined：http-proxy 按参数位置认 options，多一个空位会把 options 挤掉
+  proxy.web = (req, res, options, callback) => {
+    const routed = { ...options, target: minimaxTargetFor(req.headers) };
+    return callback ? forward(req, res, routed, callback) : forward(req, res, routed);
+  };
+};
 
 // 构建时抓 git 分支 + short commit + UTC+8 构建时间，注入到版本信息显示。
 // 非 git 环境（容器、tarball 部署）退化成 'unknown'，不影响构建。
@@ -44,6 +63,8 @@ function readCommit(): string {
 
 const gitInfo = { branch: readBranch(), commit: readCommit() };
 const buildTime = formatBuildTimeUtc8();
+// 开头是构建时间（36 进制），网页更新靠它比较两个版本谁新谁旧，别改掉这个前缀。
+const appBuildId = `${Date.now().toString(36)}-${gitInfo.commit}`;
 const isReleaseBranch = RELEASE_BRANCHES.has(gitInfo.branch);
 let showBuildBadge = !isReleaseBranch;
 if (process.env.VITE_HIDE_BUILD_BADGE === '1') showBuildBadge = false;
@@ -63,7 +84,9 @@ export default defineConfig({
     ],
   },
   plugins: [
+    startupRecoveryPlugin(appBuildId),
     react(),
+    staticCachePlugin({ buildId: appBuildId, appVersion: APP_VERSION_TAG }),
     {
       name: 'bake-voice-middleware',
       configureServer(server) {
@@ -76,6 +99,7 @@ export default defineConfig({
     __BUILD_COMMIT__: JSON.stringify(gitInfo.commit),
     __BUILD_TIME__: JSON.stringify(buildTime),
     __BUILD_BADGE_VISIBLE__: JSON.stringify(showBuildBadge),
+    __APP_BUILD_ID__: JSON.stringify(appBuildId),
   },
   // GitHub Pages 发布时使用相对路径，避免仓库子路径导致资源 404
   base: process.env.GITHUB_PAGES ? './' : '/',
@@ -90,18 +114,21 @@ export default defineConfig({
         changeOrigin: true,
         secure: true,
         rewrite: () => '/v1/t2a_v2',
+        configure: routeMinimaxByRegion,
       },
       '/api/minimax/get-voice': {
         target: 'https://api.minimaxi.com',
         changeOrigin: true,
         secure: true,
         rewrite: () => '/v1/get_voice',
+        configure: routeMinimaxByRegion,
       },
       '/api/minimax/music': {
         target: 'https://api.minimaxi.com',
         changeOrigin: true,
         secure: true,
         rewrite: () => '/v1/music_generation',
+        configure: routeMinimaxByRegion,
       },
       '/api/minimax-overseas/t2a': {
         target: 'https://api.minimax.io',
@@ -144,9 +171,10 @@ export default defineConfig({
   },
   build: {
     outDir: 'dist',
-    assetsDir: 'assets',
+    assetsDir: 'assets/build',
     chunkSizeWarningLimit: 2000,
     rollupOptions: {
+      input: { main: 'index.html', wardrobe: 'chibi-wardrobe.html' },
       // 关键修复：将这些包排除在打包之外，让浏览器通过 index.html 的 importmap 加载
       external: ['katex'],
       onwarn(warning, defaultHandler) {
@@ -157,6 +185,14 @@ export default defineConfig({
       output: {
         manualChunks(id) {
           if (id.includes('node_modules')) {
+            // This SDK core is dependency-free. Keep its initialized constants
+            // outside vendor-react: memory-palace initializes a store at module
+            // scope and can run before that cyclic vendor chunk's var defaults.
+            if (/[\\/]@rei-standard[\\/]blob-store[\\/]dist[\\/]index\.mjs$/.test(id)) {
+              return 'vendor-blob-store';
+            }
+            // Only load the image renderer when exporting a beauty preview.
+            if (id.includes('html2canvas')) return 'beauty-preview-renderer';
             // Local camera emotion calibration is opt-in. Keep MediaPipe out of
             // the preloaded common vendor so its JS is fetched only after the
             // user explicitly enables their camera.
@@ -175,7 +211,9 @@ export default defineConfig({
             if (id.includes('untitled-pixi-live2d-engine')) {
               return 'vendor-live2d-engine';
             }
-            if (id.includes('@pixi/') || /[\\/]node_modules[\\/]pixi\.js[\\/]/.test(id)) {
+            // Filters extend Pixi classes during module evaluation. Keeping them
+            // in common vendor creates vendor -> Pixi -> vendor TDZ cycles.
+            if (id.includes('pixi-filters') || id.includes('@pixi/') || /[\\/]node_modules[\\/]pixi\.js[\\/]/.test(id)) {
               return 'vendor-live2d';
             }
             if (id.includes('react') || id.includes('react-dom') || id.includes('scheduler')) {
@@ -189,9 +227,9 @@ export default defineConfig({
             }
             return 'vendor';
           }
-          if (id.includes('utils/memoryPalace')) {
-            return 'memory-palace';
-          }
+          // Let Rollup place application modules by their real dependency graph.
+          // Forcing memoryPalace into one chunk also hoists shared contexts and
+          // creates application -> React vendor -> application startup cycles.
         }
       }
     }

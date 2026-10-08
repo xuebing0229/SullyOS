@@ -4,11 +4,11 @@ import { describe, expect, it } from 'vitest';
 const source = readFileSync(
     new URL('../hooks/useChatAI.ts', import.meta.url),
     'utf8',
-);
+).replace(/\r\n/g, '\n');
 
 describe('useChatAI main-chat failover wiring', () => {
     it('首轮聊天真正通过 apiPlan 故障转移入口发送', () => {
-        expect(source).toContain("data = await executeChatBody(\n                    attemptedBody,\n                    '聊天回复',\n                    streamHooks,\n                    true,");
+        expect(source).toContain("data = await replyStep(async () => executeChatBody(\n                    attemptedBody,\n                    '聊天回复',\n                    streamHooks,\n                    true,");
         expect(source).not.toContain("data = await safeFetchJson(\`\${baseUrl}/chat/completions\`, {\n                    method: 'POST', headers,\n                    body: JSON.stringify({ ...baseReqBody, messages: withAmsg2TaskContext(baseReqBody.messages) })");
     });
 

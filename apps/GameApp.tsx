@@ -7,7 +7,7 @@ import { GameSession, GameTheme, CharacterProfile, GameLog, GameActionOption, Ga
 import { ContextBuilder } from '../utils/context';
 import { extractContent, extractJson } from '../utils/safeApi';
 import { injectMemoryPalace } from '../utils/memoryPalace/pipeline';
-import { trackEvent } from '../utils/analytics';
+
 import Modal from '../components/os/Modal';
 import { CharacterGroupFilterBar, filterCharactersByGroup, GROUP_FILTER_ALL } from '../components/character/CharacterGroupFilter';
 import { Planet, RocketLaunch, Lightning, LockSimple, DiceFive, Toolbox, FloppyDisk, ArrowsClockwise, DoorOpen } from '@phosphor-icons/react';
@@ -290,13 +290,17 @@ const GameApp: React.FC = () => {
     };
 
     // --- Helper: Robust API Call ---
-    const fetchGameAPI = async (prompt: string, maxTokens: number = 8000) => {
+    const fetchGameAPI = async (prompt: string, maxTokens: number = 8000, members: CharacterProfile[] = []) => {
+        const history = [{ role: 'user', content: '请按上述要求继续本轮游戏。' }];
+        const messages = members.length ? ContextBuilder.buildGroupWorldbookRequest({ members, user: userProfile, history, scanMessages: [{ role: 'user', content: prompt }],
+            render: (slots, turns) => [{ role: 'system', content: slots.before + prompt + slots.after }, ...turns],
+        }) : [{ role: 'user', content: prompt }];
         const response = await fetch(`${apiConfig.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiConfig.apiKey}` },
             body: JSON.stringify({
                 model: apiConfig.model,
-                messages: [{ role: "user", content: prompt }],
+                messages,
                 temperature: 0.9, 
                 max_tokens: maxTokens,
                 stream: false
@@ -342,33 +346,21 @@ const GameApp: React.FC = () => {
 
         // [优化] 多人同场时，把"用户档案 / 共有世界观 / 被多名角色挂载的世界书"提取到顶部
         // 只铺一次，避免每个角色块里重复贴同一份世界书（去重，省 token 也防串台）。
-        const sharedScene = ContextBuilder.buildGroupSharedScene(players, userProfile);
+        const sharedScene = ContextBuilder.buildGroupSharedScene(players.map(p => ({ ...p, mountedWorldbooks: [] })), userProfile);
         if (sharedScene.text) {
             fullContext += `${sharedScene.text}\n`;
         }
 
         for (const p of players) {
             // 1. Base Context (Identity & Worldview)
-            // [优化] 记忆读取：跑团多人同场，不再倾倒每个角色逐日的详细日记（极易让 LLM 把
-            //   A 的记忆安到 B 头上 = 串台）。改为 includeDetailedMemories=false（仅长期核心记忆）
-            //   + 下方按需注入的记忆宫殿向量召回（只取与当前情境相关的片段）。
-            //   同时跳过共享场景里已铺过的用户档案 / 世界书 / 世界观，彻底去重。
+            // false 仅省略传统详细日志，向量召回由核心上下文统一注入。
             await injectMemoryPalace(p);
-            const core = ContextBuilder.buildCoreContext(p, userProfile, false, undefined, {
+            const core = (await ContextBuilder.buildCoreContext({ ...p, mountedWorldbooks: [] }, userProfile, false, undefined, {
                 skipUserProfile: true,
                 skipWorldview: sharedScene.worldviewIsShared,
                 skipWorldbookIds: sharedScene.sharedWorldbookIds,
-            });
-            fullContext += `\n<<< 角色档案: ${p.name} (ID: ${p.id}) >>>\n${core}\n`;
-
-            // 记忆宫殿召回（includeDetailedMemories=false 时 buildCoreContext 不会自动带，这里按需补回）
-            // [防串台] 召回文本自带的标题是泛指的"你脑海中浮现…"，多角色同场时"你"会混淆。
-            //   这里用显式归属把它锁死到当前角色名下，并提醒 LLM 严禁挪用给别人。
-            if (p.memoryPalaceEnabled && p.memoryPalaceInjection && p.memoryPalaceInjection.trim()) {
-                fullContext += `\n【注意：以下记忆宫殿召回【仅属于 ${p.name}】，是 TA 一个人的私人记忆，绝不可当成其他角色的经历或挪用给别人】\n`;
-                fullContext += `${p.memoryPalaceInjection}\n`;
-                fullContext += `【${p.name} 的私人记忆结束】\n`;
-            }
+            }));
+            fullContext += `\n<<< 角色档案: ${p.name} (ID: ${p.id}) >>>\n本档案中的记忆仅属于 ${p.name}，不得挪用为其他角色的经历。\n${core}\n<<< ${p.name} 的角色档案结束 >>>\n`;
 
             // 2. Neural Link: Private Chat Sync
             try {
@@ -432,7 +424,7 @@ ${recentLog}
         }
         setIsGeneratingWorld(true);
         // 只报白名单里的固定风格；用户额外填的灵感是自由文本，一个字都不带
-        trackEvent('用 AI 生成世界观', { style: WORLD_STYLES.includes(worldStyle) ? worldStyle : '其他' });
+        
         try {
             // [鲁棒性] 改用带分隔符的纯文本格式而非 JSON——即使被截断也能干净解析；
             // 不再限制字数，给足 token 防止半路砍断。
@@ -463,6 +455,7 @@ ${worldIdea.trim() ? `**玩家的灵感/想法（请务必围绕它发挥）**: 
 
     // --- Creation Logic ---
     const handleCreateGame = async () => {
+
         if (!newTitle.trim() || !newWorld.trim() || selectedPlayers.size === 0) {
             addToast('请填写完整信息并选择至少一名角色', 'error');
             return;
@@ -515,7 +508,7 @@ ${playerContext}
   ]
 }`;
 
-            const data = await fetchGameAPI(prompt);
+            const data = await fetchGameAPI(prompt, 8000, players);
             const rawContent = extractContent(data);
             if (!rawContent) throw new Error('AI 返回了空响应');
 
@@ -583,11 +576,7 @@ ${playerContext}
             setGames(prev => [newGame, ...prev]);
             setActiveGame(newGame);
             setView('play');
-            trackEvent('创建冒险开团', {
-                theme: newTheme,
-                dice: newDiceDisabled ? '关' : '开',
-                archiveMode: newArchiveMode,
-            });
+            
 
             // Reset form
             setNewTitle('');
@@ -614,7 +603,7 @@ ${playerContext}
             await DB.saveGame(updated);
             addToast(newVal ? 'SAN 值已锁定' : 'SAN 值已解锁', 'info');
         }
-        trackEvent('切换 SAN 值锁定', { state: newVal ? '锁定' : '解锁' });
+        
     };
 
     // --- Dice Toggle (关闭后行动不再自动骰 D20) ---
@@ -625,11 +614,12 @@ ${playerContext}
         setActiveGame(updated);
         await DB.saveGame(updated);
         addToast(newDisabled ? '已关闭骰子，行动不再骰点' : '已开启骰子', 'info');
-        trackEvent('切换骰子判定', { state: newDisabled ? '关' : '开' });
+        
     };
 
     // --- Gameplay Logic ---
     const handleAction = async (actionText: string, isReroll: boolean = false) => {
+
         if (!activeGame || !apiConfig.apiKey) return;
 
         let contextLogs = activeGame.logs;
@@ -777,7 +767,7 @@ ${rollInstruction}
   ]
 }`;
 
-            const data = await fetchGameAPI(prompt);
+            const data = await fetchGameAPI(prompt, 8000, players);
             const rawContent = extractContent(data);
             if (!rawContent) throw new Error('AI 返回了空响应');
 
@@ -886,7 +876,7 @@ ${logText}
 
 直接输出总结正文：`;
 
-            const data = await fetchGameAPI(prompt, 1500);
+            const data = await fetchGameAPI(prompt, 1500, players);
             let summaryText = (extractContent(data) || '').trim();
             if (!summaryText) summaryText = '（这段冒险继续推进了剧情）';
 
@@ -970,7 +960,7 @@ ${logText}
         
         await handleAction("", true); // isReroll = true
         addToast('正在重新推演命运...', 'info');
-        trackEvent('重新推演上一段剧情');
+        
     };
 
     const handleRollbackLog = async (index: number) => {
@@ -982,7 +972,7 @@ ${logText}
         await DB.saveGame(updated);
         setActiveGame(updated);
         addToast('时间回溯成功', 'success');
-        trackEvent('回退剧情到某条记录');
+        
     };
 
     const handleRestart = async () => {
@@ -1018,7 +1008,7 @@ ${logText}
         setExpandedSummaries(new Set());
         setShowSystemMenu(false);
         addToast('游戏已重置', 'success');
-        trackEvent('重置本局冒险');
+        
     };
 
     // "Leave" just goes back to lobby (Auto-save is handled by DB calls in handleAction)
@@ -1045,7 +1035,7 @@ Logs:
 ${logText}
 Output: A concise summary in Chinese (e.g. "探索了地牢并击败了史莱姆"). No preamble.`;
 
-            const data = await fetchGameAPI(prompt);
+            const data = await fetchGameAPI(prompt, 8000, players);
             let summary = extractContent(data) || '进行了一场冒险';
             summary = summary.replace(/[。\.]$/, ''); // Remove trailing dot
 
@@ -1075,7 +1065,7 @@ Output: A concise summary in Chinese (e.g. "探索了地牢并击败了史莱姆
                 });
             }
             addToast('记忆传递完成 (Chat & Memory)', 'success');
-            trackEvent('归档冒险并写进角色记忆');
+            
         } catch (e) {
             console.error(e);
             addToast('归档失败', 'error');
@@ -1142,7 +1132,7 @@ Output: A concise summary in Chinese (e.g. "探索了地牢并击败了史莱姆
                 });
             }
             addToast(`已转发到 ${players.length} 位角色的聊天`, 'success');
-            trackEvent('转发剧情片段到聊天');
+            
             exitSelectMode();
         } catch (e: any) {
             addToast(`转发失败: ${e.message}`, 'error');
@@ -1176,7 +1166,7 @@ Output: A concise summary in Chinese (e.g. "探索了地牢并击败了史莱姆
         if (longPressFired.current) { longPressFired.current = false; return; } // 长按已触发删除，忽略点击
         setActiveGame(g);
         setView('play');
-        trackEvent('打开存档继续冒险');
+        
     };
 
     const confirmDeleteGame = async () => {
@@ -1185,7 +1175,7 @@ Output: A concise summary in Chinese (e.g. "探索了地牢并击败了史莱姆
         setGames(prev => prev.filter(g => g.id !== deleteConfirmId));
         setDeleteConfirmId(null);
         addToast('存档已删除', 'success');
-        trackEvent('删除跑团存档');
+        
     };
 
     // --- Renderers ---
@@ -1540,7 +1530,7 @@ Output: A concise summary in Chinese (e.g. "探索了地牢并击败了史莱姆
                         <button onClick={() => setShowParty(!showParty)} className={`p-2 rounded hover:bg-white/10 active:scale-95 transition-transform ${showParty ? theme.accent : 'opacity-50'}`}>
                             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6"><path strokeLinecap="round" strokeLinejoin="round" d="M18 18.72a9.094 9.094 0 0 0 3.741-.479 3 3 0 0 0-4.682-2.72m.94 3.198.001.031c0 .225-.012.447-.037.666A11.944 11.944 0 0 1 12 21c-2.17 0-4.207-.576-5.963-1.584A6.062 6.062 0 0 1 6 18.719m12 0a5.971 5.971 0 0 0-.941-3.197m0 0A5.995 5.995 0 0 0 12 12.75a5.995 5.995 0 0 0-5.058 2.772m0 0a3 3 0 0 0-4.681 2.72 8.986 8.986 0 0 0 3.74.477m.94-3.197a5.971 5.971 0 0 0-.94 3.197M15 6.75a3 3 0 1 1-6 0 3 3 0 0 1 6 0Zm6 3a2.25 2.25 0 1 1-4.5 0 2.25 2.25 0 0 1 4.5 0Zm-13.5 0a2.25 2.25 0 1 1-4.5 0 2.25 2.25 0 0 1 4.5 0Z" /></svg>
                         </button>
-                        <button onClick={() => { setShowSystemMenu(true); trackEvent('打开跑团系统菜单'); }} className={`p-2 -mr-2 rounded hover:bg-white/10 active:scale-95 transition-transform`}>
+                        <button onClick={() => { setShowSystemMenu(true);  }} className={`p-2 -mr-2 rounded hover:bg-white/10 active:scale-95 transition-transform`}>
                             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6"><path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" /></svg>
                         </button>
                     </div>
@@ -1625,9 +1615,9 @@ Output: A concise summary in Chinese (e.g. "探索了地牢并击败了史莱姆
                     const renderLogs = (logs: GameLog[]) => (
                         <div className={`pl-3 border-l-2 ${theme.border} space-y-1.5 mt-2`}>
                             {logs.map((log, li) => (
-                                <div key={log.id || li} className="text-[11px] leading-snug">
+                                <div key={log.id || li} className="text-sm leading-relaxed break-words" data-game-archived-log={log.id}>
                                     <span className="font-bold opacity-70">{log.role === 'gm' ? 'GM' : (log.speakerName || 'System')}: </span>
-                                    <span className="opacity-70">{log.content.replace(/\n+/g, ' ').slice(0, 140)}{log.content.length > 140 ? '…' : ''}</span>
+                                    <GameMarkdown content={log.content} theme={theme} />
                                 </div>
                             ))}
                         </div>
@@ -1653,9 +1643,9 @@ Output: A concise summary in Chinese (e.g. "探索了地牢并击败了史莱姆
                                                     className={`w-full text-left text-[10px] font-mono opacity-50 hover:opacity-90 transition-opacity flex items-center gap-1.5`}
                                                 >
                                                     <span>{open ? '▾' : '▸'}</span>
-                                                    <span>第 {g.index + 1} 段 · 原文 {g.logs.length} 条 {open ? '' : '(点击查看)'}</span>
+                                                    <span>第 {g.index + 1} 段 · 完整原文 {g.logs.length} 条 {open ? '' : '(点击展开)'}</span>
                                                 </button>
-                                                {open && <div className="opacity-50">{renderLogs(g.logs)}</div>}
+                                                {open && <div>{renderLogs(g.logs)}</div>}
                                                 {/* 原文下面就是这段的总结 */}
                                                 <div className={`p-4 rounded-lg border ${theme.border} ${theme.cardBg} text-xs italic leading-relaxed opacity-80`}>
                                                     <div className="text-[10px] font-bold uppercase tracking-widest mb-1 not-italic opacity-70">前情提要 · 第 {g.index + 1} 段</div>
@@ -1876,7 +1866,7 @@ Output: A concise summary in Chinese (e.g. "探索了地牢并击败了史莱姆
                                     className="w-full h-8 rounded cursor-pointer bg-white border border-slate-200 p-0.5" 
                                 />
                             </div>
-                            <button onClick={() => { setUiSettings({ fontSize: 14, color: '' }); trackEvent('恢复默认阅读外观'); }} className="w-full py-1.5 bg-white border border-slate-200 text-slate-500 text-xs rounded-lg active:scale-95 transition-transform">恢复默认</button>
+                            <button onClick={() => { setUiSettings({ fontSize: 14, color: '' });  }} className="w-full py-1.5 bg-white border border-slate-200 text-slate-500 text-xs rounded-lg active:scale-95 transition-transform">恢复默认</button>
                         </div>
                     </div>
 
