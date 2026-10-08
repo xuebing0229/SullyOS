@@ -112,6 +112,7 @@ import {
 } from '../../../utils/storyTheaterVoiceDirector';
 import { canSynthesizeSpeech } from '../../../utils/ttsRouter';
 import { deletePersistedVoiceAsset, ensureVoiceAsset, storyVoiceAssetKey } from '../../../utils/voiceAsset';
+import { normalizeStoryElevenLabsAudioTags } from '../../../utils/storyElevenLabsActing';
 import { createUserVoiceTarget } from '../../../utils/userVoice';
 import { createStoryTimingTrace, loadLastStoryTimingReport, type StoryTimingReport } from '../../../utils/storyTimingTrace';
 
@@ -718,7 +719,11 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
         if (!actor) return;
 
         const acting = voiceActingFromMessage(targetMessage)[dialogueIndex] ?? null;
-        const synthesisText = String(acting?.speech || text).trim().replace(/^\*([\s\S]*)\*$/, '$1').trim() || text;
+        const sourceSpeech = String(acting?.speech || text).trim().replace(/^\*([\s\S]*)\*$/, '$1').trim() || text;
+        // Repair older saved voice cues too; changed text invalidates the audio cache safely.
+        const synthesisText = storyTtsProvider === 'elevenlabs'
+            ? normalizeStoryElevenLabsAudioTags(sourceSpeech)
+            : sourceSpeech;
         const key = storyVoiceAssetKey(entry.id, messageId, dialogueIndex, storyTtsProvider);
         const currentAudio = storyVoiceAudioRef.current;
         if (!force && storyVoicePlayingKeyRef.current === key && currentAudio && !currentAudio.paused) {

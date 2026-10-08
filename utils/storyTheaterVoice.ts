@@ -1,6 +1,7 @@
 // Story keeps one structural STV protocol, but the acting syntax follows the selected TTS provider.
 import { VOICE_ACTING_GUIDE, VALID_EMOTIONS, cleanVoiceMarkupForDisplay, parseVoiceOutput } from './minimaxTts';
-import { getElevenLabsVoiceActingGuide, stripElevenLabsMarkupForDisplay } from './elevenLabsTts';
+import { stripElevenLabsMarkupForDisplay } from './elevenLabsTts';
+import { STORY_ELEVENLABS_V4_ACTING_GUIDE, normalizeStoryElevenLabsAudioTags } from './storyElevenLabsActing';
 
 export type StoryVoiceSpeaker = 'char' | 'user';
 export type StoryVoiceTaggedSpeaker = StoryVoiceSpeaker | 'npc';
@@ -133,7 +134,9 @@ const parseTaggedDialoguePayload = (
     // MiniMax needs its square-cue compatibility normalization; ElevenLabs v4 must
     // keep raw Audio Tags such as [pause] / [whispers] for the provider adapter.
     const speech = parsedVoice.hasVoiceTag
-        ? String(provider === 'elevenlabs' ? parsedVoice.rawSpeech : parsedVoice.speech || '').trim()
+        ? (provider === 'elevenlabs'
+            ? normalizeStoryElevenLabsAudioTags(parsedVoice.rawSpeech)
+            : String(parsedVoice.speech || '')).trim()
         : '';
     const spoken = speech.replace(/^\s*\*([\s\S]*?)\*\s*$/, '$1').trim();
     const acting = canSpeak && spoken
@@ -257,21 +260,22 @@ export const buildStoryVoiceSpeakerFormatReminder = (
     characterName = '当前主角色',
     userName = '用户',
     provider: 'minimax' | 'elevenlabs' = 'minimax',
-    elevenLabsModel?: string | null,
+    _elevenLabsModel?: string | null,
 ): string => {
     if (!enabled) return '';
     const emotions = Array.from(VALID_EMOTIONS).join(' / ');
     const isElevenLabs = provider === 'elevenlabs';
     const actingRule = isElevenLabs
-        ? '- <语音> 内的字就是实际要念的对白；演绎使用 ElevenLabs v4 Audio Tags，例如 [sighs]、[whispers]、[laughs]、[pause]。不要使用 <#秒数#>；v4 不读取 MiniMax 停顿标签。'
+        ? '- <语音> 内的字是准确的可发声文字；演绎使用 ElevenLabs v4 英文 Audio Tags，例如 [soft intimate whisper] [voice trembling] [quiet laugh] [short pause]。不要使用 <#秒数#>，不要用模糊的 [breathless rasp] 或带逗号、中文解释的长标签。'
         : '- <语音> 内的字就是实际要念的对白；允许按下方共享演绎规范加入 <#秒数#> 和合法 sound tag，但不要为了“演”而改变事件事实、人物意图或对白语义。';
     const hiddenRule = isElevenLabs
         ? '- <语音>、emotion 与 Audio Tags 都是隐藏的 TTS 演绎数据，正文显示时系统会自动去掉；不要在正文里解释这些标记。'
         : '- <语音>、emotion、<#秒数#>、sound tag 都是隐藏的 TTS 演绎数据，正文显示时系统会自动去掉；不要在正文里解释这些标记。';
     const example = isElevenLabs
-        ? '- 示例：[[STV:char]]<语音 emotion="sad">「我知道。[sighs]只是……有点难受。」</语音>[[/STV]] / [[STV:user]]<语音 emotion="calm">「那就先走吧。」</语音>[[/STV]] / [[STV:char]]<语音 emotion="sad">*为什么会这样？*</语音>[[/STV]] / [[STV:npc]]「请出示证件。」[[/STV]]。'
+        ? '- 示例：[[STV:char]]<语音 emotion="sad">「[voice trembling]我知道。只是……有点难受。」</语音>[[/STV]] / [[STV:user]]<语音 emotion="calm">「那就先走吧。」</语音>[[/STV]] / [[STV:char]]<语音 emotion="sad">*[soft intimate whisper]为什么会这样？*</语音>[[/STV]] / [[STV:npc]]「请出示证件。」[[/STV]]。'
         : '- 示例：[[STV:char]]<语音 emotion="sad">「我知道。<#0.5#>(sighs)只是……有点难受。」</语音>[[/STV]] / [[STV:user]]<语音 emotion="calm">「那就先走吧。」</语音>[[/STV]] / [[STV:char]]<语音 emotion="sad">*为什么会这样？*</语音>[[/STV]] / [[STV:npc]]「请出示证件。」[[/STV]]。';
-    const providerGuide = isElevenLabs ? getElevenLabsVoiceActingGuide(elevenLabsModel) : VOICE_ACTING_GUIDE;
+    // Story keeps a separate, drama-CD-oriented guide so chat/phone voices do not change.
+    const providerGuide = isElevenLabs ? STORY_ELEVENLABS_V4_ACTING_GUIDE : VOICE_ACTING_GUIDE;
     return [
         '### 文游对白与语音隐藏标记（仅作用于 <story_text> 主正文）',
         '- 真实说出口的对白必须用「……」，直接内心心理独白必须用 *……*；两种都支持配音，但内心活动不是说出口的对白。',

@@ -33,6 +33,17 @@ describe('story voice acting director', () => {
     expect(result[0]).toEqual({ speech: '「等等。」', emotion: 'fearful' });
   });
 
+  it('sanitizes duplicate-prone v4 tags while retaining the exact spoken words', () => {
+    const result = mergeStoryVoiceDirectorResponse(
+      '{"items":[{"index":0,"emotion":"sad","speech":"「[breathless, raspy voice]我……不知道。」"}]}',
+      ['「我……不知道。」'],
+      ['char'],
+      [null],
+      'elevenlabs',
+    );
+    expect(result[0]).toEqual({ speech: '「[breathless raspy voice]我……不知道。」', emotion: 'sad' });
+  });
+
   it('accepts ElevenLabs Audio Tags without treating them as rewritten dialogue', () => {
     const result = mergeStoryVoiceDirectorResponse(
       '{"items":[{"index":0,"emotion":"sad","speech":"「我知道。[sighs]只是有点累。」"}]}',

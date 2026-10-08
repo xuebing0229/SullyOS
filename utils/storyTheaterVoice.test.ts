@@ -201,11 +201,36 @@ describe('story theater speaker + acting markup', () => {
         expect(reminder).toContain('我');
     });
 
+    it('uses the dedicated ElevenLabs drama direction while leaving MiniMax untouched', () => {
+        const eleven = buildStoryVoiceSpeakerFormatReminder(true, '温鸣竹', '祁连云', 'elevenlabs', 'eleven_v4');
+        expect(eleven).toContain('女性向情境音声');
+        expect(eleven).toContain('L1 日常');
+        expect(eleven).toContain('L2 动情');
+        expect(eleven).toContain('L3 激烈');
+        expect(eleven).toContain('[breathless raspy voice]');
+        expect(eleven).toContain('[wet squelch]');
+        expect(eleven).toContain('不新增情节');
+        expect(eleven).toContain('*……*');
+        expect(eleven).toContain('[[STV:char]]');
+        expect(eleven).not.toContain('只输出严格 JSON');
+        const mini = buildStoryVoiceSpeakerFormatReminder(true, '温鸣竹', '祁连云', 'minimax');
+        expect(mini).not.toContain('女性向情境音声');
+        expect(mini).toContain('让它听起来像活人在说话');
+    });
+
+    it('normalizes ambiguous ElevenLabs tags without changing visible story', () => {
+        const raw = '<story_text>[[STV:char]]<语音 emotion="sad">「[breathless rasp]你听我说……[spank — 用尽全力,很响]别走。」</语音>[[/STV]]</story_text>';
+        const parsed = parseStoryVoiceMessage(raw, 'elevenlabs');
+        expect(parsed.cleanText).toContain('「你听我说……别走。」');
+        expect(parsed.dialogueActing[0]?.speech).toBe('「[breathless raspy voice]你听我说……[spank]别走。」');
+        expect(parsed.dialogueSpeakers).toEqual(['char']);
+    });
+
     it('switches Story acting instructions to ElevenLabs v4 Audio Tags', () => {
         const reminder = buildStoryVoiceSpeakerFormatReminder(true, '云', '我', 'elevenlabs', 'eleven_v4');
         expect(reminder).toContain('ElevenLabs v4');
-        expect(reminder).toContain('[sighs]');
-        expect(reminder).toContain('[pause]');
+        expect(reminder).toContain('[soft sigh]');
+        expect(reminder).toContain('[short pause]');
         expect(reminder).toContain('不要使用 <#秒数#>');
         expect(reminder).not.toContain('让它听起来像活人在说话');
     });

@@ -6,7 +6,8 @@ import {
     VOICE_ACTING_GUIDE,
     cleanVoiceMarkupForDisplay,
 } from './minimaxTts';
-import { getElevenLabsVoiceActingGuide, stripElevenLabsMarkupForDisplay } from './elevenLabsTts';
+import { stripElevenLabsMarkupForDisplay } from './elevenLabsTts';
+import { STORY_ELEVENLABS_V4_ACTING_GUIDE, normalizeStoryElevenLabsAudioTags } from './storyElevenLabsActing';
 import { extractContent } from './safeApi';
 import {
     extractStoryVoiceDialogues,
@@ -84,7 +85,8 @@ export const mergeStoryVoiceDirectorResponse = (
         const speech = candidate && sameVisibleWords(candidate, dialogues[index], provider)
             ? candidate
             : (next[index]?.speech || dialogues[index]);
-        next[index] = { speech: dialogues[index].startsWith('*') ? speech.replace(/^\s*\*([\s\S]*?)\*\s*$/, '$1') : speech, emotion };
+        const withoutStars = dialogues[index].startsWith('*') ? speech.replace(/^\s*\*([\s\S]*?)\*\s*$/, '$1') : speech;
+        next[index] = { speech: provider === 'elevenlabs' ? normalizeStoryElevenLabsAudioTags(withoutStars) : withoutStars, emotion };
     }
     return next;
 };
@@ -124,13 +126,13 @@ export const directMissingStoryVoiceActing = async (
     const emotionValues = Array.from(VALID_EMOTIONS).join(', ');
     const interjectionValues = Array.from(VALID_INTERJECTION_TAGS).join(', ');
     const providerTask = provider === 'elevenlabs'
-        ? '任务：结合当前正文和上一小段上下文，为每句对白或直接心理独白选择一个标准 emotion，并在需要时给 speech 加少量 ElevenLabs v4 Audio Tags，例如 [sighs]、[whispers]、[laughs]、[pause]。不要加入 <#秒数#>。'
+        ? '任务：结合正文、台词前后的动作与心理，为每句对白或直接心理选择标准 emotion；按 L1/L2/L3 判断强度，只在必要时插入 ElevenLabs v4 英文 Audio Tags。绝不改动原文中文，不给已有台词新增呻吟或新事实。不要加入 <#秒数#>。'
         : '任务：结合当前正文和上一小段上下文，为每句对白或直接心理独白选择一个标准 emotion，并在需要时给 speech 加少量停顿 <#秒数#> / 合法 sound tag。';
     const tagRule = provider === 'elevenlabs'
-        ? 'Audio Tags 只能用常见、明确的英文方括号标签；不要自造中文标签。'
+        ? 'Audio Tags 使用清晰的英文词组，区分人声属性和物理 SFX；不要在标签内使用逗号、中文或破折号，不要使用 [breathless rasp]，请用 [breathless raspy voice]。停顿与情绪变化时只加确有必要的标注。'
         : `sound tag 只能从这些值里选：${interjectionValues}`;
     const actingGuide = provider === 'elevenlabs'
-        ? getElevenLabsVoiceActingGuide(input.apiConfig.elevenLabsModel)
+        ? STORY_ELEVENLABS_V4_ACTING_GUIDE
         : VOICE_ACTING_GUIDE;
     const prompt = [
         '你是文游 TTS 的“情绪导演”。只处理下面列出的缺失演绎对白与直接心理独白，不续写剧情。',
