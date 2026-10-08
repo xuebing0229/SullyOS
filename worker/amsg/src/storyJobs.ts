@@ -1070,12 +1070,12 @@ export const runStoryJob = async (
       const timings: Record<string, number> = {
         queueMs: Math.max(0, startedAt - row.created_at),
         prepareMs: upstreamRequestAt ? Math.max(0, upstreamRequestAt - startedAt) : 0,
-        ...(headersMs !== null ? { headerMs: headersMs } : {}),
-        ...(firstByteMs !== null ? { firstByteMs } : {}),
-        ...(firstTextMs !== null ? { firstTextMs } : {}),
         upstreamTotalMs,
-        ...(spec.imageHandoff ? { imageHandoffMs: Math.max(0, now() - handoffStartedAt) } : {}),
       };
+      if (headersMs !== null) timings.headerMs = headersMs;
+      if (firstByteMs !== null) timings.firstByteMs = firstByteMs;
+      if (firstTextMs !== null) timings.firstTextMs = firstTextMs;
+      if (spec.imageHandoff) timings.imageHandoffMs = Math.max(0, now() - handoffStartedAt);
       console.info('[StoryTiming][Worker] ' + JSON.stringify({ jobId, ...timings }));
       const storedResponse = {
         ...streamed.response,
