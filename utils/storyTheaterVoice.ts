@@ -5,6 +5,7 @@ import { getElevenLabsVoiceActingGuide, stripElevenLabsMarkupForDisplay } from '
 export type StoryVoiceSpeaker = 'char' | 'user';
 export type StoryVoiceTaggedSpeaker = StoryVoiceSpeaker | 'npc';
 export type StoryVoiceDialogueSpeaker = StoryVoiceSpeaker | null;
+export type StoryVoiceSegmentKind = 'dialogue' | 'psychology';
 
 export interface StoryVoiceActing {
     speech: string;
@@ -28,6 +29,7 @@ export interface ParsedStoryVoiceMessage {
     cleanText: string;
     dialogueSpeakers: StoryVoiceDialogueSpeaker[];
     dialogueActing: Array<StoryVoiceActing | null>;
+    segmentKinds: StoryVoiceSegmentKind[];
 }
 
 const STORY_VOICE_PAIR_PATTERN = /(?:\[\[STV:(char|user|npc)\]\]|\[STV:(char|user|npc)\])([\s\S]*?)(?:\[\[\/STV\]\]|\[\/STV\])/gi;
@@ -35,7 +37,7 @@ const STORY_VOICE_MARKER_PATTERN = /(?:\[\[STV:[^\]\r\n]{1,32}\]\]|\[STV:[^\]\r\
 const STORY_TEXT_PATTERN = /<story_text\b[^>]*>([\s\S]*?)(?:<\/story_text\s*>|$)/i;
 // 文游格式协议：只有「……」是人物说出口的对白。普通中文双引号、书名号式引号、英文引号等都只是正文标点。
 // 播放阶段的坏音频缓存自愈由 Story 会话层处理；这里仅负责对白索引与说话人协议。
-const STORY_DIALOGUE_PATTERN = /(「[^」\n]*」)/g;
+const STORY_VOICE_SEGMENT_PATTERN = /(\*(?!\*)[^*\n]+?\*|「[^」\n]*」)/g;
 
 /**
  * Recover clearly spoken lines when a model drifts into ordinary quotation marks.
@@ -94,6 +96,8 @@ const normalizeTaggedDialogueText = (value: string): string => {
     const trailing = text.match(/\s*$/)?.[0] || '';
     let core = text.slice(leading.length, text.length - trailing.length);
     if (!core) return text;
+    // Tagged direct thoughts stay *psychological*, never turn into spoken quotes.
+    if (core.startsWith('*') && core.endsWith('*') && core.length > 2) return text;
 
     const quotePairs: Array<[string, string]> = [
         ['「', '」'],
@@ -131,9 +135,10 @@ const parseTaggedDialoguePayload = (
     const speech = parsedVoice.hasVoiceTag
         ? String(provider === 'elevenlabs' ? parsedVoice.rawSpeech : parsedVoice.speech || '').trim()
         : '';
-    const acting = canSpeak && speech
+    const spoken = speech.replace(/^\s*\*([\s\S]*?)\*\s*$/, '$1').trim();
+    const acting = canSpeak && spoken
         ? {
-            speech,
+            speech: spoken,
             ...(parsedVoice.emotion ? { emotion: parsedVoice.emotion } : {}),
         }
         : null;
@@ -195,8 +200,8 @@ const resolveDialogueSpan = (
 };
 
 /**
- * 「……」 consumes a dialogue slot. Clear spoken sentences accidentally wrapped
- * in "…" or “…” are recovered conservatively; quoted references stay prose.
+ * Spoken 「……」 dialogue and *……* direct thoughts share one voice slot order.
+ * Quotes in "…" or “…” only count when the recovery rules confirm speech.
  */
 export const parseStoryVoiceMessage = (
     value: string,
@@ -210,22 +215,25 @@ export const parseStoryVoiceMessage = (
     const normalizedStory = normalizeUntaggedStoryDialogue(parsedStory.cleanText);
     const dialogueSpeakers: StoryVoiceDialogueSpeaker[] = [];
     const dialogueActing: Array<StoryVoiceActing | null> = [];
+    const segmentKinds: StoryVoiceSegmentKind[] = [];
 
-    STORY_DIALOGUE_PATTERN.lastIndex = 0;
+    STORY_VOICE_SEGMENT_PATTERN.lastIndex = 0;
     let dialogue: RegExpExecArray | null;
-    while ((dialogue = STORY_DIALOGUE_PATTERN.exec(normalizedStory))) {
+    while ((dialogue = STORY_VOICE_SEGMENT_PATTERN.exec(normalizedStory))) {
         const start = dialogue.index;
         const end = start + dialogue[0].length;
         const span = resolveDialogueSpan(start, end, parsedStory.spans);
         const speaker = span?.speaker === 'char' || span?.speaker === 'user' ? span.speaker : null;
         dialogueSpeakers.push(speaker);
         dialogueActing.push(speaker ? (span?.acting || null) : null);
+        segmentKinds.push(dialogue[0].startsWith('*') ? 'psychology' : 'dialogue');
     }
 
     return {
         cleanText,
         dialogueSpeakers,
         dialogueActing,
+        segmentKinds,
     };
 };
 
@@ -236,9 +244,9 @@ export const extractStoryVoiceDialogues = (value: string): string[] => {
     const normalizedStory = normalizeUntaggedStoryDialogue(parsedStory.cleanText);
     const dialogues: string[] = [];
 
-    STORY_DIALOGUE_PATTERN.lastIndex = 0;
+    STORY_VOICE_SEGMENT_PATTERN.lastIndex = 0;
     let dialogue: RegExpExecArray | null;
-    while ((dialogue = STORY_DIALOGUE_PATTERN.exec(normalizedStory))) {
+    while ((dialogue = STORY_VOICE_SEGMENT_PATTERN.exec(normalizedStory))) {
         dialogues.push(dialogue[0]);
     }
     return dialogues;
@@ -261,21 +269,22 @@ export const buildStoryVoiceSpeakerFormatReminder = (
         ? '- <语音>、emotion 与 Audio Tags 都是隐藏的 TTS 演绎数据，正文显示时系统会自动去掉；不要在正文里解释这些标记。'
         : '- <语音>、emotion、<#秒数#>、sound tag 都是隐藏的 TTS 演绎数据，正文显示时系统会自动去掉；不要在正文里解释这些标记。';
     const example = isElevenLabs
-        ? '- 示例：[[STV:char]]<语音 emotion="sad">「我知道。[sighs]只是……有点难受。」</语音>[[/STV]] / [[STV:user]]<语音 emotion="calm">「那就先走吧。」</语音>[[/STV]] / [[STV:npc]]「请出示证件。」[[/STV]]。'
-        : '- 示例：[[STV:char]]<语音 emotion="sad">「我知道。<#0.5#>(sighs)只是……有点难受。」</语音>[[/STV]] / [[STV:user]]<语音 emotion="calm">「那就先走吧。」</语音>[[/STV]] / [[STV:npc]]「请出示证件。」[[/STV]]。';
+        ? '- 示例：[[STV:char]]<语音 emotion="sad">「我知道。[sighs]只是……有点难受。」</语音>[[/STV]] / [[STV:user]]<语音 emotion="calm">「那就先走吧。」</语音>[[/STV]] / [[STV:char]]<语音 emotion="sad">*为什么会这样？*</语音>[[/STV]] / [[STV:npc]]「请出示证件。」[[/STV]]。'
+        : '- 示例：[[STV:char]]<语音 emotion="sad">「我知道。<#0.5#>(sighs)只是……有点难受。」</语音>[[/STV]] / [[STV:user]]<语音 emotion="calm">「那就先走吧。」</语音>[[/STV]] / [[STV:char]]<语音 emotion="sad">*为什么会这样？*</语音>[[/STV]] / [[STV:npc]]「请出示证件。」[[/STV]]。';
     const providerGuide = isElevenLabs ? getElevenLabsVoiceActingGuide(elevenLabsModel) : VOICE_ACTING_GUIDE;
     return [
         '### 文游对白与语音隐藏标记（仅作用于 <story_text> 主正文）',
-        '- 人物真实说出口的对白一律使用「……」。只有「……」会被视为对白。',
+        '- 真实说出口的对白必须用「……」，直接内心心理独白必须用 *……*；两种都支持配音，但内心活动不是说出口的对白。',
         '- “……”、『……』、‘……’、英文引号等都是普通正文标点，可用于专名、标题、引用、强调等；它们不是对白，不参与对白着色或语音。',
-        '- 每一句真实说出口的对白都必须有且只有一组 STV，说话人归属由 STV 决定，不依赖“说、问、开口”等发言动词。不要因为使用 ElevenLabs Audio Tags 就把真正的对白改写成英文或中文双引号。',
+        '- 每一句真实对白和每段直接心理都必须各有且只有一组 STV；心理的归属是正在思考的人，而非旁白。不要因为 ElevenLabs Audio Tags 就把对白换成双引号。',
         `- ${characterName} 说出口的对白必须写成：[[STV:char]]<语音 emotion="calm">「……」</语音>[[/STV]]。`,
         `- ${userName} 说出口的对白必须写成：[[STV:user]]<语音 emotion="calm">「……」</语音>[[/STV]]。`,
+        `- ${characterName} 的直接心理必须写成：[[STV:char]]<语音 emotion="calm">*……*</语音>[[/STV]]；${userName} 的直接心理用 [[STV:user]]<语音 emotion="calm">*……*</语音>[[/STV]]；星号不送 TTS 朗读。`,
         `- emotion 必须根据当前情境、动作、心理状态、前后文和关系氛围逐句判断，只能从这些标准值中选择：${emotions}。不要因为同一说话人就固定一种 emotion。`,
         actingRule,
         hiddenRule,
         '- NPC、路人和其他人物说出口的对白：[[STV:npc]]「……」[[/STV]]；他们正常显示为对白，但目前不配音，不要给 NPC 添加 <语音>。',
-        '- 旁白、动作、环境描写、心理活动不要添加 STV 或 <语音>；普通引用与专名也绝不能添加 STV。',
+        '- 旁白、动作、环境描写，以及“他心里五味杂陈”等描述性心理旁白不要添加 STV 或 <语音>；只有 *……* 直接心理独白要加。普通引用与专名也不得添加 STV。',
         '- STV 必须成对出现，不要把标记放到 <story_text> 之外。',
         example,
         '',

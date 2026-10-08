@@ -157,6 +157,38 @@ describe('story theater speaker + acting markup', () => {
         ]);
     });
 
+    it('indexes spoken dialogue and direct thoughts in reading order with their own actors', () => {
+        const source = '<story_text>他想：[[STV:char]]<语音 emotion="sad">*我做错了吗？*</语音>[[/STV]]\n'
+            + '他抬头。[[STV:user]]<语音 emotion="calm">「你没事吧？」</语音>[[/STV]]\n'
+            + '[[STV:char]]<语音 emotion="happy">*终于有人问了。*</语音>[[/STV]]</story_text>';
+        for (const provider of ['minimax', 'elevenlabs'] as const) {
+            const parsed = parseStoryVoiceMessage(source, provider);
+            expect(parsed.cleanText).toContain('*我做错了吗？*');
+            expect(parsed.segmentKinds).toEqual(['psychology', 'dialogue', 'psychology']);
+            expect(parsed.dialogueSpeakers).toEqual(['char', 'user', 'char']);
+            expect(parsed.dialogueActing.map(a => a?.speech)).toEqual(['我做错了吗？', '「你没事吧？」', '终于有人问了。']);
+            expect(extractStoryVoiceDialogues(parsed.cleanText)).toEqual(['*我做错了吗？*', '「你没事吧？」', '*终于有人问了。*']);
+        }
+    });
+
+    it('keeps v4 audio tags hidden while removing thought delimiters from speech', () => {
+        const raw = '<story_text>[[STV:char]]<语音 emotion="sad">*[whispers]为什么会这样？*</语音>[[/STV]]</story_text>';
+        const parsed = parseStoryVoiceMessage(raw, 'elevenlabs');
+        expect(parsed.cleanText).toBe('<story_text>*为什么会这样？*</story_text>');
+        expect(parsed.dialogueActing).toEqual([{ speech: '[whispers]为什么会这样？', emotion: 'sad' }]);
+        expect(parsed.segmentKinds).toEqual(['psychology']);
+    });
+
+    it('does not read narration, quoted titles or backstage as an inner voice', () => {
+        const raw = '<story_text>他心里想着明天的安排。\n'
+            + '他看着“希望！”这两个字。\n'
+            + '*等会儿再说。*他依旧沉默。</story_text><backstage>*这里不是剧情正文*</backstage>';
+        const parsed = parseStoryVoiceMessage(raw, 'minimax');
+        expect(parsed.segmentKinds).toEqual(['psychology']);
+        expect(parsed.dialogueSpeakers).toEqual([null]);
+        expect(extractStoryVoiceDialogues(parsed.cleanText)).toEqual(['*等会儿再说。*']);
+    });
+
     it('injects the existing shared acting guide only when Story TTS is enabled', () => {
         expect(buildStoryVoiceSpeakerFormatReminder(false)).toBe('');
         const reminder = buildStoryVoiceSpeakerFormatReminder(true, '云', '我');

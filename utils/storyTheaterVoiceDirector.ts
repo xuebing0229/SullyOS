@@ -34,7 +34,7 @@ export const resolveStoryVoiceDirectorApiConfig = (
 
 const stripOuterDialogueQuotes = (value: string): string => {
     const text = String(value || '').trim();
-    return text.startsWith('「') && text.endsWith('」') ? text.slice(1, -1) : text;
+    return ((text.startsWith('「') && text.endsWith('」')) || (text.startsWith('*') && text.endsWith('*'))) ? text.slice(1, -1) : text;
 };
 
 const visibleVoiceWords = (value: string, provider: 'minimax' | 'elevenlabs'): string => (
@@ -84,7 +84,7 @@ export const mergeStoryVoiceDirectorResponse = (
         const speech = candidate && sameVisibleWords(candidate, dialogues[index], provider)
             ? candidate
             : (next[index]?.speech || dialogues[index]);
-        next[index] = { speech, emotion };
+        next[index] = { speech: dialogues[index].startsWith('*') ? speech.replace(/^\s*\*([\s\S]*?)\*\s*$/, '$1') : speech, emotion };
     }
     return next;
 };
@@ -124,8 +124,8 @@ export const directMissingStoryVoiceActing = async (
     const emotionValues = Array.from(VALID_EMOTIONS).join(', ');
     const interjectionValues = Array.from(VALID_INTERJECTION_TAGS).join(', ');
     const providerTask = provider === 'elevenlabs'
-        ? '任务：结合当前正文和上一小段上下文，为每句对白选择一个标准 emotion，并在需要时给 speech 加少量 ElevenLabs v4 Audio Tags，例如 [sighs]、[whispers]、[laughs]、[pause]。不要加入 <#秒数#>。'
-        : '任务：结合当前正文和上一小段上下文，为每句对白选择一个标准 emotion，并在需要时给 speech 加少量停顿 <#秒数#> / 合法 sound tag。';
+        ? '任务：结合当前正文和上一小段上下文，为每句对白或直接心理独白选择一个标准 emotion，并在需要时给 speech 加少量 ElevenLabs v4 Audio Tags，例如 [sighs]、[whispers]、[laughs]、[pause]。不要加入 <#秒数#>。'
+        : '任务：结合当前正文和上一小段上下文，为每句对白或直接心理独白选择一个标准 emotion，并在需要时给 speech 加少量停顿 <#秒数#> / 合法 sound tag。';
     const tagRule = provider === 'elevenlabs'
         ? 'Audio Tags 只能用常见、明确的英文方括号标签；不要自造中文标签。'
         : `sound tag 只能从这些值里选：${interjectionValues}`;
@@ -133,13 +133,13 @@ export const directMissingStoryVoiceActing = async (
         ? getElevenLabsVoiceActingGuide(input.apiConfig.elevenLabsModel)
         : VOICE_ACTING_GUIDE;
     const prompt = [
-        '你是文游 TTS 的“情绪导演”。只处理下面列出的缺失演绎对白，不续写剧情。',
+        '你是文游 TTS 的“情绪导演”。只处理下面列出的缺失演绎对白与直接心理独白，不续写剧情。',
         providerTask,
         '硬规则：绝对不能增删、替换或改写任何实际要说的文字；只能插入演绎标记。不要改变人物意图。',
         `emotion 只能是：${emotionValues}`,
         tagRule,
         '输出必须是严格 JSON，不要 Markdown、不要解释：{"items":[{"index":0,"emotion":"sad","speech":"原对白，只插演绎标记"}]}',
-        '每个输入 index 都必须返回一次；emotion 必填。speech 可以沿用 existingSpeech，也可以在原对白上插入演绎标记。',
+        '每个输入 index 都必须返回一次；emotion 必填。speech 可以沿用 existingSpeech，也可以在原文上插入演绎标记。心理独白的 speech 不应保留 * 星号。',
         '',
         actingGuide,
         '',
@@ -149,7 +149,7 @@ export const directMissingStoryVoiceActing = async (
         '【当前正文】',
         String(input.content || '').slice(-12000),
         '',
-        '【需要补判的对白】',
+        '【需要补判的对白和直接心理】',
         JSON.stringify(missing),
     ].join('\n');
 

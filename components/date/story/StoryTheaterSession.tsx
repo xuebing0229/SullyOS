@@ -177,22 +177,33 @@ const affinityInputsFromMessage = (message: Message | undefined, actors: Charact
     return legacy ? [legacy] : [];
 };
 
+// Old saved metadata indexes *spoken dialogue only*. Align those arrays with
+// the combined reading-order slots for dialogue and inner thoughts, keeping
+// existing dialogue voices/acting intact even when a thought precedes them.
+const alignStoryVoiceMetadata = <T,>(message: Message | undefined, values: T[], missing: T): T[] => {
+    if (!message || message.metadata?.theaterVoiceSegmentVersion === 2) return values;
+    let oldDialogueIndex = 0;
+    return parseStoryVoiceMessage(message.content).segmentKinds.map(kind =>
+        kind === 'dialogue' ? (values[oldDialogueIndex++] ?? missing) : missing,
+    );
+};
+
 const voiceSpeakersFromMessage = (message: Message | undefined): Array<StoryVoiceSpeaker | null> => {
     const values = message?.metadata?.theaterVoiceSpeakers;
     if (!Array.isArray(values)) return [];
-    return values.map(value => value === 'char' || value === 'user' ? value : null);
+    return alignStoryVoiceMetadata(message, values.map(value => value === 'char' || value === 'user' ? value : null), null);
 };
 
 const voiceActingFromMessage = (message: Message | undefined): Array<StoryVoiceActing | null> => {
     const values = message?.metadata?.theaterVoiceActing;
     if (!Array.isArray(values)) return [];
-    return values.map(value => {
+    return alignStoryVoiceMetadata(message, values.map(value => {
         if (!value || typeof value !== 'object') return null;
         const speech = String((value as any).speech || '').trim();
         if (!speech) return null;
         const emotion = String((value as any).emotion || '').trim().toLowerCase();
         return { speech, ...(emotion ? { emotion } : {}) };
-    });
+    }), null);
 };
 
 interface AffinityDraft { delta: number; reason: string; awareness: 'noticed' | 'unnoticed'; }
@@ -321,17 +332,17 @@ const splitStoryToneSegments = (text: string, nextDialogue?: () => StoryDialogue
     while ((match = pattern.exec(source)) !== null) {
         if (match.index > cursor) segments.push({ kind: 'narration', text: source.slice(cursor, match.index) });
         const token = match[0];
-        if (token.startsWith('*') && token.endsWith('*')) {
-            segments.push({ kind: 'psychology', text: token.slice(1, -1) });
-        } else {
-            const voice = nextDialogue?.();
-            const segment: StoryToneSegment = { kind: 'dialogue', text: token };
-            if (voice) {
-                segment.dialogueIndex = voice.dialogueIndex;
-                if (voice.speaker) segment.speaker = voice.speaker;
-            }
-            segments.push(segment);
+        const psychology = token.startsWith('*') && token.endsWith('*');
+        const voice = nextDialogue?.();
+        const segment: StoryToneSegment = {
+            kind: psychology ? 'psychology' : 'dialogue',
+            text: psychology ? token.slice(1, -1) : token,
+        };
+        if (voice) {
+            segment.dialogueIndex = voice.dialogueIndex;
+            if (voice.speaker) segment.speaker = voice.speaker;
         }
+        segments.push(segment);
         cursor = match.index + token.length;
     }
 
@@ -372,21 +383,22 @@ interface StoryDialoguePressTarget {
     dialogueIndex: number;
     text: string;
     speaker: StoryVoiceSpeaker;
+    kind: 'dialogue' | 'psychology';
 }
 
-const StoryOutput: React.FC<{ content: string; onChoose?: (text: string) => void; affinityInputs?: StoryAffinityInput[]; voiceSpeakers?: Array<StoryVoiceSpeaker | null>; onDialogueClick?: (dialogueIndex: number, text: string, speaker?: StoryVoiceSpeaker) => void; onDialogueLongPress?: (dialogueIndex: number, text: string, speaker: StoryVoiceSpeaker) => void }> = ({ content, onChoose, affinityInputs = [], voiceSpeakers, onDialogueClick, onDialogueLongPress }) => {
+const StoryOutput: React.FC<{ content: string; onChoose?: (text: string) => void; affinityInputs?: StoryAffinityInput[]; voiceSpeakers?: Array<StoryVoiceSpeaker | null>; onDialogueClick?: (dialogueIndex: number, text: string, speaker?: StoryVoiceSpeaker) => void; onDialogueLongPress?: (dialogueIndex: number, text: string, speaker: StoryVoiceSpeaker, kind: 'dialogue' | 'psychology') => void }> = ({ content, onChoose, affinityInputs = [], voiceSpeakers, onDialogueClick, onDialogueLongPress }) => {
     const appearance = useStoryTheaterAppearance();
     const dialoguePress = useLongPressGesture<HTMLAnchorElement, StoryDialoguePressTarget>({
         delay: 600,
         moveTolerance: 10,
-        onLongPress: target => onDialogueLongPress?.(target.dialogueIndex, target.text, target.speaker),
+        onLongPress: target => onDialogueLongPress?.(target.dialogueIndex, target.text, target.speaker, target.kind),
     });
     const inlineVoice = parseStoryVoiceMessage(content);
     const effectiveVoiceSpeakers = voiceSpeakers && voiceSpeakers.length > 0 ? voiceSpeakers : inlineVoice.dialogueSpeakers;
     const blocks = parseStoryDisplayBlocks(inlineVoice.cleanText);
-    let storyDialogueIndex = 0;
+    let storyVoiceIndex = 0;
     const nextStoryDialogue = (): StoryDialogueCursor => {
-        const dialogueIndex = storyDialogueIndex++;
+        const dialogueIndex = storyVoiceIndex++;
         return {
             dialogueIndex,
             speaker: effectiveVoiceSpeakers[dialogueIndex] || undefined,
@@ -430,7 +442,7 @@ const StoryOutput: React.FC<{ content: string; onChoose?: (text: string) => void
                                             : appearance.narrationColor,
                                     ...(segment.kind === 'psychology' ? { fontStyle: 'italic' as const } : {}),
                                 } : undefined;
-                                const clickableDialogue = segment.kind === 'dialogue'
+                                const clickableDialogue = (segment.kind === 'dialogue' || segment.kind === 'psychology')
                                     && segment.dialogueIndex !== undefined
                                     && Boolean(onDialogueClick);
 
@@ -447,6 +459,7 @@ const StoryOutput: React.FC<{ content: string; onChoose?: (text: string) => void
                                     role='button'
                                     data-story-speaker={segment.speaker}
                                     data-story-dialogue-index={segment.dialogueIndex}
+                                    data-story-voice-kind={segment.kind}
                                     onClick={event => {
                                         // Keep native inline-link tap semantics for Android WebView,
                                         // but this is an action, never a navigation.
@@ -464,6 +477,7 @@ const StoryOutput: React.FC<{ content: string; onChoose?: (text: string) => void
                                             dialogueIndex: segment.dialogueIndex as number,
                                             text: segment.text,
                                             speaker: segment.speaker as StoryVoiceSpeaker,
+                                            kind: segment.kind as 'dialogue' | 'psychology',
                                         });
                                     }}
                                     onPointerMove={event => {
@@ -485,6 +499,7 @@ const StoryOutput: React.FC<{ content: string; onChoose?: (text: string) => void
                                             dialogueIndex: segment.dialogueIndex as number,
                                             text: segment.text,
                                             speaker: segment.speaker as StoryVoiceSpeaker,
+                                            kind: segment.kind as 'dialogue' | 'psychology',
                                         });
                                     } : undefined}
                                     className='inline cursor-pointer bg-transparent p-0 m-0 text-left align-baseline no-underline'
@@ -597,7 +612,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
     const [rerollingId, setRerollingId] = useState<number | null>(null);
     const [regeneratingImageId, setRegeneratingImageId] = useState<number | null>(null);
     const [messageMenu, setMessageMenu] = useState<Message | null>(null);
-    const [voiceRefreshMenu, setVoiceRefreshMenu] = useState<{ messageId: number; dialogueIndex: number; text: string; speaker: StoryVoiceSpeaker } | null>(null);
+    const [voiceRefreshMenu, setVoiceRefreshMenu] = useState<{ messageId: number; dialogueIndex: number; text: string; speaker: StoryVoiceSpeaker; kind: 'dialogue' | 'psychology' } | null>(null);
     const [editingMessage, setEditingMessage] = useState<Message | null>(null);
     const [deletingMessage, setDeletingMessage] = useState<Message | null>(null);
     const [branchingMessage, setBranchingMessage] = useState<Message | null>(null);
@@ -663,7 +678,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             const message = targetMessage;
             if (!message) return;
             const currentSpeakers = voiceSpeakersFromMessage(message);
-            addToast('正在识别这句对白是谁说的…', 'info');
+            addToast('正在识别这段对白或心理属于谁…', 'info');
             try {
                 const classified = await classifyStoryVoiceSpeakers({
                     apiConfig,
@@ -680,9 +695,11 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                     await DB.updateMessageMetadata(messageId, previous => ({
                         ...previous,
                         theaterVoiceSpeakers: classified,
+                        theaterVoiceActing: voiceActingFromMessage(message),
+                        theaterVoiceSegmentVersion: 2,
                     }));
                     setMessages(current => current.map(item => item.id === messageId
-                        ? { ...item, metadata: { ...(item.metadata || {}), theaterVoiceSpeakers: classified } }
+                        ? { ...item, metadata: { ...(item.metadata || {}), theaterVoiceSpeakers: classified, theaterVoiceActing: voiceActingFromMessage(message), theaterVoiceSegmentVersion: 2 } }
                         : item));
                 }
             } catch (error) {
@@ -692,7 +709,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             }
 
             if (!resolvedSpeaker) {
-                addToast('这句被识别为 NPC / 其他角色对白，按设置不配音', 'info');
+                addToast('这句尚未确认属于主角色或用户侧角色，暂不配音', 'info');
                 return;
             }
         }
@@ -701,7 +718,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
         if (!actor) return;
 
         const acting = voiceActingFromMessage(targetMessage)[dialogueIndex] ?? null;
-        const synthesisText = String(acting?.speech || text).trim() || text;
+        const synthesisText = String(acting?.speech || text).trim().replace(/^\*([\s\S]*)\*$/, '$1').trim() || text;
         const key = storyVoiceAssetKey(entry.id, messageId, dialogueIndex, storyTtsProvider);
         const currentAudio = storyVoiceAudioRef.current;
         if (!force && storyVoicePlayingKeyRef.current === key && currentAudio && !currentAudio.paused) {
@@ -2054,7 +2071,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 theaterPromptTokensExact: promptTokenCountExact,
                 theaterRequestKey: activeRequestKey,
                 ...(affinityInputs.length > 0 ? { theaterAffinityInputs: affinityInputs } : {}),
-                ...(storyVoiceSpeakers.length > 0 ? { theaterVoiceSpeakers: storyVoiceSpeakers } : {}),
+                ...(storyVoiceSpeakers.length > 0 ? { theaterVoiceSpeakers: storyVoiceSpeakers, theaterVoiceSegmentVersion: 2 } : {}),
                 ...(storyVoiceActing.some(Boolean) ? { theaterVoiceActing: storyVoiceActing } : {}),
             };
             const rowsBeforeCommit = (await DB.getMessagesByCharId(threadId, true))
@@ -2211,7 +2228,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                             theaterInterrupted: true,
                             ...(activeRequestKey ? { theaterRequestKey: activeRequestKey } : {}),
                             ...(partialAffinityInputs.length > 0 ? { theaterAffinityInputs: partialAffinityInputs } : {}),
-                            ...(parsedPartialVoice.dialogueSpeakers.length > 0 ? { theaterVoiceSpeakers: parsedPartialVoice.dialogueSpeakers } : {}),
+                            ...(parsedPartialVoice.dialogueSpeakers.length > 0 ? { theaterVoiceSpeakers: parsedPartialVoice.dialogueSpeakers, theaterVoiceSegmentVersion: 2 } : {}),
                             ...(parsedPartialVoice.dialogueActing.some(Boolean) ? { theaterVoiceActing: parsedPartialVoice.dialogueActing } : {}),
                         });
                     }
@@ -2423,12 +2440,12 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                                 </div>
                                 {message.role === 'user'
                                     ? <div className='pl-4 border-l-2 border-violet-300'><div className='text-[9px] tracking-[.16em] font-bold text-violet-500'>你写下</div><p className='mt-2 text-sm leading-7 text-slate-600 whitespace-pre-wrap'>{message.content}</p></div>
-                                    : <><StoryOutput content={message.content} onChoose={choice => setInput(choice)} affinityInputs={affinityInputsFromMessage(message, actors)} voiceSpeakers={voiceSpeakersFromMessage(message)} onDialogueClick={entry.storyTtsEnabled ? (dialogueIndex, text, speaker) => void playStoryDialogue(message.id, dialogueIndex, text, speaker) : undefined} onDialogueLongPress={entry.storyTtsEnabled ? (dialogueIndex, text, speaker) => setVoiceRefreshMenu({ messageId: message.id, dialogueIndex, text, speaker }) : undefined} /><StoryRoundImage message={message} busy={regeneratingImageId === message.id} onRegenerate={() => void regenerateStoryImage(message)} /></>}
+                                    : <><StoryOutput content={message.content} onChoose={choice => setInput(choice)} affinityInputs={affinityInputsFromMessage(message, actors)} voiceSpeakers={voiceSpeakersFromMessage(message)} onDialogueClick={entry.storyTtsEnabled ? (dialogueIndex, text, speaker) => void playStoryDialogue(message.id, dialogueIndex, text, speaker) : undefined} onDialogueLongPress={entry.storyTtsEnabled ? (dialogueIndex, text, speaker, kind) => setVoiceRefreshMenu({ messageId: message.id, dialogueIndex, text, speaker, kind }) : undefined} /><StoryRoundImage message={message} busy={regeneratingImageId === message.id} onRegenerate={() => void regenerateStoryImage(message)} /></>}
                             </article>;
                         }
                         if (message.role === 'user') return <section key={message.id} ref={element => setStoryMessageElement(message.id, element)} {...pressHandlersFor(message)} className='pl-4 border-l-2 border-violet-300'><div className='text-[9px] tracking-[.16em] font-bold text-violet-500'>你写下</div><p className='mt-2 text-sm leading-7 text-slate-600 whitespace-pre-wrap'>{message.content}</p></section>;
                         const isLatest = message.id === messages[messages.length - 1]?.id;
-                        return <article key={message.id} ref={element => setStoryMessageElement(message.id, element)} {...pressHandlersFor(message)}><StoryOutput content={message.content} onChoose={choice => setInput(choice)} affinityInputs={affinityInputsFromMessage(message, actors)} voiceSpeakers={voiceSpeakersFromMessage(message)} onDialogueClick={entry.storyTtsEnabled ? (dialogueIndex, text, speaker) => void playStoryDialogue(message.id, dialogueIndex, text, speaker) : undefined} onDialogueLongPress={entry.storyTtsEnabled ? (dialogueIndex, text, speaker) => setVoiceRefreshMenu({ messageId: message.id, dialogueIndex, text, speaker }) : undefined} /><StoryRoundImage message={message} busy={regeneratingImageId === message.id} onRegenerate={() => void regenerateStoryImage(message)} />{isLatest && <div className='mt-4 flex items-center justify-end gap-2'><span className='w-1.5 h-1.5 rounded-full bg-violet-400' /><button disabled={sending} onClick={() => void send(message)} className='inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-slate-200 bg-white text-[10px] font-bold text-slate-500 disabled:opacity-40'>{rerollingId === message.id ? <SpinnerGap size={12} className='animate-spin' /> : <ArrowClockwise size={12} />}换一种写法</button></div>}</article>;
+                        return <article key={message.id} ref={element => setStoryMessageElement(message.id, element)} {...pressHandlersFor(message)}><StoryOutput content={message.content} onChoose={choice => setInput(choice)} affinityInputs={affinityInputsFromMessage(message, actors)} voiceSpeakers={voiceSpeakersFromMessage(message)} onDialogueClick={entry.storyTtsEnabled ? (dialogueIndex, text, speaker) => void playStoryDialogue(message.id, dialogueIndex, text, speaker) : undefined} onDialogueLongPress={entry.storyTtsEnabled ? (dialogueIndex, text, speaker, kind) => setVoiceRefreshMenu({ messageId: message.id, dialogueIndex, text, speaker, kind }) : undefined} /><StoryRoundImage message={message} busy={regeneratingImageId === message.id} onRegenerate={() => void regenerateStoryImage(message)} />{isLatest && <div className='mt-4 flex items-center justify-end gap-2'><span className='w-1.5 h-1.5 rounded-full bg-violet-400' /><button disabled={sending} onClick={() => void send(message)} className='inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-slate-200 bg-white text-[10px] font-bold text-slate-500 disabled:opacity-40'>{rerollingId === message.id ? <SpinnerGap size={12} className='animate-spin' /> : <ArrowClockwise size={12} />}换一种写法</button></div>}</article>;
                     })}
                     {streamingText && <article className='relative'>
                         <StoryOutput content={streamingText} affinityInputs={[]} />
@@ -2694,7 +2711,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 <div className='mx-auto mb-4 h-1 w-9 rounded-full bg-slate-300' />
                 <div className='flex items-start justify-between gap-4'>
                     <div className='min-w-0'>
-                        <div className='text-[9px] tracking-[.18em] font-bold text-violet-500'>{voiceRefreshMenu.speaker === 'user' ? '你的对白' : '角色对白'}</div>
+                        <div className='text-[9px] tracking-[.18em] font-bold text-violet-500'>{voiceRefreshMenu.kind === 'psychology' ? (voiceRefreshMenu.speaker === 'user' ? '你的心理' : '角色心理') : (voiceRefreshMenu.speaker === 'user' ? '你的对白' : '角色对白')}</div>
                         <p className='mt-1 max-w-[75vw] truncate text-xs text-slate-500'>{voiceRefreshMenu.text}</p>
                     </div>
                     <button onClick={() => setVoiceRefreshMenu(null)} className='w-8 h-8 rounded-full grid place-items-center text-slate-400'><X size={16} /></button>
@@ -2712,7 +2729,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                         <ArrowClockwise size={17} className='text-violet-600' />
                         <span>
                             <strong className='block text-xs text-slate-700'>刷新语音</strong>
-                            <span className='block mt-0.5 text-[9px] text-slate-400'>只重新请求并替换这一句的已保存音频，其他对白不变</span>
+                            <span className='block mt-0.5 text-[9px] text-slate-400'>只重新请求并替换这一句的已保存音频，其他语音不变</span>
                         </span>
                     </button>
                 </div>
