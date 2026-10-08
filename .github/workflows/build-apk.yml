@@ -92,8 +92,11 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Run story transport regression tests
-        run: pnpm exec vitest run utils/safeApi.stream.test.ts utils/apiFailover.test.ts utils/storyRouteHandoff.test.ts utils/storyTheaterBillingSafety.wiring.test.ts
+      - name: Verify TypeScript
+        run: pnpm exec tsc --noEmit
+
+      - name: Run story transport and timing regression tests
+        run: pnpm exec vitest run utils/safeApi.stream.test.ts utils/apiFailover.test.ts utils/storyRouteHandoff.test.ts utils/storyTheaterBillingSafety.wiring.test.ts utils/storyImageReferenceUploads.test.ts utils/storyTimingTrace.test.ts
 
       - name: Build web app
         run: pnpm run build

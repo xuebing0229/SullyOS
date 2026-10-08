@@ -1571,12 +1571,14 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
         return centralId;
     }, [entry, memoryActors, threadId]);
 
-    const buildActorContexts = useCallback(async (query: string): Promise<string> => {
+    const buildActorContexts = useCallback(async (query: string, onActorTiming?: (index: number, ms: number) => void): Promise<string> => {
         const allBookIds = new Set(actors.flatMap(actor => (actor.mountedWorldbooks || []).map(book => book.id)));
         const blocks: string[] = [];
-        for (const actor of actors) {
+        for (const [actorIndex, actor] of actors.entries()) {
+            const actorStartedAt = performance.now();
             if (!entry.carryCharacterMemory) {
                 blocks.push(buildBareTheaterActorContext(actor));
+                onActorTiming?.(actorIndex, performance.now() - actorStartedAt);
                 continue;
             }
             const limit = Math.max(0, Math.min(500, entry.characterContextLimits[actor.id] ?? 100));
@@ -1594,6 +1596,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 headerOverride: `[剧情角色：${actor.name}]`,
             }, { skipTimeAwareness: true });
             blocks.push(`${core}\n${formatActorRecentMessages(actor, recent, userProfile.name, mask.name)}`.trim());
+            onActorTiming?.(actorIndex, performance.now() - actorStartedAt);
         }
         return blocks.join('\n\n---\n\n');
     }, [actors, entry.id, entry.carryCharacterMemory, entry.characterContextLimits, mask.name, memoryPalaceConfig.embedding, remoteVectorConfig, userProfile]);
@@ -1861,7 +1864,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             const [actorContext, maskMemoryContext, vectorRecall] = recoveringCloudPending
                 ? ['', '', '']
                 : await Promise.all([
-                    trace.measure('角色记忆检索（含各角色）', () => buildActorContexts(modelText)),
+                    trace.measure('角色记忆检索（含各角色）', () => buildActorContexts(modelText, (index, ms) => trace.detail(`角色 ${index + 1} 上下文+记忆`, ms))),
                     trace.measure('身份记忆检索', () => buildMaskMemoryContext(modelText)),
                     trace.measure('独立剧情向量检索', () => independentRecall(modelText, visibleHistory.slice(-8), promptEntry)),
                 ]);
