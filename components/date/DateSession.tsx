@@ -28,6 +28,8 @@ import VoiceFavoriteActionSheet from '../voice/VoiceFavoriteActionSheet';
 import { getVoiceFavorite, makeVoiceFavoriteId, removeVoiceFavorite, saveVoiceFavorite } from '../../utils/voiceFavorites';
 import { saveVoiceLibraryItem, setVoiceLibraryStarredForSource } from '../../utils/voiceLibrary';
 import { resolveTtsProvider } from '../../utils/ttsProvider';
+import { synthesizeDateDialogue } from '../../utils/dateDialogueSynthesis';
+import type { DateDialogueSegment, DateDialogueTurn } from '../../utils/dateDialogueVoice';
 import { MEETING_CONTINUE_DISPLAY_TEXT } from '../../utils/meetingContinue';
 import TokenImg from '../os/TokenImg';
 import { VOICE_LANGUAGE_OPTIONS, voiceLanguageAnalyticsValue, voiceLanguageLabel, voiceLanguagePromptLabel } from '../../utils/voiceLanguage';
@@ -48,6 +50,27 @@ const extractVoiceEmotionTag = (line: string): { voiceEmotion?: string; rest: st
         return '';
     });
     return { voiceEmotion, rest };
+};
+
+const SPEAKER_TAG_RE = /\[(?:speaker|s):\s*(char|user)\s*\]/ig;
+const extractSpeakerTag = (line: string): { speaker?: 'char' | 'user'; rest: string } => {
+    let speaker: 'char' | 'user' | undefined;
+    const rest = line.replace(SPEAKER_TAG_RE, (_m, raw: string) => {
+        const value = (raw || '').toLowerCase();
+        if (value === 'char' || value === 'user') speaker = value;
+        return '';
+    });
+    return { speaker, rest };
+};
+
+/** 提取真正送 TTS 的引号内文本：保留 ElevenLabs [...] Audio Tags，只去 VN 元标签。 */
+const extractDialogueSpeech = (text: string): string => {
+    const speakerClean = extractSpeakerTag(text).rest;
+    const voiceClean = extractVoiceEmotionTag(speakerClean).rest.trim();
+    const emotionClean = voiceClean.replace(/^\[[a-zA-Z0-9_\-]+\]\s*/, '').trim();
+    const match = emotionClean.match(/^[\"“]([\s\S]*?)[\"”](?:\s|$)/)
+        || emotionClean.match(/^「([\s\S]*?)」(?:\s|$)/);
+    return (match?.[1] || emotionClean).trim();
 };
 
 // Helper: Parse dialogue with simple state machine
@@ -86,16 +109,22 @@ const extractDialogueText = (text: string): string => {
     return clean;
 };
 
-const parseDialogue = (fullText: string, initialEmotion: string = 'normal'): DialogueItem[] => {
+const parseDialogue = (
+    fullText: string,
+    initialEmotion: string = 'normal',
+    idPrefix: string = 'live',
+): DialogueItem[] => {
     if (!fullText) return [];
-    const lines = fullText.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+    const lines = fullText.split('\n').map(l => l.trim());
     const results: DialogueItem[] = [];
     let currentEmotion = initialEmotion;
 
-    for (const rawLine of lines) {
-        if (isContextNoise(rawLine)) continue;
+    for (let rawIndex = 0; rawIndex < lines.length; rawIndex++) {
+        const rawLine = lines[rawIndex];
+        if (!rawLine || isContextNoise(rawLine)) continue;
+        const { speaker, rest: speakerRest } = extractSpeakerTag(rawLine);
         // 先把独立的语音情绪标记 [v:xxx] 抽出来（跟立绘情绪互不影响），再解析立绘标签
-        const { voiceEmotion, rest } = extractVoiceEmotionTag(rawLine);
+        const { voiceEmotion, rest } = extractVoiceEmotionTag(speakerRest);
         const line = rest.trim();
         if (!line) continue;
         const tagMatch = line.match(/^\[([a-zA-Z0-9_\-]+)\]\s*(.*)/);
@@ -112,7 +141,15 @@ const parseDialogue = (fullText: string, initialEmotion: string = 'normal'): Dia
             }
         }
         if (content) {
-            results.push({ text: content, emotion: currentEmotion, voiceEmotion });
+            const dialogue = isDialogueLine(content);
+            results.push({
+                lineId: `${idPrefix}:${rawIndex}`,
+                text: content,
+                emotion: currentEmotion,
+                voiceEmotion,
+                speaker: speaker || 'char',
+                speechText: dialogue ? extractDialogueSpeech(content) : undefined,
+            });
         }
     }
     return results;
@@ -151,6 +188,12 @@ const NOVEL_MESSAGE_LOAD_STEP = 40;
 const REQUIRED_EMOTIONS_SET = ['normal', 'happy', 'angry', 'sad', 'shy'];
 
 type DateSpeechResult = { url: string; blob?: Blob | null; spokenText: string };
+type DateDialogueAudioBatch = {
+    key: string;
+    url: string;
+    blob: Blob;
+    segments: DateDialogueSegment[];
+};
 type DateVoiceFavoriteTarget = {
     sourceKey: string;
     originalText: string;
