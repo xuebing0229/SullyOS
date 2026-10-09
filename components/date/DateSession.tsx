@@ -313,9 +313,9 @@ const DateSession: React.FC<DateSessionProps> = ({
     const [dateVoicePlaying, setDateVoicePlaying] = useState(false);
     const [galVoiceLoading, setGalVoiceLoading] = useState(false);
     const [showVoiceLangPicker, setShowVoiceLangPicker] = useState(false);
-    const voiceCacheRef = useRef<Record<string, DateSpeechResult>>({});
-    const dialogueAudioCacheRef = useRef<Record<string, DateDialogueAudioBatch>>({});
-    const dialogueAudioPromiseRef = useRef<Record<string, Promise<DateDialogueAudioBatch | null>>>({});
+    const voiceCacheRef = useRef<Partial<Record<string, DateSpeechResult>>>({});
+    const dialogueAudioCacheRef = useRef<Partial<Record<string, DateDialogueAudioBatch>>>({});
+    const dialogueAudioPromiseRef = useRef<Partial<Record<string, Promise<DateDialogueAudioBatch | null>>>>({});
     const [novelVoiceLoading, setNovelVoiceLoading] = useState<Set<string>>(new Set());
     const [novelPlayingId, setNovelPlayingId] = useState<string | null>(null);
 
@@ -352,6 +352,7 @@ const DateSession: React.FC<DateSessionProps> = ({
         clearSegmentTimer();
         if (dateAudioRef.current) dateAudioRef.current.pause();
         for (const cached of Object.values(dialogueAudioCacheRef.current)) {
+            if (!cached) continue;
             try { URL.revokeObjectURL(cached.url); } catch { /* ignore */ }
         }
         dialogueAudioCacheRef.current = {};
@@ -386,7 +387,8 @@ const DateSession: React.FC<DateSessionProps> = ({
         const key = makeDateDialogueBatchKey(turns);
         const cached = dialogueAudioCacheRef.current[key];
         if (cached) return cached;
-        if (dialogueAudioPromiseRef.current[key]) return dialogueAudioPromiseRef.current[key];
+        const inFlight = dialogueAudioPromiseRef.current[key];
+        if (inFlight) return inFlight;
 
         const pending = (async (): Promise<DateDialogueAudioBatch | null> => {
             try {
@@ -685,7 +687,7 @@ const DateSession: React.FC<DateSessionProps> = ({
             }
 
             const cacheKey = singleVoiceCacheKey(speaker, speechText);
-            let speech = voiceCacheRef.current[cacheKey];
+            let speech: DateSpeechResult | undefined = voiceCacheRef.current[cacheKey];
             if (!speech) {
                 speech = await translateAndSpeak(
                     speechText,
