@@ -1,5 +1,4 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-// @ts-expect-error central worker is a plain JS module
 import worker from './index.js';
 
 const API_KEY = 'xi-test-key-not-real';
