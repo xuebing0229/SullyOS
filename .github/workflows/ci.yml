@@ -49,6 +49,9 @@ jobs:
           utils/storyTheaterImage.inlinePlan.test.ts
           utils/storyPollingVisibilityGuard.wiring.test.ts
           worker/amsg/src/storyImageHandoff.test.ts
+          utils/dateDialogueVoice.test.ts
+          utils/dateDualVoicePrompt.test.ts
+          worker/elevenLabsDialogueProxy.test.ts
 
       - name: Build worker bundles
         run: pnpm run build:workers
