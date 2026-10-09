@@ -2192,6 +2192,10 @@ export interface DialogueItem {
     emotion?: string;
     /** 语音情绪，来自独立标记 [v:xxx]，跟立绘分开。仅取合法 MiniMax emotion，否则 undefined。 */
     voiceEmotion?: string;
+    /** 见面剧情台词归属。旧记录没有该字段时按 char 处理。 */
+    speaker?: 'char' | 'user';
+    /** 仅供 TTS：保留引号内原始 Audio Tags；界面显示仍走 text。 */
+    speechText?: string;
 }
 
 /**
