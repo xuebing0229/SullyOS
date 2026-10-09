@@ -544,103 +544,165 @@ const DateSession: React.FC<DateSessionProps> = ({
         }
     };
 
-    // GAL mode: auto-play voice only for dialogue lines (quoted text), stop previous on advance
-    // Uses cache so replaying the same line doesn't re-fetch
+    // GAL mode：优先整轮 ElevenLabs Dialogue，失败/不适用时回退原逐句链路。
     useEffect(() => {
         if (!voiceEnabled || isNovelMode || !galShownText || isTyping) return;
-        // Stop any currently playing audio when text changes (advancing to next line)
-        if (dateAudioRef.current) {
-            dateAudioRef.current.pause();
-            dateAudioRef.current.currentTime = 0;
-            setDateVoicePlaying(false);
-        }
+        stopDateAudio();
         setGalVoiceLoading(false);
-        // Skip voice during opening phase and for non-dialogue lines
-        if (isShowingOpening) return;
-        if (!isDialogueLine(galShownText)) return;
+        if (isShowingOpening || !isDialogueLine(galShownText)) return;
+
         let cancelled = false;
-        const dialogueText = extractDialogueText(galShownText);
-        const cacheKey = dialogueText;
+        const speaker = currentLineSpeakerRef.current || 'char';
+        const speechText = currentLineSpeechRef.current || extractDialogueSpeech(galShownText);
+        const lineId = currentLineIdRef.current;
+        const cacheKey = singleVoiceCacheKey(speaker, speechText);
+
         const play = async () => {
-            // Check cache first
+            setGalVoiceLoading(true);
+
+            // SAR 表层文本可能和 canonical 批次不一致，不能拿另一段整轮音频硬对齐。
+            if (!currentSarPair && lineId) {
+                const batch = await ensureDateDialogueBatch(dialogueBatch);
+                if (cancelled) return;
+                const segment = batch ? resolveDialogueSegment(dialogueBatch, batch, lineId) : null;
+                if (batch && segment) {
+                    setGalVoiceLoading(false);
+                    const started = await playDialogueSegment(batch, segment, () => setDateVoicePlaying(false));
+                    if (!cancelled && started) setDateVoicePlaying(true);
+                    if (started) return;
+                }
+            }
+
             let speech: DateSpeechResult | undefined = voiceCacheRef.current[cacheKey];
             if (!speech) {
-                setGalVoiceLoading(true);
                 const archiveTarget = resolveCurrentDateVoiceTarget();
-                speech = await translateAndSpeak(dialogueText, currentLineEmotionRef.current, archiveTarget ? { sourceKey: archiveTarget.sourceKey, sourceTimestamp: archiveTarget.sourceTimestamp } : undefined) || undefined;
-                if (cancelled) return;
-                setGalVoiceLoading(false);
-                if (!speech) return;
-                voiceCacheRef.current[cacheKey] = speech;
+                speech = await translateAndSpeak(
+                    speechText,
+                    currentLineEmotionRef.current,
+                    archiveTarget ? { sourceKey: archiveTarget.sourceKey, sourceTimestamp: archiveTarget.sourceTimestamp } : undefined,
+                    speaker,
+                ) || undefined;
+                if (speech) voiceCacheRef.current[cacheKey] = speech;
             }
             if (cancelled) return;
+            setGalVoiceLoading(false);
+            if (!speech) return;
             if (!dateAudioRef.current) dateAudioRef.current = new Audio();
+            clearSegmentTimer();
             dateAudioRef.current.src = speech.url;
             dateAudioRef.current.onended = () => setDateVoicePlaying(false);
-            dateAudioRef.current.play().catch(() => {});
-            setDateVoicePlaying(true);
+            dateAudioRef.current.play().then(() => setDateVoicePlaying(true)).catch(() => {});
         };
-        play();
-        return () => { cancelled = true; setGalVoiceLoading(false); if (dateAudioRef.current) { dateAudioRef.current.pause(); } };
-    }, [galShownText, voiceEnabled, isNovelMode]);
+        void play();
+        return () => {
+            cancelled = true;
+            setGalVoiceLoading(false);
+            stopDateAudio();
+        };
+        // dialogueBatch/currentSarPair intentionally included: a freshly generated whole-turn batch
+        // and SAR surface changes must select the correct playback path.
+    }, [galShownText, voiceEnabled, isNovelMode, dialogueBatch, currentSarPair]);
 
     // GAL mode: manual play/pause for the current dialogue line
     const handleGalVoiceToggle = async () => {
         if (!galShownText || !isDialogueLine(galShownText)) return;
-        // If playing, pause
         if (dateVoicePlaying && dateAudioRef.current) {
-            dateAudioRef.current.pause();
-            setDateVoicePlaying(false);
+            stopDateAudio();
             return;
         }
-        const dialogueText = extractDialogueText(galShownText);
-        const cacheKey = dialogueText;
+
+        const speaker = currentLineSpeakerRef.current || 'char';
+        const speechText = currentLineSpeechRef.current || extractDialogueSpeech(galShownText);
+        const lineId = currentLineIdRef.current;
+        setGalVoiceLoading(true);
+
+        if (!currentSarPair && lineId) {
+            const batch = await ensureDateDialogueBatch(dialogueBatch);
+            const segment = batch ? resolveDialogueSegment(dialogueBatch, batch, lineId) : null;
+            if (batch && segment) {
+                setGalVoiceLoading(false);
+                const started = await playDialogueSegment(batch, segment, () => setDateVoicePlaying(false));
+                if (started) {
+                    setDateVoicePlaying(true);
+                    return;
+                }
+            }
+        }
+
+        const cacheKey = singleVoiceCacheKey(speaker, speechText);
         let speech: DateSpeechResult | undefined = voiceCacheRef.current[cacheKey];
         if (!speech) {
-            setGalVoiceLoading(true);
             const archiveTarget = resolveCurrentDateVoiceTarget();
-            speech = await translateAndSpeak(dialogueText, currentLineEmotionRef.current, archiveTarget ? { sourceKey: archiveTarget.sourceKey, sourceTimestamp: archiveTarget.sourceTimestamp } : undefined) || undefined;
-            setGalVoiceLoading(false);
-            if (!speech) { addToast('语音合成失败，请稍后重试', 'error'); return; }
-            voiceCacheRef.current[cacheKey] = speech;
+            speech = await translateAndSpeak(
+                speechText,
+                currentLineEmotionRef.current,
+                archiveTarget ? { sourceKey: archiveTarget.sourceKey, sourceTimestamp: archiveTarget.sourceTimestamp } : undefined,
+                speaker,
+            ) || undefined;
+            if (speech) voiceCacheRef.current[cacheKey] = speech;
         }
+        setGalVoiceLoading(false);
+        if (!speech) { addToast('语音合成失败，请稍后重试', 'error'); return; }
+
         if (!dateAudioRef.current) dateAudioRef.current = new Audio();
+        clearSegmentTimer();
         dateAudioRef.current.src = speech.url;
         dateAudioRef.current.onended = () => setDateVoicePlaying(false);
-        dateAudioRef.current.play().catch(() => {});
-        setDateVoicePlaying(true);
+        dateAudioRef.current.play().then(() => setDateVoicePlaying(true)).catch(() => {});
     };
 
-    // Novel/Reading mode: play a specific dialogue line (shares voiceCacheRef with GAL mode)
-    // voiceEmotion（[v:xxx]）跟立绘模式保持一致地传给 TTS：这样两种模式合成的音频完全相同，
-    // 且命中同一条持久缓存（ttsCache/IndexedDB）——退出见面再进来点旧台词也能从本地缓存秒取，
-    // 不必按不同的 key 重新联网合成。
-    const handleNovelLinePlay = async (lineKey: string, dialogueText: string, voiceEmotion?: string) => {
-        const cached = voiceCacheRef.current[dialogueText];
-        if (cached) {
-            // Already have URL (from GAL or previous novel play), just play/pause
-            if (!dateAudioRef.current) dateAudioRef.current = new Audio();
-            if (novelPlayingId === lineKey) {
-                dateAudioRef.current.pause();
-                setNovelPlayingId(null);
-                return;
-            }
-            dateAudioRef.current.src = cached.url;
-            dateAudioRef.current.onended = () => setNovelPlayingId(null);
-            dateAudioRef.current.play().catch(() => {});
-            setNovelPlayingId(lineKey);
+    // 小说模式点击某句时，也优先合成/复用该 assistant 消息的整轮 Dialogue。
+    const handleNovelLinePlay = async (
+        msg: Message,
+        shownContent: string,
+        rawLineIndex: number,
+        lineKey: string,
+        dialogueText: string,
+        speechText: string,
+        voiceEmotion?: string,
+        speaker: 'char' | 'user' = 'char',
+    ) => {
+        if (novelPlayingId === lineKey && dateAudioRef.current) {
+            stopDateAudio();
+            setNovelPlayingId(null);
             return;
         }
+
         setNovelVoiceLoading(prev => new Set(prev).add(lineKey));
-        const speech = await translateAndSpeak(dialogueText, voiceEmotion, { sourceKey: `${char.id}:novel:${lineKey}`, sourceTimestamp: Date.now() });
-        setNovelVoiceLoading(prev => { const n = new Set(prev); n.delete(lineKey); return n; });
-        if (!speech) { addToast('语音合成失败，请稍后重试', 'error'); return; }
-        voiceCacheRef.current[dialogueText] = speech;
-        if (!dateAudioRef.current) dateAudioRef.current = new Audio();
-        dateAudioRef.current.src = speech.url;
-        dateAudioRef.current.onended = () => setNovelPlayingId(null);
-        dateAudioRef.current.play().catch(() => {});
-        setNovelPlayingId(lineKey);
+        try {
+            const { rest: body } = extractObservation(shownContent || '', { lenient: observeEnabled, custom: char.dateObserve?.custom });
+            const historicalItems = parseDialogue(body, 'normal', String(msg.id));
+            const targetLineId = `${msg.id}:${rawLineIndex}`;
+            const batch = await ensureDateDialogueBatch(historicalItems);
+            const segment = batch ? resolveDialogueSegment(historicalItems, batch, targetLineId) : null;
+            if (batch && segment) {
+                const started = await playDialogueSegment(batch, segment, () => setNovelPlayingId(null));
+                if (started) {
+                    setNovelPlayingId(lineKey);
+                    return;
+                }
+            }
+
+            const cacheKey = singleVoiceCacheKey(speaker, speechText);
+            let speech = voiceCacheRef.current[cacheKey];
+            if (!speech) {
+                speech = await translateAndSpeak(
+                    speechText,
+                    voiceEmotion,
+                    { sourceKey: `${char.id}:novel:${lineKey}`, sourceTimestamp: msg.timestamp || Date.now() },
+                    speaker,
+                ) || undefined;
+                if (speech) voiceCacheRef.current[cacheKey] = speech;
+            }
+            if (!speech) { addToast('语音合成失败，请稍后重试', 'error'); return; }
+            if (!dateAudioRef.current) dateAudioRef.current = new Audio();
+            clearSegmentTimer();
+            dateAudioRef.current.src = speech.url;
+            dateAudioRef.current.onended = () => setNovelPlayingId(null);
+            dateAudioRef.current.play().then(() => setNovelPlayingId(lineKey)).catch(() => {});
+        } finally {
+            setNovelVoiceLoading(prev => { const n = new Set(prev); n.delete(lineKey); return n; });
+        }
     };
 
     const resolveCurrentDateVoiceTarget = (): DateVoiceFavoriteTarget | null => {
