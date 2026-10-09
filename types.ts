@@ -774,6 +774,8 @@ export interface DateStyleConfig {
   pov?: 'third-name' | 'third-you' | 'first-you';
   /** 细节深挖引导：教模型从任意输入里挖素材 + 每轮轮换聚焦线索，对冲"没话找话"式的模型八股；缺省 = 开启 */
   digDeeper?: boolean;
+  /** 强化演绎：允许 AI 把 user 当作同人文中的另一位 OC，自由补写其台词/动作；默认关闭。 */
+  coauthorUser?: boolean;
   /** 自定义补充文风要求，原样追加进风格块 */
   extra?: string;
 }
