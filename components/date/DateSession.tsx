@@ -918,6 +918,9 @@ const DateSession: React.FC<DateSessionProps> = ({
                 const first = items[0];
                 setCurrentText(first.text);
                 currentLineEmotionRef.current = first.voiceEmotion;
+                currentLineSpeakerRef.current = first.speaker || 'char';
+                currentLineSpeechRef.current = first.speechText || extractDialogueSpeech(first.text);
+                currentLineIdRef.current = first.lineId || '';
                 // Note: Not setting sprite here because useEffect below will handle emotion->sprite mapping if needed,
                 // or we rely on default.
                 setDialogueQueue(items.slice(1));
@@ -1029,6 +1032,7 @@ const DateSession: React.FC<DateSessionProps> = ({
         const items = parseDialogue(rest, 'normal', lastAssistant ? String(lastAssistant.id) : 'live');
         if (items.length === 0) return;
         setDialogueBatch(items);
+        void ensureDateDialogueBatch(items);
         processNextDialogue(items[0], items.slice(1));
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [lastAssistantContent]);
@@ -1091,6 +1095,7 @@ const DateSession: React.FC<DateSessionProps> = ({
             const items = parseDialogue(rest, 'normal');
             setDialogueBatch(items);
             setDialogueQueue(items);
+            void ensureDateDialogueBatch(items);
             if (items.length > 0) {
                 processNextDialogue(items[0], items.slice(1));
             }
@@ -1118,6 +1123,7 @@ const DateSession: React.FC<DateSessionProps> = ({
             const items = parseDialogue(rest, 'normal');
             setDialogueBatch(items);
             setDialogueQueue(items);
+            void ensureDateDialogueBatch(items);
             if (items.length > 0) processNextDialogue(items[0], items.slice(1));
         } catch(e: any) {
             // 父级 handleReroll 只抛不提示；这里不给反馈的话，点了「重新生成」
