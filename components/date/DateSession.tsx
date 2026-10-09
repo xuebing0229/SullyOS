@@ -1562,13 +1562,18 @@ const DateSession: React.FC<DateSessionProps> = ({
                                                 const lineIsDialogue = isDialogueLine(line);
                                                 const lineKey = `${msg.id}-${idx}`;
                                                 const isOpeningMsg = msg.metadata?.isOpening === true;
-                                                const parsedVoiceLine = extractVoiceEmotionTag(line);
+                                                const parsedSpeakerLine = extractSpeakerTag(line);
+                                                const parsedVoiceLine = extractVoiceEmotionTag(parsedSpeakerLine.rest);
+                                                const speaker = parsedSpeakerLine.speaker || 'char';
                                                 const dialogueText = extractDialogueText(parsedVoiceLine.rest);
+                                                const speechText = extractDialogueSpeech(line);
                                                 const voiceTarget: DateVoiceFavoriteTarget = {
                                                     sourceKey: `${char.id}:${lineKey}`,
                                                     originalText: dialogueText,
                                                     sourceTimestamp: msg.timestamp,
                                                     voiceEmotion: parsedVoiceLine.voiceEmotion,
+                                                    speaker,
+                                                    speechText,
                                                 };
                                                 return (
                                                     <div
@@ -1594,7 +1599,16 @@ const DateSession: React.FC<DateSessionProps> = ({
                                                                 onClick={(e) => {
                                                                     e.stopPropagation();
                                                                     if (voiceFavoriteLongPressTriggered.current) { voiceFavoriteLongPressTriggered.current = false; return; }
-                                                                    handleNovelLinePlay(lineKey, dialogueText, parsedVoiceLine.voiceEmotion);
+                                                                    void handleNovelLinePlay(
+                                                                        msg,
+                                                                        shown,
+                                                                        idx,
+                                                                        lineKey,
+                                                                        dialogueText,
+                                                                        speechText,
+                                                                        parsedVoiceLine.voiceEmotion,
+                                                                        speaker,
+                                                                    );
                                                                 }}
                                                                 onTouchStart={(e) => startDateVoiceLongPress(e, voiceTarget)}
                                                                 onTouchMove={endDateVoiceLongPress}
