@@ -617,7 +617,7 @@ const getTimeGapHint = (lastMsgTimestamp: number | undefined, tz?: string): stri
  * reroll 的差异只体现在末尾 user 消息的 System Note 里，不在这里分叉。
  * 风格 / 人称 / 自定义补充按 char.dateStyleConfig 动态拼装。
  */
-const buildVNModeBlock = (char: CharacterProfile, userName: string): string => {
+export const buildVNModeBlock = (char: CharacterProfile, userName: string): string => {
     const dateTimeOn = isDateTimeAwarenessOn(char);
     const timeLine = dateTimeOn ? `1. **Time**: 当前时间 ${getRealTimeStr(resolveCharTimeZone(char))}。\n` : '';
     const dateEmotions = getDateEmotions(char);
