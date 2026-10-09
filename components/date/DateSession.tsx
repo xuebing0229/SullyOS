@@ -200,6 +200,7 @@ type DateVoiceFavoriteTarget = {
     sourceTimestamp: number;
     voiceEmotion?: string;
     speaker?: 'char' | 'user';
+    speechText?: string;
 };
 
 const ReadingAvatar: React.FC<{ src?: string; name: string; light: boolean }> = ({ src, name, light }) => {
@@ -714,13 +715,16 @@ const DateSession: React.FC<DateSessionProps> = ({
             const { rest: body } = extractObservation(message.content || '', { lenient: observeEnabled, custom: char.dateObserve?.custom });
             const lines = body.split('\n');
             for (let lineIndex = lines.length - 1; lineIndex >= 0; lineIndex--) {
-                const parsed = extractVoiceEmotionTag(lines[lineIndex]);
-                if (isDialogueLine(parsed.rest) && extractDialogueText(parsed.rest) === originalText) {
+                const speakerParsed = extractSpeakerTag(lines[lineIndex]);
+                const voiceParsed = extractVoiceEmotionTag(speakerParsed.rest);
+                if (isDialogueLine(voiceParsed.rest) && extractDialogueText(voiceParsed.rest) === originalText) {
                     return {
                         sourceKey: `${char.id}:${message.id}-${lineIndex}`,
                         originalText,
                         sourceTimestamp: message.timestamp,
-                        voiceEmotion: parsed.voiceEmotion || currentLineEmotionRef.current,
+                        voiceEmotion: voiceParsed.voiceEmotion || currentLineEmotionRef.current,
+                        speaker: speakerParsed.speaker || currentLineSpeakerRef.current || 'char',
+                        speechText: extractDialogueSpeech(lines[lineIndex]),
                     };
                 }
             }
@@ -730,6 +734,8 @@ const DateSession: React.FC<DateSessionProps> = ({
             originalText,
             sourceTimestamp: Date.now(),
             voiceEmotion: currentLineEmotionRef.current,
+            speaker: currentLineSpeakerRef.current || 'char',
+            speechText: currentLineSpeechRef.current || extractDialogueSpeech(galShownText),
         };
     };
 
@@ -769,10 +775,18 @@ const DateSession: React.FC<DateSessionProps> = ({
                 addToast('已取消收藏语音', 'info');
                 return;
             }
-            let speech: DateSpeechResult | undefined = voiceCacheRef.current[target.originalText];
+            const favoriteSpeechText = target.speechText || target.originalText;
+            const favoriteSpeaker = target.speaker || 'char';
+            const favoriteCacheKey = singleVoiceCacheKey(favoriteSpeaker, favoriteSpeechText);
+            let speech: DateSpeechResult | undefined = voiceCacheRef.current[favoriteCacheKey];
             if (!speech) {
-                speech = await translateAndSpeak(target.originalText, target.voiceEmotion, { sourceKey: target.sourceKey, sourceTimestamp: target.sourceTimestamp }) || undefined;
-                if (speech) voiceCacheRef.current[target.originalText] = speech;
+                speech = await translateAndSpeak(
+                    favoriteSpeechText,
+                    target.voiceEmotion,
+                    { sourceKey: target.sourceKey, sourceTimestamp: target.sourceTimestamp },
+                    favoriteSpeaker,
+                ) || undefined;
+                if (speech) voiceCacheRef.current[favoriteCacheKey] = speech;
             }
             if (!speech) throw new Error('语音合成失败，请稍后重试');
             const blob = await fetchBlobForShare(speech.url, 'audio/mpeg');
@@ -780,7 +794,7 @@ const DateSession: React.FC<DateSessionProps> = ({
                 source: 'date',
                 sourceKey: target.sourceKey,
                 charId: char.id,
-                charName: char.name,
+                charName: target.speaker === 'user' ? (userProfile.name || '用户') : char.name,
                 sourceTimestamp: target.sourceTimestamp,
                 originalText: target.originalText,
                 spokenText: speech.spokenText !== target.originalText ? speech.spokenText : undefined,
@@ -971,6 +985,9 @@ const DateSession: React.FC<DateSessionProps> = ({
     const processNextDialogue = (item: DialogueItem, remaining: DialogueItem[]) => {
         setCurrentText(item.text);
         currentLineEmotionRef.current = item.voiceEmotion;
+        currentLineSpeakerRef.current = item.speaker || 'char';
+        currentLineSpeechRef.current = item.speechText || extractDialogueSpeech(item.text);
+        currentLineIdRef.current = item.lineId || '';
         if (item.emotion && activeSprites) {
             const emotionKey = item.emotion.toLowerCase();
             if (dateEmotionKeys.includes(emotionKey)) {
@@ -995,18 +1012,21 @@ const DateSession: React.FC<DateSessionProps> = ({
     // 但立绘引擎不会自动重解析 —— 于是立绘停在旧文字、旧语音，感觉「没同步」。这里监听最后一条
     // assistant 消息的内容，变了就把当前批次重解析同步过来。首帧跳过（含 initialState 恢复的播放
     // 位置），isTyping 时也跳过（新回复交给 handleSend / handleRerollClick 处理，避免重复解析）。
-    const lastAssistantContent = React.useMemo(() => {
+    const lastAssistant = React.useMemo(() => {
         for (let i = messages.length - 1; i >= 0; i--) {
-            if (messages[i]?.role === 'assistant') return getSARSurface(messages[i]) || messages[i].content || '';
+            if (messages[i]?.role === 'assistant') {
+                return { id: messages[i].id, content: getSARSurface(messages[i]) || messages[i].content || '' };
+            }
         }
-        return '';
+        return null;
     }, [messages]);
+    const lastAssistantContent = lastAssistant?.content || '';
     const dialogueSyncMountRef = useRef(false);
     useEffect(() => {
         if (!dialogueSyncMountRef.current) { dialogueSyncMountRef.current = true; return; }
         if (isTyping || !lastAssistantContent) return;
         const { rest } = extractObservation(lastAssistantContent, { lenient: observeEnabled, custom: char.dateObserve?.custom });
-        const items = parseDialogue(rest, 'normal');
+        const items = parseDialogue(rest, 'normal', lastAssistant ? String(lastAssistant.id) : 'live');
         if (items.length === 0) return;
         setDialogueBatch(items);
         processNextDialogue(items[0], items.slice(1));
