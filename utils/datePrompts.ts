@@ -81,7 +81,11 @@ const resolveDateVoiceGuide = (): string => {
     const custom = getVoicePromptOverride('dateVoice');
     if (custom) return custom;
     if (getTtsProvider() === 'elevenlabs') {
-        return getVoicePromptOverride('elevenlabs') || getElevenLabsVoiceActingGuide(getElevenLabsModel()) || DATE_ELEVENLABS_VOICE_GUIDE;
+        const baseGuide = getVoicePromptOverride('elevenlabs')
+            || getElevenLabsVoiceActingGuide(getElevenLabsModel());
+        // 主聊天的 v4 表演指南负责“怎么演”，见面专用补充负责“标签必须留在引号内”
+        // 以及 speaker 元标签的结构，二者缺一不可。
+        return `${baseGuide}\n\n${DATE_ELEVENLABS_VOICE_GUIDE}`;
     }
     return DATE_VOICE_GUIDE;
 };
@@ -308,8 +312,12 @@ export const DIG_FOCUS_HINTS = [
     '让此刻的环境（光线、声音、温度）影响你说话的方式',
 ];
 
-const pickFocusHint = (): string =>
-    DIG_FOCUS_HINTS[Math.floor(Math.random() * DIG_FOCUS_HINTS.length)];
+const pickFocusHint = (coauthorUser: boolean = false): string => {
+    const pool = coauthorUser
+        ? DIG_FOCUS_HINTS.filter(hint => !hint.includes('不替对方补出反应') && !hint.includes('不必替对方解释'))
+        : DIG_FOCUS_HINTS;
+    return pool[Math.floor(Math.random() * pool.length)];
+};
 
 // ─────────────────────────────────────────────────────────────
 // 观测协议 OBSERVE（全方位观察 char：时间 / 地点 / 状态 / 细节）
@@ -797,7 +805,7 @@ ${extraBlock ? `\n${extraBlock}` : ''}${isObserveOn(char) ? `\n${buildObserveBlo
             + ContextBuilder.buildSARModuleContext(char, userProfile, 'date');
 
         // 每轮轮换的聚焦线索：把注意力推向不同的具体方向，相邻回复天然有差异
-        const focusLine = isDigDeeperOn(char.dateStyleConfig) ? ` 可选的本轮线索（与当前互动无关就跳过）：${pickFocusHint()}。` : '';
+        const focusLine = isDigDeeperOn(char.dateStyleConfig) ? ` 可选的本轮线索（与当前互动无关就跳过）：${pickFocusHint(!!char.dateStyleConfig?.coauthorUser)}。` : '';
         const note = variant === 'send'
             ? `(System Note: 严格遵守 VN 格式，每一行以 [emotion] 开头；逐行选择贴合实际表情的标签，明确情绪不要一律标 normal，同一情绪延续可重复。篇幅随本轮实际内容，可以简短。${focusLine})`
             : `(System Note: Reroll. 保持已有事实、角色性格与关系阶段，尝试另一种自然回应，不必加强情绪或推进关系。严格遵守 VN 格式，每一行以 [emotion] 开头；逐行选择贴合实际表情的标签，明确情绪不要一律标 normal，同一情绪延续可重复。${focusLine})`;
