@@ -3887,6 +3887,41 @@ export default {
       }
     }
 
+    // ========== ElevenLabs Text-to-Dialogue 时间戳代理 ==========
+    // 前端 POST /elevenlabs/dialogue?output_format=... + xi-api-key: <user key>
+    // 返回 JSON（audio_base64 + voice_segments），Worker 不记录、不持久化 Key 或剧情文本。
+    if (url.pathname === '/elevenlabs/dialogue') {
+      if (request.method !== 'POST') {
+        return jsonResponse({ error: 'Method not allowed' }, { status: 405, origin });
+      }
+      const apiKey = (request.headers.get('xi-api-key') || '').trim();
+      const outputFormat = (url.searchParams.get('output_format') || 'mp3_44100_128').trim();
+      if (!apiKey) {
+        return jsonResponse({ error: 'Missing xi-api-key header (ElevenLabs API key)' }, { status: 401, origin });
+      }
+      if (!/^[a-z0-9_]{3,32}$/.test(outputFormat)) {
+        return jsonResponse({ error: 'Invalid output_format' }, { status: 400, origin });
+      }
+      try {
+        const upstreamUrl = `https://api.elevenlabs.io/v1/text-to-dialogue/with-timestamps?output_format=${encodeURIComponent(outputFormat)}`;
+        const upstream = await fetch(upstreamUrl, {
+          method: 'POST',
+          headers: {
+            'xi-api-key': apiKey,
+            'Content-Type': request.headers.get('Content-Type') || 'application/json',
+            'Accept': 'application/json',
+          },
+          body: await request.text(),
+        });
+        const text = await upstream.text();
+        const respHeaders = new Headers(corsHeaders(origin));
+        respHeaders.set('Content-Type', upstream.headers.get('Content-Type') || 'application/json; charset=utf-8');
+        return new Response(text, { status: upstream.status, headers: respHeaders });
+      } catch (e) {
+        return jsonResponse({ error: 'ElevenLabs dialogue upstream fetch failed', detail: String(e && e.message || e) }, { status: 502, origin });
+      }
+    }
+
     // ========== 麦当劳 MCP 代理 (浏览器 CORS 兜底, 纯透传) ==========
     // 前端 POST /mcp/mcd  + Authorization: Bearer <user_mcp_token>
     // body 即 MCP JSON-RPC 报文 (initialize / tools/list / tools/call ...)
