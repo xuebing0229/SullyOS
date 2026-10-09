@@ -425,7 +425,7 @@ const DateSettings: React.FC<DateSettingsProps> = ({ char, onBack }) => {
                     {/* 强化演绎：把 user 当作另一位 OC，允许 AI 自由补写双方互动 */}
                     <div className="mb-5 flex items-center justify-between">
                         <div className="pr-4">
-                            <label className="text-[11px] text-slate-500 font-bold block">强化演绎</label>
+                            <label className="text-[11px] text-slate-500 font-bold block">强化模式 · 双 OC 演绎</label>
                             <p className="text-[11px] text-slate-400 mt-1 leading-relaxed">开启后，AI 可以把你的 OC 当作另一位主角，自由补写其台词与动作；适合“看同人文”式玩法。关闭时仍只写角色自己。</p>
                         </div>
                         <button
