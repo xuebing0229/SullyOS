@@ -34,7 +34,11 @@ export function createFurnitureContact(rig:ReturnType<typeof bindBlankBody>,body
  return (time:number,activity:ActivityPose)=>{
   if(!body.parent||activity.hands.length!==2)return;
   const scale=activity.handScale??1,beat=activity.kind==='rhythm'?rhythmFrame(activity,time):null;
-  const standingBeat=beat&&'directions' in beat&&'normal' in beat?beat:null;
+  const standingBeat=beat
+   &&Array.isArray((beat as {directions?:unknown}).directions)
+   &&Array.isArray((beat as {normal?:unknown}).normal)
+    ? beat as typeof beat&{directions:number[][];normal:number[]}
+    : null;
   const hands=beat?.hands??(activity.kind==='race'?racingHands(activity.hands,time,activity.wheel):activity.hands);
   const enter=T.MathUtils.smootherstep(time,0,.65);
   body.updateWorldMatrix(true,true);
