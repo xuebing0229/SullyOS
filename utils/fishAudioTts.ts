@@ -353,7 +353,7 @@ export async function synthesizeSpeechFishDetailed(
   text: string,
   char: CharacterProfile,
   apiConfig: APIConfig,
-  options?: { languageBoost?: string; groupId?: string; emotion?: string },
+  options?: { languageBoost?: string; groupId?: string; emotion?: string; forceRefresh?: boolean },
 ): Promise<TtsResult> {
   const apiKey = resolveFishAudioApiKey(apiConfig);
   if (!apiKey) throw new Error('缺少鱼声 Fish Audio API Key');
@@ -403,7 +403,7 @@ export async function synthesizeSpeechFishDetailed(
     format: payload.format,
     prosody: payload.prosody,
   });
-  const cached = await getCachedTts(cacheKey);
+  const cached = options?.forceRefresh ? null : await getCachedTts(cacheKey);
   if (cached) {
     return { url: URL.createObjectURL(cached), blob: cached };
   }
