@@ -87,8 +87,10 @@ const toDateSegments = (
   for (const segment of raw) {
     const index = segment.dialogue_input_index;
     if (!Number.isInteger(index) || index! < 0 || index! >= turns.length) continue;
-    if (segment.voice_id && segment.voice_id !== turns[index!].voiceId) {
-      throw new Error(`ElevenLabs Dialogue 第 ${index! + 1} 句的声线与请求不一致`);
+    // 官方响应按段回传 voice_id；不能证明这段是请求的声线就不做整轮切片，
+    // 交给单句 TTS 使用明确的角色 voiceId 再合成。
+    if (segment.voice_id !== turns[index!].voiceId) {
+      throw new Error(`ElevenLabs Dialogue 第 ${index! + 1} 句的声线 ID 缺失或与请求不一致`);
     }
     const previous = byInput.get(index!);
     if (!previous) {
