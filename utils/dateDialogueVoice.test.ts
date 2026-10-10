@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { alignDateDialogueSegments, buildDateDialogueBatch, resolveDateVoiceSpeaker } from './dateDialogueVoice';
 
 const turns = [
@@ -51,5 +52,30 @@ describe('见面模式双 OC 配音批次', () => {
     expect(() => alignDateDialogueSegments(turns, [
       { start: 0, end: 2 }, { start: 2, end: 4 }, { start: 2, end: 4.5 },
     ])).toThrow();
+  });
+});
+
+
+describe('见面 Voice ID 路由合约', () => {
+  const session = readFileSync('components/date/DateSession.tsx', 'utf8');
+  const synthesis = readFileSync('utils/dateDialogueSynthesis.ts', 'utf8');
+
+  it('普通模式的一口气 Dialogue 每条都以归属解析后的声线 ID 生成', () => {
+    expect(session).toContain('const speaker = resolveDateVoiceSpeaker(item.speaker, coauthorUserEnabled);');
+    expect(session).toContain('voiceId: dialogueVoiceId(speaker)');
+    expect(session).toContain("if (!voiceEnabled || voiceLang || resolveTtsProvider(apiConfig) !== 'elevenlabs') return null;");
+    expect(session).toContain("const speaker = resolveDateVoiceSpeaker(currentLineSpeakerRef.current, coauthorUserEnabled);");
+    expect(session).toContain("const favoriteSpeaker = resolveDateVoiceSpeaker(target.speaker, coauthorUserEnabled);");
+  });
+
+  it('校验 ElevenLabs 回传 voice_id；声线或时间戳不匹配则单句重试', () => {
+    expect(synthesis).toContain('segment.voice_id !== turns[index!].voiceId');
+    expect(synthesis).toContain('return alignDateDialogueSegments(turns, ranges);');
+  });
+
+  it('单句 TTS 缓存必须绑定实际声线配置与模型设置', () => {
+    expect(session).toContain('voice: profile,');
+    expect(session).toContain('elevenLabsModel: apiConfig.elevenLabsModel,');
+    expect(session).toContain('elevenLabsSimilarityBoost: apiConfig.elevenLabsSimilarityBoost,');
   });
 });
