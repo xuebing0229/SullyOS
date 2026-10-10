@@ -606,7 +606,7 @@ const DateSession: React.FC<DateSessionProps> = ({
         };
         // dialogueBatch/currentSarPair intentionally included: a freshly generated whole-turn batch
         // and SAR surface changes must select the correct playback path.
-    }, [galShownText, voiceEnabled, isNovelMode, dialogueBatch, currentSarPair]);
+    }, [galShownText, voiceEnabled, isNovelMode, dialogueBatch, currentSarPair, isTyping]);
 
     // GAL mode: manual play/pause for the current dialogue line
     const handleGalVoiceToggle = async () => {
