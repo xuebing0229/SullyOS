@@ -40,7 +40,11 @@ describe('见面模式双 OC / ElevenLabs prompt', () => {
     expect(principles).toContain('至少写一条 祁连云 的直接台词并标成 [speaker:user]');
     expect(principles).toContain('整轮只有 [speaker:char]');
     expect(principles).toContain('"……忙忘了。" [speaker:user]');
-    expect(principles.lastIndexOf('### 强化演绎执行提醒')).toBeGreaterThan(principles.lastIndexOf('### 最后，回到你自己'));
+    expect(principles).toContain('用户已经通过“强化演绎”明确授权');
+    expect(principles).toContain('### 写 温鸣竹 时，回到他自己');
+    expect(principles).toContain('每一条属于 温鸣竹 的台词');
+    expect(principles).not.toContain('### 最后，回到你自己\n你就是 温鸣竹。');
+    expect(principles.lastIndexOf('### 强化演绎执行提醒')).toBeGreaterThan(principles.lastIndexOf('### 写 温鸣竹 时，回到他自己'));
     expect(principles).not.toContain('用户没有写出的台词、动作');
 
     const block = buildVNModeBlock(makeChar(true), '祁连云');
