@@ -35,6 +35,9 @@ describe('见面模式双 OC / ElevenLabs prompt', () => {
     const principles = buildDateInteractionPrinciples('温鸣竹', '祁连云', false, true);
     expect(principles).toContain('强化演绎已开启');
     expect(principles).toContain('自由补写 祁连云 的台词、动作');
+    expect(principles).toContain('强化演绎执行提醒');
+    expect(principles).toContain('不要等待用户逐句替 祁连云 输入台词');
+    expect(principles.lastIndexOf('强化演绎执行提醒')).toBeGreaterThan(principles.lastIndexOf('最后，回到你自己'));
     expect(principles).not.toContain('用户没有写出的台词、动作');
 
     const block = buildVNModeBlock(makeChar(true), '祁连云');
