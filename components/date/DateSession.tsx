@@ -1576,6 +1576,18 @@ const DateSession: React.FC<DateSessionProps> = ({
                             </button>
                         )}
 
+                        {!isTyping && voiceEnabled && dialogueBatch.some(item => !!item.speechText && isDialogueLine(item.text)) && (
+                            <button
+                                onClick={() => { setShowMenu(false); setShowVoiceLangPicker(false); void regenerateVoiceTurn(dialogueBatch, 'gal'); }}
+                                disabled={voiceRegeneratingKey !== null}
+                                className="h-9 px-3.5 rounded-full flex items-center gap-2 text-xs font-bold border shadow-lg active:scale-95 transition-all bg-indigo-500/40 backdrop-blur-md border-indigo-300/30 text-white hover:bg-indigo-500/60 disabled:opacity-50"
+                                title="文字和情绪标签完全不变，只重新请求本轮语音（会消耗语音 API 额度）"
+                            >
+                                <span aria-hidden="true">♫</span>
+                                {voiceRegeneratingKey === 'gal' ? '正在重配语音…' : '仅重配本轮语音'}
+                            </button>
+                        )}
+
                         {/* 语音：未开启时点击直接开启并展开语种；开启时点击展开/收起语种选择（含关闭项） */}
                         <button onClick={() => {
                                 if (voiceEnabled) {
@@ -1781,6 +1793,23 @@ const DateSession: React.FC<DateSessionProps> = ({
                                                 <ReadingAvatar src={char.avatar} name={char.name} light={!!lightReading} />
                                             )}
                                             <div className="min-w-0 flex-1">
+                                                {voiceEnabled && !isBatchSelectMode && msg.metadata?.isOpening !== true &&
+                                                    (msgBody || '').split('\n').some(line => isDialogueLine(line)) && (
+                                                    <div className="flex justify-end mb-2">
+                                                        <button
+                                                            type="button"
+                                                            aria-label="重新合成这轮语音，保留原文"
+                                                            title="仅重新配音，文字不变；会消耗语音 API 额度"
+                                                            disabled={voiceRegeneratingKey !== null || isTyping}
+                                                            onClick={(e) => { e.stopPropagation(); regenerateNovelVoiceTurn(msg, shown); }}
+                                                            onTouchStart={e => e.stopPropagation()}
+                                                            onTouchEnd={e => e.stopPropagation()}
+                                                            className={`rounded-full border px-3 py-1 text-[11px] font-medium transition-opacity disabled:opacity-40 ${lightReading ? 'border-stone-200 bg-stone-100 text-stone-600' : 'border-white/15 bg-white/5 text-slate-300'}`}
+                                                        >
+                                                            {voiceRegeneratingKey === `novel:${msg.id}` ? '重新配音中…' : '♫ 重配这轮语音'}
+                                                        </button>
+                                                    </div>
+                                                )}
                                                 {observeEnabled && hasObservation(msgObs) && (
                                                     <ReadingObservation reading={decoratedReading} observation={msgObs} variant="card" charName={char.name} config={char.dateObserve} />
                                                 )}
