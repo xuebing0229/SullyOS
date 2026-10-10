@@ -1,11 +1,23 @@
 import { describe, expect, it } from 'vitest';
-import { alignDateDialogueSegments, buildDateDialogueBatch } from './dateDialogueVoice';
+import { alignDateDialogueSegments, buildDateDialogueBatch, resolveDateVoiceSpeaker } from './dateDialogueVoice';
 
 const turns = [
   { lineId: '1', speaker: 'char' as const, speech: '[softly] 你怎么还没睡？', voiceId: 'char-voice' },
   { lineId: '2', speaker: 'user' as const, speech: '[chuckles] 等你啊。', voiceId: 'user-voice' },
   { lineId: '3', speaker: 'char' as const, speech: '不是说了不用等吗？', voiceId: 'char-voice' },
 ];
+
+describe('见面声线归属', () => {
+  it('关闭强化模式时即使模型错标 user 也只能使用角色 Voice ID', () => {
+    expect(resolveDateVoiceSpeaker('user', false)).toBe('char');
+    expect(resolveDateVoiceSpeaker('char', false)).toBe('char');
+    expect(resolveDateVoiceSpeaker(undefined, false)).toBe('char');
+  });
+  it('开启强化模式后 char 和 user 仍各自使用独立声线', () => {
+    expect(resolveDateVoiceSpeaker('char', true)).toBe('char');
+    expect(resolveDateVoiceSpeaker('user', true)).toBe('user');
+  });
+});
 
 describe('见面模式双 OC 配音批次', () => {
   it('按剧情原顺序保留双人台词与原生 Audio Tags', () => {
