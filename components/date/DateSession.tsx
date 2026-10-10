@@ -958,8 +958,18 @@ const DateSession: React.FC<DateSessionProps> = ({
             setCurrentSprite(isBlobRef(resumedSprite) ? (char.avatar || '') : resumedSprite);
             setCurrentText(initialState.currentText || '');
             setDisplayedText(initialState.currentText || '');
-            setDialogueQueue(Array.isArray(initialState.dialogueQueue) ? initialState.dialogueQueue : []);
-            setDialogueBatch(Array.isArray(initialState.dialogueBatch) ? initialState.dialogueBatch : []);
+            const savedQueue = Array.isArray(initialState.dialogueQueue) ? initialState.dialogueQueue : [];
+            const savedBatch = Array.isArray(initialState.dialogueBatch) ? initialState.dialogueBatch : [];
+            setDialogueQueue(savedQueue);
+            setDialogueBatch(savedBatch);
+            // 恢复进度时也要找回当句的 speaker/voice，避免 user 台词恢复后冒出 char 姓名牌。
+            const savedLine = savedBatch[savedBatch.length - savedQueue.length - 1];
+            const currentLine = savedLine?.text === initialState.currentText
+                ? savedLine
+                : savedBatch.findLast(item => item.text === initialState.currentText);
+            currentLineSpeakerRef.current = currentLine?.speaker || 'char';
+            currentLineSpeechRef.current = currentLine?.speechText || extractDialogueSpeech(initialState.currentText || '');
+            currentLineIdRef.current = currentLine?.lineId || '';
             setIsNovelMode(!!initialState.isNovelMode);
         } else {
             // New Session - pick initial sprite from active skin set or default sprites
@@ -1668,7 +1678,7 @@ const DateSession: React.FC<DateSessionProps> = ({
                                                 const isOpeningMsg = msg.metadata?.isOpening === true;
                                                 const parsedSpeakerLine = extractSpeakerTag(line);
                                                 const parsedVoiceLine = extractVoiceEmotionTag(parsedSpeakerLine.rest);
-                                                const speaker = parsedSpeakerLine.speaker || 'char';
+                                                const speaker = coauthorUserEnabled ? (parsedSpeakerLine.speaker || 'char') : 'char';
                                                 const dialogueText = extractDialogueText(parsedVoiceLine.rest);
                                                 const speechText = extractDialogueSpeech(line);
                                                 const voiceTarget: DateVoiceFavoriteTarget = {
