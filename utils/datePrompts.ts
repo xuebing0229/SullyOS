@@ -49,7 +49,15 @@ ${coauthorUser
 : '用户没有写出的台词、动作、身体反应、内心和决定留给用户。你可以完成自己的动作、发出邀请、留下具体话头，但不替对方写下接受、回应或关系升级。'}
 一轮只需走到此刻自然成熟的一步。允许一句台词、一个普通动作、共享沉默或继续日常；无需凑满戏剧拍数。张力可以起伏、回落，不必连续升高。已有亲密和热烈也可以自然延续，程度仍来自这两个人的关系和当前互动。
 ${peek === 'invite' ? '此刻由角色主动靠近用户：用第三人称开场散文写自己的行动和开口，不使用 VN 情绪标签；给用户留下回应空间，不代写用户反应。' : peek ? '此刻是用户尚未走近的第三人称镜头：描写角色自己的生活与当下状态，不新增用户的到场动作、台词或双方互动。' : '保持本场景的 VN 输出格式；角色与回应原则用于形成正文，不在正文解释规则。'}
-` + buildCharacterResponsePrinciples(charName, userName);
+` + buildCharacterResponsePrinciples(charName, userName)
+        + (coauthorUser && !peek ? `
+
+### 强化演绎执行提醒（本模式优先）
+上面的“最后，回到你自己”只是在约束 ${charName} 本人的性格和语言不要跑偏，**不是**让整轮只能写 ${charName}。
+你现在同时承担这场双主角剧情的场景作者职责：${userName || '用户'} 也是可由你主动书写的 OC。不要等待用户逐句替 ${userName || '用户'} 输入台词；当当前情境自然需要对方回应、动作或做决定时，直接依据系统里已有的用户设定、共同经历和本轮素材写出来。
+这不是“偶尔获准代写”的例外，而是当前写作模式。除非这一拍自然应该沉默、停顿或只聚焦 ${charName}，否则不要因为代理权习惯把整轮写成只有 ${charName} 一个人说话和行动。
+不要求机械轮流，也不要为了凑双人对白强塞台词；按场景节奏自然地让双方连续、交替或短暂停顿。只要写出台词，就严格用 [speaker:char] / [speaker:user] 标明真正的说话人。
+` : '');
 }
 
 export type ApiMessage = { role: string; content: any };
@@ -632,7 +640,7 @@ export const buildVNModeBlock = (char: CharacterProfile, userName: string): stri
     const observeBlock = isObserveOn(char) ? buildObserveBlock(char) : '';
     const coauthorUser = !!styleConfig?.coauthorUser;
     const speakerRule = char.dateVoiceEnabled || coauthorUser
-        ? `4. **说话人标签**: 每一条带双引号的台词行末尾都必须加一个机器标签：\`[speaker:char]\` 表示 ${char.name} 在说，\`[speaker:user]\` 表示 ${userName || '用户'} 在说。标签放在引号外，动作/叙述行不要加。这个标签不会显示给用户，只用于双声线配音和归属识别。${coauthorUser ? ` 强化演绎已开启，因此可以自然地让双方交替或连续说话。` : ` 普通模式下你只写 ${char.name} 的台词，所以台词使用 [speaker:char]。`}`
+        ? `4. **说话人标签**: 每一条带双引号的台词行末尾都必须加一个机器标签：\`[speaker:char]\` 表示 ${char.name} 在说，\`[speaker:user]\` 表示 ${userName || '用户'} 在说。标签放在引号外，动作/叙述行不要加。这个标签不会显示给用户，只用于双声线配音和归属识别。${coauthorUser ? ` **强化演绎已开启**：这是主动双主角写作模式，不要等待用户逐句提供 user 台词；场景自然有回应空间时可以直接写双方台词，允许交替、连续或一方暂时沉默。` : ` 普通模式下你只写 ${char.name} 的台词，所以台词使用 [speaker:char]。`}`
         : '';
     return `### [Visual Novel Mode: 视觉小说脚本模式]
 你正在与用户进行**面对面**的互动。这不是聊天，是一场真实的见面。
