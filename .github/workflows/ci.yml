@@ -42,6 +42,7 @@ jobs:
           pnpm exec vitest run
           utils/dateDialogueVoice.test.ts
           utils/dateDialoguePlayback.contract.test.ts
+          utils/dateDialogueDisplay.contract.test.ts
           utils/dateDualVoicePrompt.test.ts
           utils/dateModelOutput.test.ts
           utils/dateCoauthorUi.contract.test.ts
