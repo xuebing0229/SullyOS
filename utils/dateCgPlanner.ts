@@ -18,7 +18,7 @@ import {
 import { normalizeToolCallsForCompat } from './toolCallCompat';
 import { prepareBuiltinImageToolArguments } from './novelAiReference';
 import { persistMcpGeneratedImages } from './mcpImagePersistence';
-import { makeMeetingCgBackground, type MeetingCgBackground, type MeetingCgEngine } from './meetingCg';
+import { makeMeetingCgBackground, type MeetingCgBackground } from './meetingCg';
 
 export interface GenerateMeetingCgInput {
     apiConfig: APIConfig;
