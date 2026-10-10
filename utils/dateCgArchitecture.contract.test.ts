@@ -37,6 +37,16 @@ describe('DateSession CG architecture contract', () => {
         expect(planner).not.toContain('resolveDefaultImageTool');
     });
 
+    it('separates the CG planning model from the writing model, without changing the image engine', () => {
+        expect(source).toContain('resolveDateCgPlannerApiConfig(char, apiConfig, apiPresets)');
+        expect(source).toContain('plannerSystemCompatibility: resolveDateCgPlannerSystemCompatibility');
+        expect(planner).toContain('const plannerApi = input.plannerApiConfig || input.apiConfig;');
+        expect(planner).toContain("resolveApiExecutionPlan('chat', plannerApi, !input.plannerApiConfig)");
+        expect(cgPromptSettings).toContain('CG 生图规划模型');
+        expect(cgPromptSettings).toContain('dateCgPlannerApiPresetId');
+        expect(cgPromptSettings).toContain('dateCgPlannerModel');
+    });
+
     it('renders full-opacity CG in front of the sprite and below dialogue UI', () => {
         const spriteIndex = source.indexOf('pointer-events-none z-10 overflow-hidden');
         const cgIndex = source.indexOf('absolute inset-0 z-20 pointer-events-none');
