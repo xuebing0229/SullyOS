@@ -79,3 +79,43 @@ describe('见面 Voice ID 路由合约', () => {
     expect(session).toContain('elevenLabsSimilarityBoost: apiConfig.elevenLabsSimilarityBoost,');
   });
 });
+
+
+describe('见面逐轮重新配音（正文不变）', () => {
+  const session = readFileSync('components/date/DateSession.tsx', 'utf8');
+  const router = readFileSync('utils/ttsRouter.ts', 'utf8');
+  const eleven = readFileSync('utils/elevenLabsTts.ts', 'utf8');
+  const fish = readFileSync('utils/fishAudioTts.ts', 'utf8');
+  const minimax = readFileSync('utils/minimaxTts.ts', 'utf8');
+
+  it('GAL 与历史每轮分别有仅重配语音入口，并保留已有正文重生成入口', () => {
+    expect(session).toContain('仅重配本轮语音');
+    expect(session).toContain('重配这轮语音');
+    expect(session).toContain('handleRerollClick()');
+    expect(session).toContain('regenerateNovelVoiceTurn(msg, shown)');
+    expect(session).toContain("regenerateVoiceTurn(dialogueBatch, 'gal')");
+    expect(session).toContain('文字和演出标签都不变');
+  });
+
+  it('强制新合成，整轮优先，逐句兜底，不改变历史消息', () => {
+    expect(session).toContain('await synthesizeDateDialogue(turns, apiConfig)');
+    expect(session).toContain('translateAndSpeak(speechText, item.voiceEmotion, undefined, speaker, true)');
+    expect(session).toContain('dialogueForcedSinglesRef.current.add(batchKey)');
+    expect(session).toContain('dialogueVoiceRevisionRef.current[batchKey]');
+    expect(session).toContain('voiceRegenerationLockRef.current');
+    expect(session).toContain('Object.assign(voiceCacheRef.current, freshLines)');
+    expect(session).not.toContain("await onReroll();\n            const { rest:");
+  });
+
+  it('所有 TTS 服务商都可以明确绕过磁盘缓存', () => {
+    expect(router).toContain('forceRefresh?: boolean');
+    for (const provider of [eleven, fish, minimax]) {
+      expect(provider).toContain('options?.forceRefresh ? null : await getCachedTts(cacheKey)');
+    }
+  });
+
+  it('整轮重配之后不会复用相同文本的旧 PCM 解码', () => {
+    expect(session).toContain('cached?.blob === batch.blob');
+    expect(session).toContain('decodedDialogueRef.current = { key: batch.key, blob: batch.blob, buffer };');
+  });
+});
