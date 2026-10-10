@@ -14,8 +14,8 @@ export function HomePresenceBubbles({editor,character,enabled,canInvite=false,on
  const [view,setView]=useState<{x:number;y:number;emoji?:string;code?:string;petName?:string;petPortrait?:string;offer?:{key:string;reason:string};roomId:string}>();
  useEffect(()=>{pending.current=undefined;clock.current={entered:Date.now(),offered:0,consumed:''};const tick=()=>{
   const {character:char,enabled}=latest.current;if(!char||(!enabled&&!pending.current)||document.hidden){setView(undefined);return;}
-  const home=editor.getState(),scene=editor.getHomeScene(),snapshot=editor.getCompanionSnapshot?.(),now=Date.now(),anchor=editor.getResidentAnchor?.(char.id);
-  if(!scene.present||!anchor||anchor.x<0||anchor.x>anchor.width||anchor.y<0||anchor.y>anchor.height){setView(undefined);return;}
+  const home=editor.getState?.(),scene=editor.getHomeScene(),snapshot=editor.getCompanionSnapshot?.(),now=Date.now(),anchor=editor.getResidentAnchor?.(char.id);
+  if(!home||!scene.present||!anchor||anchor.x<0||anchor.x>anchor.width||anchor.y<0||anchor.y>anchor.height){setView(undefined);return;}
   if(!pending.current&&(scene.busy||!(home.directSpeech?(snapshot?.speechReady??snapshot?.ready):snapshot?.ready))){setView(undefined);return;}
   const candidate=latest.current.canInvite?homeInitiative(homeRecords(home),scene.roomId,now,clock.current.entered,clock.current.offered):null;
   if(!pending.current&&candidate&&candidate.key!==clock.current.consumed)pending.current=candidate;
