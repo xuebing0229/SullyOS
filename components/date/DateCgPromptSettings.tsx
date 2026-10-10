@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import type { CharacterProfile, DateCgImagePromptConfig } from '../../types';
 import { useOS } from '../../context/OSContext';
+import { getApiPresetModelEntries } from '../../utils/apiPresetModels';
 import {
     deleteStoryImageTextPreset,
     loadStoryImageTextPresets,
@@ -18,10 +19,15 @@ const normalizeDraft = (char: CharacterProfile): DateCgImagePromptConfig => ({
 });
 
 const DateCgPromptSettings: React.FC<{ char: CharacterProfile }> = ({ char }) => {
-    const { updateCharacter, addToast, userProfile } = useOS();
+    const { updateCharacter, addToast, userProfile, apiPresets, apiConfig } = useOS();
     const [draft, setDraft] = useState<DateCgImagePromptConfig>(() => normalizeDraft(char));
     const [textPresets, setTextPresets] = useState<StoryImageTextPreset[]>(() => loadStoryImageTextPresets());
     const [presetName, setPresetName] = useState('');
+    const selectedPlannerPreset = apiPresets.find(preset => preset.id === char.dateCgPlannerApiPresetId);
+    const plannerModels = selectedPlannerPreset ? getApiPresetModelEntries(selectedPlannerPreset) : [];
+    const plannerModel = selectedPlannerPreset
+        ? (char.dateCgPlannerModel || selectedPlannerPreset.config.model)
+        : apiConfig.model;
 
     useEffect(() => {
         setDraft(normalizeDraft(char));
@@ -108,6 +114,49 @@ const DateCgPromptSettings: React.FC<{ char: CharacterProfile }> = ({ char }) =>
     return <div className="space-y-4">
         <div className="rounded-xl bg-violet-50 px-3 py-2.5 text-[10px] leading-5 text-violet-700">
             与文游共用同一套「配图内容预设」。规划 API 会看到这些固定层来理解人物与画风，但只负责本轮场景、构图、谁入镜和参考图选择；真正出图前由客户端按实际入镜者确定性合并固定外貌、画风与负面词。
+        </div>
+
+        <div className="rounded-xl border border-slate-200 bg-white px-3 py-3">
+            <div className="text-[11px] font-bold text-slate-600">CG 生图规划模型</div>
+            <p className="mt-1 text-[10px] leading-5 text-slate-400">
+                只负责理解见面剧情、选择生图工具和画面参数。可与写剧情的模型使用不同 API；
+                真正出图仍由已选的 GPT Image / NovelAI 执行。
+            </p>
+            <select
+                aria-label="见面 CG 规划 API 预设"
+                value={char.dateCgPlannerApiPresetId || ''}
+                onChange={event => {
+                    const presetId = event.target.value;
+                    const preset = apiPresets.find(item => item.id === presetId);
+                    updateCharacter(char.id, {
+                        dateCgPlannerApiPresetId: presetId || undefined,
+                        dateCgPlannerModel: preset?.config.model || undefined,
+                    });
+                }}
+                className="mt-2 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-xs outline-none"
+            >
+                <option value="">跟随当前聊天 API（{apiConfig.model || '未配置模型'}）</option>
+                {char.dateCgPlannerApiPresetId && !selectedPlannerPreset && (
+                    <option value={char.dateCgPlannerApiPresetId} disabled>所选预设已删除，请重新选择</option>
+                )}
+                {apiPresets.map(preset => <option key={preset.id} value={preset.id}>{preset.name}</option>)}
+            </select>
+            {selectedPlannerPreset && <select
+                aria-label="见面 CG 规划模型"
+                value={plannerModel}
+                onChange={event => updateCharacter(char.id, { dateCgPlannerModel: event.target.value })}
+                className="mt-2 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-xs outline-none"
+            >
+                {!plannerModels.some(item => item.model === plannerModel) && (
+                    <option value={plannerModel} disabled>模型已从预设中删除：{plannerModel}</option>
+                )}
+                {plannerModels.map(item => <option key={item.model} value={item.model}>{item.model}</option>)}
+            </select>}
+            <div className="mt-2 rounded-lg bg-violet-50 px-3 py-2 text-[10px] leading-5 text-violet-700">
+                {char.dateCgPlannerApiPresetId && !selectedPlannerPreset
+                    ? '原规划 API 预设已失效，请重新选择（不会偷偷切回正文模型）。'
+                    : `当前规划器：${selectedPlannerPreset?.name || '跟随聊天 API'} · ${plannerModel || '未配置'}`}
+            </div>
         </div>
 
         <div>
