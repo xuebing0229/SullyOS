@@ -31,7 +31,7 @@ import { saveVoiceLibraryItem, setVoiceLibraryStarredForSource } from '../../uti
 import { resolveTtsProvider } from '../../utils/ttsProvider';
 import { synthesizeDateDialogue } from '../../utils/dateDialogueSynthesis';
 import { extractDateSpokenText, isDateSpokenLine } from '../../utils/dateDialogueLines';
-import type { DateDialogueSegment, DateDialogueTurn } from '../../utils/dateDialogueVoice';
+import { resolveDateVoiceSpeaker, type DateDialogueSegment, type DateDialogueTurn } from '../../utils/dateDialogueVoice';
 import { MEETING_CONTINUE_DISPLAY_TEXT } from '../../utils/meetingContinue';
 import TokenImg from '../os/TokenImg';
 import { VOICE_LANGUAGE_OPTIONS, voiceLanguageAnalyticsValue, voiceLanguageLabel, voiceLanguagePromptLabel } from '../../utils/voiceLanguage';
@@ -389,12 +389,16 @@ const DateSession: React.FC<DateSessionProps> = ({
     const buildDateDialogueTurns = (items: DialogueItem[]): DateDialogueTurn[] =>
         items
             .filter(item => !!item.lineId && !!item.speechText && isDialogueLine(item.text))
-            .map(item => ({
-                lineId: item.lineId!,
-                speaker: item.speaker || 'char',
-                speech: item.speechText!,
-                voiceId: dialogueVoiceId(item.speaker || 'char'),
-            }));
+            .map(item => {
+                // 姓名牌和 TTS 归属必须采用同一规则；原版强制只有角色声线。
+                const speaker = resolveDateVoiceSpeaker(item.speaker, coauthorUserEnabled);
+                return {
+                    lineId: item.lineId!,
+                    speaker,
+                    speech: item.speechText!,
+                    voiceId: dialogueVoiceId(speaker),
+                };
+            });
 
     const makeDateDialogueBatchKey = (turns: DateDialogueTurn[]): string =>
         JSON.stringify({
@@ -521,8 +525,20 @@ const DateSession: React.FC<DateSessionProps> = ({
         return false;
     };
 
-    const singleVoiceCacheKey = (speaker: 'char' | 'user', text: string): string =>
-        `${speaker}\u0000${text}`;
+    // 用户切换音色、服务商或稳定性设置后，不能继续回放本次见面里旧声线的缓存音频。
+    const singleVoiceCacheKey = (speaker: 'char' | 'user', text: string): string => {
+        const profile = speaker === 'user' ? userProfile.voiceProfile : char.voiceProfile;
+        return JSON.stringify({
+            speaker, text, language: voiceLang,
+            provider: resolveTtsProvider(apiConfig),
+            voice: profile,
+            elevenLabsModel: apiConfig.elevenLabsModel,
+            elevenLabsStability: apiConfig.elevenLabsStability,
+            elevenLabsSimilarityBoost: apiConfig.elevenLabsSimilarityBoost,
+            fishAudioModel: apiConfig.fishAudioModel,
+            minimaxRegion: apiConfig.minimaxRegion,
+        });
+    };
 
     const translateAndSpeak = async (
         text: string,
@@ -607,7 +623,7 @@ const DateSession: React.FC<DateSessionProps> = ({
         let cancelled = false;
         const generation = playbackGenerationRef.current;
         const isCurrent = () => !cancelled && generation === playbackGenerationRef.current;
-        const speaker = coauthorUserEnabled ? (currentLineSpeakerRef.current || 'char') : 'char';
+        const speaker = resolveDateVoiceSpeaker(currentLineSpeakerRef.current, coauthorUserEnabled);
         const speechText = currentLineSpeechRef.current || extractDialogueSpeech(galShownText);
         const lineId = currentLineIdRef.current;
         const cacheKey = singleVoiceCacheKey(speaker, speechText);
@@ -666,7 +682,7 @@ const DateSession: React.FC<DateSessionProps> = ({
             return;
         }
 
-        const speaker = coauthorUserEnabled ? (currentLineSpeakerRef.current || 'char') : 'char';
+        const speaker = resolveDateVoiceSpeaker(currentLineSpeakerRef.current, coauthorUserEnabled);
         const speechText = currentLineSpeechRef.current || extractDialogueSpeech(galShownText);
         const lineId = currentLineIdRef.current;
         stopDateAudio();
@@ -1678,7 +1694,7 @@ const DateSession: React.FC<DateSessionProps> = ({
                                                 const isOpeningMsg = msg.metadata?.isOpening === true;
                                                 const parsedSpeakerLine = extractSpeakerTag(line);
                                                 const parsedVoiceLine = extractVoiceEmotionTag(parsedSpeakerLine.rest);
-                                                const speaker = coauthorUserEnabled ? (parsedSpeakerLine.speaker || 'char') : 'char';
+                                                const speaker = resolveDateVoiceSpeaker(parsedSpeakerLine.speaker, coauthorUserEnabled);
                                                 const dialogueText = extractDialogueText(parsedVoiceLine.rest);
                                                 const speechText = extractDialogueSpeech(line);
                                                 const voiceTarget: DateVoiceFavoriteTarget = {
