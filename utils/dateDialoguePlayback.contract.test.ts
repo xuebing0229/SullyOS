@@ -11,9 +11,11 @@ describe('DateSession precise dialogue segment playback contract', () => {
         expect(session).toContain('decodedDialogueRef');
     });
 
-    it('keeps HTMLAudio only as fallback and does not intentionally bleed 60ms into the next line', () => {
-        expect(session).toContain('precise segment playback failed, falling back to HTMLAudio');
-        expect(session).toContain("audio.addEventListener('seeked'");
-        expect(session).not.toContain('(segment.endTime - segment.startTime) * 1000 + 60');
+    it('never seeks a shared MP3 with HTMLAudio timers when PCM decoding fails', () => {
+        expect(session).toContain('PCM 切片不可用时返回 false');
+        expect(session).not.toContain("audio.addEventListener('seeked'");
+        expect(session).not.toContain('const durationMs = Math.max(40, (segment.endTime - segment.startTime) * 1000)');
+        expect(session).toContain('const isCurrent = () =>');
+        expect(session).toContain('if (!isCurrent()) return false;');
     });
 });
