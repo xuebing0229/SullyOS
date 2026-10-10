@@ -78,16 +78,19 @@ export const DATE_ELEVENLABS_VOICE_GUIDE = `4. **语音演出（ElevenLabs v4）
    - 示例：\`[shy] "[breathless, raspy voice] ……你别这么看我。" [speaker:char]\`。`;
 
 const resolveDateVoiceGuide = (): string => {
-    const custom = getVoicePromptOverride('dateVoice');
-    if (custom) return custom;
+    const customDateGuide = getVoicePromptOverride('dateVoice');
     if (getTtsProvider() === 'elevenlabs') {
         const baseGuide = getVoicePromptOverride('elevenlabs')
             || getElevenLabsVoiceActingGuide(getElevenLabsModel());
-        // 主聊天的 v4 表演指南负责“怎么演”，见面专用补充负责“标签必须留在引号内”
-        // 以及 speaker 元标签的结构，二者缺一不可。
-        return `${baseGuide}\n\n${DATE_ELEVENLABS_VOICE_GUIDE}`;
+        // ElevenLabs 见面模式必须保留 v4 原生 Audio Tags + speaker 结构。
+        // 旧用户可能保存过基于 [v:xxx] 的 dateVoice 自定义词，因此把它当“附加要求”
+        // 放在强制 v4 规则之前，而不是让旧规则整个覆盖新链路。
+        const customBlock = customDateGuide
+            ? `\n\n### 见面模式自定义语音要求\n${customDateGuide}`
+            : '';
+        return `${baseGuide}${customBlock}\n\n${DATE_ELEVENLABS_VOICE_GUIDE}`;
     }
-    return DATE_VOICE_GUIDE;
+    return customDateGuide || DATE_VOICE_GUIDE;
 };
 
 
