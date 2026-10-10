@@ -32,5 +32,12 @@ describe('见面模式双 OC 配音批次', () => {
     expect(() => alignDateDialogueSegments(turns, [
       { start: 0, end: 1 }, { start: 2, end: 1 }, { start: 3, end: 4 },
     ])).toThrow();
+    // 上游在长对白后偶发重叠或塌缩的 voice_segments：不得拿来截取别人台词。
+    expect(() => alignDateDialogueSegments(turns, [
+      { start: 0, end: 2.5 }, { start: 1, end: 4 }, { start: 4, end: 6 },
+    ])).toThrow();
+    expect(() => alignDateDialogueSegments(turns, [
+      { start: 0, end: 2 }, { start: 2, end: 4 }, { start: 2, end: 4.5 },
+    ])).toThrow();
   });
 });
