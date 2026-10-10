@@ -19,6 +19,11 @@ import { normalizeToolCallsForCompat } from './toolCallCompat';
 import { prepareBuiltinImageToolArguments } from './novelAiReference';
 import { persistMcpGeneratedImages } from './mcpImagePersistence';
 import { makeMeetingCgBackground, type MeetingCgBackground } from './meetingCg';
+import {
+    augmentStoryImagePlanningParameters,
+    composeStoryImagePromptArguments,
+    type StoryImagePromptLayers,
+} from './storyImagePromptLayers';
 
 export interface GenerateMeetingCgInput {
     apiConfig: APIConfig;
@@ -80,17 +85,30 @@ export const resolveMeetingCgPlannerTools = (charId?: string) => {
         allowCharacterReference: isCharacterReferenceAllowedForActivePreset(),
     });
     const resolve = new Map<string, ResolvedMcpTool>();
-    const tools = built.tools.filter(tool => {
+    const tools = built.tools.flatMap(tool => {
         const hit = built.resolve.get(tool.function.name);
-        if (!isMeetingImageTool(hit)) return false;
+        if (!isMeetingImageTool(hit)) return [];
         resolve.set(tool.function.name, hit);
-        return true;
+        return [{
+            ...tool,
+            function: {
+                ...tool.function,
+                parameters: augmentStoryImagePlanningParameters(tool.function.parameters),
+            },
+        }];
     });
     if (!tools.length) {
         throw new Error('当前没有可用的内置生图工具。请先在设置 → 生图功能中启用并完成工具发现。');
     }
     return { tools, resolve };
 };
+
+export const buildMeetingCgPromptLayers = (char: CharacterProfile): StoryImagePromptLayers => ({
+    character: compact(char.dateCgImagePrompt?.characterAnchors?.[char.id]),
+    user: compact(char.dateCgImagePrompt?.userAnchor),
+    style: compact(char.dateCgImagePrompt?.stylePrompt),
+    negative: compact(char.dateCgImagePrompt?.negativePrompt),
+});
 
 const plannerToolSummary = (
     tools: ReturnType<typeof resolveMeetingCgPlannerTools>['tools'],
@@ -104,31 +122,49 @@ const plannerInstruction = (
     tools: ReturnType<typeof resolveMeetingCgPlannerTools>['tools'],
     char: CharacterProfile,
     userProfile: UserProfile,
-): string => `
+): string => {
+    const layers = buildMeetingCgPromptLayers(char);
+    return `
 你正在后台为“线下模式”规划并生成一张剧情 CG。你不是在回复普通聊天。
 
 必须以本次线下会话消息和下面的当前场景为最高优先级；不要改用主聊天近期消息：
 ${sceneSummary}
 
-这次提供给你的生图工具、参数 schema 和参考图开关与主聊天共用同一套规则。必须只调用一次下面的生图工具之一，不要只输出文字，也不要先做第二次聊天判断：
+这次提供给你的生图工具、参数 schema 和参考图开关与主聊天/文游共用同一套规则。必须只调用一次下面的生图工具之一，不要只输出文字，也不要先做第二次聊天判断：
 ${plannerToolSummary(tools)}
 
-如果出现多个“生图预设”工具，它们仍属于用户已经固定选择的同一个 NovelAI 引擎；请直接根据工具描述里的“用途”在本次调用中选一个最适合当前 CG 的预设，不要额外调用模型来选预设。
+如果出现多个“生图预设”工具，它们仍属于用户已经固定选择的同一个 NovelAI 引擎；请直接根据工具描述里的“用途”和当前这一帧选择最合适的预设，不要额外调用模型来选预设。
 
-参考图可用性：
-- 当前角色（${char.name}）：${char.novelAiReference?.enabled ? '有可选精密参考图；仅当画面确实需要锁定该角色外观时使用。' : '没有启用精密参考图。'}
-- 用户角色（${userProfile.name || '用户'}）：${userProfile.novelAiReference?.enabled ? '有可选精密参考图；仅当画面确实需要锁定用户角色外观时使用。' : '没有启用精密参考图。'}
-多人构图若工具支持 character_prompts，应像主聊天一样用原生多人字段隔离每个人的外观与动作，不要把两个人的身份特征混进同一人物。
+你还必须像文游配图一样明确决定这一帧谁真正入镜：
+- story_include_character：当前角色 ${char.name} 是否真实出现在最终画面；
+- story_include_user：用户 ${userProfile.name || '用户'} 是否真实出现在最终画面；
+- story_character_dynamic_prompt / story_user_dynamic_prompt 只写各自在这一帧变化的动作、表情、姿势、位置、临时服装或状态；
+- 不入镜的人对应 include 必须为 false，dynamic prompt 留空；
+- 不要因为两个人都存在于剧情上下文，就把两个人都判定为入镜。
+
+参考图也只按这一帧的真实画面判断：
+- 当前角色（${char.name}）：${char.novelAiReference?.enabled ? '有可选精密参考图；只有角色真正入镜且本帧需要锁定外观时才可开启 use_character_reference。' : '没有启用精密参考图。'}
+- 用户角色（${userProfile.name || '用户'}）：${userProfile.novelAiReference?.enabled ? '有可选精密参考图；只有用户真正入镜且本帧需要锁定外观时才可开启 use_user_reference。' : '没有启用精密参考图。'}
+单人画面不得顺手带另一个人的参考图。双人画面若工具支持 character_prompts，由执行端根据双方固定锚点和动态状态生成原生多人字段；你不要自己填写 character_prompts。
+
+以下固定层来自用户在“见面设置 → CG 配图提示词”保存的共享文游配图预设。它们会由客户端在你完成规划后确定性合并，你可以据此理解人物与画风，但不要复制进动态 prompt：
+- 固定画风：${layers.style || '未设置'}
+- ${userProfile.name || '用户'} 固定外观：${layers.user || '未设置'}
+- ${char.name} 固定外观：${layers.character || '未设置'}
+- 固定负面提示：${layers.negative || '未设置'}
+
+工具 arguments 里的 prompt 只负责这一帧可变的场景、镜头、构图、光线、整体互动与环境。不要复述上面的固定人物外貌、固定画风或固定负面词；客户端会按 story_include_character / story_include_user 的结果自动合并。
 
 画面目标：
 - story CG / character-focused illustration，而不是背景图或壁纸；
-- 突出当前这一幕真正发生的角色互动、外貌、姿态、视线、表情和距离感；
+- 突出当前这一幕真正发生的角色互动、姿态、视线、表情和距离感；
 - 场景与当下情绪明确，构图完整、自然、有剧情感；
 - 不要求为 UI 留空白，不使用 suitable as a background / leave negative space for UI 之类导向；
 - 不生成文字、对白框、水印、Logo 或 UI 元素；
 - after_generate_action 固定用 none；见面 CG 不需要生成后再追加一次聊天评价。
 
 请直接调用一次图像工具。`.trim();
+};
 
 const parseToolArgs = (call: any): Record<string, any> => {
     const raw = call?.function?.arguments ?? call?.arguments;
@@ -232,6 +268,16 @@ export async function generateMeetingCgViaChatPlanner(input: GenerateMeetingCgIn
     }
 
     const { cleanedArgs } = parseImageToolClientOptions(chosen.args);
+    const planningTool = toolSet.tools.find(tool => tool.function.name === chosen.exposedName);
+    const engineId = chosen.resolved.toolName === 'novelai_generate_image' ? 'novelai' : 'gpt-image';
+    const composed = composeStoryImagePromptArguments({
+        args: cleanedArgs,
+        parameters: planningTool?.function.parameters,
+        layers: buildMeetingCgPromptLayers(input.char),
+        engineId,
+        toolName: chosen.resolved.toolName,
+    });
+
     if (chosen.resolved.server.imagePresetId) {
         await applyImageGenerationPresetById(chosen.resolved.server.imagePresetId);
     }
@@ -239,7 +285,7 @@ export async function generateMeetingCgViaChatPlanner(input: GenerateMeetingCgIn
     const preparedArgs = await prepareBuiltinImageToolArguments({
         server: chosen.resolved.server,
         toolName: chosen.resolved.toolName,
-        args: cleanedArgs,
+        args: composed.arguments,
         character: input.char,
         userProfile: input.userProfile,
     });
