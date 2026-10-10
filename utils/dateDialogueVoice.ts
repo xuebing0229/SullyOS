@@ -47,7 +47,7 @@ export const alignDateDialogueSegments = (
     const range = ranges[index];
     if (!Number.isFinite(range.start) || !Number.isFinite(range.end) ||
         range.start < 0 || range.end <= range.start ||
-        (index > 0 && range.start < ranges[index - 1].start)) {
+        (index > 0 && (range.start < ranges[index - 1].start || range.start < ranges[index - 1].end - 0.02))) {
       throw new Error('见面双人配音时间戳无效');
     }
     return { lineId: turn.lineId, speaker: turn.speaker, startTime: range.start, endTime: range.end };
