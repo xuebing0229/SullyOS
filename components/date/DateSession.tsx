@@ -323,6 +323,7 @@ const DateSession: React.FC<DateSessionProps> = ({
     const segmentStopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const voiceEnabled = !!char.dateVoiceEnabled;
     const voiceLang = char.dateVoiceLang || '';
+    const coauthorUserEnabled = !!char.dateStyleConfig?.coauthorUser;
     // Bridges the current line's VOICE emotion ([v:xxx], 跟立绘情绪分开) to the GAL.
     const currentLineEmotionRef = useRef<string | undefined>(undefined);
     const currentLineSpeakerRef = useRef<'char' | 'user'>('char');
@@ -1432,6 +1433,31 @@ const DateSession: React.FC<DateSessionProps> = ({
                             </button>
                         )}
 
+                        <button onClick={() => {
+                                const next = !coauthorUserEnabled;
+                                updateCharacter(char.id, {
+                                    dateStyleConfig: {
+                                        ...(char.dateStyleConfig || {}),
+                                        coauthorUser: next ? true : undefined,
+                                    },
+                                });
+                                addToast(
+                                    next
+                                        ? '强化演绎已开启 · AI 可替双方写台词和动作，下条回复生效'
+                                        : '强化演绎已关闭 · 恢复只写角色自己',
+                                    'info',
+                                );
+                                setShowMenu(false); setShowVoiceLangPicker(false);
+                            }}
+                            type="button"
+                            role="switch"
+                            aria-checked={coauthorUserEnabled}
+                            aria-label="切换强化模式双 OC 演绎"
+                            className={`h-9 px-3.5 rounded-full flex items-center gap-2 text-xs font-bold border shadow-lg active:scale-95 transition-all backdrop-blur-md ${coauthorUserEnabled ? 'bg-fuchsia-400/25 border-fuchsia-300/45 text-fuchsia-50' : 'bg-black/40 border-white/15 text-white/60 hover:bg-white/20'}`}>
+                            <span aria-hidden="true">✦</span>
+                            强化模式 · {coauthorUserEnabled ? '开' : '关'}
+                        </button>
+
                         {/* 观测协议 OBSERVE 开关：开启后回复带「时间/地点/状态/细节」全息 HUD */}
                         <button onClick={() => {
                                 const next = !observeEnabled;
@@ -1446,7 +1472,7 @@ const DateSession: React.FC<DateSessionProps> = ({
 
                         <button onClick={() => { setShowSettings(true); setShowMenu(false); setShowVoiceLangPicker(false); }} className="h-9 px-3.5 rounded-full flex items-center gap-2 text-xs font-bold border shadow-lg active:scale-95 transition-all bg-black/40 backdrop-blur-md border-white/15 text-white hover:bg-white/20">
                             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-4 h-4"><path strokeLinecap="round" strokeLinejoin="round" d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.324.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 0 1 1.37.49l1.296 2.247a1.125 1.125 0 0 1-.26 1.431l-1.003.827c-.293.24-.438.613-.431.992a6.759 6.759 0 0 1 0 2.555c-.007.378.138.75.43.99l1.005.828c.424.35.534.954.26 1.43l-1.298 2.247a1.125 1.125 0 0 1-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.57 6.57 0 0 1-.22.128c-.331.183-.581.495-.644.869l-.212 1.281c-.09.543-.56.941-1.11.941h-2.594c-.55 0-1.02-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 0 1-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 0 1-1.369-.49l-1.297-2.247a1.125 1.125 0 0 1 .26-1.431l1.004-.827c.292-.24.437-.613.43-.992a6.932 6.932 0 0 1 0-2.555c.007-.378-.138-.75-.43-.99l-1.004-.828a1.125 1.125 0 0 1-.26-1.43l1.297-2.247a1.125 1.125 0 0 1 1.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.087.22-.128.332-.183.582-.495.644-.869l.214-1.281Z" /><path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z" /></svg>
-                            布置场景
+                            见面设置
                         </button>
 
                         <button onClick={() => { setShowMenu(false); setShowVoiceLangPicker(false); onExit(); }} className="h-9 px-3.5 rounded-full flex items-center gap-2 text-xs font-bold border shadow-lg active:scale-95 transition-all bg-red-500/70 backdrop-blur-md border-white/20 text-white hover:bg-red-600">
