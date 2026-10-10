@@ -313,6 +313,11 @@ const DateSession: React.FC<DateSessionProps> = ({
     const voiceCacheRef = useRef<Partial<Record<string, DateSpeechResult>>>({});
     const dialogueAudioCacheRef = useRef<Partial<Record<string, DateDialogueAudioBatch>>>({});
     const dialogueAudioPromiseRef = useRef<Partial<Record<string, Promise<DateDialogueAudioBatch | null>>>>({});
+    // 手动重配音需要绕开两级缓存；整轮失败后的逐句替代品不能被旧整轮抢回。
+    const dialogueVoiceRevisionRef = useRef<Record<string, number>>({});
+    const dialogueForcedSinglesRef = useRef<Set<string>>(new Set());
+    const voiceRegenerationLockRef = useRef(false);
+    const [voiceRegeneratingKey, setVoiceRegeneratingKey] = useState<string | null>(null);
     const [novelVoiceLoading, setNovelVoiceLoading] = useState<Set<string>>(new Set());
     const [novelPlayingId, setNovelPlayingId] = useState<string | null>(null);
 
@@ -415,11 +420,13 @@ const DateSession: React.FC<DateSessionProps> = ({
         const turns = buildDateDialogueTurns(items);
         if (!turns.length || turns.some(turn => !turn.voiceId)) return null;
         const key = makeDateDialogueBatchKey(turns);
+        if (dialogueForcedSinglesRef.current.has(key)) return null;
         const cached = dialogueAudioCacheRef.current[key];
         if (cached) return cached;
         const inFlight = dialogueAudioPromiseRef.current[key];
         if (inFlight) return inFlight;
 
+        const revision = dialogueVoiceRevisionRef.current[key] || 0;
         const pending = (async (): Promise<DateDialogueAudioBatch | null> => {
             try {
                 const result = await synthesizeDateDialogue(turns, apiConfig);
@@ -429,6 +436,11 @@ const DateSession: React.FC<DateSessionProps> = ({
                     blob: result.audio,
                     segments: result.segments,
                 };
+                if (revision !== (dialogueVoiceRevisionRef.current[key] || 0) ||
+                    dialogueForcedSinglesRef.current.has(key)) {
+                    URL.revokeObjectURL(batch.url);
+                    return null;
+                }
                 dialogueAudioCacheRef.current[key] = batch;
                 return batch;
             } catch (error: any) {
@@ -545,6 +557,7 @@ const DateSession: React.FC<DateSessionProps> = ({
         emotion?: string,
         archive?: { sourceKey?: string; sourceTimestamp?: number },
         speaker: 'char' | 'user' = 'char',
+        forceRefresh = false,
     ): Promise<DateSpeechResult | null> => {
         const speakerChar: CharacterProfile = speaker === 'user'
             ? { ...char, id: `${char.id}:user-voice`, name: userProfile.name || '用户', voiceProfile: userProfile.voiceProfile }
@@ -574,6 +587,7 @@ const DateSession: React.FC<DateSessionProps> = ({
                 languageBoost: voiceLang || undefined,
                 groupId: apiConfig.minimaxGroupId || undefined,
                 emotion,
+                forceRefresh,
             });
             const spokenText = stripTtsMarkupForDisplay(ttsText, apiConfig);
 
