@@ -56,7 +56,16 @@ ${peek === 'invite' ? '此刻由角色主动靠近用户：用第三人称开场
 上面的“最后，回到你自己”只是在约束 ${charName} 本人的性格和语言不要跑偏，**不是**让整轮只能写 ${charName}。
 你现在同时承担这场双主角剧情的场景作者职责：${userName || '用户'} 也是可由你主动书写的 OC。不要等待用户逐句替 ${userName || '用户'} 输入台词；当当前情境自然需要对方回应、动作或做决定时，直接依据系统里已有的用户设定、共同经历和本轮素材写出来。
 这不是“偶尔获准代写”的例外，而是当前写作模式。除非这一拍自然应该沉默、停顿或只聚焦 ${charName}，否则不要因为代理权习惯把整轮写成只有 ${charName} 一个人说话和行动。
+**执行要求**：在双方都在场且能正常交流的普通互动轮里，默认必须让 ${userName || '用户'} 至少实际参与一次。若当下有任何合理的开口空间，至少写一条 ${userName || '用户'} 的直接台词并标成 [speaker:user]；如果更自然的是动作/身体反应，也可以先写动作，但不要连续多轮都让 user OC 永远沉默。只有“明确沉默/睡着或失去意识/暂时不在场/这一拍明确只聚焦 ${charName}”这些情形可以整轮省略 user。
+输出前做一次自检：如果整轮只有 [speaker:char] 和 ${charName} 的动作，而当前并不存在上述沉默例外，就视为没有执行强化模式，先在内部改写后再输出。
 不要求机械轮流，也不要为了凑双人对白强塞台词；按场景节奏自然地让双方连续、交替或短暂停顿。只要写出台词，就严格用 [speaker:char] / [speaker:user] 标明真正的说话人。
+
+示意（只说明归属和节奏，不要求照抄内容）：
+[normal] ${charName} 把杯子推过去一点。
+[normal] "你又没吃午饭？" [speaker:char]
+[normal] ${userName || '用户'} 低头看了眼杯子，没立刻接。
+[normal] "……忙忘了。" [speaker:user]
+[normal] ${charName} 没接着训，只把吸管拆开。
 ` : '');
 }
 
@@ -640,7 +649,7 @@ export const buildVNModeBlock = (char: CharacterProfile, userName: string): stri
     const observeBlock = isObserveOn(char) ? buildObserveBlock(char) : '';
     const coauthorUser = !!styleConfig?.coauthorUser;
     const speakerRule = char.dateVoiceEnabled || coauthorUser
-        ? `4. **说话人标签**: 每一条带双引号的台词行末尾都必须加一个机器标签：\`[speaker:char]\` 表示 ${char.name} 在说，\`[speaker:user]\` 表示 ${userName || '用户'} 在说。标签放在引号外，动作/叙述行不要加。这个标签不会显示给用户，只用于双声线配音和归属识别。${coauthorUser ? ` **强化演绎已开启**：这是主动双主角写作模式，不要等待用户逐句提供 user 台词；场景自然有回应空间时可以直接写双方台词，允许交替、连续或一方暂时沉默。` : ` 普通模式下你只写 ${char.name} 的台词，所以台词使用 [speaker:char]。`}`
+        ? `4. **说话人标签**: 每一条带双引号的台词行末尾都必须加一个机器标签：\`[speaker:char]\` 表示 ${char.name} 在说，\`[speaker:user]\` 表示 ${userName || '用户'} 在说。标签放在引号外，动作/叙述行不要加。这个标签不会显示给用户，只用于双声线配音和归属识别。${coauthorUser ? ` **强化演绎已开启**：这是主动双主角写作模式，不要等待用户逐句提供 user 台词。只要当前是双方都在场、可以正常交流的互动轮，默认至少实际写出一次 user OC 的反应；有合理发言空间时优先写成一条带 [speaker:user] 的直接台词。只有明确沉默、睡着/失去意识、暂时不在场，或本拍确实只该聚焦 ${char.name} 时才可以整轮不写 user。不要机械一人一句，允许交替、连续或一方短暂停顿。` : ` 普通模式下你只写 ${char.name} 的台词，所以台词使用 [speaker:char]。`}`
         : '';
     return `### [Visual Novel Mode: 视觉小说脚本模式]
 你正在与用户进行**面对面**的互动。这不是聊天，是一场真实的见面。
@@ -817,9 +826,12 @@ ${extraBlock ? `\n${extraBlock}` : ''}${isObserveOn(char) ? `\n${buildObserveBlo
 
         // 每轮轮换的聚焦线索：把注意力推向不同的具体方向，相邻回复天然有差异
         const focusLine = isDigDeeperOn(char.dateStyleConfig) ? ` 可选的本轮线索（与当前互动无关就跳过）：${pickFocusHint(!!char.dateStyleConfig?.coauthorUser)}。` : '';
+        const coauthorTurnCheck = char.dateStyleConfig?.coauthorUser
+            ? ` 强化演绎自检：双方在场且可正常交流时，本轮默认至少写一次 user OC；有合理发言空间时至少一条直接台词必须标 [speaker:user]。除非明确沉默、失去意识、暂时不在场或镜头明确只聚焦角色，否则整轮只有 char 视为格式未完成。`
+            : '';
         const note = variant === 'send'
-            ? `(System Note: 严格遵守 VN 格式，每一行以 [emotion] 开头；逐行选择贴合实际表情的标签，明确情绪不要一律标 normal，同一情绪延续可重复。篇幅随本轮实际内容，可以简短。${focusLine})`
-            : `(System Note: Reroll. 保持已有事实、角色性格与关系阶段，尝试另一种自然回应，不必加强情绪或推进关系。严格遵守 VN 格式，每一行以 [emotion] 开头；逐行选择贴合实际表情的标签，明确情绪不要一律标 normal，同一情绪延续可重复。${focusLine})`;
+            ? `(System Note: 严格遵守 VN 格式，每一行以 [emotion] 开头；逐行选择贴合实际表情的标签，明确情绪不要一律标 normal，同一情绪延续可重复。不要输出或仿写历史里的时间戳与 [聊天]/[约会]/[通话]/[家园]/[剧情：…] 来源标签。篇幅随本轮实际内容，可以简短。${coauthorTurnCheck}${focusLine})`
+            : `(System Note: Reroll. 保持已有事实、角色性格与关系阶段，尝试另一种自然回应，不必加强情绪或推进关系。严格遵守 VN 格式，每一行以 [emotion] 开头；逐行选择贴合实际表情的标签，明确情绪不要一律标 normal，同一情绪延续可重复。不要输出或仿写历史里的时间戳与 [聊天]/[约会]/[通话]/[家园]/[剧情：…] 来源标签。${coauthorTurnCheck}${focusLine})`;
 
         const messagesWithWorldbooks = context.history;
         // depth=0 会在末条用户消息之后插入世界书，不能给数组最后一项追加 VN 指令。
