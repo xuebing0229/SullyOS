@@ -634,7 +634,7 @@ const DateSession: React.FC<DateSessionProps> = ({
 
     // 只重新合成声音，不调用剧情模型、不修改消息或台词。成功后整体替换，
     // 失败时保留旧音频；绝不因为普通播放意外绕开缓存重复计费。
-    const regenerateVoiceTurn = async (items: DialogueItem[], targetKey: string) => {
+    const regenerateVoiceTurn = async (items: DialogueItem[], targetKey: string, forceSingles = false) => {
         if (voiceRegenerationLockRef.current || isTyping || !voiceEnabled) return;
         const spokenItems = items.filter(item => !!item.speechText && isDialogueLine(item.text));
         if (!spokenItems.length) {
@@ -665,7 +665,7 @@ const DateSession: React.FC<DateSessionProps> = ({
 
         try {
             let freshBatch: DateDialogueAudioBatch | null = null;
-            if (!voiceLang && resolveTtsProvider(apiConfig) === 'elevenlabs' && turns.every(turn => !!turn.voiceId)) {
+            if (!forceSingles && !voiceLang && resolveTtsProvider(apiConfig) === 'elevenlabs' && turns.every(turn => !!turn.voiceId)) {
                 try {
                     const result = await synthesizeDateDialogue(turns, apiConfig);
                     freshBatch = {
@@ -721,6 +721,20 @@ const DateSession: React.FC<DateSessionProps> = ({
         void regenerateVoiceTurn(parseDialogue(body, 'normal', String(msg.id)), `novel:${msg.id}`);
     };
 
+    const regenerateGalVoiceTurn = () => {
+        // SAR 表层与原文可能不同；此时播放器按句合成，重配必须命中当前展示的表层。
+        if (currentSarPair) {
+            const source = messages.find(message => message.id === currentSarPair.messageId);
+            if (source) {
+                const shown = sarVisualTruth ? source.content : (getSARSurface(source) || source.content);
+                const { rest: body } = extractObservation(shown || '', { lenient: observeEnabled, custom: char.dateObserve?.custom });
+                void regenerateVoiceTurn(parseDialogue(body, 'normal', String(source.id)), 'gal', true);
+                return;
+            }
+        }
+        void regenerateVoiceTurn(dialogueBatch, 'gal');
+    };
+
     // GAL mode：优先整轮 ElevenLabs Dialogue，失败/不适用时回退原逐句链路。
     useEffect(() => {
         if (!voiceEnabled || isNovelMode || !galShownText || isTyping) return;
@@ -732,7 +746,7 @@ const DateSession: React.FC<DateSessionProps> = ({
         const generation = playbackGenerationRef.current;
         const isCurrent = () => !cancelled && generation === playbackGenerationRef.current;
         const speaker = resolveDateVoiceSpeaker(currentLineSpeakerRef.current, coauthorUserEnabled);
-        const speechText = currentLineSpeechRef.current || extractDialogueSpeech(galShownText);
+        const speechText = currentSarPair ? extractDialogueSpeech(galShownText) : (currentLineSpeechRef.current || extractDialogueSpeech(galShownText));
         const lineId = currentLineIdRef.current;
         const cacheKey = singleVoiceCacheKey(speaker, speechText);
 
@@ -791,7 +805,7 @@ const DateSession: React.FC<DateSessionProps> = ({
         }
 
         const speaker = resolveDateVoiceSpeaker(currentLineSpeakerRef.current, coauthorUserEnabled);
-        const speechText = currentLineSpeechRef.current || extractDialogueSpeech(galShownText);
+        const speechText = currentSarPair ? extractDialogueSpeech(galShownText) : (currentLineSpeechRef.current || extractDialogueSpeech(galShownText));
         const lineId = currentLineIdRef.current;
         stopDateAudio();
         const generation = playbackGenerationRef.current;
@@ -1588,7 +1602,7 @@ const DateSession: React.FC<DateSessionProps> = ({
 
                         {!isTyping && voiceEnabled && dialogueBatch.some(item => !!item.speechText && isDialogueLine(item.text)) && (
                             <button
-                                onClick={() => { setShowMenu(false); setShowVoiceLangPicker(false); void regenerateVoiceTurn(dialogueBatch, 'gal'); }}
+                                onClick={() => { setShowMenu(false); setShowVoiceLangPicker(false); regenerateGalVoiceTurn(); }}
                                 disabled={voiceRegeneratingKey !== null}
                                 className="h-9 px-3.5 rounded-full flex items-center gap-2 text-xs font-bold border shadow-lg active:scale-95 transition-all bg-indigo-500/40 backdrop-blur-md border-indigo-300/30 text-white hover:bg-indigo-500/60 disabled:opacity-50"
                                 title="文字和情绪标签完全不变，只重新请求本轮语音（会消耗语音 API 额度）"
