@@ -1809,7 +1809,7 @@ const DateSession: React.FC<DateSessionProps> = ({
                                 onContextMenu={voiceEnabled && !isTextAnimating && !isShowingOpening && isDialogueLine(galShownText) ? (e) => { e.preventDefault(); e.stopPropagation(); void openDateVoiceFavorite(resolveCurrentDateVoiceTarget()); } : undefined}
                             >
                                 <div className="absolute -top-3 left-6 flex items-center gap-2">
-                                    <div className="bg-white/90 text-black px-4 py-1 rounded-sm text-xs font-bold tracking-widest uppercase shadow-[0_4px_10px_rgba(0,0,0,0.3)] transform -skew-x-12">{char.name}</div>
+                                    <div className="bg-white/90 text-black px-4 py-1 rounded-sm text-xs font-bold tracking-widest uppercase shadow-[0_4px_10px_rgba(0,0,0,0.3)] transform -skew-x-12">{currentLineSpeakerRef.current === 'user' ? (userProfile.name || '用户') : char.name}</div>
                                     {/* Voice play button next to name */}
                                     {voiceEnabled && !isTextAnimating && !isShowingOpening && isDialogueLine(galShownText) && (
                                         <button
