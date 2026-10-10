@@ -292,6 +292,11 @@ const DateSession: React.FC<DateSessionProps> = ({
         return resolveSARDateSpeech(speech, dialogueBatch, dialogueQueue.length, currentText);
     }, [messages, dialogueBatch, dialogueQueue.length, currentText, observeEnabled, char.dateObserve?.custom]);
     const galShownText = currentSarPair ? (sarVisualTruth ? currentSarPair.canonical : currentSarPair.surface) : currentText;
+    // 语音演出标签（ElevenLabs Audio Tags / 其他 TTS 控制标记）属于“给上游听”的隐藏层：
+    // 原始 currentText / speechText 继续保留给整轮 Dialogue 合成和时间戳对齐，
+    // UI 只渲染清洗后的副本，避免 [wet kiss] / [soft whisper] 直接露给用户。
+    const currentDisplayText = stripTtsMarkupForDisplay(currentText, apiConfig);
+    const galDisplayText = stripTtsMarkupForDisplay(galShownText, apiConfig);
 
     useEffect(() => {
         if (!getPendingReplyText(messages)) setPendingRetryText('');
@@ -1062,25 +1067,25 @@ const DateSession: React.FC<DateSessionProps> = ({
             void onLoadMoreHistory?.();
     };
 
-    // Typewriter effect
+    // Typewriter effect：只动画可见文本，原始 Audio Tags 继续留在 speechText 供 TTS 使用。
     useEffect(() => {
-        if (!currentText || isNovelMode) {
-            if (isNovelMode) setDisplayedText(currentText);
+        if (!currentDisplayText || isNovelMode) {
+            if (isNovelMode) setDisplayedText(currentDisplayText);
             return;
         }
         setIsTextAnimating(true);
         setDisplayedText('');
         let i = 0;
         const timer = setInterval(() => {
-            setDisplayedText(currentText.substring(0, i + 1));
+            setDisplayedText(currentDisplayText.substring(0, i + 1));
             i++;
-            if (i >= currentText.length) {
+            if (i >= currentDisplayText.length) {
                 clearInterval(timer);
                 setIsTextAnimating(false);
             }
         }, 20);
         return () => clearInterval(timer);
-    }, [currentText, isNovelMode]);
+    }, [currentDisplayText, isNovelMode]);
 
     // --- Logic ---
 
@@ -1152,7 +1157,7 @@ const DateSession: React.FC<DateSessionProps> = ({
 
         // Skip animation
         if (isTextAnimating) {
-            setDisplayedText(currentText);
+            setDisplayedText(currentDisplayText);
             setIsTextAnimating(false);
             return;
         }
@@ -1837,7 +1842,7 @@ const DateSession: React.FC<DateSessionProps> = ({
                                     </div>
                                 )}
                                 <p className="text-white/90 text-[16px] leading-relaxed font-light tracking-wide drop-shadow-md mt-2 whitespace-pre-wrap" data-sar-gal-text>
-                                    {galShownText === currentText ? displayedText : galShownText}
+                                    {galShownText === currentText ? displayedText : galDisplayText}
                                     {isTextAnimating && galShownText === currentText && <span className="inline-block w-2 h-4 bg-white/70 ml-1 animate-pulse align-middle"></span>}
                                 </p>
                                 {!isTextAnimating && dialogueQueue.length > 0 && <div className="absolute bottom-3 right-4 animate-bounce opacity-70"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5 text-white"><path fillRule="evenodd" d="M12.53 16.28a.75.75 0 0 1-1.06 0l-7.5-7.5a.75.75 0 0 1 1.06-1.06L12 14.69l6.97-6.97a.75.75 0 1 1 1.06 1.06l-7.5 7.5Z" clipRule="evenodd" /></svg></div>}
