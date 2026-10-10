@@ -12,6 +12,7 @@ import { pickDateFallbackSprite } from '../../utils/dateSprites';
 import { isBlobRef, useBlobRefUrl } from '../../utils/blobRef';
 import { getMeetingCgButtonLabel, type MeetingCgBackground } from '../../utils/meetingCg';
 import { generateMeetingCgViaChatPlanner } from '../../utils/dateCgPlanner';
+import { resolveDateCgPlannerApiConfig, resolveDateCgPlannerSystemCompatibility } from '../../utils/dateCgPlannerApi';
 import { clearDateResumeAttempt } from '../../utils/dateSessionRecovery';
 import { VALID_EMOTIONS } from '../../utils/minimaxTts';
 import {
@@ -240,7 +241,7 @@ const DateSession: React.FC<DateSessionProps> = ({
     onDeleteMessages,
     onSettings
 }) => {
-    const { addToast, registerBackHandler, apiConfig, updateCharacter, groups } = useOS();
+    const { addToast, registerBackHandler, apiConfig, apiPresets, updateCharacter, groups } = useOS();
 
     const readingStyle = meetingAppearance(char.dateAppearance);
     const decoratedReading = readingStyle.id !== 'none';
@@ -1379,8 +1380,14 @@ const DateSession: React.FC<DateSessionProps> = ({
         setShowMenu(false);
         setShowVoiceLangPicker(false);
         try {
+            const dedicatedPlanner = Boolean(char.dateCgPlannerApiPresetId?.trim());
+            const plannerApiConfig = dedicatedPlanner
+                ? resolveDateCgPlannerApiConfig(char, apiConfig, apiPresets)
+                : undefined;
             const asset = await generateMeetingCgViaChatPlanner({
                 apiConfig,
+                plannerApiConfig,
+                plannerSystemCompatibility: resolveDateCgPlannerSystemCompatibility(char, apiConfig, apiPresets),
                 char,
                 userProfile,
                 groups,
