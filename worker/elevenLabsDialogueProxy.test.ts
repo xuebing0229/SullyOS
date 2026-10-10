@@ -31,6 +31,7 @@ describe('ElevenLabs dialogue proxy', () => {
         { text: '[softly] 你好', voice_id: 'voiceA123' },
         { text: '[laughs] 我在', voice_id: 'voiceB123' },
       ],
+      settings: { stability: 0.38, similarity_boost: 0.78 },
     };
     const res = await worker.fetch(new Request(
       'https://proxy.test/elevenlabs/dialogue?output_format=mp3_44100_128',
