@@ -5,6 +5,16 @@
  */
 export type DateDialogueSpeaker = 'char' | 'user';
 
+/**
+ * 见面原版只有当前角色拥有发言权；不能因模型偶发输出 [speaker:user]
+ * 就把这句发送给用户声线（姓名牌依旧显示角色会造成明显串戏）。
+ * 只有用户明确启用双 OC 强化演绎后才允许 user 声线。
+ */
+export const resolveDateVoiceSpeaker = (
+  claimedSpeaker: DateDialogueSpeaker | undefined,
+  coauthorUserEnabled: boolean,
+): DateDialogueSpeaker => coauthorUserEnabled && claimedSpeaker === 'user' ? 'user' : 'char';
+
 export interface DateDialogueTurn {
   lineId: string;
   speaker: DateDialogueSpeaker;
