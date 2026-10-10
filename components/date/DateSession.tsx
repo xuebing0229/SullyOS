@@ -328,7 +328,7 @@ const DateSession: React.FC<DateSessionProps> = ({
     // 对压缩 MP3 的 seek 会受帧边界/解码预卷影响，容易串到前后一句。
     const dialogueAudioContextRef = useRef<AudioContext | null>(null);
     const dialogueAudioSourceRef = useRef<AudioBufferSourceNode | null>(null);
-    const decodedDialogueRef = useRef<{ key: string; buffer: AudioBuffer } | null>(null);
+    const decodedDialogueRef = useRef<{ key: string; blob: Blob; buffer: AudioBuffer } | null>(null);
     const voiceEnabled = !!char.dateVoiceEnabled;
     const voiceLang = char.dateVoiceLang || '';
     const coauthorUserEnabled = !!char.dateStyleConfig?.coauthorUser;
@@ -466,10 +466,11 @@ const DateSession: React.FC<DateSessionProps> = ({
                 context = new AudioContextCtor();
                 dialogueAudioContextRef.current = context;
             }
-            if (cached?.key === batch.key) return { context, buffer: cached.buffer };
+            // 同一轮重配音前后 key（文字/声线）一致，但 Blob 不同，不能命中旧 PCM。
+            if (cached?.blob === batch.blob) return { context, buffer: cached.buffer };
             const bytes = await batch.blob.arrayBuffer();
             const buffer = await context.decodeAudioData(bytes.slice(0));
-            decodedDialogueRef.current = { key: batch.key, buffer };
+            decodedDialogueRef.current = { key: batch.key, blob: batch.blob, buffer };
             return { context, buffer };
         } catch (error) {
             console.warn('[DateDialogue] Web Audio decode unavailable, falling back to HTMLAudio:', error);
