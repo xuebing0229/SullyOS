@@ -406,8 +406,8 @@ const DateSession: React.FC<DateSessionProps> = ({
 
     const ensureDateDialogueBatch = async (items: DialogueItem[]): Promise<DateDialogueAudioBatch | null> => {
         // 自定义翻译语言仍沿用原逐句链路，避免整轮里二次翻译导致文本/时间戳错位。
-        // 普通模式维持原本逐句语音；整轮双人 Dialogue 只在强化演绎启用时使用。
-        if (!coauthorUserEnabled || !voiceEnabled || voiceLang || resolveTtsProvider(apiConfig) !== 'elevenlabs') return null;
+        // ElevenLabs 整轮 Dialogue 与强化演绎独立：普通模式也按整轮合成播放。
+        if (!voiceEnabled || voiceLang || resolveTtsProvider(apiConfig) !== 'elevenlabs') return null;
         const turns = buildDateDialogueTurns(items);
         if (!turns.length || turns.some(turn => !turn.voiceId)) return null;
         const key = makeDateDialogueBatchKey(turns);
@@ -1788,7 +1788,7 @@ const DateSession: React.FC<DateSessionProps> = ({
                                 onContextMenu={voiceEnabled && !isTextAnimating && !isShowingOpening && isDialogueLine(galShownText) ? (e) => { e.preventDefault(); e.stopPropagation(); void openDateVoiceFavorite(resolveCurrentDateVoiceTarget()); } : undefined}
                             >
                                 <div className="absolute -top-3 left-6 flex items-center gap-2">
-                                    <div className="bg-white/90 text-black px-4 py-1 rounded-sm text-xs font-bold tracking-widest uppercase shadow-[0_4px_10px_rgba(0,0,0,0.3)] transform -skew-x-12">{!isDialogueLine(galShownText) ? '旁白' : coauthorUserEnabled && currentLineSpeakerRef.current === 'user' ? (userProfile.name || '用户') : char.name}</div>
+                                    <div className="bg-white/90 text-black px-4 py-1 rounded-sm text-xs font-bold tracking-widest uppercase shadow-[0_4px_10px_rgba(0,0,0,0.3)] transform -skew-x-12">{!coauthorUserEnabled ? char.name : !isDialogueLine(galShownText) ? '旁白' : currentLineSpeakerRef.current === 'user' ? (userProfile.name || '用户') : char.name}</div>
                                     {/* Voice play button next to name */}
                                     {voiceEnabled && !isTextAnimating && !isShowingOpening && isDialogueLine(galShownText) && (
                                         <button
