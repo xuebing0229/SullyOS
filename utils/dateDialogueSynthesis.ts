@@ -10,6 +10,7 @@ import {
 import { getProxyWorkerUrl } from './proxyWorker';
 import { isStaticWebDeployment } from './staticWebDeployment';
 import {
+  alignDateDialogueSegments,
   buildDateDialogueBatch,
   type DateDialogueSegment,
   type DateDialogueTurn,
@@ -86,6 +87,9 @@ const toDateSegments = (
   for (const segment of raw) {
     const index = segment.dialogue_input_index;
     if (!Number.isInteger(index) || index! < 0 || index! >= turns.length) continue;
+    if (segment.voice_id && segment.voice_id !== turns[index!].voiceId) {
+      throw new Error(`ElevenLabs Dialogue 第 ${index! + 1} 句的声线与请求不一致`);
+    }
     const previous = byInput.get(index!);
     if (!previous) {
       byInput.set(index!, segment);
@@ -105,20 +109,16 @@ const toDateSegments = (
     });
   }
 
-  return turns.map((turn, index) => {
+  const ranges = turns.map((_turn, index) => {
     const segment = byInput.get(index);
-    const startTime = segment?.start_time_seconds;
-    const endTime = segment?.end_time_seconds;
-    if (!Number.isFinite(startTime) || !Number.isFinite(endTime) || endTime! <= startTime!) {
+    const start = segment?.start_time_seconds;
+    const end = segment?.end_time_seconds;
+    if (!Number.isFinite(start) || !Number.isFinite(end)) {
       throw new Error(`ElevenLabs Dialogue 第 ${index + 1} 句缺少有效时间戳`);
     }
-    return {
-      lineId: turn.lineId,
-      speaker: turn.speaker,
-      startTime: startTime!,
-      endTime: endTime!,
-    };
+    return { start: start!, end: end! };
   });
+  return alignDateDialogueSegments(turns, ranges);
 };
 
 /**
