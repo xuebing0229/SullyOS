@@ -537,7 +537,7 @@ export async function synthesizeSpeechDetailed(
   text: string,
   char: CharacterProfile,
   apiConfig: APIConfig,
-  options?: { languageBoost?: string; groupId?: string; emotion?: string }
+  options?: { languageBoost?: string; groupId?: string; emotion?: string; forceRefresh?: boolean }
 ): Promise<TtsResult> {
   const apiKey = resolveMiniMaxApiKey(apiConfig);
   if (!apiKey) throw new Error('缺少 MiniMax API Key');
@@ -556,7 +556,7 @@ export async function synthesizeSpeechDetailed(
   // build the same payload get the same hash and reuse whichever one synthesized
   // the audio first — across sessions, across apps.
   const cacheKey = buildMiniMaxTtsCacheKey(payload, paramVersion);
-  const cached = await getCachedTts(cacheKey);
+  const cached = options?.forceRefresh ? null : await getCachedTts(cacheKey);
   if (cached) {
     return { url: URL.createObjectURL(cached), blob: cached };
   }
