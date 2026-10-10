@@ -326,7 +326,7 @@ export async function synthesizeSpeechElevenLabsDetailed(
   text: string,
   char: CharacterProfile,
   apiConfig: APIConfig,
-  options?: { languageBoost?: string; groupId?: string; emotion?: string },
+  options?: { languageBoost?: string; groupId?: string; emotion?: string; forceRefresh?: boolean },
 ): Promise<TtsResult> {
   const apiKey = resolveElevenLabsApiKey(apiConfig);
   if (!apiKey) throw new Error('缺少 ElevenLabs API Key');
@@ -342,7 +342,7 @@ export async function synthesizeSpeechElevenLabsDetailed(
     output_format: ELEVENLABS_OUTPUT_FORMAT,
     ...payload,
   });
-  const cached = await getCachedTts(cacheKey);
+  const cached = options?.forceRefresh ? null : await getCachedTts(cacheKey);
   if (cached) return { url: URL.createObjectURL(cached), blob: cached };
 
   console.log('[elevenlabs] TTS', {
