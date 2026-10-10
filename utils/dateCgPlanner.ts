@@ -110,6 +110,19 @@ export const buildMeetingCgPromptLayers = (char: CharacterProfile): StoryImagePr
     negative: compact(char.dateCgImagePrompt?.negativePrompt),
 });
 
+export const composeMeetingCgImageArguments = (input: {
+    args: Record<string, any>;
+    parameters?: Record<string, any>;
+    char: CharacterProfile;
+    toolName: string;
+}) => composeStoryImagePromptArguments({
+    args: input.args,
+    parameters: input.parameters,
+    layers: buildMeetingCgPromptLayers(input.char),
+    engineId: input.toolName === 'novelai_generate_image' ? 'novelai' : 'gpt-image',
+    toolName: input.toolName,
+});
+
 const plannerToolSummary = (
     tools: ReturnType<typeof resolveMeetingCgPlannerTools>['tools'],
 ): string => tools.map(tool => {
@@ -269,12 +282,10 @@ export async function generateMeetingCgViaChatPlanner(input: GenerateMeetingCgIn
 
     const { cleanedArgs } = parseImageToolClientOptions(chosen.args);
     const planningTool = toolSet.tools.find(tool => tool.function.name === chosen.exposedName);
-    const engineId = chosen.resolved.toolName === 'novelai_generate_image' ? 'novelai' : 'gpt-image';
-    const composed = composeStoryImagePromptArguments({
+    const composed = composeMeetingCgImageArguments({
         args: cleanedArgs,
         parameters: planningTool?.function.parameters,
-        layers: buildMeetingCgPromptLayers(input.char),
-        engineId,
+        char: input.char,
         toolName: chosen.resolved.toolName,
     });
 
