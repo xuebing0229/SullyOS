@@ -21,6 +21,8 @@ export const extractDateSpokenText = (raw: string): string => {
   const after = line.slice(endIndex + 1).trim();
   if (after && !/^[。！？!?.,，、…~～\s]+$/.test(after)) return '';
   const spoken = line.slice(1, endIndex).trim();
+  // 同一行两个完整引号段（或引号后夹动作）不符合 VN 的“一行一句”协议。
+  if (spoken.includes(opening) || spoken.includes(ending)) return '';
   return spoken;
 };
 
