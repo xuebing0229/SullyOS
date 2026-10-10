@@ -966,7 +966,7 @@ const DateSession: React.FC<DateSessionProps> = ({
             const savedLine = savedBatch[savedBatch.length - savedQueue.length - 1];
             const currentLine = savedLine?.text === initialState.currentText
                 ? savedLine
-                : savedBatch.findLast(item => item.text === initialState.currentText);
+                : savedBatch.slice().reverse().find(item => item.text === initialState.currentText);
             currentLineSpeakerRef.current = currentLine?.speaker || 'char';
             currentLineSpeechRef.current = currentLine?.speechText || extractDialogueSpeech(initialState.currentText || '');
             currentLineIdRef.current = currentLine?.lineId || '';
