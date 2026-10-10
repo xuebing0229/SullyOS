@@ -2,6 +2,7 @@ import type { APIConfig, CharacterProfile, DateObservation, GroupProfile, Messag
 import { DB } from './db';
 import { buildChatRequestPayload } from './chatRequestPayload';
 import { resolveApiExecutionPlan, executeOpenAiChatPlan } from './apiFailover';
+import { applyStorySystemCompatibilityToBody } from './storySystemCompatibility';
 import { parseImageToolClientOptions } from './imageToolPostAction';
 import { callMcpTool, getMcpUseNativeTools, type McpToolResult } from './mcpClient';
 import {
@@ -27,6 +28,9 @@ import {
 
 export interface GenerateMeetingCgInput {
     apiConfig: APIConfig;
+    /** 见面 CG 专用 API：指定后不参与主聊天的故障转移组。 */
+    plannerApiConfig?: APIConfig;
+    plannerSystemCompatibility?: boolean;
     char: CharacterProfile;
     userProfile: UserProfile;
     groups: GroupProfile[];
@@ -215,22 +219,26 @@ export async function generateMeetingCgViaChatPlanner(input: GenerateMeetingCgIn
         }],
     });
 
+    const plannerApi = input.plannerApiConfig || input.apiConfig;
     const body: Record<string, any> = {
-        model: input.apiConfig.model,
+        model: plannerApi.model,
         messages: payload.fullMessages,
         tools: toolSet.tools,
         tool_choice: 'required',
-        temperature: input.apiConfig.temperature ?? 0.85,
+        temperature: plannerApi.temperature ?? 0.85,
         max_tokens: 4000,
         stream: false,
     };
 
-    const plan = resolveApiExecutionPlan('chat', input.apiConfig, true);
+    // 已指定专用规划 API 时固定这一路，不因主聊天故障转移把请求切回正文模型。
+    const plan = resolveApiExecutionPlan('chat', plannerApi, !input.plannerApiConfig);
+    const plannerBody = (requestBody: Record<string, any>) =>
+        applyStorySystemCompatibilityToBody(requestBody, input.plannerSystemCompatibility === true);
     let response;
     if (!getMcpUseNativeTools()) {
         response = await executeOpenAiChatPlan({
             plan,
-            body: buildMcpRejectedToolsFallbackBody(body),
+            body: plannerBody(buildMcpRejectedToolsFallbackBody(body)),
             meta: { appName: '线下见面', charId: input.char.id, charName: input.char.name, purpose: '线下 CG 生图规划兼容模式' },
             directMaxRetries: 2,
         });
@@ -238,7 +246,7 @@ export async function generateMeetingCgViaChatPlanner(input: GenerateMeetingCgIn
         try {
             response = await executeOpenAiChatPlan({
                 plan,
-                body,
+                body: plannerBody(body),
                 meta: { appName: '线下见面', charId: input.char.id, charName: input.char.name, purpose: '线下 CG 生图规划' },
                 directMaxRetries: 2,
             });
@@ -246,7 +254,7 @@ export async function generateMeetingCgViaChatPlanner(input: GenerateMeetingCgIn
             if (!shouldRetryMcpWithoutTools(error)) throw error;
             response = await executeOpenAiChatPlan({
                 plan,
-                body: buildMcpRejectedToolsFallbackBody(body),
+                body: plannerBody(buildMcpRejectedToolsFallbackBody(body)),
                 meta: { appName: '线下见面', charId: input.char.id, charName: input.char.name, purpose: '线下 CG 生图规划兼容重试' },
                 directMaxRetries: 0,
             });
