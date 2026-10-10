@@ -384,6 +384,10 @@ const DateSession: React.FC<DateSessionProps> = ({
             try { URL.revokeObjectURL(cached.url); } catch { /* ignore */ }
         }
         dialogueAudioCacheRef.current = {};
+        for (const cached of Object.values(voiceCacheRef.current)) {
+            if (cached?.url?.startsWith('blob:')) URL.revokeObjectURL(cached.url);
+        }
+        voiceCacheRef.current = {};
     }, []);
 
     const dialogueVoiceId = (speaker: 'char' | 'user'): string =>
@@ -690,6 +694,11 @@ const DateSession: React.FC<DateSessionProps> = ({
                     const speech = await translateAndSpeak(speechText, item.voiceEmotion, undefined, speaker, true);
                     if (!speech) throw new Error('部分台词重新配音失败，旧语音已保留');
                     freshLines[cacheKey] = speech;
+                }
+                // 全部合成成功后才替换；释放已经停播的旧 blob URL。
+                for (const [key, result] of Object.entries(freshLines)) {
+                    const old = voiceCacheRef.current[key];
+                    if (old?.url?.startsWith('blob:') && old.url !== result.url) URL.revokeObjectURL(old.url);
                 }
                 Object.assign(voiceCacheRef.current, freshLines);
                 const previous = dialogueAudioCacheRef.current[batchKey];
@@ -1968,6 +1977,9 @@ const DateSession: React.FC<DateSessionProps> = ({
                                     {galShownText === currentText ? displayedText : galDisplayText}
                                     {isTextAnimating && galShownText === currentText && <span className="inline-block w-2 h-4 bg-white/70 ml-1 animate-pulse align-middle"></span>}
                                 </p>
+                                {voiceRegeneratingKey === 'gal' && (
+                                    <div className="mt-2 text-[11px] text-indigo-200 animate-pulse" role="status">正在重配本轮语音，正文保持不变…</div>
+                                )}
                                 {!isTextAnimating && dialogueQueue.length > 0 && <div className="absolute bottom-3 right-4 animate-bounce opacity-70"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5 text-white"><path fillRule="evenodd" d="M12.53 16.28a.75.75 0 0 1-1.06 0l-7.5-7.5a.75.75 0 0 1 1.06-1.06L12 14.69l6.97-6.97a.75.75 0 1 1 1.06 1.06l-7.5 7.5Z" clipRule="evenodd" /></svg></div>}
                                 {!isTextAnimating && dialogueQueue.length === 0 && dialogueBatch.length > 0 && <div className="absolute bottom-3 right-4 opacity-50 text-[10px] text-white flex items-center gap-1 animate-pulse"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-3 h-3"><path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99" /></svg>Loop</div>}
                             </div>
