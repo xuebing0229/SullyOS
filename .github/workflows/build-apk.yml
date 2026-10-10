@@ -93,7 +93,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Run story transport and timing regression tests
-        run: pnpm exec vitest run utils/safeApi.stream.test.ts utils/apiFailover.test.ts utils/storyRouteHandoff.test.ts utils/storyTheaterBillingSafety.wiring.test.ts utils/storyImageReferenceUploads.test.ts utils/storyTimingTrace.test.ts utils/dateDialogueVoice.test.ts utils/dateDualVoicePrompt.test.ts utils/dateCoauthorUi.contract.test.ts utils/dateCgPlanner.test.ts utils/dateCgArchitecture.contract.test.ts utils/meetingCg.test.ts worker/elevenLabsDialogueProxy.test.ts
+        run: pnpm exec vitest run utils/safeApi.stream.test.ts utils/apiFailover.test.ts utils/storyRouteHandoff.test.ts utils/storyTheaterBillingSafety.wiring.test.ts utils/storyImageReferenceUploads.test.ts utils/storyTimingTrace.test.ts utils/dateDialogueVoice.test.ts utils/dateDialoguePlayback.contract.test.ts utils/dateDualVoicePrompt.test.ts utils/dateModelOutput.test.ts utils/dateCoauthorUi.contract.test.ts utils/dateCgPlanner.test.ts utils/dateCgArchitecture.contract.test.ts utils/meetingCg.test.ts worker/elevenLabsDialogueProxy.test.ts
 
       - name: Build web app
         run: pnpm run build

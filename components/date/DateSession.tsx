@@ -36,6 +36,7 @@ import { VOICE_LANGUAGE_OPTIONS, voiceLanguageAnalyticsValue, voiceLanguageLabel
 
 import { SARSpeechSwitch } from '../sar/SARSpeechSwitch';
 import { resolveSARDateSpeech } from '../../utils/sarDatePresentation';
+import { isDateHistoryEnvelopeOnly, stripDateHistoryEnvelope } from '../../utils/dateModelOutput';
 
 // 语音情绪标记 [v:xxx]：跟立绘情绪 [emotion] 分开的独立通道。立绘的 happy 是
 // 夸张的表情、语音的 happy 是音色情绪，两者强度/语义差异大，不能一概而论。
@@ -121,8 +122,10 @@ const parseDialogue = (
 
     for (let rawIndex = 0; rawIndex < lines.length; rawIndex++) {
         const rawLine = lines[rawIndex];
-        if (!rawLine || isContextNoise(rawLine)) continue;
-        const { speaker, rest: speakerRest } = extractSpeakerTag(rawLine);
+        if (!rawLine || isContextNoise(rawLine) || isDateHistoryEnvelopeOnly(rawLine)) continue;
+        const visibleLine = stripDateHistoryEnvelope(rawLine);
+        if (!visibleLine) continue;
+        const { speaker, rest: speakerRest } = extractSpeakerTag(visibleLine);
         // 先把独立的语音情绪标记 [v:xxx] 抽出来（跟立绘情绪互不影响），再解析立绘标签
         const { voiceEmotion, rest } = extractVoiceEmotionTag(speakerRest);
         const line = rest.trim();
@@ -321,6 +324,12 @@ const DateSession: React.FC<DateSessionProps> = ({
 
     const dateAudioRef = useRef<HTMLAudioElement | null>(null);
     const segmentStopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    // 整轮 ElevenLabs Dialogue 按句回放优先走 Web Audio：先把 MP3 解码为 PCM，
+    // 再按官方时间戳做 sample-accurate offset/duration 播放。HTMLAudio.currentTime
+    // 对压缩 MP3 的 seek 会受帧边界/解码预卷影响，容易串到前后一句。
+    const dialogueAudioContextRef = useRef<AudioContext | null>(null);
+    const dialogueAudioSourceRef = useRef<AudioBufferSourceNode | null>(null);
+    const decodedDialogueRef = useRef<{ key: string; buffer: AudioBuffer } | null>(null);
     const voiceEnabled = !!char.dateVoiceEnabled;
     const voiceLang = char.dateVoiceLang || '';
     const coauthorUserEnabled = !!char.dateStyleConfig?.coauthorUser;
@@ -340,8 +349,18 @@ const DateSession: React.FC<DateSessionProps> = ({
         segmentStopTimerRef.current = null;
     };
 
+    const stopDialogueBufferSource = () => {
+        const source = dialogueAudioSourceRef.current;
+        dialogueAudioSourceRef.current = null;
+        if (!source) return;
+        source.onended = null;
+        try { source.stop(); } catch { /* already stopped */ }
+        try { source.disconnect(); } catch { /* no-op */ }
+    };
+
     const stopDateAudio = () => {
         clearSegmentTimer();
+        stopDialogueBufferSource();
         if (dateAudioRef.current) {
             dateAudioRef.current.pause();
             dateAudioRef.current.onended = null;
@@ -351,7 +370,13 @@ const DateSession: React.FC<DateSessionProps> = ({
 
     useEffect(() => () => {
         clearSegmentTimer();
+        stopDialogueBufferSource();
         if (dateAudioRef.current) dateAudioRef.current.pause();
+        decodedDialogueRef.current = null;
+        if (dialogueAudioContextRef.current) {
+            void dialogueAudioContextRef.current.close().catch(() => undefined);
+            dialogueAudioContextRef.current = null;
+        }
         for (const cached of Object.values(dialogueAudioCacheRef.current)) {
             if (!cached) continue;
             try { URL.revokeObjectURL(cached.url); } catch { /* ignore */ }
@@ -415,6 +440,29 @@ const DateSession: React.FC<DateSessionProps> = ({
         return pending;
     };
 
+    const ensureDecodedDialogueBatch = async (
+        batch: DateDialogueAudioBatch,
+    ): Promise<{ context: AudioContext; buffer: AudioBuffer } | null> => {
+        try {
+            const cached = decodedDialogueRef.current;
+            let context = dialogueAudioContextRef.current;
+            if (!context) {
+                const AudioContextCtor = window.AudioContext || (window as any).webkitAudioContext;
+                if (!AudioContextCtor) return null;
+                context = new AudioContextCtor();
+                dialogueAudioContextRef.current = context;
+            }
+            if (cached?.key === batch.key) return { context, buffer: cached.buffer };
+            const bytes = await batch.blob.arrayBuffer();
+            const buffer = await context.decodeAudioData(bytes.slice(0));
+            decodedDialogueRef.current = { key: batch.key, buffer };
+            return { context, buffer };
+        } catch (error) {
+            console.warn('[DateDialogue] Web Audio decode unavailable, falling back to HTMLAudio:', error);
+            return null;
+        }
+    };
+
     const resolveDialogueSegment = (
         items: DialogueItem[],
         batch: DateDialogueAudioBatch,
@@ -431,11 +479,43 @@ const DateSession: React.FC<DateSessionProps> = ({
         onEnded: () => void,
     ): Promise<boolean> => {
         clearSegmentTimer();
+        stopDialogueBufferSource();
+        if (dateAudioRef.current) {
+            dateAudioRef.current.pause();
+            dateAudioRef.current.onended = null;
+        }
+
+        // 优先：解码整轮 MP3 后按 PCM 时间轴截播。这样起止点由 AudioBufferSourceNode
+        // 的 offset + duration 控制，不经过 MP3 seek，按句点击时不会轻易吃到前后句尾音。
+        const decoded = await ensureDecodedDialogueBatch(batch);
+        if (decoded) {
+            try {
+                if (decoded.context.state === 'suspended') await decoded.context.resume();
+                const startTime = Math.max(0, Math.min(segment.startTime, decoded.buffer.duration));
+                const endTime = Math.max(startTime, Math.min(segment.endTime, decoded.buffer.duration));
+                const duration = endTime - startTime;
+                if (duration > 0.015) {
+                    const source = decoded.context.createBufferSource();
+                    source.buffer = decoded.buffer;
+                    source.connect(decoded.context.destination);
+                    dialogueAudioSourceRef.current = source;
+                    source.onended = () => {
+                        if (dialogueAudioSourceRef.current === source) dialogueAudioSourceRef.current = null;
+                        try { source.disconnect(); } catch { /* no-op */ }
+                        onEnded();
+                    };
+                    source.start(0, startTime, duration);
+                    return true;
+                }
+            } catch (error) {
+                console.warn('[DateDialogue] precise segment playback failed, falling back to HTMLAudio:', error);
+                stopDialogueBufferSource();
+            }
+        }
+
+        // 兜底：仍保留 HTMLAudio，兼容极老 WebView / AudioContext 解码失败。
         if (!dateAudioRef.current) dateAudioRef.current = new Audio();
         const audio = dateAudioRef.current;
-        audio.pause();
-        audio.onended = null;
-
         if (audio.src !== batch.url) {
             audio.src = batch.url;
             audio.load();
@@ -454,20 +534,34 @@ const DateSession: React.FC<DateSessionProps> = ({
         }
 
         try {
-            audio.currentTime = Math.max(0, segment.startTime);
+            const target = Math.max(0, segment.startTime);
+            if (Math.abs(audio.currentTime - target) > 0.01) {
+                await new Promise<void>((resolve) => {
+                    let settled = false;
+                    const done = () => {
+                        if (settled) return;
+                        settled = true;
+                        audio.removeEventListener('seeked', done);
+                        resolve();
+                    };
+                    audio.addEventListener('seeked', done, { once: true });
+                    try { audio.currentTime = target; } catch { done(); return; }
+                    setTimeout(done, 180);
+                });
+            }
             await audio.play();
         } catch {
             return false;
         }
 
-        const durationMs = Math.max(80, (segment.endTime - segment.startTime) * 1000 + 60);
+        // 不再额外 +60ms：那会在相邻 segment 几乎无空隙时明确吃进下一句。
+        const durationMs = Math.max(40, (segment.endTime - segment.startTime) * 1000);
         audio.onended = () => {
             clearSegmentTimer();
             onEnded();
         };
         segmentStopTimerRef.current = setTimeout(() => {
             audio.pause();
-            try { audio.currentTime = Math.max(audio.currentTime, segment.endTime); } catch { /* ignore */ }
             clearSegmentTimer();
             onEnded();
         }, durationMs);
@@ -612,7 +706,7 @@ const DateSession: React.FC<DateSessionProps> = ({
     // GAL mode: manual play/pause for the current dialogue line
     const handleGalVoiceToggle = async () => {
         if (!galShownText || !isDialogueLine(galShownText)) return;
-        if (dateVoicePlaying && dateAudioRef.current) {
+        if (dateVoicePlaying) {
             stopDateAudio();
             return;
         }
@@ -668,7 +762,7 @@ const DateSession: React.FC<DateSessionProps> = ({
         voiceEmotion?: string,
         speaker: 'char' | 'user' = 'char',
     ) => {
-        if (novelPlayingId === lineKey && dateAudioRef.current) {
+        if (novelPlayingId === lineKey) {
             stopDateAudio();
             setNovelPlayingId(null);
             return;

@@ -21,6 +21,7 @@ import { clearDateResumeAttempt } from '../utils/dateSessionRecovery';
 import { BookOpen, Sparkle, CaretLeft, GearSix } from '@phosphor-icons/react';
 import { CharacterGroupFilterBar, filterCharactersByGroup, GROUP_FILTER_ALL } from '../components/character/CharacterGroupFilter';
 import { trimHistoryThrough } from '../utils/dateSessionHistory';
+import { sanitizeDateModelReply } from '../utils/dateModelOutput';
 
 import { markAmsgStateDirty } from '../utils/amsgStateSync';
 import { dateLaunch } from '../utils/dateLaunch';
@@ -302,7 +303,7 @@ const DateApp: React.FC = () => {
                 useVisionDescriptions: apiConfig.visionApi?.enabled === true,
                 openingMode: selectedOpening,
             }));
-            const content = await callLLM(messages, resolveDialogueApi(apiConfig, c).temperature ?? 0.85, c);
+            const content = sanitizeDateModelReply(await callLLM(messages, resolveDialogueApi(apiConfig, c).temperature ?? 0.85, c));
             if (requestId === peekRequestRef.current) setPeekStatus(content);
 
         } catch (e: any) {
@@ -419,7 +420,7 @@ const DateApp: React.FC = () => {
             variant: 'send',
             useVisionDescriptions: apiConfig.visionApi?.enabled === true,
         });
-        const rawContent = await callLLM(messages, resolveDialogueApi(apiConfig, char).temperature ?? 0.85);
+        const rawContent = sanitizeDateModelReply(await callLLM(messages, resolveDialogueApi(apiConfig, char).temperature ?? 0.85));
         const parsed = parseSARModuleReply(rawContent, sarModulePlan);
         const sarModuleEvents = createSARModuleEventMeta(sarModulePlan);
         const userSurface = sarModulePlan.user?.phase === 'active' && parsed.userSurface
@@ -486,7 +487,7 @@ const DateApp: React.FC = () => {
                 emojis,
                 useVisionDescriptions: apiConfig.visionApi?.enabled === true,
             }));
-            const content = await callLLM(messages, Math.max(resolveDialogueApi(apiConfig, char).temperature ?? 0.85, 0.9));
+            const content = sanitizeDateModelReply(await callLLM(messages, Math.max(resolveDialogueApi(apiConfig, char).temperature ?? 0.85, 0.9)));
             // 生成成功后才动库：先删旧开场、再带 isOpening 落新开场，请求失败时原剧情不丢
             await DB.deleteMessage(lastMsg.id);
             await DB.saveMessage({ charId: char.id, role: 'assistant', type: 'text', content, metadata: { ...lastMsg.metadata, source: 'date', isOpening: true } });
@@ -519,7 +520,7 @@ const DateApp: React.FC = () => {
             useVisionDescriptions: apiConfig.visionApi?.enabled === true,
         });
         // Reroll 略调高温度求多样性，但绝不低于用户配置的基线。
-        const rawContent = await callLLM(messages, Math.max(resolveDialogueApi(apiConfig, char).temperature ?? 0.85, 0.9));
+        const rawContent = sanitizeDateModelReply(await callLLM(messages, Math.max(resolveDialogueApi(apiConfig, char).temperature ?? 0.85, 0.9)));
         const sarPlan = getSARModuleRuntimePlan(char, userProfile);
         const parsed = parseSARModuleReply(rawContent, sarPlan);
         const sarModuleEvents = createSARModuleEventMeta(sarPlan);
