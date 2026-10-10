@@ -12,6 +12,7 @@ import { DATE_STYLE_PRESETS } from '../../utils/datePrompts';
 import ObserveSettings from './ObserveSettings';
 import DateExtraPresets from './DateExtraPresets';
 import DateExtraEditor from './DateExtraEditor';
+import DateCgPromptSettings from './DateCgPromptSettings';
 
 // 标准情绪列表
 const REQUIRED_EMOTIONS = ['normal', 'happy', 'angry', 'sad', 'shy'];
@@ -460,6 +461,10 @@ const DateSettings: React.FC<DateSettingsProps> = ({ char, onBack }) => {
                         </div>
                         <p className="text-[10px] text-slate-300 mt-1">点别处会自动保存；这段会照原样用上，比上面的风格优先。</p>
                     </div>
+                </Section>
+
+                <Section title="CG 配图提示词">
+                    <DateCgPromptSettings char={char} />
                 </Section>
 
                 <Section title="背景 (Background)">
