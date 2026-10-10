@@ -806,7 +806,7 @@ const DateSession: React.FC<DateSessionProps> = ({
                         originalText,
                         sourceTimestamp: message.timestamp,
                         voiceEmotion: voiceParsed.voiceEmotion || currentLineEmotionRef.current,
-                        speaker: speakerParsed.speaker || currentLineSpeakerRef.current || 'char',
+                        speaker: resolveDateVoiceSpeaker(speakerParsed.speaker || currentLineSpeakerRef.current, coauthorUserEnabled),
                         speechText: extractDialogueSpeech(lines[lineIndex]),
                     };
                 }
@@ -817,7 +817,7 @@ const DateSession: React.FC<DateSessionProps> = ({
             originalText,
             sourceTimestamp: Date.now(),
             voiceEmotion: currentLineEmotionRef.current,
-            speaker: currentLineSpeakerRef.current || 'char',
+            speaker: resolveDateVoiceSpeaker(currentLineSpeakerRef.current, coauthorUserEnabled),
             speechText: currentLineSpeechRef.current || extractDialogueSpeech(galShownText),
         };
     };
@@ -859,7 +859,7 @@ const DateSession: React.FC<DateSessionProps> = ({
                 return;
             }
             const favoriteSpeechText = target.speechText || target.originalText;
-            const favoriteSpeaker = target.speaker || 'char';
+            const favoriteSpeaker = resolveDateVoiceSpeaker(target.speaker, coauthorUserEnabled);
             const favoriteCacheKey = singleVoiceCacheKey(favoriteSpeaker, favoriteSpeechText);
             let speech: DateSpeechResult | undefined = voiceCacheRef.current[favoriteCacheKey];
             if (!speech) {
@@ -877,7 +877,7 @@ const DateSession: React.FC<DateSessionProps> = ({
                 source: 'date',
                 sourceKey: target.sourceKey,
                 charId: char.id,
-                charName: target.speaker === 'user' ? (userProfile.name || '用户') : char.name,
+                charName: favoriteSpeaker === 'user' ? (userProfile.name || '用户') : char.name,
                 sourceTimestamp: target.sourceTimestamp,
                 originalText: target.originalText,
                 spokenText: speech.spokenText !== target.originalText ? speech.spokenText : undefined,
