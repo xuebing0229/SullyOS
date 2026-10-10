@@ -639,14 +639,14 @@ const DateSession: React.FC<DateSessionProps> = ({
                 ) || undefined;
                 if (speech) voiceCacheRef.current[cacheKey] = speech;
             }
-            if (cancelled) return;
+            if (!isCurrent()) return;
             setGalVoiceLoading(false);
             if (!speech) return;
             if (!dateAudioRef.current) dateAudioRef.current = new Audio();
             clearSegmentTimer();
             dateAudioRef.current.src = speech.url;
             dateAudioRef.current.onended = () => setDateVoicePlaying(false);
-            dateAudioRef.current.play().then(() => setDateVoicePlaying(true)).catch(() => {});
+            dateAudioRef.current.play().then(() => { if (isCurrent()) setDateVoicePlaying(true); }).catch(() => {});
         };
         void play();
         return () => {
@@ -709,7 +709,7 @@ const DateSession: React.FC<DateSessionProps> = ({
         clearSegmentTimer();
         dateAudioRef.current.src = speech.url;
         dateAudioRef.current.onended = () => setDateVoicePlaying(false);
-        dateAudioRef.current.play().then(() => setDateVoicePlaying(true)).catch(() => {});
+        dateAudioRef.current.play().then(() => { if (isCurrent()) setDateVoicePlaying(true); }).catch(() => {});
     };
 
     // 小说模式点击某句时，也优先合成/复用该 assistant 消息的整轮 Dialogue。
@@ -729,15 +729,21 @@ const DateSession: React.FC<DateSessionProps> = ({
             return;
         }
 
+        stopDateAudio();
+        setNovelPlayingId(null);
+        const generation = playbackGenerationRef.current;
+        const isCurrent = () => generation === playbackGenerationRef.current;
         setNovelVoiceLoading(prev => new Set(prev).add(lineKey));
         try {
             const { rest: body } = extractObservation(shownContent || '', { lenient: observeEnabled, custom: char.dateObserve?.custom });
             const historicalItems = parseDialogue(body, 'normal', String(msg.id));
             const targetLineId = `${msg.id}:${rawLineIndex}`;
             const batch = await ensureDateDialogueBatch(historicalItems);
+            if (!isCurrent()) return;
             const segment = batch ? resolveDialogueSegment(historicalItems, batch, targetLineId) : null;
             if (batch && segment) {
-                const started = await playDialogueSegment(batch, segment, () => setNovelPlayingId(null));
+                const started = await playDialogueSegment(batch, segment, () => setNovelPlayingId(null), isCurrent);
+                if (!isCurrent()) return;
                 if (started) {
                     setNovelPlayingId(lineKey);
                     return;
@@ -755,12 +761,13 @@ const DateSession: React.FC<DateSessionProps> = ({
                 ) || undefined;
                 if (speech) voiceCacheRef.current[cacheKey] = speech;
             }
+            if (!isCurrent()) return;
             if (!speech) { addToast('语音合成失败，请稍后重试', 'error'); return; }
             if (!dateAudioRef.current) dateAudioRef.current = new Audio();
             clearSegmentTimer();
             dateAudioRef.current.src = speech.url;
             dateAudioRef.current.onended = () => setNovelPlayingId(null);
-            dateAudioRef.current.play().then(() => setNovelPlayingId(lineKey)).catch(() => {});
+            dateAudioRef.current.play().then(() => { if (isCurrent()) setNovelPlayingId(lineKey); }).catch(() => {});
         } finally {
             setNovelVoiceLoading(prev => { const n = new Set(prev); n.delete(lineKey); return n; });
         }
