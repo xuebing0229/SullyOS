@@ -30,6 +30,7 @@ import { getVoiceFavorite, makeVoiceFavoriteId, removeVoiceFavorite, saveVoiceFa
 import { saveVoiceLibraryItem, setVoiceLibraryStarredForSource } from '../../utils/voiceLibrary';
 import { resolveTtsProvider } from '../../utils/ttsProvider';
 import { synthesizeDateDialogue } from '../../utils/dateDialogueSynthesis';
+import { extractDateSpokenText, isDateSpokenLine } from '../../utils/dateDialogueLines';
 import type { DateDialogueSegment, DateDialogueTurn } from '../../utils/dateDialogueVoice';
 import { MEETING_CONTINUE_DISPLAY_TEXT } from '../../utils/meetingContinue';
 import TokenImg from '../os/TokenImg';
@@ -65,15 +66,8 @@ const extractSpeakerTag = (line: string): { speaker?: 'char' | 'user'; rest: str
     return { speaker, rest };
 };
 
-/** 提取真正送 TTS 的引号内文本：保留 ElevenLabs [...] Audio Tags，只去 VN 元标签。 */
-const extractDialogueSpeech = (text: string): string => {
-    const speakerClean = extractSpeakerTag(text).rest;
-    const voiceClean = extractVoiceEmotionTag(speakerClean).rest.trim();
-    const emotionClean = voiceClean.replace(/^\[[a-zA-Z0-9_\-]+\]\s*/, '').trim();
-    const match = emotionClean.match(/^[\"“]([\s\S]*?)[\"”](?:\s|$)/)
-        || emotionClean.match(/^「([\s\S]*?)」(?:\s|$)/);
-    return (match?.[1] || emotionClean).trim();
-};
+// 唯一的台词来源：严格抽取完整引号里的话，旁白绝不落到 TTS 兜底。
+const extractDialogueSpeech = extractDateSpokenText;
 
 // Helper: Parse dialogue with simple state machine
 const isContextNoise = (line: string) => {
@@ -92,13 +86,7 @@ const cleanTextForDisplay = (text: string) => {
     return text.replace(/\[.*?\]/g, '').trim();
 };
 
-// Helper: Check if a line is dialogue (starts with quoted speech "...")
-// A dialogue line must BEGIN with a quote character (after trimming).
-// Lines that merely contain incidental quotes (e.g. 把"项圈草图"塞进...) are narration.
-const isDialogueLine = (text: string) => {
-    const clean = cleanTextForDisplay(text);
-    return /^[""\u201C\u300C]/.test(clean);
-};
+const isDialogueLine = isDateSpokenLine;
 
 // Helper: Extract only the dialogue text from a line for TTS
 const extractDialogueText = (text: string): string => {
@@ -415,7 +403,8 @@ const DateSession: React.FC<DateSessionProps> = ({
 
     const ensureDateDialogueBatch = async (items: DialogueItem[]): Promise<DateDialogueAudioBatch | null> => {
         // 自定义翻译语言仍沿用原逐句链路，避免整轮里二次翻译导致文本/时间戳错位。
-        if (!voiceEnabled || voiceLang || resolveTtsProvider(apiConfig) !== 'elevenlabs') return null;
+        // 普通模式维持原本逐句语音；整轮双人 Dialogue 只在强化演绎启用时使用。
+        if (!coauthorUserEnabled || !voiceEnabled || voiceLang || resolveTtsProvider(apiConfig) !== 'elevenlabs') return null;
         const turns = buildDateDialogueTurns(items);
         if (!turns.length || turns.some(turn => !turn.voiceId)) return null;
         const key = makeDateDialogueBatchKey(turns);
@@ -1816,7 +1805,7 @@ const DateSession: React.FC<DateSessionProps> = ({
                                 onContextMenu={voiceEnabled && !isTextAnimating && !isShowingOpening && isDialogueLine(galShownText) ? (e) => { e.preventDefault(); e.stopPropagation(); void openDateVoiceFavorite(resolveCurrentDateVoiceTarget()); } : undefined}
                             >
                                 <div className="absolute -top-3 left-6 flex items-center gap-2">
-                                    <div className="bg-white/90 text-black px-4 py-1 rounded-sm text-xs font-bold tracking-widest uppercase shadow-[0_4px_10px_rgba(0,0,0,0.3)] transform -skew-x-12">{currentLineSpeakerRef.current === 'user' ? (userProfile.name || '用户') : char.name}</div>
+                                    <div className="bg-white/90 text-black px-4 py-1 rounded-sm text-xs font-bold tracking-widest uppercase shadow-[0_4px_10px_rgba(0,0,0,0.3)] transform -skew-x-12">{!isDialogueLine(galShownText) ? '旁白' : coauthorUserEnabled && currentLineSpeakerRef.current === 'user' ? (userProfile.name || '用户') : char.name}</div>
                                     {/* Voice play button next to name */}
                                     {voiceEnabled && !isTextAnimating && !isShowingOpening && isDialogueLine(galShownText) && (
                                         <button
