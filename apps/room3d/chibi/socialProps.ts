@@ -1,5 +1,5 @@
 import * as T from 'three';
-import type {ChibiVisitor} from './visitor';
+import type {SocialVisitor} from './socialVisitor';
 import {furniturePalm} from './furnitureMotion';
 import {BLANK_SCALE} from './blankBody';
 import {waterGrip} from './waterGrip';
@@ -11,7 +11,7 @@ const phoneHands:Record<string,'L'|'R'>={
  'vrma-cae36da2cc8b9845':'R',
 };
 /** Transient props belong to an action, never to the furniture save. */
-export function createSocialProp(id:string,visitors:ChibiVisitor[]){
+export function createSocialProp(id:string,visitors:SocialVisitor[]){
  const phoneSide=phoneHands[id],phone=!!phoneSide,drink=id==='cmu-22_13';
  if(!phone&&!drink)return null;
  const root=new T.Group(),materials:T.Material[]=[],geometries:T.BufferGeometry[]=[];
@@ -44,7 +44,7 @@ export function createSocialProp(id:string,visitors:ChibiVisitor[]){
    const receiving=drink&&time>2.262,owner=visitors[receiving?1:0],side=phoneSide??(drink&&!receiving?'L':'R');root.visible=weight>.02;
    if(phone&&owner.rig)return; // Bone parenting follows rotation as well as position.
    if(grip?.(time,weight))return;
-   const p=owner.rig?owner.rig.bones[side+'_hand'].localToWorld(furniturePalm(side)):owner.classicPoint(side+'_hand');
+   const p=owner.rig?owner.rig.bones[side+'_hand'].localToWorld(furniturePalm(side)):(owner.classicPoint?.(side+'_hand')??owner.root.getWorldPosition(new T.Vector3()));
    root.position.copy(parent?parent.worldToLocal(p):p);root.quaternion.copy(owner.root.getWorldQuaternion(new T.Quaternion()));
    if(parent)root.quaternion.premultiply(parent.getWorldQuaternion(new T.Quaternion()).invert());
    if(phone)root.rotateX(-.55);else if(time>duration*.7)root.rotateZ(-.5);

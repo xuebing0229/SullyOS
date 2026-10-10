@@ -37,6 +37,13 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Run date duet voice regressions
+        run: >-
+          pnpm exec vitest run
+          utils/dateDialogueVoice.test.ts
+          utils/dateDualVoicePrompt.test.ts
+          worker/elevenLabsDialogueProxy.test.ts
+
       - name: Check TypeScript types
         run: pnpm exec tsc --noEmit
 

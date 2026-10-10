@@ -774,6 +774,8 @@ export interface DateStyleConfig {
   pov?: 'third-name' | 'third-you' | 'first-you';
   /** 细节深挖引导：教模型从任意输入里挖素材 + 每轮轮换聚焦线索，对冲"没话找话"式的模型八股；缺省 = 开启 */
   digDeeper?: boolean;
+  /** 强化演绎：允许 AI 把 user 当作同人文中的另一位 OC，自由补写其台词/动作；默认关闭。 */
+  coauthorUser?: boolean;
   /** 自定义补充文风要求，原样追加进风格块 */
   extra?: string;
 }
@@ -2192,6 +2194,12 @@ export interface DialogueItem {
     emotion?: string;
     /** 语音情绪，来自独立标记 [v:xxx]，跟立绘分开。仅取合法 MiniMax emotion，否则 undefined。 */
     voiceEmotion?: string;
+    /** 同一轮剧情里的稳定行标识；用于把整段 Dialogue 音频的时间区间映射回 GAL/小说行。 */
+    lineId?: string;
+    /** 见面剧情台词归属。旧记录没有该字段时按 char 处理。 */
+    speaker?: 'char' | 'user';
+    /** 仅供 TTS：保留引号内原始 Audio Tags；界面显示仍走 text。 */
+    speechText?: string;
 }
 
 /**

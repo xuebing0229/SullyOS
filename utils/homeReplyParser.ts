@@ -49,7 +49,7 @@ export function parseHomeReply(raw:string,scene:HomeScene,onAction?:(info:{reque
  if(Array.isArray(value.actionIds)){
   // A missing middle step must not silently turn into a different plan.
   if(value.actionIds.length>8)throw Error('动作计划过长，请重试');
-  const ids=value.actionIds.map(resolve);
+  const ids=(value.actionIds as unknown[]).map((entry:unknown)=>resolve(entry));
   if(scene.present&&ids.some(id=>!id))throw Error('动作计划包含无效编号，请重试');
   return {text:value.text.trim().slice(0,8000),actionIds:ids.filter((id):id is string=>!!id)};
  }

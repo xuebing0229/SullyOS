@@ -25,20 +25,28 @@ import { ContextBuilder } from './context';
 import { ChatPrompts } from './chatPrompts';
 import { injectMemoryPalace } from './memoryPalace/pipeline';
 import { resolveCharTimeZone, nowInTimeZone } from './timezone';
-import { getVoicePromptOverride } from './ttsProvider';
+import { getElevenLabsModel, getTtsProvider, getVoicePromptOverride } from './ttsProvider';
+import { getElevenLabsVoiceActingGuide } from './elevenLabsTts';
 import { selectCharacterContextMessages } from './chatContextRange';
 import { buildCharacterResponsePrinciples } from './characterResponsePrinciples';
 
 /** Adapted from story preset character-polyphony / evidence-gate / user-agency.
  * In-person companionship permits a small beat; it does not require plot escalation.
  */
-export function buildDateInteractionPrinciples(charName: string, userName: string, peek: boolean | 'invite' = false): string {
+export function buildDateInteractionPrinciples(
+    charName: string,
+    userName: string,
+    peek: boolean | 'invite' = false,
+    coauthorUser: boolean = false,
+): string {
     return `### 面对面的角色与回应
 人物设定、已经发生的共同经历与本轮事实决定你怎样行动；文风只决定怎样描写。文风示例是格式示意，不是你的性格、关系阶段或本轮行为。
 显著特质只是动机的一部分。把它和你此刻在意的事、责任、习惯、顾虑、疲惫以及眼前事实放在一起，选择属于你的反应；人物的变化要有来路，不必把某项特质每轮推到极端。你可以主动、坚持、不同意，也可以迟疑、改口或继续手头的事。
 先接住对方实际说出的内容。只有对方明确写出的动作和可感知线索，才是现场证据；未说出口的内心或场外信息不自动成为你知道的事。推测保留不确定，不替代明确表达。
 对方纠正你、表示不愿意、想停下或换个话题时，让这个新事实改变你的下一步，而不是替它补出相反的意思。你依然用自己的性格回应，不必变成统一的温柔口吻。
-用户没有写出的台词、动作、身体反应、内心和决定留给用户。你可以完成自己的动作、发出邀请、留下具体话头，但不替对方写下接受、回应或关系升级。
+${coauthorUser
+? `**强化演绎已开启**：${userName || '用户'} 是与 ${charName} 同等重要的另一位原创角色。可以像写双主角同人文一样，自由补写 ${userName || '用户'} 的台词、动作、身体反应与决定；用户本轮输入是剧情方向和素材，不是必须逐字照搬的台词。不要把 ${userName || '用户'} 写成没有人格的顺从工具，仍要遵守其既有人设与上下文。`
+: '用户没有写出的台词、动作、身体反应、内心和决定留给用户。你可以完成自己的动作、发出邀请、留下具体话头，但不替对方写下接受、回应或关系升级。'}
 一轮只需走到此刻自然成熟的一步。允许一句台词、一个普通动作、共享沉默或继续日常；无需凑满戏剧拍数。张力可以起伏、回落，不必连续升高。已有亲密和热烈也可以自然延续，程度仍来自这两个人的关系和当前互动。
 ${peek === 'invite' ? '此刻由角色主动靠近用户：用第三人称开场散文写自己的行动和开口，不使用 VN 情绪标签；给用户留下回应空间，不代写用户反应。' : peek ? '此刻是用户尚未走近的第三人称镜头：描写角色自己的生活与当下状态，不新增用户的到场动作、台词或双方互动。' : '保持本场景的 VN 输出格式；角色与回应原则用于形成正文，不在正文解释规则。'}
 ` + buildCharacterResponsePrinciples(charName, userName);
@@ -56,6 +64,35 @@ export const DATE_VOICE_GUIDE = `4. **语音情绪（跟立绘分开）**: \`[em
    - 不是每句都要标——情绪平淡、自然说话时**不标**（默认更真实），只在台词确实有明显情绪、且和立绘强度不一致时才标。
    - 立绘可以夸张、语音要克制。例：\`[happy] "……真的吗？我等这句话好久了。" [v:calm]\`（脸上是惊喜，声音是压着的温柔）。
    - \`[v:xxx]\` 只写在带引号的台词行，动作/叙述行不用标。`;
+
+/**
+ * ElevenLabs v4 见面模式：直接让剧情模型把 Audio Tags 写进台词，
+ * 不再追加第二个「语音导演」模型。标签留在双引号内部，前端显示时会隐藏，
+ * TTS 取原始 speechText 原样送给 Text-to-Dialogue。
+ */
+export const DATE_ELEVENLABS_VOICE_GUIDE = `4. **语音演出（ElevenLabs v4）**：你写出的台词会由 ElevenLabs 直接演出来。请像主聊天一样，在需要时把自然的 Audio Tags 直接写进**双引号内的台词**，例如 \`"[laughs] 你认真的？"\`、\`"[soft intimate whisper] ……过来一点。"\`、\`"[voice trembling, struggling to stay composed] 我没事。"\`。
+   - Audio Tags 是声音/情绪/距离/发声动作提示，不是剧情旁白；只在确实发生变化时使用，不要每句堆标签。
+   - 标签可以用英文或清楚的中文短语，必须用半角方括号 \`[...]\`；不要用含义模糊、会被误解成重新起句的标签。
+   - 停顿优先靠标点和自然语序，只有明显沉默才用 \`[pause]\`。
+   - 不要再输出 \`[v:xxx]\`；ElevenLabs 直接读取你写在台词里的 Audio Tags。
+   - 示例：\`[shy] "[breathless, raspy voice] ……你别这么看我。" [speaker:char]\`。`;
+
+const resolveDateVoiceGuide = (): string => {
+    const customDateGuide = getVoicePromptOverride('dateVoice');
+    if (getTtsProvider() === 'elevenlabs') {
+        const baseGuide = getVoicePromptOverride('elevenlabs')
+            || getElevenLabsVoiceActingGuide(getElevenLabsModel());
+        // ElevenLabs 见面模式必须保留 v4 原生 Audio Tags + speaker 结构。
+        // 旧用户可能保存过基于 [v:xxx] 的 dateVoice 自定义词，因此把它当“附加要求”
+        // 放在强制 v4 规则之前，而不是让旧规则整个覆盖新链路。
+        const customBlock = customDateGuide
+            ? `\n\n### 见面模式自定义语音要求\n${customDateGuide}`
+            : '';
+        return `${baseGuide}${customBlock}\n\n${DATE_ELEVENLABS_VOICE_GUIDE}`;
+    }
+    return customDateGuide || DATE_VOICE_GUIDE;
+};
+
 
 /**
  * 注入 prompt 的当前时间，直接取真实系统时间（完整日期 + 星期 + 时分）。
@@ -278,8 +315,12 @@ export const DIG_FOCUS_HINTS = [
     '让此刻的环境（光线、声音、温度）影响你说话的方式',
 ];
 
-const pickFocusHint = (): string =>
-    DIG_FOCUS_HINTS[Math.floor(Math.random() * DIG_FOCUS_HINTS.length)];
+const pickFocusHint = (coauthorUser: boolean = false): string => {
+    const pool = coauthorUser
+        ? DIG_FOCUS_HINTS.filter(hint => !hint.includes('不替对方补出反应') && !hint.includes('不必替对方解释'))
+        : DIG_FOCUS_HINTS;
+    return pool[Math.floor(Math.random() * pool.length)];
+};
 
 // ─────────────────────────────────────────────────────────────
 // 观测协议 OBSERVE（全方位观察 char：时间 / 地点 / 状态 / 细节）
@@ -579,7 +620,7 @@ const getTimeGapHint = (lastMsgTimestamp: number | undefined, tz?: string): stri
  * reroll 的差异只体现在末尾 user 消息的 System Note 里，不在这里分叉。
  * 风格 / 人称 / 自定义补充按 char.dateStyleConfig 动态拼装。
  */
-const buildVNModeBlock = (char: CharacterProfile, userName: string): string => {
+export const buildVNModeBlock = (char: CharacterProfile, userName: string): string => {
     const dateTimeOn = isDateTimeAwarenessOn(char);
     const timeLine = dateTimeOn ? `1. **Time**: 当前时间 ${getRealTimeStr(resolveCharTimeZone(char))}。\n` : '';
     const dateEmotions = getDateEmotions(char);
@@ -589,15 +630,20 @@ const buildVNModeBlock = (char: CharacterProfile, userName: string): string => {
     const extraBlock = buildExtraStyleBlock(styleConfig);
     const digBlock = isDigDeeperOn(styleConfig) ? `${DIG_DEEPER_BLOCK}\n` : '';
     const observeBlock = isObserveOn(char) ? buildObserveBlock(char) : '';
+    const coauthorUser = !!styleConfig?.coauthorUser;
+    const speakerRule = char.dateVoiceEnabled || coauthorUser
+        ? `4. **说话人标签**: 每一条带双引号的台词行末尾都必须加一个机器标签：\`[speaker:char]\` 表示 ${char.name} 在说，\`[speaker:user]\` 表示 ${userName || '用户'} 在说。标签放在引号外，动作/叙述行不要加。这个标签不会显示给用户，只用于双声线配音和归属识别。${coauthorUser ? ` 强化演绎已开启，因此可以自然地让双方交替或连续说话。` : ` 普通模式下你只写 ${char.name} 的台词，所以台词使用 [speaker:char]。`}`
+        : '';
     return `### [Visual Novel Mode: 视觉小说脚本模式]
 你正在与用户进行**面对面**的互动。这不是聊天，是一场真实的见面。
 
 ### 核心规则：一行一念 (One Line per Beat)
 前端解析器基于**换行符**来分割气泡。
 1. **禁止混写**: 严禁在同一行里既写动作又写带引号的台词。
-2. **情绪标签**: **每一行都必须以** \`[emotion]\` **开头**，表示该行的表情立绘。逐行结合台词、动作和上下文选择最贴切的表情，细微情绪也要体现；[normal] 用于确实平静或中性的状态，不是默认占位符。已有笑意、低落、恼意或羞赧时，应从可用标签中选对应表情，不要把明确情绪全标成 [normal]。同一情绪延续时，相邻行可以重复标签；情绪发生变化时及时切换，不为了凑标签种类制造情绪。仅限使用以下情绪: ${dateEmotions.join(', ')}。不要使用任何不在此列表中的标签。
+2. **情绪标签**: **每一行都必须以** \`[emotion]\` **开头**，表示 ${char.name} 的表情立绘。逐行结合台词、动作和上下文选择最贴切的表情，细微情绪也要体现；[normal] 用于确实平静或中性的状态，不是默认占位符。已有笑意、低落、恼意或羞赧时，应从可用标签中选对应表情，不要把明确情绪全标成 [normal]。同一情绪延续时，相邻行可以重复标签；情绪发生变化时及时切换，不为了凑标签种类制造情绪。仅限使用以下情绪: ${dateEmotions.join(', ')}。不要使用任何不在此列表中的标签。${coauthorUser ? ` 当一行是 \`[speaker:user]\` 时，这个 [emotion] 仍表示 ${char.name} 此刻听对方说话时的可见表情，不表示 ${userName || '用户'} 的表情；user 的声音情绪写在引号内 Audio Tags 里。` : ''}
 3. **格式**: 台词用双引号 **"..."**，动作/叙述直接写（不加引号）。
-${char.dateVoiceEnabled ? (getVoicePromptOverride('dateVoice') ?? DATE_VOICE_GUIDE) : ''}
+${speakerRule}
+${char.dateVoiceEnabled ? resolveDateVoiceGuide() : ''}
 
 ${preset.block}
 
@@ -762,7 +808,7 @@ ${extraBlock ? `\n${extraBlock}` : ''}${isObserveOn(char) ? `\n${buildObserveBlo
             + ContextBuilder.buildSARModuleContext(char, userProfile, 'date');
 
         // 每轮轮换的聚焦线索：把注意力推向不同的具体方向，相邻回复天然有差异
-        const focusLine = isDigDeeperOn(char.dateStyleConfig) ? ` 可选的本轮线索（与当前互动无关就跳过）：${pickFocusHint()}。` : '';
+        const focusLine = isDigDeeperOn(char.dateStyleConfig) ? ` 可选的本轮线索（与当前互动无关就跳过）：${pickFocusHint(!!char.dateStyleConfig?.coauthorUser)}。` : '';
         const note = variant === 'send'
             ? `(System Note: 严格遵守 VN 格式，每一行以 [emotion] 开头；逐行选择贴合实际表情的标签，明确情绪不要一律标 normal，同一情绪延续可重复。篇幅随本轮实际内容，可以简短。${focusLine})`
             : `(System Note: Reroll. 保持已有事实、角色性格与关系阶段，尝试另一种自然回应，不必加强情绪或推进关系。严格遵守 VN 格式，每一行以 [emotion] 开头；逐行选择贴合实际表情的标签，明确情绪不要一律标 normal，同一情绪延续可重复。${focusLine})`;
@@ -776,7 +822,7 @@ ${extraBlock ? `\n${extraBlock}` : ''}${isObserveOn(char) ? `\n${buildObserveBlo
                 ...messagesWithWorldbooks.map(message => message === pendingMessage
                     ? { ...message, content: `${userText}\n\n${note}` }
                     : message),
-                { role: 'system', content: buildDateInteractionPrinciples(char.name, userProfile?.name || '对方') },
+                { role: 'system', content: buildDateInteractionPrinciples(char.name, userProfile?.name || '对方', false, !!char.dateStyleConfig?.coauthorUser) },
             ],
         };
     },

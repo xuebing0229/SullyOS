@@ -15,5 +15,5 @@ export const approvedPresets:Record<string,{label:string;items:ApprovedWardrobe;
  original:{label:'初始卫衣搭配',items:{top:'original-hoodie',socks:'original-socks',shoes:'original-shoes'}},
  sailor:{label:'长袖水手服',items:{top:'sailor-long',bottom:'sailor-shorts',socks:'school-socks',shoes:'school-loafers'}},
  summer:{label:'短袖水手服',items:{top:'sailor-short',bottom:'sailor-skirt',socks:'school-socks',shoes:'school-loafers'}},
- ...Object.fromEntries(builtinOutfits.map((outfit,index)=>[`curated-${index+1}`,{label:outfit.name,items:outfit.clothes.wardrobe as ApprovedWardrobe,clothes:outfit.clothes as SavedOutfit['clothes']} ])),
+ ...Object.fromEntries(builtinOutfits.map((outfit,index)=>[`curated-${index+1}`,{label:outfit.name,items:outfit.clothes.wardrobe as ApprovedWardrobe,clothes:outfit.clothes as unknown as SavedOutfit['clothes']} ])),
 };

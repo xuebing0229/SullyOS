@@ -1,5 +1,5 @@
 import * as T from 'three';
-import type {ChibiVisitor} from './visitor';
+import type {SocialVisitor} from './socialVisitor';
 import {BLANK_SCALE} from './blankBody';
 import {furniturePalm,furnitureHandRotation} from './furnitureMotion';
 import {contactSolver} from './socialContact';
@@ -7,12 +7,12 @@ import {contactSolver} from './socialContact';
 // The cylinder runs across the fingers, with the thumb on the rim side.
 const cupInHand=new T.Quaternion().setFromAxisAngle(new T.Vector3(1,0,0),Math.PI/2);
 const offset=(side:'L'|'R')=>new T.Vector3(side==='L'?.010:-.010,-.018,.010).multiplyScalar(BLANK_SCALE);
-export function waterGrip(visitors:ChibiVisitor[],cup:T.Group){
+export function waterGrip(visitors:SocialVisitor[],cup:T.Group){
  const solvers=visitors.map(contactSolver);
  return (time:number,weight:number)=>{
   const transfer=T.MathUtils.smootherstep(time,2.04,2.48);
   const poses=visitors.slice(0,2).map((visitor,i)=>{
-   const side=i===0?'L':'R',hand=visitor.rig?.bones[side+'_hand'];
+   const side:'L'|'R'=i===0?'L':'R',hand=visitor.rig?.bones[side+'_hand'];
    if(!hand)return null;
    const scale=hand.getWorldScale(new T.Vector3()).y;
    const palm=hand.localToWorld(furniturePalm(side));

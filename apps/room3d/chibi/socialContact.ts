@@ -1,10 +1,10 @@
 import * as T from 'three';
 import {CCDIKSolver} from 'three/examples/jsm/animation/CCDIKSolver.js';
-import type {ChibiVisitor} from './visitor';
+import type {SocialVisitor} from './socialVisitor';
 import {furnitureHandRotation,furniturePalm} from './furnitureMotion';
 import {constrainForearmTwist} from '../../../experiments/chibi/forearmTwist';
 export type Contact={side:'R'|'L';point:T.Vector3;direction:T.Vector3;normal:T.Vector3;curl?:number};
-export function contactSolver(visitor:ChibiVisitor){
+export function contactSolver(visitor:SocialVisitor){
  const rig=visitor.rig;if(!rig)return null;
  const goals=[new T.Bone(),new T.Bone()],bones=[...rig.skeleton.bones,...goals];
  const chains=['R','L'].map((side,i)=>({target:rig.skeleton.bones.length+i,effector:bones.indexOf(rig.bones[side+'_hand']),iteration:48,maxAngle:.16,links:['forearm','upperArm'].map(n=>({index:bones.indexOf(rig.bones[side+'_'+n])}))}));

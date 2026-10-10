@@ -34,6 +34,11 @@ export function createFurnitureContact(rig:ReturnType<typeof bindBlankBody>,body
  return (time:number,activity:ActivityPose)=>{
   if(!body.parent||activity.hands.length!==2)return;
   const scale=activity.handScale??1,beat=activity.kind==='rhythm'?rhythmFrame(activity,time):null;
+  const standingBeat=beat
+   &&Array.isArray((beat as {directions?:unknown}).directions)
+   &&Array.isArray((beat as {normal?:unknown}).normal)
+    ? beat as typeof beat&{directions:number[][];normal:number[]}
+    : null;
   const hands=beat?.hands??(activity.kind==='race'?racingHands(activity.hands,time,activity.wheel):activity.hands);
   const enter=T.MathUtils.smootherstep(time,0,.65);
   body.updateWorldMatrix(true,true);
@@ -44,7 +49,7 @@ export function createFurnitureContact(rig:ReturnType<typeof bindBlankBody>,body
     // Fingers wrap outward over the rim; +Z in both authored hands is the thumb.
     // Pointing fingers inward rolls both thumbs underneath the wheel.
     handRotation=furnitureHandRotation(side,[side==='L'?1:-1,0,0],activity.wheel.axis).premultiply(turn);
-   }else if(beat?.directions)handRotation=furnitureHandRotation(side,beat.directions[i],beat.normal);
+   }else if(standingBeat)handRotation=furnitureHandRotation(side,standingBeat.directions[i],standingBeat.normal);
    p.fromArray(hands[i]);if(beat)p.add(new T.Vector3().fromArray(beat.offset));
    p.multiplyScalar(scale);
    if(handRotation)p.sub(furniturePalm(side,!!activity.wheel).applyQuaternion(handRotation));
