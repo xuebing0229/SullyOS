@@ -36,6 +36,7 @@ import { VOICE_LANGUAGE_OPTIONS, voiceLanguageAnalyticsValue, voiceLanguageLabel
 
 import { SARSpeechSwitch } from '../sar/SARSpeechSwitch';
 import { resolveSARDateSpeech } from '../../utils/sarDatePresentation';
+import { isDateHistoryEnvelopeOnly, stripDateHistoryEnvelope } from '../../utils/dateModelOutput';
 
 // 语音情绪标记 [v:xxx]：跟立绘情绪 [emotion] 分开的独立通道。立绘的 happy 是
 // 夸张的表情、语音的 happy 是音色情绪，两者强度/语义差异大，不能一概而论。
@@ -121,8 +122,10 @@ const parseDialogue = (
 
     for (let rawIndex = 0; rawIndex < lines.length; rawIndex++) {
         const rawLine = lines[rawIndex];
-        if (!rawLine || isContextNoise(rawLine)) continue;
-        const { speaker, rest: speakerRest } = extractSpeakerTag(rawLine);
+        if (!rawLine || isContextNoise(rawLine) || isDateHistoryEnvelopeOnly(rawLine)) continue;
+        const visibleLine = stripDateHistoryEnvelope(rawLine);
+        if (!visibleLine) continue;
+        const { speaker, rest: speakerRest } = extractSpeakerTag(visibleLine);
         // 先把独立的语音情绪标记 [v:xxx] 抽出来（跟立绘情绪互不影响），再解析立绘标签
         const { voiceEmotion, rest } = extractVoiceEmotionTag(speakerRest);
         const line = rest.trim();
