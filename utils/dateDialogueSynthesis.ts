@@ -29,6 +29,12 @@ type ElevenLabsDialogueResponse = {
   error?: unknown;
 };
 
+
+const clamp01 = (value: unknown, fallback: number): number => {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? Math.max(0, Math.min(1, numeric)) : fallback;
+};
+
 const base64ToBlob = (base64: string, mime = 'audio/mpeg'): Blob => {
   const binary = atob(base64);
   const bytes = new Uint8Array(binary.length);
@@ -153,6 +159,10 @@ export async function synthesizeDateDialogue(
   const { status, data } = await requestDialogue(apiKey, {
     model_id: model,
     inputs: batch.inputs,
+    settings: {
+      stability: clamp01(config.elevenLabsStability, 0.5),
+      similarity_boost: clamp01(config.elevenLabsSimilarityBoost, 0.8),
+    },
   });
   if (status < 200 || status >= 300) {
     const detail = data?.detail ?? data?.error ?? '';
