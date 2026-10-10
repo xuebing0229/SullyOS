@@ -3094,6 +3094,10 @@ export interface CharacterProfile {
   dateStyleConfig?: DateStyleConfig; // 见面模式文风（写作风格 / 叙事人称 / 自定义补充）
   /** 见面 CG 固定提示层；字段语义与文游 StoryTheaterImageConfig 的四类配图文本一致。 */
   dateCgImagePrompt?: DateCgImagePromptConfig;
+  /** 见面 CG 规划器的独立 API 预设；不设置时沿用正在使用的聊天模型。 */
+  dateCgPlannerApiPresetId?: string;
+  /** 规划器在上述预设内单独选择的模型；不会影响见面正文与实际出图模型。 */
+  dateCgPlannerModel?: string;
   dateExtraPresets?: Array<{ id: string; name: string; content: string }>; // 当前角色的见面自定义补充预设
   /** 观测协议 OBSERVE：开启后每条回复注入「时间/地点/状态/细节」结构化观测，渲染成全息 HUD（样式/字段可自定义） */
   dateObserve?: DateObserveConfig;
