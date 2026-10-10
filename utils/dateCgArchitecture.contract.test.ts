@@ -4,6 +4,9 @@ import { readFileSync } from 'node:fs';
 describe('DateSession CG architecture contract', () => {
     const source = readFileSync('components/date/DateSession.tsx', 'utf8');
     const planner = readFileSync('utils/dateCgPlanner.ts', 'utf8');
+    const settings = readFileSync('components/date/DateSettings.tsx', 'utf8');
+    const cgPromptSettings = readFileSync('components/date/DateCgPromptSettings.tsx', 'utf8');
+    const sharedPresets = readFileSync('utils/storyImageTextPresets.ts', 'utf8');
 
     it('routes generation through the hidden planner and removes the chat-message relay', () => {
         expect(source).toContain('generateMeetingCgViaChatPlanner({');
@@ -22,6 +25,10 @@ describe('DateSession CG architecture contract', () => {
         expect(planner).toContain('buildMcpOpenAITools(charId');
         expect(planner).toContain('getMcpUseNativeTools()');
         expect(planner).toContain('parseImageToolClientOptions(chosen.args)');
+        expect(planner).toContain('augmentStoryImagePlanningParameters');
+        expect(planner).toContain('composeMeetingCgImageArguments({');
+        expect(planner).toContain('story_include_character');
+        expect(planner).toContain('story_include_user');
         expect(planner).toContain('applyImageGenerationPresetById');
         expect(planner).toContain('prepareBuiltinImageToolArguments({');
         expect(planner).toContain("ownerType: 'meeting-cg'");
@@ -38,5 +45,14 @@ describe('DateSession CG architecture contract', () => {
         expect(cgIndex).toBeGreaterThan(spriteIndex);
         expect(dialogueIndex).toBeGreaterThan(cgIndex);
         expect(source).toContain('object-cover opacity-100');
+    });
+
+    it('shares Story Theater text presets with meeting CG settings', () => {
+        expect(settings).toContain('<DateCgPromptSettings char={char} />');
+        expect(settings).toContain('CG 配图提示词');
+        expect(cgPromptSettings).toContain('loadStoryImageTextPresets');
+        expect(cgPromptSettings).toContain('resolveStoryImagePresetForActors');
+        expect(cgPromptSettings).toContain('upsertStoryImageTextPreset');
+        expect(sharedPresets).toContain("sullyos_story_image_text_presets_v1");
     });
 });

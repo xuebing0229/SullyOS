@@ -6,6 +6,11 @@ import type { CharacterProfile, StoryTheaterEntry, StoryTheaterImageConfig } fro
 import { getBuiltinImageMcpServers, loadBuiltinImageSettings } from '../../../utils/builtinImageMcp';
 import { getApiPresetModelEntries } from '../../../utils/apiPresetModels';
 import { normalizeElevenLabsModel } from '../../../utils/elevenLabsTts';
+import {
+    loadStoryImageTextPresets,
+    persistStoryImageTextPresets,
+    type StoryImageTextPreset,
+} from '../../../utils/storyImageTextPresets';
 
 interface Props {
     entry: StoryTheaterEntry;
@@ -25,46 +30,6 @@ const fallback = (entry: StoryTheaterEntry): StoryTheaterImageConfig => ({
     userAnchor: entry.imageGeneration?.userAnchor || '',
     characterAnchors: entry.imageGeneration?.characterAnchors || {},
 });
-
-const STORY_IMAGE_TEXT_PRESETS_KEY = 'sullyos_story_image_text_presets_v1';
-
-type StoryImageTextPreset = {
-    id: string;
-    name: string;
-    stylePrompt: string;
-    negativePrompt: string;
-    userAnchor: string;
-    characterAnchors: Record<string, string>;
-    characterAnchorNames: Record<string, string>;
-    updatedAt: number;
-};
-
-const loadImageTextPresets = (): StoryImageTextPreset[] => {
-    try {
-        const raw = JSON.parse(localStorage.getItem(STORY_IMAGE_TEXT_PRESETS_KEY) || '[]');
-        if (!Array.isArray(raw)) return [];
-        return raw
-            .filter(item => item && typeof item === 'object' && typeof item.name === 'string')
-            .map(item => ({
-                id: typeof item.id === 'string' && item.id ? item.id : `story_img_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-                name: item.name.trim(),
-                stylePrompt: typeof item.stylePrompt === 'string' ? item.stylePrompt : '',
-                negativePrompt: typeof item.negativePrompt === 'string' ? item.negativePrompt : '',
-                userAnchor: typeof item.userAnchor === 'string' ? item.userAnchor : '',
-                characterAnchors: item.characterAnchors && typeof item.characterAnchors === 'object' ? item.characterAnchors : {},
-                characterAnchorNames: item.characterAnchorNames && typeof item.characterAnchorNames === 'object' ? item.characterAnchorNames : {},
-                updatedAt: typeof item.updatedAt === 'number' ? item.updatedAt : 0,
-            }))
-            .filter(item => item.name.length > 0)
-            .sort((a, b) => b.updatedAt - a.updatedAt);
-    } catch {
-        return [];
-    }
-};
-
-const persistImageTextPresets = (presets: StoryImageTextPreset[]) => {
-    localStorage.setItem(STORY_IMAGE_TEXT_PRESETS_KEY, JSON.stringify(presets));
-};
 
 const voiceProfileLabel = (
     profile: CharacterProfile['voiceProfile'] | undefined,
@@ -88,12 +53,12 @@ const StoryImageSettingsButton: React.FC<Props> = ({ entry, onChange, triggerLab
     const [open, setOpen] = useState(false);
     const [voiceOpen, setVoiceOpen] = useState(false);
     const [draft, setDraft] = useState<StoryTheaterImageConfig>(() => fallback(entry));
-    const [textPresets, setTextPresets] = useState<StoryImageTextPreset[]>(() => loadImageTextPresets());
+    const [textPresets, setTextPresets] = useState<StoryImageTextPreset[]>(() => loadStoryImageTextPresets());
     const [presetName, setPresetName] = useState('');
     useEffect(() => { if (open) setDraft(fallback(entry)); }, [entry, open]);
     useEffect(() => {
         if (!open) return;
-        setTextPresets(loadImageTextPresets());
+        setTextPresets(loadStoryImageTextPresets());
         setPresetName('');
     }, [open]);
     useEffect(() => {
@@ -167,7 +132,7 @@ const StoryImageSettingsButton: React.FC<Props> = ({ entry, onChange, triggerLab
         };
         const next = [nextPreset, ...textPresets.filter(item => item.id !== nextPreset.id)].sort((a, b) => b.updatedAt - a.updatedAt);
         try {
-            persistImageTextPresets(next);
+            persistStoryImageTextPresets(next);
             setTextPresets(next);
             setPresetName('');
             addToast(existing ? `已覆盖配图预设「${name}」` : `已保存配图预设「${name}」`, 'success');
@@ -184,7 +149,7 @@ const StoryImageSettingsButton: React.FC<Props> = ({ entry, onChange, triggerLab
         if (textPresets.some(item => item.id !== preset.id && item.name === name)) { addToast('已经有同名配图预设', 'error'); return; }
         const next = textPresets.map(item => item.id === preset.id ? { ...item, name, updatedAt: Date.now() } : item).sort((a, b) => b.updatedAt - a.updatedAt);
         try {
-            persistImageTextPresets(next);
+            persistStoryImageTextPresets(next);
             setTextPresets(next);
             addToast(`已重命名为「${name}」`, 'success');
         } catch {
@@ -196,7 +161,7 @@ const StoryImageSettingsButton: React.FC<Props> = ({ entry, onChange, triggerLab
         if (!window.confirm(`删除配图预设「${preset.name}」？`)) return;
         const next = textPresets.filter(item => item.id !== preset.id);
         try {
-            persistImageTextPresets(next);
+            persistStoryImageTextPresets(next);
             setTextPresets(next);
             addToast(`已删除配图预设「${preset.name}」`, 'success');
         } catch {

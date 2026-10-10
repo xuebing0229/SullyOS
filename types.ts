@@ -767,6 +767,17 @@ export interface CompanionAvatarConfig {
 
 // 见面模式文风配置。由「场景布置」面板调整，datePrompts 构建 VN 提示词时读取，
 // 改动即时生效于后续生成（system prompt 每次请求重建）。
+export interface DateCgImagePromptConfig {
+  /** 与文游配图共用语义：固定画风层，由执行端确定性合并，不让 planner 重写。 */
+  stylePrompt?: string;
+  /** 固定负面提示层。 */
+  negativePrompt?: string;
+  /** User 固定外观锚点。 */
+  userAnchor?: string;
+  /** 与文游保持同形状：角色 id → 固定外观锚点；见面只读取当前角色。 */
+  characterAnchors?: Record<string, string>;
+}
+
 export interface DateStyleConfig {
   /** 写作风格预设 id，见 datePrompts.DATE_STYLE_PRESETS；缺省 = cinematic（电影感） */
   style?: string;
@@ -3081,6 +3092,8 @@ export interface CharacterProfile {
   dateSkinSets?: SkinSet[];     // Multiple skin sets for portrait mode
   activeSkinSetId?: string;     // Currently active skin set ID
   dateStyleConfig?: DateStyleConfig; // 见面模式文风（写作风格 / 叙事人称 / 自定义补充）
+  /** 见面 CG 固定提示层；字段语义与文游 StoryTheaterImageConfig 的四类配图文本一致。 */
+  dateCgImagePrompt?: DateCgImagePromptConfig;
   dateExtraPresets?: Array<{ id: string; name: string; content: string }>; // 当前角色的见面自定义补充预设
   /** 观测协议 OBSERVE：开启后每条回复注入「时间/地点/状态/细节」结构化观测，渲染成全息 HUD（样式/字段可自定义） */
   dateObserve?: DateObserveConfig;
