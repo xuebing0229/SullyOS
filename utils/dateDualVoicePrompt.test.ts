@@ -55,4 +55,17 @@ describe('见面模式双 OC / ElevenLabs prompt', () => {
     expect(block).toContain('[v:xxx]');
     expect(block).toContain('[speaker:user]');
   });
+  it('旧 dateVoice 自定义提示不会覆盖 ElevenLabs v4 必需的 Audio Tags 规则', () => {
+    setTtsProvider('elevenlabs');
+    setElevenLabsModel('eleven_v4');
+    setVoicePromptOverrides({ dateVoice: '旧规则：[v:calm] 每句都写。' });
+
+    const block = buildVNModeBlock(makeChar(true), '祁连云');
+    expect(block).toContain('旧规则：[v:calm] 每句都写。');
+    expect(block).toContain('不要再输出');
+    expect(block).toContain('[v:xxx]');
+    expect(block).toContain('Audio Tags');
+    expect(block).toContain('[speaker:user]');
+  });
+
 });
