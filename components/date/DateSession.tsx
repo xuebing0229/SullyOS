@@ -627,6 +627,90 @@ const DateSession: React.FC<DateSessionProps> = ({
         }
     };
 
+    // 只重新合成声音，不调用剧情模型、不修改消息或台词。成功后整体替换，
+    // 失败时保留旧音频；绝不因为普通播放意外绕开缓存重复计费。
+    const regenerateVoiceTurn = async (items: DialogueItem[], targetKey: string) => {
+        if (voiceRegenerationLockRef.current || isTyping || !voiceEnabled) return;
+        const spokenItems = items.filter(item => !!item.speechText && isDialogueLine(item.text));
+        if (!spokenItems.length) {
+            addToast('这一轮没有可配音的台词', 'info');
+            return;
+        }
+        const turns = buildDateDialogueTurns(spokenItems);
+        const missingSpeaker = turns.find(turn => {
+            const profile = turn.speaker === 'user' ? userProfile.voiceProfile : char.voiceProfile;
+            return !canSynthesizeSpeech(
+                turn.speaker === 'user' ? { ...char, voiceProfile: profile } : char,
+                apiConfig,
+            );
+        });
+        if (missingSpeaker) {
+            addToast(missingSpeaker.speaker === 'user' ? '请先为 USER 配置当前服务商的声线' : '请先配置角色声线与语音 API', 'error');
+            return;
+        }
+        if (!window.confirm(`重新合成这一轮的 ${spokenItems.length} 句语音？文字和演出标签都不变，但会重新消耗语音 API 额度。`)) return;
+
+        voiceRegenerationLockRef.current = true;
+        setVoiceRegeneratingKey(targetKey);
+        stopDateAudio();
+        setNovelPlayingId(null);
+        const batchKey = makeDateDialogueBatchKey(turns);
+        // 异步中的旧批次不能在新语音生成后写回旧缓存。
+        dialogueVoiceRevisionRef.current[batchKey] = (dialogueVoiceRevisionRef.current[batchKey] || 0) + 1;
+
+        try {
+            let freshBatch: DateDialogueAudioBatch | null = null;
+            if (!voiceLang && resolveTtsProvider(apiConfig) === 'elevenlabs' && turns.every(turn => !!turn.voiceId)) {
+                try {
+                    const result = await synthesizeDateDialogue(turns, apiConfig);
+                    freshBatch = {
+                        key: batchKey, url: result.url, blob: result.audio, segments: result.segments,
+                    };
+                } catch (error) {
+                    console.warn('[DateDialogue] regenerate whole-turn unavailable; regenerating separate lines:', error);
+                }
+            }
+
+            if (freshBatch) {
+                const previous = dialogueAudioCacheRef.current[batchKey];
+                dialogueAudioCacheRef.current[batchKey] = freshBatch;
+                dialogueForcedSinglesRef.current.delete(batchKey);
+                if (decodedDialogueRef.current?.key === batchKey) decodedDialogueRef.current = null;
+                if (previous) URL.revokeObjectURL(previous.url);
+                addToast('本轮语音已重配，点击播放试听（文字未改变）', 'success');
+            } else {
+                // v4 Turbo / 其他 TTS / 整轮接口失败：强制逐句重新请求，全部成功才替换播放缓存。
+                const freshLines: Record<string, DateSpeechResult> = {};
+                for (const item of spokenItems) {
+                    const speaker = resolveDateVoiceSpeaker(item.speaker, coauthorUserEnabled);
+                    const speechText = item.speechText!;
+                    const cacheKey = singleVoiceCacheKey(speaker, speechText);
+                    if (freshLines[cacheKey]) continue;
+                    const speech = await translateAndSpeak(speechText, item.voiceEmotion, undefined, speaker, true);
+                    if (!speech) throw new Error('部分台词重新配音失败，旧语音已保留');
+                    freshLines[cacheKey] = speech;
+                }
+                Object.assign(voiceCacheRef.current, freshLines);
+                const previous = dialogueAudioCacheRef.current[batchKey];
+                delete dialogueAudioCacheRef.current[batchKey];
+                dialogueForcedSinglesRef.current.add(batchKey);
+                if (decodedDialogueRef.current?.key === batchKey) decodedDialogueRef.current = null;
+                if (previous) URL.revokeObjectURL(previous.url);
+                addToast('本轮语音已逐句重配，点击播放试听（文字未改变）', 'success');
+            }
+        } catch (error: any) {
+            addToast(error?.message || '重新配音失败，原语音已保留', 'error');
+        } finally {
+            voiceRegenerationLockRef.current = false;
+            if (mountedRef.current) setVoiceRegeneratingKey(null);
+        }
+    };
+
+    const regenerateNovelVoiceTurn = (msg: Message, shown: string) => {
+        const { rest: body } = extractObservation(shown || '', { lenient: observeEnabled, custom: char.dateObserve?.custom });
+        void regenerateVoiceTurn(parseDialogue(body, 'normal', String(msg.id)), `novel:${msg.id}`);
+    };
+
     // GAL mode：优先整轮 ElevenLabs Dialogue，失败/不适用时回退原逐句链路。
     useEffect(() => {
         if (!voiceEnabled || isNovelMode || !galShownText || isTyping) return;
