@@ -376,6 +376,8 @@ const DateSession: React.FC<DateSessionProps> = ({
     const makeDateDialogueBatchKey = (turns: DateDialogueTurn[]): string =>
         JSON.stringify({
             model: apiConfig.elevenLabsModel || 'eleven_v4',
+            stability: apiConfig.elevenLabsStability ?? 0.5,
+            similarity: apiConfig.elevenLabsSimilarityBoost ?? 0.8,
             turns: turns.map(turn => [turn.speaker, turn.voiceId, turn.speech]),
         });
 
