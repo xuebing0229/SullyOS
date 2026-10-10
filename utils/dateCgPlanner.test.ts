@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildMeetingSceneSummary } from './dateCgPlanner';
+import { buildMeetingSceneSummary, sanitizeMeetingMessageForCg } from './dateCgPlanner';
 
 describe('date CG planner scene context', () => {
     it('prioritizes current meeting observation and keeps regenerate in the same scene', () => {
@@ -27,5 +27,23 @@ describe('date CG planner scene context', () => {
             regenerate: false,
         });
         expect(summary).toContain('她把热饮推到用户面前');
+    });
+
+    it('strips meeting-only speaker, voice and sprite metadata before image planning', () => {
+        const message = sanitizeMeetingMessageForCg({
+            id: 7,
+            charId: 'c1',
+            role: 'assistant',
+            type: 'text',
+            content: '[shy] "[softly] 别躲。" [speaker:char] [v:happy]\n[normal] 他伸手替对方理好衣领。',
+            timestamp: 123,
+        } as any);
+
+        expect(message.content).toContain('[softly] 别躲。');
+        expect(message.content).toContain('他伸手替对方理好衣领');
+        expect(message.content).not.toContain('[speaker:char]');
+        expect(message.content).not.toContain('[v:happy]');
+        expect(message.content).not.toContain('[shy]');
+        expect(message.content).not.toContain('[normal]');
     });
 });

@@ -14,14 +14,20 @@ describe('DateSession CG architecture contract', () => {
         expect(source).not.toContain('meetingCgToken');
     });
 
-    it('reuses the main payload context and the default built-in image tool', () => {
+    it('reuses the main chat image-tool bridge instead of maintaining a second image schema path', () => {
         expect(planner).toContain('buildChatRequestPayload({');
         expect(planner).toContain('historyMsgs: recentMeetingMessages');
         expect(planner).toContain('worldbookQueryMessages: recentMeetingMessages');
         expect(planner).toContain('recallQueryHint: sceneSummary');
+        expect(planner).toContain('buildMcpOpenAITools(charId');
+        expect(planner).toContain('getMcpUseNativeTools()');
+        expect(planner).toContain('parseImageToolClientOptions(chosen.args)');
+        expect(planner).toContain('applyImageGenerationPresetById');
         expect(planner).toContain('prepareBuiltinImageToolArguments({');
         expect(planner).toContain("ownerType: 'meeting-cg'");
         expect(planner).toContain('allowMcpChat: false');
+        expect(planner).not.toContain('augmentImageToolSchema(');
+        expect(planner).not.toContain('resolveDefaultImageTool');
     });
 
     it('renders full-opacity CG in front of the sprite and below dialogue UI', () => {
