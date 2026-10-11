@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { alignDateDialogueSegments, buildDateDialogueBatch, hasCollapsedDateDialogueAlignment, resolveDateDialogueSegmentForLine, resolveDateVoiceSpeaker } from './dateDialogueVoice';
+import { alignDateDialogueSegments, buildDateDialogueBatch, hasCollapsedDateDialogueAlignment, resolveDateDialogueCharacterRanges, resolveDateDialogueSegmentForLine, resolveDateVoiceSpeaker } from './dateDialogueVoice';
 
 const turns = [
   { lineId: '1', speaker: 'char' as const, speech: '[softly] 你怎么还没睡？', voiceId: 'char-voice' },
@@ -87,6 +87,41 @@ describe('见面逐句播放定位', () => {
     expect(resolveDateDialogueSegmentForLine(turns, segments, '1')).toBeNull();
   });
 
+  it('优先用字符级时间戳收紧 voice segment 粗边界，避免相邻台词串音', () => {
+    const segments = [
+      { dialogue_input_index: 0, character_start_index: 0, character_end_index: 4 },
+      { dialogue_input_index: 1, character_start_index: 4, character_end_index: 8 },
+      { dialogue_input_index: 2, character_start_index: 8, character_end_index: 12 },
+    ];
+    const alignment = {
+      character_start_times_seconds: [0.10, 0.30, 0.55, 0.80, 1.15, 1.35, 1.55, 1.80, 2.15, 2.40, 2.65, 2.90],
+      character_end_times_seconds: [0.25, 0.50, 0.75, 1.00, 1.30, 1.50, 1.75, 2.00, 2.35, 2.60, 2.85, 3.10],
+    };
+    expect(resolveDateDialogueCharacterRanges(segments, 3, alignment)).toEqual([
+      { start: 0.10, end: 1.00 },
+      { start: 1.15, end: 2.00 },
+      { start: 2.15, end: 3.10 },
+    ]);
+  });
+
+  it('同一 input 被拆成多个 voice segment 时合并字符跨度；索引坏掉则拒绝精切', () => {
+    const alignment = {
+      character_start_times_seconds: [0, 0.2, 0.4, 0.6, 0.8, 1.0],
+      character_end_times_seconds: [0.15, 0.35, 0.55, 0.75, 0.95, 1.15],
+    };
+    expect(resolveDateDialogueCharacterRanges([
+      { dialogue_input_index: 0, character_start_index: 0, character_end_index: 2 },
+      { dialogue_input_index: 0, character_start_index: 2, character_end_index: 4 },
+      { dialogue_input_index: 1, character_start_index: 4, character_end_index: 6 },
+    ], 2, alignment)).toEqual([
+      { start: 0, end: 0.75 },
+      { start: 0.8, end: 1.15 },
+    ]);
+    expect(resolveDateDialogueCharacterRanges([
+      { dialogue_input_index: 0, character_start_index: 0, character_end_index: 99 },
+    ], 1, alignment)).toBeNull();
+  });
+
   it('供应商字符时间戳塌缩应回退逐句，正常原生时间戳照常使用', () => {
     const voiceSegments = [{ character_start_index: 0, character_end_index: 50 }];
     expect(hasCollapsedDateDialogueAlignment(voiceSegments,
@@ -117,6 +152,8 @@ describe('见面 Voice ID 路由合约', () => {
 
   it('校验 ElevenLabs 回传 voice_id；声线或时间戳不匹配则单句重试', () => {
     expect(synthesis).toContain('segment.voice_id !== turns[index!].voiceId');
+    expect(synthesis).toContain('resolveDateDialogueCharacterRanges(usableSegments, turns.length, alignment)');
+    expect(synthesis).toContain('return alignDateDialogueSegments(turns, characterRanges);');
     expect(synthesis).toContain('return alignDateDialogueSegments(turns, ranges);');
   });
 
