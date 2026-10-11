@@ -665,7 +665,7 @@ export const buildVNModeBlock = (char: CharacterProfile, userName: string): stri
     const observeBlock = isObserveOn(char) ? buildObserveBlock(char) : '';
     const coauthorUser = !!styleConfig?.coauthorUser;
     const speakerRule = char.dateVoiceEnabled || coauthorUser
-        ? `4. **说话人标签**: 每一条带双引号的台词行末尾都必须加一个机器标签：\`[speaker:char]\` 表示 ${char.name} 在说，\`[speaker:user]\` 表示 ${userName || '用户'} 在说。标签放在引号外，动作/叙述行不要加。这个标签不会显示给用户，只用于双声线配音和归属识别。${coauthorUser ? ` **强化演绎已开启**：这是主动双主角写作模式，不要等待用户逐句提供 user 台词。只要当前是双方都在场、可以正常交流的互动轮，默认至少实际写出一次 user OC 的反应；有合理发言空间时优先写成一条带 [speaker:user] 的直接台词。只有明确沉默、睡着/失去意识、暂时不在场，或本拍确实只该聚焦 ${char.name} 时才可以整轮不写 user。不要机械一人一句，允许交替、连续或一方短暂停顿。` : ` 普通模式下你只写 ${char.name} 的台词，所以台词使用 [speaker:char]。`}`
+        ? `4. **说话人标签**: 每一条带双引号的台词行末尾都必须加一个机器标签：\`[speaker:char]\` 表示 ${char.name} 在说，\`[speaker:user]\` 表示 ${userName || '用户'} 在说，\`[speaker:npc:姓名]\` 表示其他有名字的 NPC 在说（例如 \`[speaker:npc:店员]\`）；没有姓名的路人写 \`[speaker:npc]\`。标签放在引号外，动作/叙述行不要加。不要把 NPC、路人的台词标成 [speaker:char] 或 [speaker:user]；NPC 未配置独立音色时只显示文字，不得借用主角或用户声线。这个标签不会显示给用户，只用于声线配音和归属识别。${coauthorUser ? ` **强化演绎已开启**：这是主动双主角写作模式，不要等待用户逐句提供 user 台词。只要当前是双方都在场、可以正常交流的互动轮，默认至少实际写出一次 user OC 的反应；有合理发言空间时优先写成一条带 [speaker:user] 的直接台词。只有明确沉默、睡着/失去意识、暂时不在场，或本拍确实只该聚焦 ${char.name} 时才可以整轮不写 user。不要机械一人一句，允许交替、连续或一方短暂停顿。` : ` 普通模式下你不能替用户写台词；${char.name} 的台词用 [speaker:char]，场景中其他 NPC 开口时必须标 [speaker:npc:姓名]，不要归给 ${char.name}。`}`
         : '';
     return `### [Visual Novel Mode: 视觉小说脚本模式]
 你正在与用户进行**面对面**的互动。这不是聊天，是一场真实的见面。
