@@ -1,4 +1,5 @@
 import Amsg2DebugPanel from './components/Amsg2DebugPanel';
+import type { StartupBootControls } from './components/DatabaseGuard';
 
 import './utils/configCheckFetchGuard';
 import GameHallAutoplayHost from './components/GameHallAutoplayHost';
@@ -16,7 +17,7 @@ import WebUpdateNotice from './components/WebUpdateNotice';
 import { isIOSStandaloneWebApp } from './utils/iosStandalone';
 import { installDevDebugLifecycleCapture } from './utils/devDebug';
 
-const App: React.FC = () => {
+const App: React.FC<{ startupBoot?: StartupBootControls }> = ({ startupBoot }) => {
   React.useEffect(() => {
     // 常驻监听前后台 / 焦点 / 网络事件；抓不抓由 devDebug 的 lifecycle 类勾选决定
     installDevDebugLifecycleCapture();
@@ -42,7 +43,7 @@ const App: React.FC = () => {
         >
           <OSProvider>
             <MusicProvider>
-              <PhoneShell />
+              <PhoneShell startupBoot={startupBoot} />
               <GameHallAutoplayHost />
             </MusicProvider>
             <EatAppHost />
