@@ -3,6 +3,7 @@ import {
     buildMeetingCgPromptLayers,
     buildMeetingSceneSummary,
     composeMeetingCgImageArguments,
+    preferMeetingCgPortraitAspect,
     sanitizeMeetingMessageForCg,
 } from './dateCgPlanner';
 import { augmentStoryImagePlanningParameters } from './storyImagePromptLayers';
@@ -51,6 +52,29 @@ describe('date CG planner scene context', () => {
         expect(message.content).not.toContain('[v:happy]');
         expect(message.content).not.toContain('[shy]');
         expect(message.content).not.toContain('[normal]');
+    });
+
+    it('targets 9:20 vertical CG without injecting unrecognized size fields', () => {
+        const args = { prompt: 'dramatic reunion' };
+        expect(preferMeetingCgPortraitAspect(args)).toEqual({
+            prompt: expect.stringContaining('9:20 width-to-height'),
+        });
+        const schema = {
+            type: 'object',
+            properties: { prompt: { type: 'string' }, aspect_ratio: { type: 'string', enum: ['1:1', '9:16', '9:20'] } },
+        };
+        const composed = preferMeetingCgPortraitAspect(args, schema);
+        expect(composed.aspect_ratio).toBe('9:20');
+        expect(composed.prompt).toContain('Portrait mobile CG');
+        expect(args).toEqual({ prompt: 'dramatic reunion' });
+
+        const fallback = preferMeetingCgPortraitAspect({ positive_prompt: 'one character' }, {
+            properties: { positive_prompt: { type: 'string' }, size: { type: 'string', enum: ['1024x1024'] } },
+        });
+        expect(fallback.positive_prompt).toContain('9:20');
+        expect(fallback).not.toHaveProperty('aspect_ratio');
+        expect(fallback).not.toHaveProperty('prompt');
+        expect(fallback).not.toHaveProperty('size');
     });
 
     it('reads the same fixed prompt layers as Story Theater and only applies the in-frame identity', () => {
