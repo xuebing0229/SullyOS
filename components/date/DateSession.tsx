@@ -29,7 +29,7 @@ import VoiceFavoriteActionSheet from '../voice/VoiceFavoriteActionSheet';
 import { getVoiceFavorite, makeVoiceFavoriteId, removeVoiceFavorite, saveVoiceFavorite } from '../../utils/voiceFavorites';
 import { saveVoiceLibraryItem, setVoiceLibraryStarredForSource } from '../../utils/voiceLibrary';
 import { resolveTtsProvider } from '../../utils/ttsProvider';
-import { synthesizeDateDialogue } from '../../utils/dateDialogueSynthesis';
+import { synthesizeDateDialogue, DateDialogueAlignmentError } from '../../utils/dateDialogueSynthesis';
 import { extractDateSpokenText, isDateSpokenLine } from '../../utils/dateDialogueLines';
 import { resolveDateVoiceSpeaker, resolveDateDialogueSegmentForLine, type DateDialogueSegment, type DateDialogueTurn } from '../../utils/dateDialogueVoice';
 import { MEETING_CONTINUE_DISPLAY_TEXT } from '../../utils/meetingContinue';
@@ -453,6 +453,8 @@ const DateSession: React.FC<DateSessionProps> = ({
                 dialogueAudioCacheRef.current[key] = batch;
                 return batch;
             } catch (error: any) {
+                // 供应商时间轴异常时不再为本轮反复购买同一段无法准确切片的音频。
+                if (error instanceof DateDialogueAlignmentError) dialogueForcedSinglesRef.current.add(key);
                 console.warn('[DateDialogue] whole-turn synthesis unavailable, falling back:', error?.message || error);
                 return null;
             } finally {
