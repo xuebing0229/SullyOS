@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { alignDateDialogueSegments, buildDateDialogueBatch, resolveDateVoiceSpeaker } from './dateDialogueVoice';
+import { alignDateDialogueSegments, buildDateDialogueBatch, hasCollapsedDateDialogueAlignment, resolveDateDialogueSegmentForLine, resolveDateVoiceSpeaker } from './dateDialogueVoice';
 
 const turns = [
   { lineId: '1', speaker: 'char' as const, speech: '[softly] 你怎么还没睡？', voiceId: 'char-voice' },
@@ -60,6 +60,43 @@ describe('见面模式双 OC 配音批次', () => {
 });
 
 
+describe('见面逐句播放定位', () => {
+  it('NPC 与旁白不占用配音索引，历史复用相同音频也能对应正确一句', () => {
+    const voiced = [
+      { lineId: 'historical:1', speaker: 'char' as const, voiceId: 'c', speech: '早上好' },
+      { lineId: 'historical:4', speaker: 'user' as const, voiceId: 'u', speech: '你好' },
+    ];
+    // 原本的第 2/3 行是无声旁白、NPC；服务商只收到了这两条配音请求。
+    const cachedAudioSegments = [
+      { lineId: 'live:1', speaker: 'char' as const, startTime: 0, endTime: 1 },
+      { lineId: 'live:4', speaker: 'user' as const, startTime: 1.1, endTime: 2.1 },
+    ];
+    expect(resolveDateDialogueSegmentForLine(voiced, cachedAudioSegments, 'historical:4'))
+      .toEqual({ lineId: 'historical:4', speaker: 'user', startTime: 1.1, endTime: 2.1 });
+    expect(resolveDateDialogueSegmentForLine(voiced, cachedAudioSegments, 'historical:2')).toBeNull();
+    expect(resolveDateDialogueSegmentForLine(voiced, cachedAudioSegments, 'historical:3')).toBeNull();
+    expect(resolveDateDialogueSegmentForLine(voiced, cachedAudioSegments.slice(0, 1), 'historical:4')).toBeNull();
+  });
+
+  it('声线或返回批次数量不一致时拒绝猜测切点', () => {
+    const segments = [
+      { lineId: 'old', speaker: 'user' as const, startTime: 0, endTime: 2 },
+      { lineId: 'old2', speaker: 'user' as const, startTime: 2.1, endTime: 3 },
+      { lineId: 'old3', speaker: 'char' as const, startTime: 3.1, endTime: 4 },
+    ];
+    expect(resolveDateDialogueSegmentForLine(turns, segments, '1')).toBeNull();
+  });
+
+  it('供应商字符时间戳塌缩应回退逐句，正常原生时间戳照常使用', () => {
+    const voiceSegments = [{ character_start_index: 0, character_end_index: 50 }];
+    expect(hasCollapsedDateDialogueAlignment(voiceSegments,
+      { character_start_times_seconds: Array(50).fill(23.5) })).toBe(true);
+    expect(hasCollapsedDateDialogueAlignment(voiceSegments,
+      { character_start_times_seconds: Array.from({ length: 50 }, (_, i) => i * 0.1) })).toBe(false);
+    expect(hasCollapsedDateDialogueAlignment(voiceSegments, undefined)).toBe(false);
+  });
+});
+
 describe('见面 Voice ID 路由合约', () => {
   const session = readFileSync('components/date/DateSession.tsx', 'utf8');
   const synthesis = readFileSync('utils/dateDialogueSynthesis.ts', 'utf8');
@@ -67,6 +104,8 @@ describe('见面 Voice ID 路由合约', () => {
   it('普通模式的一口气 Dialogue 每条都以归属解析后的声线 ID 生成', () => {
     expect(session).toContain('const speaker = resolveDateVoiceSpeaker(item.speaker, coauthorUserEnabled);');
     expect(session).toContain('voiceId: dialogueVoiceId(speaker)');
+    expect(session).toContain('return resolveDateDialogueSegmentForLine(turns, batch.segments, lineId);');
+    expect(session).not.toContain('batch.segments[index] || null');
     expect(session).toContain('if (!speaker) return [];');
     expect(session).toContain('if (!speaker) continue;');
     expect(session).toContain("currentLineSpeakerRef.current !== 'npc'");
