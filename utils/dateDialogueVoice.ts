@@ -67,3 +67,25 @@ export const alignDateDialogueSegments = (
     return { lineId: turn.lineId, speaker: turn.speaker, startTime: range.start, endTime: range.end };
   });
 };
+
+/**
+ * 用实际送进 ElevenLabs 的台词顺序定位，而不是用屏幕气泡序号。
+ * 叙述与 NPC 不参与配音：把它们计进索引会使后续台词全部错位。
+ * 缓存可跨实时 GAL / 历史阅读复用，缓存中的 lineId 可能不同，
+ * 所以只按同一个批次的输入顺序匹配，再还原本次请求的 lineId。
+ */
+export const resolveDateDialogueSegmentForLine = (
+  voicedTurns: DateDialogueTurn[],
+  segments: DateDialogueSegment[],
+  lineId: string,
+): DateDialogueSegment | null => {
+  if (voicedTurns.length !== segments.length) return null;
+  const index = voicedTurns.findIndex(turn => turn.lineId === lineId);
+  if (index < 0) return null;
+  const segment = segments[index];
+  const turn = voicedTurns[index];
+  if (!segment || segment.speaker !== turn.speaker
+      || !Number.isFinite(segment.startTime) || !Number.isFinite(segment.endTime)
+      || segment.endTime <= segment.startTime) return null;
+  return { ...segment, lineId: turn.lineId };
+};
