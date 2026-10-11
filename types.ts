@@ -2273,6 +2273,8 @@ export interface DateObserveConfig {
 }
 
 export interface DateState {
+    /** 此进度对应的见面场次；恢复时避免误接到最新的另一场。 */
+    encounterId?: string;
     dialogueQueue: DialogueItem[];
     dialogueBatch: DialogueItem[];
     currentText: string;
