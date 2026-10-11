@@ -31,7 +31,7 @@ import { saveVoiceLibraryItem, setVoiceLibraryStarredForSource } from '../../uti
 import { resolveTtsProvider } from '../../utils/ttsProvider';
 import { synthesizeDateDialogue } from '../../utils/dateDialogueSynthesis';
 import { extractDateSpokenText, isDateSpokenLine } from '../../utils/dateDialogueLines';
-import { resolveDateVoiceSpeaker, type DateDialogueSegment, type DateDialogueTurn } from '../../utils/dateDialogueVoice';
+import { resolveDateVoiceSpeaker, resolveDateDialogueSegmentForLine, type DateDialogueSegment, type DateDialogueTurn } from '../../utils/dateDialogueVoice';
 import { MEETING_CONTINUE_DISPLAY_TEXT } from '../../utils/meetingContinue';
 import TokenImg from '../os/TokenImg';
 import { VOICE_LANGUAGE_OPTIONS, voiceLanguageAnalyticsValue, voiceLanguageLabel, voiceLanguagePromptLabel } from '../../utils/voiceLanguage';
@@ -492,9 +492,8 @@ const DateSession: React.FC<DateSessionProps> = ({
         batch: DateDialogueAudioBatch,
         lineId: string,
     ): DateDialogueSegment | null => {
-        const dialogueItems = items.filter(item => !!item.lineId && !!item.speechText && isDialogueLine(item.text));
-        const index = dialogueItems.findIndex(item => item.lineId === lineId);
-        return index >= 0 ? (batch.segments[index] || null) : null;
+        const turns = buildDateDialogueTurns(items);
+        return resolveDateDialogueSegmentForLine(turns, batch.segments, lineId);
     };
 
     const playDialogueSegment = async (
