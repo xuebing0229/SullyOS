@@ -134,6 +134,7 @@ import PersonaSimIndicator from './os/PersonaSimIndicator';
 import DreamSimIndicator from './os/DreamSimIndicator';
 import ErrorDialog from './os/ErrorDialog';
 import BootSequence from './os/BootSequence';
+import type { StartupBootControls } from './DatabaseGuard';
 import { setAppPayloadWarmer, shouldUseIdleAppPreload } from './os/appPreload';
 import { isBrowserBackGuardState, makeBrowserBackGuardState } from '../utils/browserBackGuard';
 import MomentsScheduler from './MomentsScheduler';
@@ -470,7 +471,7 @@ const AppLoadingFallback: React.FC<{ onReturn?: () => void; animationEnabled?: b
   );
 };
 
-const PhoneShell: React.FC = () => {
+const PhoneShell: React.FC<{ startupBoot?: StartupBootControls }> = ({ startupBoot }) => {
   const { theme, isLocked, unlock, activeApp, closeApp, openApp, virtualTime, isDataLoaded, toasts, unreadMessages, characters, handleBack, suspendedCall, resumeCall, activeCharacterId, errorDialog, dismissError, sysOperation } = useOS();
   const useIOSStandaloneLayout = isIOSStandaloneWebApp();
 
@@ -483,11 +484,21 @@ const PhoneShell: React.FC = () => {
   }, [statusBarMode]);
 
   // 冷启动「世界入场」是否已结束。结束前由 BootSequence 接管整屏（同时取代旧的黑屏 spinner）。
-  const [bootDone, setBootDone] = useState(false);
+  const [localBootDone, setLocalBootDone] = useState(false);
+  const bootDone = startupBoot ? startupBoot.done : localBootDone;
   const bootAnimationEnabled = theme.bootAnimationEnabled !== false;
   useEffect(() => {
-    // 本次启动一旦选择跳过，就记为已经完成；用户稍后重新打开开关时不在桌面中途补播。
-    if (!bootAnimationEnabled) setBootDone(true);
+    // When guarded, the single root-level boot owns the transition across both loading stages.
+    startupBoot?.reportState({
+      dataReady: isDataLoaded,
+      enabled: bootAnimationEnabled,
+      wallpaper: theme.wallpaper,
+      style: theme.bootAnimationStyle,
+    });
+  }, [startupBoot?.reportState, isDataLoaded, bootAnimationEnabled, theme.wallpaper, theme.bootAnimationStyle]);
+  useEffect(() => {
+    // A boot skipped once must not start halfway through an already open session.
+    if (!bootAnimationEnabled) setLocalBootDone(true);
   }, [bootAnimationEnabled]);
 
   // 折中预热策略：首屏/开机完全让路；桌面稳定约 600ms 后，能力足够的设备就逐个预热。
@@ -875,8 +886,8 @@ const PhoneShell: React.FC = () => {
 
   // 冷启动：先放「世界入场」cinematic（数据没就绪时它持续呼吸等待，绝不出现 spinner）。
   // BootSequence 在「数据就绪 + 停留够时长」后推进退场，再交还控制权给下方的锁屏/桌面。
-  if (!bootDone && bootAnimationEnabled) {
-    return <BootSequence dataReady={isDataLoaded} wallpaper={theme.wallpaper} style={theme.bootAnimationStyle} onDone={() => setBootDone(true)} />;
+  if (!startupBoot && !bootDone && bootAnimationEnabled) {
+    return <BootSequence dataReady={isDataLoaded} wallpaper={theme.wallpaper} style={theme.bootAnimationStyle} onDone={() => setLocalBootDone(true)} />;
   }
 
   // 兜底：理论上 bootDone 时数据已就绪；万一未就绪（极端慢）退化为最简静态深色屏，不闪 spinner。

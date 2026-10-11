@@ -1,14 +1,51 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { openDB } from '../utils/db';
 import { checkDatabaseReadable, databaseFailure, subscribeDatabaseFailure, type DatabaseFailure } from '../utils/databaseHealth';
 import { BUILD_LABEL } from '../utils/buildInfo';
 import { databaseOpenDiagnostic } from '../utils/databaseOpenDiagnostics';
+import BootSequence from './os/BootSequence';
+import type { OSTheme } from '../types';
 import './DatabaseGuard.css';
 
-export default function DatabaseGuard({ children }: { children: React.ReactNode }) {
+type BootState = {
+  dataReady: boolean;
+  enabled: boolean;
+  wallpaper?: string;
+  style?: OSTheme['bootAnimationStyle'];
+};
+
+export type StartupBootControls = {
+  done: boolean;
+  reportState: (state: BootState) => void;
+};
+
+// Start the existing boot scene before IndexedDB opens; never mount data-backed
+// providers until the archive check passes. The scene remains mounted through
+// the subsequent OSContext load, so there is only one continuous animation.
+function storedBootState(): BootState {
+  try {
+    const saved = JSON.parse(localStorage.getItem('os_theme') || '{}') as Partial<OSTheme>;
+    return {
+      dataReady: false,
+      enabled: saved.bootAnimationEnabled !== false,
+      wallpaper: typeof saved.wallpaper === 'string' ? saved.wallpaper : undefined,
+      style: saved.bootAnimationStyle,
+    };
+  } catch {
+    return { dataReady: false, enabled: true };
+  }
+}
+
+export default function DatabaseGuard({ children }: { children: (boot: StartupBootControls) => React.ReactNode }) {
   const [ready, setReady] = useState(false);
   const [failure, setFailure] = useState<DatabaseFailure | null>(null);
   const [copyStatus, setCopyStatus] = useState('');
+  const [bootDone, setBootDone] = useState(false);
+  const [bootState, setBootState] = useState(storedBootState);
+  const reportState = useCallback((next: BootState) => {
+    setBootState(current => current.dataReady === next.dataReady && current.enabled === next.enabled
+      && current.style === next.style && current.wallpaper === next.wallpaper ? current : next);
+  }, []);
   useEffect(() => {
     let active = true, failed = false;
     const fail = (error: unknown) => {
@@ -24,20 +61,27 @@ export default function DatabaseGuard({ children }: { children: React.ReactNode 
     return () => { active = false; unsubscribe(); };
   }, []);
 
-  if (ready && !failure) return <>{children}</>;
-  const duplicateIndex = failure?.message.includes('Index with the same ID already exists');
-  const diagnostic = failure ? [
+  if (!failure) return <>
+    {ready && children({ done: bootDone || !bootState.enabled, reportState })}
+    {!bootDone && bootState.enabled && <BootSequence
+      dataReady={ready && bootState.dataReady}
+      wallpaper={bootState.wallpaper}
+      style={bootState.style}
+      onDone={() => setBootDone(true)}
+    />}
+  </>;
+  const duplicateIndex = failure.message.includes('Index with the same ID already exists');
+  const diagnostic = [
     'SullyOS 本地数据库诊断', `构建：${BUILD_LABEL}`,
     `页面：${location.origin}${location.pathname}`, `浏览器：${navigator.userAgent}`,
     `错误：${failure.name}: ${failure.message}`,
     databaseOpenDiagnostic(),
-  ].join('\n') : '';
-  return <main className="database-guard" aria-busy={!failure}>
+  ].join('\n');
+  return <main className="database-guard">
     <section aria-labelledby="database-guard-title">
       <span className="database-guard-label">SULLYOS · 本地存档</span>
-      <h1 id="database-guard-title">{failure ? '暂时无法读取本地数据' : '正在读取本地数据…'}</h1>
-      {failure ? <>
-        <p role="alert">读取失败不代表数据已被清空。主界面已暂停加载，请先保留当前浏览器和原访问网址。</p>
+      <h1 id="database-guard-title">暂时无法读取本地数据</h1>
+      <p role="alert">读取失败不代表数据已被清空。主界面已暂停加载，请先保留当前浏览器和原访问网址。</p>
         {duplicateIndex && <p>浏览器报告数据库内部索引冲突。目前无法确认存档是否完整；清理网站数据无法保留原存档。</p>}
         <ul>
           <li>不要清除网站数据、卸载浏览器或用空备份覆盖已有备份。</li>
@@ -56,7 +100,6 @@ export default function DatabaseGuard({ children }: { children: React.ReactNode 
           }}>复制诊断</button>
           <span role="status">{copyStatus}</span>
         </details>
-      </> : <p>确认存档可读取后再打开桌面，请稍候。</p>}
     </section>
   </main>;
 }

@@ -85,7 +85,7 @@ if (!rootElement) {
 const root = ReactDOM.createRoot(rootElement);
 root.render(
   <React.StrictMode>
-    <DatabaseGuard><App /></DatabaseGuard>
+    <DatabaseGuard>{startupBoot => <App startupBoot={startupBoot} />}</DatabaseGuard>
   </React.StrictMode>
 );
 }

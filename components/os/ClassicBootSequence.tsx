@@ -82,6 +82,8 @@ const ClassicBootSequence: React.FC<Props> = ({ dataReady, wallpaper, onDone }) 
 
   // 轻触跳过：进入平滑退场（非硬切）。
   const skip = () => {
+    // Skipping the animation must never release an unreadable or unfinished archive.
+    if (!dataReady) return;
     if (phase !== 'exit') {
       setPhase('exit');
       
