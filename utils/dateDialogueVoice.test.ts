@@ -14,6 +14,10 @@ describe('见面声线归属', () => {
     expect(resolveDateVoiceSpeaker('char', false)).toBe('char');
     expect(resolveDateVoiceSpeaker(undefined, false)).toBe('char');
   });
+  it('NPC 在任何模式下都没有主角或用户声线，绝不混入整轮配音', () => {
+    expect(resolveDateVoiceSpeaker('npc', false)).toBeNull();
+    expect(resolveDateVoiceSpeaker('npc', true)).toBeNull();
+  });
   it('开启强化模式后 char 和 user 仍各自使用独立声线', () => {
     expect(resolveDateVoiceSpeaker('char', true)).toBe('char');
     expect(resolveDateVoiceSpeaker('user', true)).toBe('user');
@@ -63,6 +67,10 @@ describe('见面 Voice ID 路由合约', () => {
   it('普通模式的一口气 Dialogue 每条都以归属解析后的声线 ID 生成', () => {
     expect(session).toContain('const speaker = resolveDateVoiceSpeaker(item.speaker, coauthorUserEnabled);');
     expect(session).toContain('voiceId: dialogueVoiceId(speaker)');
+    expect(session).toContain('if (!speaker) return [];');
+    expect(session).toContain('if (!speaker) continue;');
+    expect(session).toContain("currentLineSpeakerRef.current !== 'npc'");
+    expect(session).toContain("currentLineNpcNameRef.current = item.npcName;");
     expect(session).toContain("if (!voiceEnabled || voiceLang || resolveTtsProvider(apiConfig) !== 'elevenlabs') return null;");
     expect(session).toContain("const speaker = resolveDateVoiceSpeaker(currentLineSpeakerRef.current, coauthorUserEnabled);");
     expect(session).toContain("const favoriteSpeaker = resolveDateVoiceSpeaker(target.speaker, coauthorUserEnabled);");
