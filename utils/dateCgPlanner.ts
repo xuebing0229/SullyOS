@@ -75,7 +75,7 @@ const isMeetingImageTool = (resolved: ResolvedMcpTool | undefined): resolved is 
 export const sanitizeMeetingMessageForCg = (message: Message): Message => {
     if (typeof message.content !== 'string') return message;
     const content = message.content
-        .replace(/\[(?:speaker|s):\s*(?:char|user)\s*\]/ig, '')
+        .replace(/\[(?:speaker|s):\s*(?:char|user|npc)(?:\s*[:：]\s*[^\]\r\n]+)?\s*\]/ig, '')
         .replace(/\[v:\s*[a-zA-Z]+\s*\]/g, '')
         .split('\n')
         .map(line => line.replace(/^\s*\[(?:normal|happy|angry|sad|shy)\]\s*/i, ''))
@@ -133,6 +133,10 @@ export const preferMeetingCgPortraitAspect = (
     parameters?: Record<string, any>,
 ): Record<string, any> => {
     const output = { ...args };
+    const promptKey = ['prompt', 'positive_prompt', 'positivePrompt'].find(key => typeof output[key] === 'string');
+    if (promptKey) {
+        output[promptKey] = [output[promptKey], 'Portrait mobile CG composition, target 9:20 width-to-height aspect ratio.'].filter(Boolean).join(' ');
+    }
     const properties = parameters?.properties;
     if (!properties || typeof properties !== 'object') return output;
     for (const key of ['aspect_ratio', 'aspectRatio', 'ratio']) {
@@ -326,11 +330,7 @@ export async function generateMeetingCgViaChatPlanner(input: GenerateMeetingCgIn
     const preparedArgs = await prepareBuiltinImageToolArguments({
         server: chosen.resolved.server,
         toolName: chosen.resolved.toolName,
-        args: preferMeetingCgPortraitAspect({
-            ...composed.arguments,
-            // 即使生图服务没有比例参数，也由客户端保证画幅构图要求进入最终请求。
-            prompt: [composed.arguments.prompt, 'Portrait mobile CG composition, target 9:20 width-to-height aspect ratio.'].filter(Boolean).join(' '),
-        }, planningTool?.function.parameters),
+        args: preferMeetingCgPortraitAspect(composed.arguments, planningTool?.function.parameters),
         character: input.char,
         userProfile: input.userProfile,
     });
