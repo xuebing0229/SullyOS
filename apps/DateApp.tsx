@@ -17,7 +17,8 @@ import Modal from '../components/os/Modal';
 import TokenImg from '../components/os/TokenImg';
 import DateSession from '../components/date/DateSession';
 import DateSettings from '../components/date/DateSettings';
-import { clearDateResumeAttempt } from '../utils/dateSessionRecovery';
+import { armDateResumeAttempt, clearDateResumeAttempt, takeCrashedDateResume } from '../utils/dateSessionRecovery';
+import { recoverDateStateFromHistory, resolveResumeEncounterId } from '../utils/dateResume';
 import { BookOpen, Sparkle, CaretLeft, GearSix } from '@phosphor-icons/react';
 import { CharacterGroupFilterBar, filterCharactersByGroup, GROUP_FILTER_ALL } from '../components/character/CharacterGroupFilter';
 import { trimHistoryThrough } from '../utils/dateSessionHistory';
@@ -135,6 +136,10 @@ const DateApp: React.FC = () => {
     };
     const peekRequestRef = useRef(0);
     const enteringSessionRef = useRef(false);
+    // 切换角色前先让用户选择：恢复快照，或开始新的见面。
+    const [pendingResume, setPendingResume] = useState<{ character: CharacterProfile; state: DateState; historyOnly: boolean } | null>(null);
+    const [resumeState, setResumeState] = useState<DateState | null>(null);
+    const selectionGenerationRef = useRef(0);
 
     // --- NEW: Editing State lifted to here for DB sync ---
     const { messages: dateMessages, setMessages: setDateMessages, refresh: loadDateMessages,
@@ -168,6 +173,14 @@ const DateApp: React.FC = () => {
     };
 
     useEffect(() => () => { peekRequestRef.current++; }, []);
+
+    // 之前 iOS 恢复崩溃哨兵曾直接删除存档。现在只提醒，不自动擦除任何用户进度。
+    useEffect(() => {
+        const crashedCharId = takeCrashedDateResume();
+        if (crashedCharId) addToast('上次恢复见面时可能异常退出，进度仍保留，可选择重新见面', 'info');
+        // 仅初始化时检查一次。
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
 
     // --- Navigation Helpers ---
     const handleBack = () => {
@@ -211,16 +224,72 @@ const DateApp: React.FC = () => {
         return content;
     };
 
-    // 每次进入独立记次；模型上下文仍由共享管线决定。
-    const handleCharClick = (c: CharacterProfile) => {
+    // 每次明确选择「新的见面」才创建场次并替换快照；仅点角色卡片不能清理旧进度。
+    const startNewMeeting = (c: CharacterProfile) => {
         clearDateResumeAttempt();
         setActiveCharacterId(c.id);
         encounterIdRef.current = crypto.randomUUID();
+        setResumeState(null);
         setDateMessages([]);
         setPeekStatus('');
         setHasSavedOpening(false);
         if (c.savedDateState) updateCharacter(c.id, { savedDateState: undefined });
         setMode('entry');
+    };
+
+    const handleCharClick = async (c: CharacterProfile) => {
+        const generation = ++selectionGenerationRef.current;
+        if (c.savedDateState) {
+            setPendingResume({ character: c, state: c.savedDateState, historyOnly: false });
+            return;
+        }
+        // 旧版本点选角色时会提前清空 savedDateState；尝试从数据库的见面正文续接。
+        try {
+            const history = await loadRecentDateMessages(c.id, 10);
+            if (generation !== selectionGenerationRef.current) return;
+            const recovered = recoverDateStateFromHistory(history);
+            if (recovered) setPendingResume({ character: c, state: recovered, historyOnly: true });
+            else startNewMeeting(c);
+        } catch (error) {
+            if (generation === selectionGenerationRef.current) {
+                console.error('[Date] failed to check previous meeting', error);
+                addToast('读取上次见面记录失败，请重试', 'error');
+            }
+        }
+    };
+
+    const handleResumeMeeting = async () => {
+        const pending = pendingResume;
+        if (!pending) return;
+        const generation = ++selectionGenerationRef.current;
+        try {
+            const history = await loadRecentDateMessages(pending.character.id, 10);
+            if (generation !== selectionGenerationRef.current) return;
+            const restoredEncounterId = resolveResumeEncounterId(pending.state, history);
+            encounterIdRef.current = restoredEncounterId;
+            setResumeState({ ...pending.state, encounterId: restoredEncounterId || undefined });
+            setActiveCharacterId(pending.character.id);
+            setDateMessages([]);
+            setPeekStatus(pending.state.peekStatus || '');
+            setHasSavedOpening(true);
+            armDateResumeAttempt(pending.character.id);
+            setMode('session');
+            setPendingResume(null);
+            addToast(pending.historyOnly ? '已从历史消息继续见面，原画面进度无法还原' : '已恢复上次见面进度', 'success');
+        } catch (error) {
+            if (generation === selectionGenerationRef.current) {
+                console.error('[Date] failed to restore previous meeting', error);
+                addToast('读取上次见面失败，请重试', 'error');
+            }
+        }
+    };
+
+    const handleStartNewMeeting = () => {
+        const pending = pendingResume;
+        if (!pending) return;
+        ++selectionGenerationRef.current;
+        setPendingResume(null);
+        startNewMeeting(pending.character);
     };
 
     // 从聊天「见面」按钮跳进来，同样选择本次开场方式。
@@ -634,6 +703,7 @@ const DateApp: React.FC = () => {
         // 来自聊天：退出见面回聊天
         if (cameFromChat) { returnToChat(); return; }
         setMode('select');
+        setResumeState(null);
         setPeekStatus('');
         setHasSavedOpening(false);
     };
@@ -858,6 +928,19 @@ const DateApp: React.FC = () => {
                         ))}
                     </div>
                 )}
+                <Modal isOpen={!!pendingResume} title="继续上次见面？"
+                    onClose={() => { ++selectionGenerationRef.current; setPendingResume(null); }}
+                    footer={<div className="flex w-full gap-3">
+                        <button onClick={handleStartNewMeeting} className="flex-1 rounded-2xl bg-slate-100 py-3 text-sm font-bold text-slate-600">新的见面</button>
+                        <button onClick={() => { void handleResumeMeeting(); }} className="flex-1 rounded-2xl bg-primary py-3 text-sm font-bold text-white">继续上次</button>
+                    </div>}>
+                    <div className="space-y-2 py-3 text-center text-sm text-slate-600">
+                        <p>{pendingResume?.character.name} 有上次见面的进度，可以直接接着聊。</p>
+                        <p className="text-xs text-slate-400">最近记录：{pendingResume?.state.timestamp ? new Date(pendingResume.state.timestamp).toLocaleString() : '未知'}</p>
+                        {pendingResume?.historyOnly && <p className="text-xs text-amber-700">此前的进度快照已丢失，可从保留的文字记录接续，但 CG 与停留位置无法还原。</p>}
+                        <p className="text-xs text-slate-400">选择「新的见面」后仍可选靠近、让他靠近或直接见面；历史记录不会删除。</p>
+                    </div>
+                </Modal>
             </div>
         );
     }
@@ -1082,6 +1165,7 @@ const DateApp: React.FC = () => {
                     userProfile={userProfile}
                     messages={dateMessages}
                     peekStatus={peekStatus}
+                    initialState={resumeState || undefined}
                     encounterId={encounterIdRef.current}
                     onSendMessage={handleSendMessage}
                     onReroll={handleReroll}
