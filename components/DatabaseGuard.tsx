@@ -81,8 +81,7 @@ export default function DatabaseGuard({ children }: { children: (boot: StartupBo
     <section aria-labelledby="database-guard-title">
       <span className="database-guard-label">SULLYOS · 本地存档</span>
       <h1 id="database-guard-title">暂时无法读取本地数据</h1>
-      <>
-        <p role="alert">读取失败不代表数据已被清空。主界面已暂停加载，请先保留当前浏览器和原访问网址。</p>
+      <p role="alert">读取失败不代表数据已被清空。主界面已暂停加载，请先保留当前浏览器和原访问网址。</p>
         {duplicateIndex && <p>浏览器报告数据库内部索引冲突。目前无法确认存档是否完整；清理网站数据无法保留原存档。</p>}
         <ul>
           <li>不要清除网站数据、卸载浏览器或用空备份覆盖已有备份。</li>
@@ -101,7 +100,6 @@ export default function DatabaseGuard({ children }: { children: (boot: StartupBo
           }}>复制诊断</button>
           <span role="status">{copyStatus}</span>
         </details>
-      </>
     </section>
   </main>;
 }
