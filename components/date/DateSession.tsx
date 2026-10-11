@@ -812,6 +812,7 @@ const DateSession: React.FC<DateSessionProps> = ({
         }
 
         const speaker = resolveDateVoiceSpeaker(currentLineSpeakerRef.current, coauthorUserEnabled);
+        if (!speaker) return; // NPC 没有专属声线，不做单句配音。
         const speechText = currentSarPair ? extractDialogueSpeech(galShownText) : (currentLineSpeechRef.current || extractDialogueSpeech(galShownText));
         const lineId = currentLineIdRef.current;
         stopDateAudio();
@@ -1877,16 +1878,16 @@ const DateSession: React.FC<DateSessionProps> = ({
                                                             voiceFavoriteLongPressTriggered.current = false;
                                                         }}
                                                         onTouchStart={voiceEnabled && !!speaker && lineIsDialogue && !isOpeningMsg ? (e) => startDateVoiceLongPress(e, voiceTarget) : undefined}
-                                                        onTouchMove={voiceEnabled && lineIsDialogue && !isOpeningMsg ? endDateVoiceLongPress : undefined}
-                                                        onTouchEnd={voiceEnabled && lineIsDialogue && !isOpeningMsg ? endDateVoiceLongPress : undefined}
-                                                        onMouseDown={voiceEnabled && lineIsDialogue && !isOpeningMsg ? (e) => e.stopPropagation() : undefined}
-                                                        onContextMenu={voiceEnabled && lineIsDialogue && !isOpeningMsg ? (e) => { e.preventDefault(); e.stopPropagation(); void openDateVoiceFavorite(voiceTarget); } : undefined}
+                                                        onTouchMove={voiceEnabled && !!speaker && lineIsDialogue && !isOpeningMsg ? endDateVoiceLongPress : undefined}
+                                                        onTouchEnd={voiceEnabled && !!speaker && lineIsDialogue && !isOpeningMsg ? endDateVoiceLongPress : undefined}
+                                                        onMouseDown={voiceEnabled && !!speaker && lineIsDialogue && !isOpeningMsg ? (e) => e.stopPropagation() : undefined}
+                                                        onContextMenu={voiceEnabled && !!speaker && lineIsDialogue && !isOpeningMsg ? (e) => { e.preventDefault(); e.stopPropagation(); void openDateVoiceFavorite(voiceTarget); } : undefined}
                                                     >
                                                         <p
                                                             className={`meeting-prose flex-1 whitespace-pre-wrap font-serif text-[18px] text-justify leading-loose tracking-wide pl-4 ${lightReading ? 'text-stone-700 border-l-2 border-stone-200' : 'text-slate-200 drop-shadow-md border-l-2 border-white/10'}`}
                                                         >{cleanLine}</p>
                                                         {/* Voice button: only for dialogue lines, not opening */}
-                                                        {voiceEnabled && lineIsDialogue && !isOpeningMsg && (
+                                                        {voiceEnabled && !!speaker && lineIsDialogue && !isOpeningMsg && (
                                                             <button
                                                                 onClick={(e) => {
                                                                     e.stopPropagation();
@@ -1961,9 +1962,9 @@ const DateSession: React.FC<DateSessionProps> = ({
                             <div
                                 className="w-[90%] max-w-lg bg-black/60 backdrop-blur-xl rounded-2xl border border-white/10 p-6 min-h-[140px] shadow-2xl animate-slide-up hover:bg-black/70 cursor-pointer"
                                 onTouchStart={voiceEnabled && currentLineSpeakerRef.current !== 'npc' && !isTextAnimating && !isShowingOpening && isDialogueLine(galShownText) ? (e) => startDateVoiceLongPress(e, resolveCurrentDateVoiceTarget()) : undefined}
-                                onTouchMove={voiceEnabled && !isTextAnimating && !isShowingOpening && isDialogueLine(galShownText) ? endDateVoiceLongPress : undefined}
-                                onTouchEnd={voiceEnabled && !isTextAnimating && !isShowingOpening && isDialogueLine(galShownText) ? endDateVoiceLongPress : undefined}
-                                onContextMenu={voiceEnabled && !isTextAnimating && !isShowingOpening && isDialogueLine(galShownText) ? (e) => { e.preventDefault(); e.stopPropagation(); void openDateVoiceFavorite(resolveCurrentDateVoiceTarget()); } : undefined}
+                                onTouchMove={voiceEnabled && currentLineSpeakerRef.current !== 'npc' && !isTextAnimating && !isShowingOpening && isDialogueLine(galShownText) ? endDateVoiceLongPress : undefined}
+                                onTouchEnd={voiceEnabled && currentLineSpeakerRef.current !== 'npc' && !isTextAnimating && !isShowingOpening && isDialogueLine(galShownText) ? endDateVoiceLongPress : undefined}
+                                onContextMenu={voiceEnabled && currentLineSpeakerRef.current !== 'npc' && !isTextAnimating && !isShowingOpening && isDialogueLine(galShownText) ? (e) => { e.preventDefault(); e.stopPropagation(); void openDateVoiceFavorite(resolveCurrentDateVoiceTarget()); } : undefined}
                             >
                                 <div className="absolute -top-3 left-6 flex items-center gap-2">
                                     <div className="bg-white/90 text-black px-4 py-1 rounded-sm text-xs font-bold tracking-widest uppercase shadow-[0_4px_10px_rgba(0,0,0,0.3)] transform -skew-x-12">{currentLineSpeakerRef.current === 'npc' && isDialogueLine(galShownText)
@@ -1972,7 +1973,7 @@ const DateSession: React.FC<DateSessionProps> = ({
                                             : !isDialogueLine(galShownText) ? '旁白'
                                             : currentLineSpeakerRef.current === 'user' ? (userProfile.name || '用户') : char.name}</div>
                                     {/* Voice play button next to name */}
-                                    {voiceEnabled && !isTextAnimating && !isShowingOpening && isDialogueLine(galShownText) && (
+                                    {voiceEnabled && currentLineSpeakerRef.current !== 'npc' && !isTextAnimating && !isShowingOpening && isDialogueLine(galShownText) && (
                                         <button
                                             onClick={(e) => {
                                                 e.stopPropagation();
