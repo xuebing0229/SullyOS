@@ -55,15 +55,17 @@ const extractVoiceEmotionTag = (line: string): { voiceEmotion?: string; rest: st
     return { voiceEmotion, rest };
 };
 
-const SPEAKER_TAG_RE = /\[(?:speaker|s):\s*(char|user)\s*\]/ig;
-const extractSpeakerTag = (line: string): { speaker?: 'char' | 'user'; rest: string } => {
-    let speaker: 'char' | 'user' | undefined;
-    const rest = line.replace(SPEAKER_TAG_RE, (_m, raw: string) => {
-        const value = (raw || '').toLowerCase();
-        if (value === 'char' || value === 'user') speaker = value;
+const SPEAKER_TAG_RE = /\[(?:speaker|s):\s*(char|user|npc)(?:\s*[:：]\s*([^\]\r\n]+))?\s*\]/ig;
+const extractSpeakerTag = (line: string): { speaker?: 'char' | 'user' | 'npc'; npcName?: string; rest: string } => {
+    let speaker: 'char' | 'user' | 'npc' | undefined;
+    let npcName: string | undefined;
+    const rest = line.replace(SPEAKER_TAG_RE, (_m, raw: string, name?: string) => {
+        const value = (raw || '').toLowerCase() as 'char' | 'user' | 'npc';
+        speaker = value;
+        npcName = value === 'npc' ? name?.trim() || undefined : undefined;
         return '';
     });
-    return { speaker, rest };
+    return { speaker, npcName, rest };
 };
 
 // 唯一的台词来源：严格抽取完整引号里的话，旁白绝不落到 TTS 兜底。
@@ -114,7 +116,7 @@ const parseDialogue = (
         if (!rawLine || isContextNoise(rawLine) || isDateHistoryEnvelopeOnly(rawLine)) continue;
         const visibleLine = stripDateHistoryEnvelope(rawLine);
         if (!visibleLine) continue;
-        const { speaker, rest: speakerRest } = extractSpeakerTag(visibleLine);
+        const { speaker, npcName, rest: speakerRest } = extractSpeakerTag(visibleLine);
         // 先把独立的语音情绪标记 [v:xxx] 抽出来（跟立绘情绪互不影响），再解析立绘标签
         const { voiceEmotion, rest } = extractVoiceEmotionTag(speakerRest);
         const line = rest.trim();
@@ -140,6 +142,7 @@ const parseDialogue = (
                 emotion: currentEmotion,
                 voiceEmotion,
                 speaker: speaker || 'char',
+                npcName,
                 speechText: dialogue ? extractDialogueSpeech(content) : undefined,
             });
         }
@@ -334,7 +337,8 @@ const DateSession: React.FC<DateSessionProps> = ({
     const coauthorUserEnabled = !!char.dateStyleConfig?.coauthorUser;
     // Bridges the current line's VOICE emotion ([v:xxx], 跟立绘情绪分开) to the GAL.
     const currentLineEmotionRef = useRef<string | undefined>(undefined);
-    const currentLineSpeakerRef = useRef<'char' | 'user'>('char');
+    const currentLineSpeakerRef = useRef<'char' | 'user' | 'npc'>('char');
+    const currentLineNpcNameRef = useRef<string | undefined>();
     const currentLineSpeechRef = useRef<string>('');
     const currentLineIdRef = useRef<string>('');
     const [voiceFavoriteTarget, setVoiceFavoriteTarget] = useState<DateVoiceFavoriteTarget | null>(null);
@@ -398,15 +402,16 @@ const DateSession: React.FC<DateSessionProps> = ({
     const buildDateDialogueTurns = (items: DialogueItem[]): DateDialogueTurn[] =>
         items
             .filter(item => !!item.lineId && !!item.speechText && isDialogueLine(item.text))
-            .map(item => {
-                // 姓名牌和 TTS 归属必须采用同一规则；原版强制只有角色声线。
+            .flatMap(item => {
+                // NPC 没有独立声线，整个 Dialogue 批次也不能把 NPC 台词借给角色。
                 const speaker = resolveDateVoiceSpeaker(item.speaker, coauthorUserEnabled);
-                return {
+                if (!speaker) return [];
+                return [{
                     lineId: item.lineId!,
                     speaker,
                     speech: item.speechText!,
                     voiceId: dialogueVoiceId(speaker),
-                };
+                }];
             });
 
     const makeDateDialogueBatchKey = (turns: DateDialogueTurn[]): string =>
@@ -636,7 +641,7 @@ const DateSession: React.FC<DateSessionProps> = ({
     // 失败时保留旧音频；绝不因为普通播放意外绕开缓存重复计费。
     const regenerateVoiceTurn = async (items: DialogueItem[], targetKey: string, forceSingles = false) => {
         if (voiceRegenerationLockRef.current || isTyping || !voiceEnabled) return;
-        const spokenItems = items.filter(item => !!item.speechText && isDialogueLine(item.text));
+        const spokenItems = items.filter(item => !!item.speechText && isDialogueLine(item.text) && !!resolveDateVoiceSpeaker(item.speaker, coauthorUserEnabled));
         if (!spokenItems.length) {
             addToast('这一轮没有可配音的台词', 'info');
             return;
@@ -688,6 +693,7 @@ const DateSession: React.FC<DateSessionProps> = ({
                 const freshLines: Record<string, DateSpeechResult> = {};
                 for (const item of spokenItems) {
                     const speaker = resolveDateVoiceSpeaker(item.speaker, coauthorUserEnabled);
+                    if (!speaker) continue;
                     const speechText = item.speechText!;
                     const cacheKey = singleVoiceCacheKey(speaker, speechText);
                     if (freshLines[cacheKey]) continue;
@@ -746,6 +752,7 @@ const DateSession: React.FC<DateSessionProps> = ({
         const generation = playbackGenerationRef.current;
         const isCurrent = () => !cancelled && generation === playbackGenerationRef.current;
         const speaker = resolveDateVoiceSpeaker(currentLineSpeakerRef.current, coauthorUserEnabled);
+        if (!speaker) return; // NPC 只显示台词，不发送给当前角色的 TTS。
         const speechText = currentSarPair ? extractDialogueSpeech(galShownText) : (currentLineSpeechRef.current || extractDialogueSpeech(galShownText));
         const lineId = currentLineIdRef.current;
         const cacheKey = singleVoiceCacheKey(speaker, speechText);
@@ -912,7 +919,7 @@ const DateSession: React.FC<DateSessionProps> = ({
     };
 
     const resolveCurrentDateVoiceTarget = (): DateVoiceFavoriteTarget | null => {
-        if (!galShownText || !isDialogueLine(galShownText)) return null;
+        if (!galShownText || !isDialogueLine(galShownText) || !resolveDateVoiceSpeaker(currentLineSpeakerRef.current, coauthorUserEnabled)) return null;
         const originalText = extractDialogueText(galShownText);
         for (let messageIndex = messages.length - 1; messageIndex >= 0; messageIndex--) {
             const message = messages[messageIndex];
@@ -928,7 +935,7 @@ const DateSession: React.FC<DateSessionProps> = ({
                         originalText,
                         sourceTimestamp: message.timestamp,
                         voiceEmotion: voiceParsed.voiceEmotion || currentLineEmotionRef.current,
-                        speaker: resolveDateVoiceSpeaker(speakerParsed.speaker || currentLineSpeakerRef.current, coauthorUserEnabled),
+                        speaker: resolveDateVoiceSpeaker(speakerParsed.speaker || currentLineSpeakerRef.current, coauthorUserEnabled) || undefined,
                         speechText: extractDialogueSpeech(lines[lineIndex]),
                     };
                 }
@@ -939,7 +946,7 @@ const DateSession: React.FC<DateSessionProps> = ({
             originalText,
             sourceTimestamp: Date.now(),
             voiceEmotion: currentLineEmotionRef.current,
-            speaker: resolveDateVoiceSpeaker(currentLineSpeakerRef.current, coauthorUserEnabled),
+            speaker: resolveDateVoiceSpeaker(currentLineSpeakerRef.current, coauthorUserEnabled) || undefined,
             speechText: currentLineSpeechRef.current || extractDialogueSpeech(galShownText),
         };
     };
@@ -982,6 +989,7 @@ const DateSession: React.FC<DateSessionProps> = ({
             }
             const favoriteSpeechText = target.speechText || target.originalText;
             const favoriteSpeaker = resolveDateVoiceSpeaker(target.speaker, coauthorUserEnabled);
+            if (!favoriteSpeaker) return;
             const favoriteCacheKey = singleVoiceCacheKey(favoriteSpeaker, favoriteSpeechText);
             let speech: DateSpeechResult | undefined = voiceCacheRef.current[favoriteCacheKey];
             if (!speech) {
@@ -1106,6 +1114,7 @@ const DateSession: React.FC<DateSessionProps> = ({
                 ? savedLine
                 : savedBatch.slice().reverse().find(item => item.text === initialState.currentText);
             currentLineSpeakerRef.current = currentLine?.speaker || 'char';
+            currentLineNpcNameRef.current = currentLine?.npcName;
             currentLineSpeechRef.current = currentLine?.speechText || extractDialogueSpeech(initialState.currentText || '');
             currentLineIdRef.current = currentLine?.lineId || '';
             setIsNovelMode(!!initialState.isNovelMode);
@@ -1134,6 +1143,7 @@ const DateSession: React.FC<DateSessionProps> = ({
                 setCurrentText(first.text);
                 currentLineEmotionRef.current = first.voiceEmotion;
                 currentLineSpeakerRef.current = first.speaker || 'char';
+                currentLineNpcNameRef.current = first.npcName;
                 currentLineSpeechRef.current = first.speechText || extractDialogueSpeech(first.text);
                 currentLineIdRef.current = first.lineId || '';
                 // Note: Not setting sprite here because useEffect below will handle emotion->sprite mapping if needed,
@@ -1204,6 +1214,7 @@ const DateSession: React.FC<DateSessionProps> = ({
         setCurrentText(item.text);
         currentLineEmotionRef.current = item.voiceEmotion;
         currentLineSpeakerRef.current = item.speaker || 'char';
+        currentLineNpcNameRef.current = item.npcName;
         currentLineSpeechRef.current = item.speechText || extractDialogueSpeech(item.text);
         currentLineIdRef.current = item.lineId || '';
         if (item.emotion && activeSprites) {
@@ -1848,14 +1859,14 @@ const DateSession: React.FC<DateSessionProps> = ({
                                                 const speaker = resolveDateVoiceSpeaker(parsedSpeakerLine.speaker, coauthorUserEnabled);
                                                 const dialogueText = extractDialogueText(parsedVoiceLine.rest);
                                                 const speechText = extractDialogueSpeech(line);
-                                                const voiceTarget: DateVoiceFavoriteTarget = {
+                                                const voiceTarget: DateVoiceFavoriteTarget | null = speaker ? {
                                                     sourceKey: `${char.id}:${lineKey}`,
                                                     originalText: dialogueText,
                                                     sourceTimestamp: msg.timestamp,
                                                     voiceEmotion: parsedVoiceLine.voiceEmotion,
                                                     speaker,
                                                     speechText,
-                                                };
+                                                } : null;
                                                 return (
                                                     <div
                                                         key={idx}
@@ -1865,7 +1876,7 @@ const DateSession: React.FC<DateSessionProps> = ({
                                                             e.stopPropagation();
                                                             voiceFavoriteLongPressTriggered.current = false;
                                                         }}
-                                                        onTouchStart={voiceEnabled && lineIsDialogue && !isOpeningMsg ? (e) => startDateVoiceLongPress(e, voiceTarget) : undefined}
+                                                        onTouchStart={voiceEnabled && !!speaker && lineIsDialogue && !isOpeningMsg ? (e) => startDateVoiceLongPress(e, voiceTarget) : undefined}
                                                         onTouchMove={voiceEnabled && lineIsDialogue && !isOpeningMsg ? endDateVoiceLongPress : undefined}
                                                         onTouchEnd={voiceEnabled && lineIsDialogue && !isOpeningMsg ? endDateVoiceLongPress : undefined}
                                                         onMouseDown={voiceEnabled && lineIsDialogue && !isOpeningMsg ? (e) => e.stopPropagation() : undefined}
@@ -1949,13 +1960,17 @@ const DateSession: React.FC<DateSessionProps> = ({
                         <div className="absolute inset-x-0 bottom-8 z-30 flex justify-center">
                             <div
                                 className="w-[90%] max-w-lg bg-black/60 backdrop-blur-xl rounded-2xl border border-white/10 p-6 min-h-[140px] shadow-2xl animate-slide-up hover:bg-black/70 cursor-pointer"
-                                onTouchStart={voiceEnabled && !isTextAnimating && !isShowingOpening && isDialogueLine(galShownText) ? (e) => startDateVoiceLongPress(e, resolveCurrentDateVoiceTarget()) : undefined}
+                                onTouchStart={voiceEnabled && currentLineSpeakerRef.current !== 'npc' && !isTextAnimating && !isShowingOpening && isDialogueLine(galShownText) ? (e) => startDateVoiceLongPress(e, resolveCurrentDateVoiceTarget()) : undefined}
                                 onTouchMove={voiceEnabled && !isTextAnimating && !isShowingOpening && isDialogueLine(galShownText) ? endDateVoiceLongPress : undefined}
                                 onTouchEnd={voiceEnabled && !isTextAnimating && !isShowingOpening && isDialogueLine(galShownText) ? endDateVoiceLongPress : undefined}
                                 onContextMenu={voiceEnabled && !isTextAnimating && !isShowingOpening && isDialogueLine(galShownText) ? (e) => { e.preventDefault(); e.stopPropagation(); void openDateVoiceFavorite(resolveCurrentDateVoiceTarget()); } : undefined}
                             >
                                 <div className="absolute -top-3 left-6 flex items-center gap-2">
-                                    <div className="bg-white/90 text-black px-4 py-1 rounded-sm text-xs font-bold tracking-widest uppercase shadow-[0_4px_10px_rgba(0,0,0,0.3)] transform -skew-x-12">{!coauthorUserEnabled ? char.name : !isDialogueLine(galShownText) ? '旁白' : currentLineSpeakerRef.current === 'user' ? (userProfile.name || '用户') : char.name}</div>
+                                    <div className="bg-white/90 text-black px-4 py-1 rounded-sm text-xs font-bold tracking-widest uppercase shadow-[0_4px_10px_rgba(0,0,0,0.3)] transform -skew-x-12">{currentLineSpeakerRef.current === 'npc' && isDialogueLine(galShownText)
+                                            ? (currentLineNpcNameRef.current || 'NPC')
+                                            : !coauthorUserEnabled ? char.name
+                                            : !isDialogueLine(galShownText) ? '旁白'
+                                            : currentLineSpeakerRef.current === 'user' ? (userProfile.name || '用户') : char.name}</div>
                                     {/* Voice play button next to name */}
                                     {voiceEnabled && !isTextAnimating && !isShowingOpening && isDialogueLine(galShownText) && (
                                         <button
