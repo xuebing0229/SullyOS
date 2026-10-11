@@ -10,8 +10,7 @@ export const resolveResumeEncounterId = (
     }
     const latest = [...messages]
         .filter(message => message.metadata?.source === 'date')
-        .sort((a, b) => b.timestamp - a.timestamp || b.id - a.id)
-        .find(message => typeof message.metadata?.dateEncounterId === 'string' && message.metadata.dateEncounterId);
+        .sort((a, b) => b.timestamp - a.timestamp || b.id - a.id)[0];
     return typeof latest?.metadata?.dateEncounterId === 'string' ? latest.metadata.dateEncounterId : '';
 };
 
