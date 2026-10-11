@@ -55,6 +55,9 @@ try {
   Pop-Location
 }
 
+& node (Join-Path $PSScriptRoot 'sync-native-app-icon.mjs') $wrapperRoot
+if ($LASTEXITCODE -ne 0) { throw "Android launcher icon sync failed with exit code $LASTEXITCODE" }
+
 if ($SkipAndroidBuild) {
   Write-Host 'Capacitor sync complete (Android build skipped).'
   exit 0
