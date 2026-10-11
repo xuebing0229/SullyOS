@@ -5,7 +5,7 @@
  */
 export const extractDateSpokenText = (raw: string): string => {
   const withoutControlTags = (raw || '')
-    .replace(/\[(?:speaker|s):\s*(?:char|user)\s*\]/gi, '')
+    .replace(/\[(?:speaker|s):\s*(?:char|user|npc)(?:\s*[:：]\s*[^\]\r\n]+)?\s*\]/gi, '')
     .replace(/\[v:\s*[a-zA-Z]+\s*\]/gi, '')
     .trim();
   // 允许前缀表情标签和声音提示标签，但它们不属于台词正文。
