@@ -134,7 +134,6 @@ const StorageUsagePanel: React.FC = () => {
     const handleToggle = useCallback(() => {
         const next = !expanded;
         setExpanded(next);
-        if (next) {}
         if (next && !cachedBreakdown && !computing) void runBreakdown();
     }, [expanded, computing, runBreakdown]);
 

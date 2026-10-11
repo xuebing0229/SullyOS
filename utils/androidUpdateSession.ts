@@ -72,11 +72,7 @@ export const createAndroidUpdateSession = (deps: Dependencies) => {
       });
       update({ downloadedPath: path, progress: 1 });
       const result = await install(path, manifest);
-      // Preserve existing analytics; permission settings are not an opened installer.
-      if (result.status === 'installer_opened') {
-
-      }
-    } catch (error) {
+      } catch (error) {
       update({ phase: 'error', message: errorMessage(error) });
 
     }

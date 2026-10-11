@@ -1126,7 +1126,6 @@ const ThemeMaker: React.FC<ThemeMakerProps> = ({embedded=false,initialTheme,onCl
                                 onClick={(event) => {
                                     event.stopPropagation();
                                     toggleVoicePreview(voicePreviewKey);
-                                    if (!isVoicePreviewPlaying) {}
                                 }}
                                 aria-pressed={isVoicePreviewPlaying}
                                 aria-label={isVoicePreviewPlaying ? '暂停语音条播放预览' : '播放语音条样式预览'}
@@ -1221,7 +1220,7 @@ const ThemeMaker: React.FC<ThemeMakerProps> = ({embedded=false,initialTheme,onCl
 
             {/* 用户作品区：保存后的气泡可回到工坊继续编辑，也可单独导出分享。 */}
             {!embedded&&<section className="shrink-0 bg-white/80 border-b border-slate-100 px-4 py-3">
-                <button type="button" onClick={() => { setIsThemeLibraryOpen(prev => !prev); if (!isThemeLibraryOpen) {} }} aria-expanded={isThemeLibraryOpen} className="w-full flex items-center justify-between text-left">
+                <button type="button" onClick={() => setIsThemeLibraryOpen(prev => !prev)} aria-expanded={isThemeLibraryOpen} className="w-full flex items-center justify-between text-left">
                     <div>
                         <h2 className="text-xs font-bold text-slate-600">我的自定义气泡</h2>
                         <p className="text-[10px] text-slate-400 mt-0.5">点击{isThemeLibraryOpen ? '收起' : '展开并选择'} · 可搜索、导入、修改或导出</p>

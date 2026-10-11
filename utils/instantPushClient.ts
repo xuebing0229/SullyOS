@@ -932,6 +932,8 @@ export async function sendInstantPushAndAwaitReply(
   const cfg = loadInstantConfig();
   if (!isInstantConfigReady(cfg)) {
     instantTrace(sessionId, 'config-missing');
+    // 没有可发送的请求时也要结束调用方的“准备中”状态，避免 UI 一直卡住。
+    onPosted?.();
     return {
       ok: false,
       outcome: 'config-missing',
@@ -950,6 +952,7 @@ export async function sendInstantPushAndAwaitReply(
   const { sub, reason } = await getOrCreateInstantSubscription();
   if (!sub) {
     instantTrace(sessionId, 'subscription-failed', { reason });
+    onPosted?.();
     let swRegistered: boolean | undefined;
     if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
       try { swRegistered = !!(await navigator.serviceWorker.getRegistration()); } catch { /* ignore */ }

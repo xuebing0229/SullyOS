@@ -3505,7 +3505,7 @@ const MessageItem = React.memo(({
                     {voiceData?.url ? (
                         <div className="max-w-[260px]">
                             <button
-                                onClick={(e) => { e.stopPropagation(); e.preventDefault(); onPlayVoice?.(m.id); if (!isVoicePlaying) {} }}
+                                onClick={(e) => { e.stopPropagation(); e.preventDefault(); onPlayVoice?.(m.id); }}
                                 className="sully-voice-bar group flex items-center gap-2.5 w-full px-3 py-2 rounded-2xl transition-all duration-300 active:scale-[0.97] select-none"
                                 style={{
                                     background: isVoicePlaying
@@ -3557,7 +3557,6 @@ const MessageItem = React.memo(({
                                         e.stopPropagation();
                                         e.preventDefault();
                                         setShowVoiceText(v => !v);
-                                        if (!showVoiceText) {}
                                     }}
                                 >
                                     {showVoiceText ? '收起' : '转文字'}
@@ -3647,7 +3646,7 @@ const MessageItem = React.memo(({
                                             color: vbText || 'rgba(100,116,139,0.7)',
                                             backgroundColor: showVoiceText ? 'rgba(0,0,0,0.08)' : 'rgba(0,0,0,0.04)',
                                         }}
-                                        onClick={(e) => { e.stopPropagation(); e.preventDefault(); setShowVoiceText(v => !v); if (!showVoiceText) {} }}
+                                        onClick={(e) => { e.stopPropagation(); e.preventDefault(); setShowVoiceText(v => !v); }}
                                     >
                                         {showVoiceText ? '收起' : '转文字'}
                                     </div>

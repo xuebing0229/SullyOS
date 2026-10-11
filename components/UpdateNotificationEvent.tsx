@@ -94,10 +94,6 @@ const COLLABORATION_FEATURES = [
 const CollaborationUpdatePopup: React.FC<UpdatePopupProps> = ({ onDone, onExit }) => {
     const { openApp } = useOS();
 
-    React.useEffect(() => {
-        
-    }, []);
-
     const markSeen = () => markUpdateSeen(UPDATE_NOTIFICATION_KEY_2026_08_30);
     const handleOpenChat = () => {
         markSeen();
@@ -189,10 +185,6 @@ const LIVE2D_FEATURES = [
 
 const Live2DUpdatePopup: React.FC<UpdatePopupProps> = ({ onDone, onExit }) => {
     const { openApp } = useOS();
-
-    React.useEffect(() => {
-        
-    }, []);
 
     const handleGuide = () => {
         markUpdateSeen(UPDATE_NOTIFICATION_KEY_2026_08_10);
@@ -338,10 +330,6 @@ const AMSG2_FEATURES = [
 const Amsg2UpdatePopup: React.FC<UpdatePopupProps> = ({ onDone, onExit }) => {
     const { openApp } = useOS();
 
-    React.useEffect(() => {
-        
-    }, []);
-
     const handleGuide = () => {
         markUpdateSeen(UPDATE_NOTIFICATION_KEY_2026_08_03);
         // 直接展开这一版的更新说明：怎么部署、有哪些边界都写在那页里。
@@ -482,10 +470,6 @@ const Amsg2UpdatePopup: React.FC<UpdatePopupProps> = ({ onDone, onExit }) => {
 
 const NetworkTransitNoticePopup: React.FC<UpdatePopupProps> = ({ onDone, onExit }) => {
     const { openApp } = useOS();
-
-    React.useEffect(() => {
-        
-    }, []);
 
     const handleDismiss = () => {
         markUpdateSeen(NETWORK_TRANSIT_NOTICE_KEY_2026_08);

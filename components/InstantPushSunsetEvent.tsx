@@ -52,10 +52,6 @@ interface InstantPushSunsetPopupProps {
 }
 
 export const InstantPushSunsetPopup: React.FC<InstantPushSunsetPopupProps> = ({ onClose }) => {
-  React.useEffect(() => {
-    
-  }, []);
-
   const dismiss = () => {
     markInstantPushSunsetNoticeShown();
     onClose();

@@ -12,7 +12,6 @@ import {
   AmsgDiagnosticLevel, AmsgDiagnosticsProbe, type AmsgTickReportResult,
   buildAmsgDiagnosticRows, summarizeAmsgDiagnostics,
   INSTANT_CHAT_BLOCKER_HINTS, resolveInstantChatBlocker,
-  type InstantChatGateInput,
 } from '../../utils/amsgDiagnostics';
 import { ActiveMsgStore, maskActiveMsgUserId } from '../../utils/activeMsgStore';
 import { formatTaskTime } from '../../utils/amsg2Tasks';
@@ -150,12 +149,6 @@ const SETUP_WALKTHROUGH_URL = 'https://github.com/qegj567-cloud/SullyOS/blob/mas
 /** 一键部署要的那枚 API Token 在这里建。 */
 const CF_TOKEN_URL = 'https://dash.cloudflare.com/profile/api-tokens';
 
-// 探测结果每次会话只报一次。refresh() 在开面板、连接成功、订阅成功后都会跑一遍，
-// 一个连不上、反复点「连接」的人否则能一个人刷出十几条同样的结果，把分布带歪。
-let workerCapsReported = false;
-// 「即时对话开不了卡在哪」同样每次会话只报一次，理由同上。
-let instantChatGateReported = false;
-
 /** 体检每一行的配色与那一列小字。unknown 用灰：查不出结论时别拿颜色暗示好坏。 */
 const DIAGNOSTIC_STYLES: Record<AmsgDiagnosticLevel, { dot: string; text: string; word: string }> = {
   ok: { dot: 'bg-emerald-500', text: 'text-emerald-600', word: '正常' },
@@ -262,25 +255,16 @@ const ActiveMsgGlobalSettingsModal: React.FC<ActiveMsgGlobalSettingsModalProps> 
 
   // 特性探测：确认「过老」（端点 404 → null，或缺关键特性）才亮牌；
   // 探测本身失败（断网 / 密钥不对 / 没填地址）不亮，避免误报。
-  const probeWorkerCaps = async (workerConfigured: boolean) => {
-    // 只有配了地址才报：没填地址时这次探测必然失败，那不是版本问题。
-    const shouldReport = workerConfigured && !workerCapsReported;
-    if (shouldReport) workerCapsReported = true;
+  const probeWorkerCaps = async () => {
     try {
       const caps = await ActiveMsgClient.getCapabilities();
       const missingFeature = !caps || REQUIRED_WORKER_FEATURES.some((f) => !caps.features.includes(f));
       const versionTooOld = !caps || !isAmsgServerVersionAtLeast(caps.serverVersion, REQUIRED_WORKER_VERSION);
       setWorkerOutdated(missingFeature || versionTooOld);
-      // 跑着旧 worker 的表现是**静默错**（自述回写不落盘、任务重复推），用户不会来报，
-      // 面板这一句提示是唯一的出口。这里数的就是「有多少人正跑着一个不该跑的版本」。
-      if (shouldReport) {
-        
-      }
     } catch {
       setWorkerOutdated(false);
       // 探测本身炸了（断网 / 地址不通）不亮牌，免得误报；但它跟「版本旧」是两回事，
       // 单独占一格，看分布时能一眼把这批人排除掉。
-      if (shouldReport) {}
     }
   };
 
@@ -323,35 +307,17 @@ const ActiveMsgGlobalSettingsModal: React.FC<ActiveMsgGlobalSettingsModalProps> 
     setCronState(null);
   };
 
-  /**
-   * 报一次「即时对话此刻能不能开、开不了卡在哪」。
-   *
-   * 这一格只能在这儿收：开关灰着的时候用户什么都点不动，也就不会产生任何别的事件——
-   * 光看配置快照里那个开/关，被挡在门外的人和「不想要这功能的人」长得一模一样。
-   * 判定跟界面上那行黄字共用 resolveInstantChatBlocker，两处不会各说各话。
-   */
-  const reportInstantChatGate = (gate: InstantChatGateInput, enabled: boolean) => {
-    if (instantChatGateReported) return;
-    instantChatGateReported = true;
-    
-  };
-
   const refresh = async () => {
     const nextConfig = await ActiveMsgClient.getGlobalConfig();
     const nextPushStatus = await ActiveMsgClient.getPushStatus();
     savedWorkerUrlRef.current = nextConfig.workerUrl || '';
     setConfig(nextConfig);
     setPushStatus(nextPushStatus);
-    void probeWorkerCaps(Boolean(nextConfig.workerUrl?.trim()));
+    void probeWorkerCaps();
     if (nextConfig.workerUrl?.trim()) {
       void ActiveMsgClient.probeWorkerVersion().then(setWorkerVersion);
       void ActiveMsgClient.probeInstantChatSupport().then((supported) => {
         setInstantChatSupported(supported);
-        reportInstantChatGate({
-          connected: Boolean(nextConfig.initializedAt),
-          pushSubscribed: Boolean(nextPushStatus?.hasSubscription),
-          workerSupportsInstantChat: supported,
-        }, Boolean(nextConfig.instantChatEnabled));
       });
       void runDiagnostics();
       // 已连接才问定时触发开没开：没连上的时候这事还轮不到操心。
@@ -1078,11 +1044,7 @@ const ActiveMsgGlobalSettingsModal: React.FC<ActiveMsgGlobalSettingsModalProps> 
         <div className="bg-white border border-slate-200 rounded-2xl p-4 space-y-3">
           <button
             type="button"
-            onClick={() => setDeployOpen((prev) => {
-              // 只在展开时记一笔：收起也记的话同一个人会被数两次，漏斗第一格直接虚高一倍。
-              if (!prev) {}
-              return !prev;
-            })}
+            onClick={() => setDeployOpen((prev) => !prev)}
             className="w-full flex items-center justify-between text-left"
           >
             <span className="font-bold text-slate-700">手动部署 Worker（想自己一步步来）</span>
@@ -1215,7 +1177,6 @@ const ActiveMsgGlobalSettingsModal: React.FC<ActiveMsgGlobalSettingsModalProps> 
                 <button
                   type="button"
                   onClick={() => setPasteFallbackOpen((prev) => {
-                    if (!prev) {}
                     return !prev;
                   })}
                   className="w-full flex items-center justify-between text-left text-[11px] font-bold text-slate-400"
@@ -1294,7 +1255,6 @@ const ActiveMsgGlobalSettingsModal: React.FC<ActiveMsgGlobalSettingsModalProps> 
               <button
                 type="button"
                 onClick={() => setDenoProxyOpen((prev) => {
-                  if (!prev) {}
                   return !prev;
                 })}
                 className="w-full flex items-center justify-between text-left text-[11px] font-bold text-slate-400"

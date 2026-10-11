@@ -942,7 +942,10 @@ export const useChatAI = ({
             char, userProfile, groups, realtimeConfig, apiConfig, updateCharacter,
         });
         const releaseReply = acquireChatReply(char.id);
-        if (!releaseReply) return;
+        if (!releaseReply) {
+            onInstantPosted?.();
+            return;
+        }
         const replyRun = createReplyRun(char.id);
         amsg2Session.signal = replyRun.signal;
         const replyStep = <T>(operation: () => Promise<T>) => withReplyCancellation(replyRun, operation);

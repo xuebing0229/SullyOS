@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React from 'react';
 import { useOS } from '../context/OSContext';
 import { AppID } from '../types';
 
@@ -11,10 +11,6 @@ interface QixiLaunchPopupProps {
 
 export const QixiLaunchPopup: React.FC<QixiLaunchPopupProps> = ({ onClose }) => {
     const { openApp } = useOS();
-
-    useEffect(() => {
-        
-    }, []);
 
     const dismiss = () => {
         markQixiLaunchPopupSeen();

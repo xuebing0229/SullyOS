@@ -15,7 +15,6 @@ const CONFETTI = ['🎉', '✨', '💜', '👑', '🌟', '🎊'];
 
 export default function AnniversaryGiftPopup({ onClose }: { onClose: () => void }) {
   const { characters, activeCharacterId, userProfile, theme, addCustomTheme, updateCharacter, updateTheme, addToast } = useOS();
-  useEffect(() => {  }, []);
   const [choosing, setChoosing] = useState(false);
   const [characterId, setCharacterId] = useState(characters.find(c => c.id === activeCharacterId)?.id || characters[0]?.id || '');
   const [phone, setPhone] = useState(true);

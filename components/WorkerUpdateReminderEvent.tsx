@@ -87,10 +87,6 @@ export const WorkerUpdateReminderPopup: React.FC<WorkerUpdateReminderPopupProps>
   const [copyStatus, setCopyStatus] = useState<'idle' | 'loading' | 'done' | 'error'>('idle');
   const [copyError, setCopyError] = useState('');
 
-  React.useEffect(() => {
-    
-  }, []);
-
   const cfg = loadInstantConfig();
   const dashboardUrl = buildCloudflareDashboardUrl(cfg.workerUrl);
   // workers.dev 子域才能推出确切的 worker name; 自定义域 / 反代退化成 workers 列表页。

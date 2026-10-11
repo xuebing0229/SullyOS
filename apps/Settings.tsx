@@ -259,19 +259,6 @@ const McpServersCard: React.FC<{
         try {
             const r = await testMcpConnection(server);
             setTestStatus(prev => ({ ...prev, [server.id]: r.ok ? `✅ ${r.message}` : `❌ ${r.message}` }));
-            // 失败原因只上报归类后的固定枚举：原始报错里可能带服务器地址和返回内容，不能外发
-            if (r.ok) {
-                
-            } else {
-                const msg = r.message || '';
-                const failureKind =
-                    /超时/.test(msg) ? 'timeout'
-                    : /鉴权失败/.test(msg) ? 'auth-failed'
-                    : /请求失败/.test(msg) ? 'fetch-failed'
-                    : /MCP HTTP/.test(msg) ? 'http-error'
-                    : 'other';
-                
-            }
             if (r.ok && r.tools) {
                 update(server.id, { tools: r.tools });
             }
@@ -1886,13 +1873,6 @@ const Settings: React.FC = () => {
           const tempConfig = { ...cloudBackupConfig, webdavUrl: cbUrl, username: cbUsername, password: cbPassword, remotePath: cbPath };
           const result = await testConnection(tempConfig);
           setCloudTestResult(result.ok ? `✓ ${result.message}` : `✗ ${result.message}`);
-          // 失败原因收敛成固定几类，地址/账号/密码与原始报错都不上报
-          if (result.ok) {
-              
-          } else {
-              const m = result.message || '';
-              
-          }
       } catch (e: any) {
           
           setCloudTestResult(`✗ ${e.message}`);
@@ -1926,7 +1906,6 @@ const Settings: React.FC = () => {
       setProxyWorkerInput(applied);
       // 上云那份的 proxyWorkerUrl 是现算的（读 getProxyWorkerUrl），所以要在生效之后再传。
       syncAmsgToolConfig(realtimeConfig);
-      if (applied === DEFAULT_PROXY_WORKER) {}
       addToast(applied === DEFAULT_PROXY_WORKER ? '已恢复为默认 Worker' : 'Worker 地址已保存', 'success');
   };
 
@@ -4255,7 +4234,7 @@ const Settings: React.FC = () => {
               )}
 
               <button
-                  onClick={() => { if (!ghShowAdvanced) {} setGhShowAdvanced(v => !v); }}
+                  onClick={() => setGhShowAdvanced(v => !v)}
                   className="w-full text-[10px] text-slate-400 underline-offset-2 hover:underline"
               >
                   {ghShowAdvanced ? '收起高级选项 ▲' : '高级选项 ▼'}
@@ -5039,7 +5018,7 @@ const Settings: React.FC = () => {
                               </div>
                           </div>
                           <div>
-                              <button type="button" onClick={() => { if (!rtXhsGuideOpen) {} setRtXhsGuideOpen(v => !v); }} className="text-[11px] font-bold text-rose-600 underline">📖 点击获取 cookie 教程 {rtXhsGuideOpen ? '▲' : '▼'}</button>
+                              <button type="button" onClick={() => setRtXhsGuideOpen(v => !v)} className="text-[11px] font-bold text-rose-600 underline">📖 点击获取 cookie 教程 {rtXhsGuideOpen ? '▲' : '▼'}</button>
                               {rtXhsGuideOpen && (
                                   <div className="mt-1 bg-white/70 rounded-lg p-2 space-y-1.5">
                                       <pre className="text-[10px] text-slate-600 whitespace-pre-wrap font-sans leading-relaxed">{XHS_COOKIE_GUIDE}</pre>

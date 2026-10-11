@@ -155,7 +155,6 @@ const XhsStockApp: React.FC = () => {
                                 onClick={() => {
                                     const nextTag = filterTag === tag ? null : tag;
                                     setFilterTag(nextTag);
-                                    if (nextTag) {}
                                 }}
                                 className={`shrink-0 px-3 py-1.5 rounded-full text-xs font-medium transition-colors ${filterTag === tag ? 'bg-red-500 text-white' : 'bg-slate-100 text-slate-500'}`}
                             >

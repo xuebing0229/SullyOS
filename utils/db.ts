@@ -1047,11 +1047,11 @@ export const DB = {
       cursorReq.onsuccess = () => {
           const cursor = cursorReq.result;
           if (cursor && collected.length < limit) {
-              // Index duplicates are ordered by message primary key. Seek straight to
-              // the page boundary instead of deserializing every newer message again.
+              // Index duplicates are ordered by message primary key. A `prev` cursor
+              // cannot call continuePrimaryKey (that API is only valid for forward
+              // cursors), so skip newer rows while keeping the cursor direction.
               if (beforeId !== undefined && Number(cursor.primaryKey) >= beforeId) {
-                  if (Number(cursor.primaryKey) > beforeId) cursor.continuePrimaryKey(charId, beforeId);
-                  else cursor.continue();
+                  cursor.continue();
                   return;
               }
               const m = cursor.value as Message;

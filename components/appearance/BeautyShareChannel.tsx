@@ -13,7 +13,7 @@ import {belongsInBeautyLibrary,isAppDecoration} from '../../utils/beautyCategori
 import BeautyImportHub from '../share/BeautyImportHub';
 import {stampBeautyCss,isCssImportCandidate,readLegacyWhiteboxShare} from '../../utils/beautyCssAttribution';
 import {PSYCHE_STYLE_LIST} from '../../utils/psycheStyleCatalog';
-import React, { useEffect, useState, useRef, lazy, Suspense } from 'react';
+import React, { useEffect, useState, lazy, Suspense } from 'react';
 import {createPortal} from 'react-dom';
 import { AppID, type AppearancePreset } from '../../types';
 import { useOS, DEFAULT_PAPER_APPEARANCE, DEFAULT_WALLPAPER } from '../../context/OSContext';
@@ -63,8 +63,6 @@ interface Props {
 export default function BeautyShareChannel({ presets, onExport, onImport, onBusyChange, onBack, targetCharacterId, onCustomize, onApplied, createDraft, onOpenWorkshop, initialMaker, initialCategory }: Props) {
   const { characters, activeCharacterId, theme, updateTheme, customIcons, setCustomIcon, deleteAppearancePreset, removeCustomTheme, replaceAppearancePreset, customThemes=[], applyAppearancePreset, addCustomTheme, updateCharacter, setActiveCharacterId, openApp, closeApp } = useOS();
   const libraryContext=targetCharacterId||initialCategory==='date'||initialCategory==='story'?'chat':'appearance';
-  const trackedOpen=useRef(false);
-  useEffect(()=>{if(!trackedOpen.current){trackedOpen.current=true;if(initialMaker){}}},[]);
   const firstGuideActive=useFirstUseGuideStep()!==null;
   const [catalogNotice, setCatalogNotice] = useState(() => !initialMaker && !!targetCharacterId && needsBeautyNotice(BEAUTY_CATALOG_NOTICE));
   const [guideStep,setGuideStep]=useState<number|null>(()=>!initialMaker&&targetCharacterId&&needsDecorationGuide()?0:null);

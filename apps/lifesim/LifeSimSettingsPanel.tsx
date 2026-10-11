@@ -195,7 +195,6 @@ const LifeSimSettingsPanel: React.FC<{
                             onClick={() => {
                                 // 只在「关 → 开」这一下记一次，且只发事件名：
                                 // 填没填 URL / Key 属于配置状态，一律不上报。
-                                if (!useIndependentApi) {}
                                 setUseIndependentApi(value => !value);
                             }}
                             style={{

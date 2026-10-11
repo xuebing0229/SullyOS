@@ -50,7 +50,10 @@ export async function loadRangeMessagePage(charId: string, options: {
             if (!cursor) return;
             const id = Number(cursor.primaryKey);
             if (boundary !== undefined && (forward ? id <= boundary : id >= boundary)) {
-                if (forward ? id < boundary : id > boundary) cursor.continuePrimaryKey(charId, boundary);
+                // continuePrimaryKey is only valid for a forward index cursor.
+                // Older pages use a reverse cursor, so advance normally until the
+                // exclusive boundary instead of throwing InvalidStateError.
+                if (forward && id < boundary) cursor.continuePrimaryKey(charId, boundary);
                 else cursor.continue();
                 return;
             }

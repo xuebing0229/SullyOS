@@ -32,7 +32,6 @@ import {HomeSpeechBubble} from './HomeSpeechBubble';
 
 export default function Home3DView({value,onChange,onBack,character,user,api,conversationContext,onDefinition,onFigures,parts:previewParts,hair:inputHair,suspended=false,residents=[],onEditor,presentation='home'}:{presentation?:'home'|'homely';value?:Home3DState;onChange:(value:Home3DState)=>void;onBack:()=>void;character?:CharacterProfile;user?:UserProfile;api?:APIConfig;conversationContext?:HomeConversationContext;onDefinition?:()=>void;onFigures?:()=>void;parts?:Parts;hair?:HairSettings;suspended?:boolean;residents?:HomeResidentOption[];onEditor?:(editor:HomeEditor)=>void}){
  const homely=presentation==='homely';
- const entryTracked=useRef(false);
  const hair=inputHair??character?.chibiStudio?.home3D?.hair;
  const host=useRef<HTMLDivElement>(null),save=useRef(onChange),back=useRef(onBack),initial=useRef(value);
  const [editor,setEditor]=useState<HomeEditor>(),[parts,setParts]=useState<Parts>(),[residentError,setResidentError]=useState('');
@@ -44,7 +43,7 @@ export default function Home3DView({value,onChange,onBack,character,user,api,con
  useHomeCompanion(editor,character,user,api,mainReady,suspended);
  const [photoActive,setPhotoActive]=useState(false),[phoneOpen,setPhoneOpen]=useState(false),[phoneBusy,setPhoneBusy]=useState(false),[homeBusy,setHomeBusy]=useState(false);
  const [interactionTarget,setInteractionTarget]=useState<string>();
- const openLifePanel=(name:string|null,targetId?:string)=>{if(name&&name!==lifePanel){}setInteractionTarget(name==='interact'?targetId:undefined);setLifePanel(name);};
+ const openLifePanel=(name:string|null,targetId?:string)=>{setInteractionTarget(name==='interact'?targetId:undefined);setLifePanel(name);};
  const openFigures=onFigures?()=>{onFigures();}:undefined;
  const [initiative,setInitiative]=useState<HomeInitiativeRequest>();
  const [lifePanel,setLifePanel]=useState<string|null>(homely?'chat':null);

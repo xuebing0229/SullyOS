@@ -1223,7 +1223,7 @@ ${charPart}
                         )}
                         
                         <button 
-                            onClick={() => { setShowStickerPanel(!showStickerPanel); if (!showStickerPanel) {} }}
+                            onClick={() => setShowStickerPanel(!showStickerPanel)}
                             className={`sully-journal-sticker-button w-11 h-11 rounded-full flex items-center justify-center text-xl shadow-lg active:scale-90 transition-transform ${showStickerPanel ? 'bg-white text-black' : 'bg-gradient-to-br from-amber-400 to-orange-500 text-white'}`}
                         >
                             <Sparkle size={24} weight="fill" />
