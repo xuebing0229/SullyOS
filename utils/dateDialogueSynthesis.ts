@@ -12,6 +12,7 @@ import { isStaticWebDeployment } from './staticWebDeployment';
 import {
   alignDateDialogueSegments,
   buildDateDialogueBatch,
+  hasCollapsedDateDialogueAlignment,
   type DateDialogueSegment,
   type DateDialogueTurn,
 } from './dateDialogueVoice';
@@ -21,15 +22,26 @@ type ElevenLabsDialogueSegment = {
   start_time_seconds?: number;
   end_time_seconds?: number;
   dialogue_input_index?: number;
+  character_start_index?: number;
+  character_end_index?: number;
 };
 
 type ElevenLabsDialogueResponse = {
   audio_base64?: string;
   voice_segments?: ElevenLabsDialogueSegment[];
+  alignment?: { character_start_times_seconds?: number[] } | null;
   detail?: unknown;
   error?: unknown;
 };
 
+
+/** 时间戳不可用时，标记整轮调用无需再试，以免每句都重复计费生成整轮音频。 */
+export class DateDialogueAlignmentError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'DateDialogueAlignmentError';
+  }
+}
 
 const clamp01 = (value: unknown, fallback: number): number => {
   const numeric = Number(value);
@@ -176,6 +188,14 @@ export async function synthesizeDateDialogue(
   }
   const audio = base64ToBlob(data.audio_base64);
   if (!audio.size) throw new Error('ElevenLabs Dialogue 返回了空音频');
-  const segments = toDateSegments(normalized, data.voice_segments);
+  if (hasCollapsedDateDialogueAlignment(data.voice_segments || [], data.alignment)) {
+    throw new DateDialogueAlignmentError('ElevenLabs Dialogue 字符时间戳出现塌缩，已改为逐句配音，避免播放错位');
+  }
+  let segments: DateDialogueSegment[];
+  try {
+    segments = toDateSegments(normalized, data.voice_segments);
+  } catch (error) {
+    throw new DateDialogueAlignmentError(error instanceof Error ? error.message : 'ElevenLabs Dialogue 时间戳不可用');
+  }
   return { audio, url: URL.createObjectURL(audio), segments };
 }

@@ -29,9 +29,9 @@ import VoiceFavoriteActionSheet from '../voice/VoiceFavoriteActionSheet';
 import { getVoiceFavorite, makeVoiceFavoriteId, removeVoiceFavorite, saveVoiceFavorite } from '../../utils/voiceFavorites';
 import { saveVoiceLibraryItem, setVoiceLibraryStarredForSource } from '../../utils/voiceLibrary';
 import { resolveTtsProvider } from '../../utils/ttsProvider';
-import { synthesizeDateDialogue } from '../../utils/dateDialogueSynthesis';
+import { synthesizeDateDialogue, DateDialogueAlignmentError } from '../../utils/dateDialogueSynthesis';
 import { extractDateSpokenText, isDateSpokenLine } from '../../utils/dateDialogueLines';
-import { resolveDateVoiceSpeaker, type DateDialogueSegment, type DateDialogueTurn } from '../../utils/dateDialogueVoice';
+import { resolveDateVoiceSpeaker, resolveDateDialogueSegmentForLine, type DateDialogueSegment, type DateDialogueTurn } from '../../utils/dateDialogueVoice';
 import { MEETING_CONTINUE_DISPLAY_TEXT } from '../../utils/meetingContinue';
 import TokenImg from '../os/TokenImg';
 import { VOICE_LANGUAGE_OPTIONS, voiceLanguageAnalyticsValue, voiceLanguageLabel, voiceLanguagePromptLabel } from '../../utils/voiceLanguage';
@@ -453,6 +453,8 @@ const DateSession: React.FC<DateSessionProps> = ({
                 dialogueAudioCacheRef.current[key] = batch;
                 return batch;
             } catch (error: any) {
+                // 供应商时间轴异常时不再为本轮反复购买同一段无法准确切片的音频。
+                if (error instanceof DateDialogueAlignmentError) dialogueForcedSinglesRef.current.add(key);
                 console.warn('[DateDialogue] whole-turn synthesis unavailable, falling back:', error?.message || error);
                 return null;
             } finally {
@@ -492,9 +494,8 @@ const DateSession: React.FC<DateSessionProps> = ({
         batch: DateDialogueAudioBatch,
         lineId: string,
     ): DateDialogueSegment | null => {
-        const dialogueItems = items.filter(item => !!item.lineId && !!item.speechText && isDialogueLine(item.text));
-        const index = dialogueItems.findIndex(item => item.lineId === lineId);
-        return index >= 0 ? (batch.segments[index] || null) : null;
+        const turns = buildDateDialogueTurns(items);
+        return resolveDateDialogueSegmentForLine(turns, batch.segments, lineId);
     };
 
     const playDialogueSegment = async (

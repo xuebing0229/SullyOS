@@ -67,3 +67,50 @@ export const alignDateDialogueSegments = (
     return { lineId: turn.lineId, speaker: turn.speaker, startTime: range.start, endTime: range.end };
   });
 };
+
+/**
+ * 用实际送进 ElevenLabs 的台词顺序定位，而不是用屏幕气泡序号。
+ * 叙述与 NPC 不参与配音：把它们计进索引会使后续台词全部错位。
+ * 缓存可跨实时 GAL / 历史阅读复用，缓存中的 lineId 可能不同，
+ * 所以只按同一个批次的输入顺序匹配，再还原本次请求的 lineId。
+ */
+export const resolveDateDialogueSegmentForLine = (
+  voicedTurns: DateDialogueTurn[],
+  segments: DateDialogueSegment[],
+  lineId: string,
+): DateDialogueSegment | null => {
+  if (voicedTurns.length !== segments.length) return null;
+  const index = voicedTurns.findIndex(turn => turn.lineId === lineId);
+  if (index < 0) return null;
+  const segment = segments[index];
+  const turn = voicedTurns[index];
+  if (!segment || segment.speaker !== turn.speaker
+      || !Number.isFinite(segment.startTime) || !Number.isFinite(segment.endTime)
+      || segment.endTime <= segment.startTime) return null;
+  return { ...segment, lineId: turn.lineId };
+};
+
+/**
+ * ElevenLabs 偶尔返回时间戳塌缩：音频正常，很多字却标成同一时刻。
+ * 官方 voice_segments 的先后顺序仍可能合法，单靠相邻区间检查发现不了。
+ * 只在响应提供字符对齐且出现显著塌缩时拒绝整轮切片。
+ */
+export const hasCollapsedDateDialogueAlignment = (
+  segments: Array<{ character_start_index?: number; character_end_index?: number }>,
+  alignment?: { character_start_times_seconds?: number[] } | null,
+): boolean => {
+  const times = alignment?.character_start_times_seconds;
+  if (!Array.isArray(times) || !times.length) return false;
+  return segments.some(segment => {
+    const from = segment.character_start_index;
+    const to = segment.character_end_index;
+    if (!Number.isInteger(from) || !Number.isInteger(to)
+        || from! < 0 || to! > times.length || to! <= from!) return false;
+    const count = to! - from!;
+    if (count < 8) return false;
+    const span = times.slice(from!, to!);
+    if (span.some(value => !Number.isFinite(value))) return true;
+    const distinct = new Set(span.map(value => Math.round(value * 1000))).size;
+    return distinct <= Math.max(1, Math.floor(count / 5));
+  });
+};
