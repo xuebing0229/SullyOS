@@ -29,6 +29,11 @@ describe('见面恢复目标', () => {
         ])).toBe('later');
     });
 
+    it('最新一场是无场次 ID 的旧记录时，不误连到更早的有标记场次', () => {
+        const legacy = { ...message(3, 'ignored', 300), metadata: { source: 'date' } } as Message;
+        expect(resolveResumeEncounterId(snapshot, [message(2, 'old', 200), legacy])).toBe('');
+    });
+
     it('快照曾被旧版误清空，仍能从历史文字重建可继续的阅读会话', () => {
         const recovered = recoverDateStateFromHistory([
             message(20, 'second', 200), message(10, 'first', 100),
