@@ -102,6 +102,7 @@ jobs:
         run: |
           pnpm exec cap add android
           pnpm exec cap sync android
+          node scripts/sync-native-app-icon.mjs "$GITHUB_WORKSPACE"
 
       - name: Restore signing key
         shell: bash
