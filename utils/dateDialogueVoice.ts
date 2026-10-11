@@ -89,3 +89,28 @@ export const resolveDateDialogueSegmentForLine = (
       || segment.endTime <= segment.startTime) return null;
   return { ...segment, lineId: turn.lineId };
 };
+
+/**
+ * ElevenLabs 偶尔返回时间戳塌缩：音频正常，很多字却标成同一时刻。
+ * 官方 voice_segments 的先后顺序仍可能合法，单靠相邻区间检查发现不了。
+ * 只在响应提供字符对齐且出现显著塌缩时拒绝整轮切片。
+ */
+export const hasCollapsedDateDialogueAlignment = (
+  segments: Array<{ character_start_index?: number; character_end_index?: number }>,
+  alignment?: { character_start_times_seconds?: number[] } | null,
+): boolean => {
+  const times = alignment?.character_start_times_seconds;
+  if (!Array.isArray(times) || !times.length) return false;
+  return segments.some(segment => {
+    const from = segment.character_start_index;
+    const to = segment.character_end_index;
+    if (!Number.isInteger(from) || !Number.isInteger(to)
+        || from! < 0 || to! > times.length || to! <= from!) return false;
+    const count = to! - from!;
+    if (count < 8) return false;
+    const span = times.slice(from!, to!);
+    if (span.some(value => !Number.isFinite(value))) return true;
+    const distinct = new Set(span.map(value => Math.round(value * 1000))).size;
+    return distinct <= Math.max(1, Math.floor(count / 5));
+  });
+};
