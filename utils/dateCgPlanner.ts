@@ -75,7 +75,7 @@ const isMeetingImageTool = (resolved: ResolvedMcpTool | undefined): resolved is 
 export const sanitizeMeetingMessageForCg = (message: Message): Message => {
     if (typeof message.content !== 'string') return message;
     const content = message.content
-        .replace(/\[(?:speaker|s):\s*(?:char|user)\s*\]/ig, '')
+        .replace(/\[(?:speaker|s):\s*(?:char|user|npc)(?:\s*[:：]\s*[^\]\r\n]+)?\s*\]/ig, '')
         .replace(/\[v:\s*[a-zA-Z]+\s*\]/g, '')
         .split('\n')
         .map(line => line.replace(/^\s*\[(?:normal|happy|angry|sad|shy)\]\s*/i, ''))
@@ -127,6 +127,31 @@ export const composeMeetingCgImageArguments = (input: {
     toolName: input.toolName,
 });
 
+/** CG 只在工具明确支持相应值时提交画幅参数；不能凭空发送未知尺寸让服务报错。 */
+export const preferMeetingCgPortraitAspect = (
+    args: Record<string, any>,
+    parameters?: Record<string, any>,
+): Record<string, any> => {
+    const output = { ...args };
+    const promptKey = ['prompt', 'positive_prompt', 'positivePrompt'].find(key => typeof output[key] === 'string');
+    if (promptKey) {
+        output[promptKey] = [output[promptKey], 'Portrait mobile CG composition, target 9:20 width-to-height aspect ratio.'].filter(Boolean).join(' ');
+    }
+    const properties = parameters?.properties;
+    if (!properties || typeof properties !== 'object') return output;
+    for (const key of ['aspect_ratio', 'aspectRatio', 'ratio']) {
+        const field = properties[key];
+        if (!field || !Array.isArray(field.enum)) continue;
+        // 9:20 是宽:高，20:9 是手机横竖比的习惯叫法，不要把宽高写反。
+        const value = ['9:20', '9/20', 'portrait_9_20', 'portrait'].find(candidate => field.enum.includes(candidate));
+        if (value) {
+            output[key] = value;
+            break;
+        }
+    }
+    return output;
+};
+
 const plannerToolSummary = (
     tools: ReturnType<typeof resolveMeetingCgPlannerTools>['tools'],
 ): string => tools.map(tool => {
@@ -173,6 +198,7 @@ ${plannerToolSummary(tools)}
 工具 arguments 里的 prompt 只负责这一帧可变的场景、镜头、构图、光线、整体互动与环境。不要复述上面的固定人物外貌、固定画风或固定负面词；客户端会按 story_include_character / story_include_user 的结果自动合并。
 
 画面目标：
+- 为手机竖屏生成 CG：目标宽高比为 9:20（竖向 20:9），按竖幅构图，不要使用横幅或正方形构图。若生图工具支持画幅比例参数，优先选择 9:20；否则选择可用的竖屏规格，同时通过 prompt 明确竖屏构图。不要填写工具 schema 不支持的尺寸值；
 - story CG / character-focused illustration，而不是背景图或壁纸；
 - 突出当前这一幕真正发生的角色互动、姿态、视线、表情和距离感；
 - 场景与当下情绪明确，构图完整、自然、有剧情感；
@@ -304,7 +330,7 @@ export async function generateMeetingCgViaChatPlanner(input: GenerateMeetingCgIn
     const preparedArgs = await prepareBuiltinImageToolArguments({
         server: chosen.resolved.server,
         toolName: chosen.resolved.toolName,
-        args: composed.arguments,
+        args: preferMeetingCgPortraitAspect(composed.arguments, planningTool?.function.parameters),
         character: input.char,
         userProfile: input.userProfile,
     });

@@ -6,6 +6,8 @@ describe('见面 VN 台词识别（不让旁白进入语音）', () => {
     expect(extractDateSpokenText('[happy] "[chuckles] 等你啊。" [speaker:user]')).toBe('[chuckles] 等你啊。');
     expect(extractDateSpokenText('[normal] 「别乱晃。」 [speaker:char]')).toBe('别乱晃。');
     expect(extractDateSpokenText('[normal] “站好。” [v:angry] [speaker:char]')).toBe('站好。');
+    expect(extractDateSpokenText('[normal] "欢迎光临。" [speaker:npc:店员]')).toBe('欢迎光临。');
+    expect(isDateSpokenLine('[normal] "下一站到了。" [speaker:npc]')).toBe(true);
   });
   it('纯旁白、旁白引号、引号不匹配均不送 TTS', () => {
     for (const input of [

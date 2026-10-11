@@ -4,6 +4,8 @@
  * 一轮剧情共享一个音频，GAL/小说视图按 lineId 引用同一时间区间。
  */
 export type DateDialogueSpeaker = 'char' | 'user';
+/** NPC 会显示台词，但没有专属声线时绝不能借用主角色声线。 */
+export type DateLineSpeaker = DateDialogueSpeaker | 'npc';
 
 /**
  * 见面原版只有当前角色拥有发言权；不能因模型偶发输出 [speaker:user]
@@ -11,9 +13,11 @@ export type DateDialogueSpeaker = 'char' | 'user';
  * 只有用户明确启用双 OC 强化演绎后才允许 user 声线。
  */
 export const resolveDateVoiceSpeaker = (
-  claimedSpeaker: DateDialogueSpeaker | undefined,
+  claimedSpeaker: DateLineSpeaker | undefined,
   coauthorUserEnabled: boolean,
-): DateDialogueSpeaker => coauthorUserEnabled && claimedSpeaker === 'user' ? 'user' : 'char';
+): DateDialogueSpeaker | null => claimedSpeaker === 'npc'
+  ? null
+  : (coauthorUserEnabled && claimedSpeaker === 'user' ? 'user' : 'char');
 
 export interface DateDialogueTurn {
   lineId: string;
