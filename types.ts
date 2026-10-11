@@ -2207,8 +2207,10 @@ export interface DialogueItem {
     voiceEmotion?: string;
     /** 同一轮剧情里的稳定行标识；用于把整段 Dialogue 音频的时间区间映射回 GAL/小说行。 */
     lineId?: string;
-    /** 见面剧情台词归属。旧记录没有该字段时按 char 处理。 */
-    speaker?: 'char' | 'user';
+    /** 见面剧情台词归属。NPC 不继承角色声线；旧记录没有该字段时按 char 处理。 */
+    speaker?: 'char' | 'user' | 'npc';
+    /** NPC 说话时的姓名牌；未提供时显示 NPC。 */
+    npcName?: string;
     /** 仅供 TTS：保留引号内原始 Audio Tags；界面显示仍走 text。 */
     speechText?: string;
 }
