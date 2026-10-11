@@ -70,18 +70,18 @@ export default function DatabaseGuard({ children }: { children: (boot: StartupBo
       onDone={() => setBootDone(true)}
     />}
   </>;
-  const duplicateIndex = failure?.message.includes('Index with the same ID already exists');
-  const diagnostic = failure ? [
+  const duplicateIndex = failure.message.includes('Index with the same ID already exists');
+  const diagnostic = [
     'SullyOS 本地数据库诊断', `构建：${BUILD_LABEL}`,
     `页面：${location.origin}${location.pathname}`, `浏览器：${navigator.userAgent}`,
     `错误：${failure.name}: ${failure.message}`,
     databaseOpenDiagnostic(),
-  ].join('\n') : '';
-  return <main className="database-guard" aria-busy={!failure}>
+  ].join('\n');
+  return <main className="database-guard">
     <section aria-labelledby="database-guard-title">
       <span className="database-guard-label">SULLYOS · 本地存档</span>
-      <h1 id="database-guard-title">{failure ? '暂时无法读取本地数据' : '正在读取本地数据…'}</h1>
-      {failure ? <>
+      <h1 id="database-guard-title">暂时无法读取本地数据</h1>
+      <>
         <p role="alert">读取失败不代表数据已被清空。主界面已暂停加载，请先保留当前浏览器和原访问网址。</p>
         {duplicateIndex && <p>浏览器报告数据库内部索引冲突。目前无法确认存档是否完整；清理网站数据无法保留原存档。</p>}
         <ul>
@@ -101,7 +101,7 @@ export default function DatabaseGuard({ children }: { children: (boot: StartupBo
           }}>复制诊断</button>
           <span role="status">{copyStatus}</span>
         </details>
-      </> : <p>确认存档可读取后再打开桌面，请稍候。</p>}
+      </>
     </section>
   </main>;
 }
