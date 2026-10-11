@@ -1363,6 +1363,7 @@ const DateSession: React.FC<DateSessionProps> = ({
     };
 
     const buildCurrentState = (): DateState => ({
+        encounterId: encounterId || undefined,
         dialogueQueue,
         dialogueBatch,
         currentText,
