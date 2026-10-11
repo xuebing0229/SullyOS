@@ -1,14 +1,51 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { openDB } from '../utils/db';
 import { checkDatabaseReadable, databaseFailure, subscribeDatabaseFailure, type DatabaseFailure } from '../utils/databaseHealth';
 import { BUILD_LABEL } from '../utils/buildInfo';
 import { databaseOpenDiagnostic } from '../utils/databaseOpenDiagnostics';
+import BootSequence from './os/BootSequence';
+import type { OSTheme } from '../types';
 import './DatabaseGuard.css';
 
-export default function DatabaseGuard({ children }: { children: React.ReactNode }) {
+type BootState = {
+  dataReady: boolean;
+  enabled: boolean;
+  wallpaper?: string;
+  style?: OSTheme['bootAnimationStyle'];
+};
+
+export type StartupBootControls = {
+  done: boolean;
+  reportState: (state: BootState) => void;
+};
+
+// Start the existing boot scene before IndexedDB opens; never mount data-backed
+// providers until the archive check passes. The scene remains mounted through
+// the subsequent OSContext load, so there is only one continuous animation.
+function storedBootState(): BootState {
+  try {
+    const saved = JSON.parse(localStorage.getItem('os_theme') || '{}') as Partial<OSTheme>;
+    return {
+      dataReady: false,
+      enabled: saved.bootAnimationEnabled !== false,
+      wallpaper: typeof saved.wallpaper === 'string' ? saved.wallpaper : undefined,
+      style: saved.bootAnimationStyle,
+    };
+  } catch {
+    return { dataReady: false, enabled: true };
+  }
+}
+
+export default function DatabaseGuard({ children }: { children: (boot: StartupBootControls) => React.ReactNode }) {
   const [ready, setReady] = useState(false);
   const [failure, setFailure] = useState<DatabaseFailure | null>(null);
   const [copyStatus, setCopyStatus] = useState('');
+  const [bootDone, setBootDone] = useState(false);
+  const [bootState, setBootState] = useState(storedBootState);
+  const reportState = useCallback((next: BootState) => {
+    setBootState(current => current.dataReady === next.dataReady && current.enabled === next.enabled
+      && current.style === next.style && current.wallpaper === next.wallpaper ? current : next);
+  }, []);
   useEffect(() => {
     let active = true, failed = false;
     const fail = (error: unknown) => {
@@ -24,7 +61,15 @@ export default function DatabaseGuard({ children }: { children: React.ReactNode 
     return () => { active = false; unsubscribe(); };
   }, []);
 
-  if (ready && !failure) return <>{children}</>;
+  if (!failure) return <>
+    {ready && children({ done: bootDone || !bootState.enabled, reportState })}
+    {!bootDone && bootState.enabled && <BootSequence
+      dataReady={ready && bootState.dataReady}
+      wallpaper={bootState.wallpaper}
+      style={bootState.style}
+      onDone={() => setBootDone(true)}
+    />}
+  </>;
   const duplicateIndex = failure?.message.includes('Index with the same ID already exists');
   const diagnostic = failure ? [
     'SullyOS 本地数据库诊断', `构建：${BUILD_LABEL}`,
