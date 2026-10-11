@@ -13,6 +13,8 @@ import {
   alignDateDialogueSegments,
   buildDateDialogueBatch,
   hasCollapsedDateDialogueAlignment,
+  resolveDateDialogueCharacterRanges,
+  type DateDialogueCharacterAlignment,
   type DateDialogueSegment,
   type DateDialogueTurn,
 } from './dateDialogueVoice';
@@ -29,7 +31,8 @@ type ElevenLabsDialogueSegment = {
 type ElevenLabsDialogueResponse = {
   audio_base64?: string;
   voice_segments?: ElevenLabsDialogueSegment[];
-  alignment?: { character_start_times_seconds?: number[] } | null;
+  alignment?: DateDialogueCharacterAlignment | null;
+  normalized_alignment?: DateDialogueCharacterAlignment | null;
   detail?: unknown;
   error?: unknown;
 };
@@ -92,10 +95,12 @@ const requestDialogue = async (
 const toDateSegments = (
   turns: DateDialogueTurn[],
   raw: ElevenLabsDialogueSegment[] | undefined,
+  alignment?: DateDialogueCharacterAlignment | null,
 ): DateDialogueSegment[] => {
   if (!Array.isArray(raw) || !raw.length) throw new Error('ElevenLabs Dialogue 未返回逐句时间戳');
 
   const byInput = new Map<number, ElevenLabsDialogueSegment>();
+  const usableSegments: ElevenLabsDialogueSegment[] = [];
   for (const segment of raw) {
     const index = segment.dialogue_input_index;
     if (!Number.isInteger(index) || index! < 0 || index! >= turns.length) continue;
@@ -104,12 +109,14 @@ const toDateSegments = (
     if (segment.voice_id !== turns[index!].voiceId) {
       throw new Error(`ElevenLabs Dialogue 第 ${index! + 1} 句的声线 ID 缺失或与请求不一致`);
     }
+    usableSegments.push(segment);
     const previous = byInput.get(index!);
     if (!previous) {
       byInput.set(index!, segment);
       continue;
     }
-    // 某些返回会把同一 input 拆成多个 voice segment；合并首尾而不是丢掉尾音。
+    // 某些返回会把同一 input 拆成多个 voice segment；粗粒度时间先合并首尾，
+    // 字符级边界会在下面按 character_start/end_index 再精确收紧。
     byInput.set(index!, {
       ...previous,
       start_time_seconds: Math.min(
@@ -120,8 +127,26 @@ const toDateSegments = (
         previous.end_time_seconds ?? Number.NEGATIVE_INFINITY,
         segment.end_time_seconds ?? Number.NEGATIVE_INFINITY,
       ),
+      character_start_index: Math.min(
+        previous.character_start_index ?? Number.POSITIVE_INFINITY,
+        segment.character_start_index ?? Number.POSITIVE_INFINITY,
+      ),
+      character_end_index: Math.max(
+        previous.character_end_index ?? Number.NEGATIVE_INFINITY,
+        segment.character_end_index ?? Number.NEGATIVE_INFINITY,
+      ),
     });
   }
+
+  // with-timestamps 同时返回字符级 alignment。voice_segments 的 start/end 是“声线片段”边界，
+  // 点击逐句播放时优先用 character_start/end_index 映射到字符时间戳，避免粗边界吞到邻句。
+  const hasCharacterAlignment = Array.isArray(alignment?.character_start_times_seconds)
+    || Array.isArray(alignment?.character_end_times_seconds);
+  const characterRanges = resolveDateDialogueCharacterRanges(usableSegments, turns.length, alignment);
+  if (hasCharacterAlignment && !characterRanges) {
+    throw new Error('ElevenLabs Dialogue 字符级时间戳与逐句分段不一致');
+  }
+  if (characterRanges) return alignDateDialogueSegments(turns, characterRanges);
 
   const ranges = turns.map((_turn, index) => {
     const segment = byInput.get(index);
@@ -188,12 +213,13 @@ export async function synthesizeDateDialogue(
   }
   const audio = base64ToBlob(data.audio_base64);
   if (!audio.size) throw new Error('ElevenLabs Dialogue 返回了空音频');
-  if (hasCollapsedDateDialogueAlignment(data.voice_segments || [], data.alignment)) {
+  const characterAlignment = data.alignment || data.normalized_alignment || null;
+  if (hasCollapsedDateDialogueAlignment(data.voice_segments || [], characterAlignment)) {
     throw new DateDialogueAlignmentError('ElevenLabs Dialogue 字符时间戳出现塌缩，已改为逐句配音，避免播放错位');
   }
   let segments: DateDialogueSegment[];
   try {
-    segments = toDateSegments(normalized, data.voice_segments);
+    segments = toDateSegments(normalized, data.voice_segments, characterAlignment);
   } catch (error) {
     throw new DateDialogueAlignmentError(error instanceof Error ? error.message : 'ElevenLabs Dialogue 时间戳不可用');
   }
