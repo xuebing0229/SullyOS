@@ -90,6 +90,56 @@ export const resolveDateDialogueSegmentForLine = (
   return { ...segment, lineId: turn.lineId };
 };
 
+export type DateDialogueCharacterAlignment = {
+  character_start_times_seconds?: number[];
+  character_end_times_seconds?: number[];
+};
+
+/**
+ * 官方 voice_segments 负责告诉我们“这段属于第几个 dialogue input”，
+ * 真正的裁剪边界优先取字符级 alignment。这样即使 voice segment 的粗粒度
+ * start/end 带了前后缓冲，也不会把相邻一句的尾音/开头切进来。
+ *
+ * character_end_index 是官方定义的 exclusive index。
+ */
+export const resolveDateDialogueCharacterRanges = (
+  segments: Array<{
+    dialogue_input_index?: number;
+    character_start_index?: number;
+    character_end_index?: number;
+  }>,
+  inputCount: number,
+  alignment?: DateDialogueCharacterAlignment | null,
+): Array<{ start: number; end: number }> | null => {
+  const starts = alignment?.character_start_times_seconds;
+  const ends = alignment?.character_end_times_seconds;
+  if (!Array.isArray(starts) || !Array.isArray(ends) || !starts.length || starts.length !== ends.length) return null;
+  if (!Number.isInteger(inputCount) || inputCount <= 0) return null;
+
+  const spans = Array.from({ length: inputCount }, () => ({ from: Number.POSITIVE_INFINITY, to: -1, seen: false }));
+  for (const segment of segments) {
+    const inputIndex = segment.dialogue_input_index;
+    if (!Number.isInteger(inputIndex) || inputIndex! < 0 || inputIndex! >= inputCount) continue;
+    const from = segment.character_start_index;
+    const to = segment.character_end_index;
+    if (!Number.isInteger(from) || !Number.isInteger(to)
+        || from! < 0 || to! > starts.length || to! <= from!) return null;
+    const span = spans[inputIndex!];
+    span.from = Math.min(span.from, from!);
+    span.to = Math.max(span.to, to!);
+    span.seen = true;
+  }
+
+  if (spans.some(span => !span.seen)) return null;
+  const ranges = spans.map(span => {
+    const start = starts[span.from];
+    const end = ends[span.to - 1];
+    if (!Number.isFinite(start) || !Number.isFinite(end) || start! < 0 || end! <= start!) return null;
+    return { start: start!, end: end! };
+  });
+  return ranges.some(range => !range) ? null : ranges as Array<{ start: number; end: number }>;
+};
+
 /**
  * ElevenLabs 偶尔返回时间戳塌缩：音频正常，很多字却标成同一时刻。
  * 官方 voice_segments 的先后顺序仍可能合法，单靠相邻区间检查发现不了。
@@ -97,7 +147,7 @@ export const resolveDateDialogueSegmentForLine = (
  */
 export const hasCollapsedDateDialogueAlignment = (
   segments: Array<{ character_start_index?: number; character_end_index?: number }>,
-  alignment?: { character_start_times_seconds?: number[] } | null,
+  alignment?: DateDialogueCharacterAlignment | null,
 ): boolean => {
   const times = alignment?.character_start_times_seconds;
   if (!Array.isArray(times) || !times.length) return false;
