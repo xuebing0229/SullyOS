@@ -15,11 +15,12 @@ function normalizeApiKey(raw?: string): string {
   return (raw || '').trim();
 }
 
-function base64ToBytes(base64: string): Uint8Array {
+function base64ToArrayBuffer(base64: string): ArrayBuffer {
   const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
+  const buffer = new ArrayBuffer(binary.length);
+  const bytes = new Uint8Array(buffer);
   for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
-  return bytes;
+  return buffer;
 }
 
 export default async function handler(req: any, res: any) {
@@ -54,7 +55,7 @@ export default async function handler(req: any, res: any) {
     }
 
     const form = new FormData();
-    form.append('file', new Blob([base64ToBytes(audioBase64)], { type: mimeType }), 'dialogue.mp3');
+    form.append('file', new Blob([base64ToArrayBuffer(audioBase64)], { type: mimeType }), 'dialogue.mp3');
     form.append('text', text);
 
     const upstream = await fetch(ELEVENLABS_FORCED_ALIGNMENT, {
