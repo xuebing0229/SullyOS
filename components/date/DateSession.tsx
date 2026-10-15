@@ -30,6 +30,7 @@ import { getVoiceFavorite, makeVoiceFavoriteId, removeVoiceFavorite, saveVoiceFa
 import { saveVoiceLibraryItem, setVoiceLibraryStarredForSource } from '../../utils/voiceLibrary';
 import { resolveTtsProvider } from '../../utils/ttsProvider';
 import { synthesizeDateDialogue, DateDialogueAlignmentError } from '../../utils/dateDialogueSynthesis';
+import { getCachedDateDialogue, markDateDialogueForcedSingles, saveCachedDateDialogue } from '../../utils/dateDialogueCache';
 import { extractDateSpokenText, isDateSpokenLine } from '../../utils/dateDialogueLines';
 import { resolveDateVoiceSpeaker, resolveDateDialogueSegmentForLine, type DateDialogueSegment, type DateDialogueTurn } from '../../utils/dateDialogueVoice';
 import { MEETING_CONTINUE_DISPLAY_TEXT } from '../../utils/meetingContinue';
@@ -438,6 +439,26 @@ const DateSession: React.FC<DateSessionProps> = ({
         const revision = dialogueVoiceRevisionRef.current[key] || 0;
         const pending = (async (): Promise<DateDialogueAudioBatch | null> => {
             try {
+                // 整轮 Dialogue 很贵：先从 IndexedDB 恢复已经生成成功的音频与逐句时间轴。
+                // 退出见面 / WebView 重载只释放 object URL，不应再次购买同一轮语音。
+                const persisted = await getCachedDateDialogue(key);
+                if (revision !== (dialogueVoiceRevisionRef.current[key] || 0) ||
+                    dialogueForcedSinglesRef.current.has(key)) return null;
+                if (persisted?.kind === 'forced-singles') {
+                    dialogueForcedSinglesRef.current.add(key);
+                    return null;
+                }
+                if (persisted?.kind === 'audio') {
+                    const restored: DateDialogueAudioBatch = {
+                        key,
+                        url: URL.createObjectURL(persisted.blob),
+                        blob: persisted.blob,
+                        segments: persisted.segments,
+                    };
+                    dialogueAudioCacheRef.current[key] = restored;
+                    return restored;
+                }
+
                 const result = await synthesizeDateDialogue(turns, apiConfig);
                 const batch: DateDialogueAudioBatch = {
                     key,
@@ -450,11 +471,15 @@ const DateSession: React.FC<DateSessionProps> = ({
                     URL.revokeObjectURL(batch.url);
                     return null;
                 }
+                await saveCachedDateDialogue(key, batch.blob, batch.segments);
                 dialogueAudioCacheRef.current[key] = batch;
                 return batch;
             } catch (error: any) {
                 // 供应商时间轴异常时不再为本轮反复购买同一段无法准确切片的音频。
-                if (error instanceof DateDialogueAlignmentError) dialogueForcedSinglesRef.current.add(key);
+                if (error instanceof DateDialogueAlignmentError) {
+                    dialogueForcedSinglesRef.current.add(key);
+                    await markDateDialogueForcedSingles(key);
+                }
                 console.warn('[DateDialogue] whole-turn synthesis unavailable, falling back:', error?.message || error);
                 return null;
             } finally {
@@ -683,6 +708,7 @@ const DateSession: React.FC<DateSessionProps> = ({
             }
 
             if (freshBatch) {
+                await saveCachedDateDialogue(batchKey, freshBatch.blob, freshBatch.segments);
                 const previous = dialogueAudioCacheRef.current[batchKey];
                 dialogueAudioCacheRef.current[batchKey] = freshBatch;
                 dialogueForcedSinglesRef.current.delete(batchKey);
@@ -708,6 +734,7 @@ const DateSession: React.FC<DateSessionProps> = ({
                     if (old?.url?.startsWith('blob:') && old.url !== result.url) URL.revokeObjectURL(old.url);
                 }
                 Object.assign(voiceCacheRef.current, freshLines);
+                await markDateDialogueForcedSingles(batchKey);
                 const previous = dialogueAudioCacheRef.current[batchKey];
                 delete dialogueAudioCacheRef.current[batchKey];
                 dialogueForcedSinglesRef.current.add(batchKey);
