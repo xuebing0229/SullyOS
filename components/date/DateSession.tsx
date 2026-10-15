@@ -523,13 +523,15 @@ const DateSession: React.FC<DateSessionProps> = ({
         return resolveDateDialogueSegmentForLine(turns, batch.segments, lineId);
     };
 
+    type DateDialoguePlayResult = 'started' | 'segment-unusable' | 'playback-failed' | 'cancelled';
+
     const playDialogueSegment = async (
         batch: DateDialogueAudioBatch,
         segment: DateDialogueSegment,
         onEnded: () => void,
         isCurrent: () => boolean,
-    ): Promise<boolean> => {
-        if (!isCurrent()) return false;
+    ): Promise<DateDialoguePlayResult> => {
+        if (!isCurrent()) return 'cancelled';
         clearSegmentTimer();
         stopDialogueBufferSource();
         if (dateAudioRef.current) {
@@ -537,39 +539,45 @@ const DateSession: React.FC<DateSessionProps> = ({
             dateAudioRef.current.onended = null;
         }
 
-        // 优先：解码整轮 MP3 后按 PCM 时间轴截播。这样起止点由 AudioBufferSourceNode
-        // 的 offset + duration 控制，不经过 MP3 seek，按句点击时不会轻易吃到前后句尾音。
+        // 优先：解码整轮 MP3 后按 PCM 时间轴截播。只有“这句的时间轴本身不可用”
+        // 才允许调用方补生成这一句；Web Audio/播放设备故障绝不能触发额外 TTS 计费。
         const decoded = await ensureDecodedDialogueBatch(batch);
-        if (!isCurrent()) return false;
+        if (!isCurrent()) return 'cancelled';
         if (decoded) {
+            const rawDuration = segment.endTime - segment.startTime;
+            if (!Number.isFinite(rawDuration) || rawDuration <= 0.015
+                || segment.startTime < 0
+                || segment.startTime >= decoded.buffer.duration - 0.01
+                || segment.endTime > decoded.buffer.duration + 0.08) {
+                return 'segment-unusable';
+            }
             try {
                 if (decoded.context.state === 'suspended') await decoded.context.resume();
-                if (!isCurrent()) return false;
+                if (!isCurrent()) return 'cancelled';
                 const startTime = Math.max(0, Math.min(segment.startTime, decoded.buffer.duration));
                 const endTime = Math.max(startTime, Math.min(segment.endTime, decoded.buffer.duration));
                 const duration = endTime - startTime;
-                if (duration > 0.015) {
-                    const source = decoded.context.createBufferSource();
-                    source.buffer = decoded.buffer;
-                    source.connect(decoded.context.destination);
-                    dialogueAudioSourceRef.current = source;
-                    source.onended = () => {
-                        if (dialogueAudioSourceRef.current === source) dialogueAudioSourceRef.current = null;
-                        try { source.disconnect(); } catch { /* no-op */ }
-                        onEnded();
-                    };
-                    source.start(0, startTime, duration);
-                    return true;
-                }
+                if (duration <= 0.015) return 'segment-unusable';
+                const source = decoded.context.createBufferSource();
+                source.buffer = decoded.buffer;
+                source.connect(decoded.context.destination);
+                dialogueAudioSourceRef.current = source;
+                source.onended = () => {
+                    if (dialogueAudioSourceRef.current === source) dialogueAudioSourceRef.current = null;
+                    try { source.disconnect(); } catch { /* no-op */ }
+                    onEnded();
+                };
+                source.start(0, startTime, duration);
+                return 'started';
             } catch (error) {
                 console.warn('[DateDialogue] precise segment playback failed, reusing whole-turn audio:', error);
                 stopDialogueBufferSource();
             }
         }
 
-        // Web Audio 在部分 Android WebView 里可能无法解码/恢复。这里仍然复用已经购买的整轮
-        // Dialogue 音频，按 Forced Alignment 的边界 seek + 定时停止；绝不能因为“播放层失败”
-        // 再调用一次单句 TTS。只有整轮合成本身失败时，调用方才允许进入逐句合成链路。
+        // Web Audio 在部分 Android WebView 里可能无法解码/恢复。继续复用同一份整轮音频。
+        // 若整轮音频能加载，但这一句的区间为空/越界，才判定 segment-unusable，
+        // 由调用方仅补这一句；如果只是 audio.play/设备播放失败，则不重新生成。
         try {
             if (!dateAudioRef.current) dateAudioRef.current = new Audio();
             const audio = dateAudioRef.current;
@@ -579,8 +587,8 @@ const DateSession: React.FC<DateSessionProps> = ({
 
             const startTime = Math.max(0, segment.startTime);
             const endTime = Math.max(startTime, segment.endTime);
-            const durationMs = Math.max(20, (endTime - startTime) * 1000);
-            if (!(durationMs > 20) || !Number.isFinite(durationMs)) return false;
+            const requestedDuration = endTime - startTime;
+            if (!Number.isFinite(requestedDuration) || requestedDuration <= 0.02) return 'segment-unusable';
 
             if (audio.readyState < 1) {
                 await new Promise<void>((resolve, reject) => {
@@ -595,12 +603,16 @@ const DateSession: React.FC<DateSessionProps> = ({
                     audio.load();
                 });
             }
-            if (!isCurrent()) return false;
+            if (!isCurrent()) return 'cancelled';
 
+            if (Number.isFinite(audio.duration)
+                && (startTime >= audio.duration - 0.01 || endTime > audio.duration + 0.08)) {
+                return 'segment-unusable';
+            }
             const safeStart = Math.min(startTime, Math.max(0, (audio.duration || startTime) - 0.01));
             const safeEnd = Math.min(endTime, Number.isFinite(audio.duration) ? audio.duration : endTime);
-            const safeDurationMs = Math.max(20, (safeEnd - safeStart) * 1000);
-            if (!(safeDurationMs > 20) || !Number.isFinite(safeDurationMs)) return false;
+            const safeDurationMs = (safeEnd - safeStart) * 1000;
+            if (!Number.isFinite(safeDurationMs) || safeDurationMs <= 20) return 'segment-unusable';
 
             audio.currentTime = safeStart;
             let finished = false;
@@ -616,13 +628,13 @@ const DateSession: React.FC<DateSessionProps> = ({
             await audio.play();
             if (!isCurrent()) {
                 finish();
-                return false;
+                return 'cancelled';
             }
             segmentStopTimerRef.current = setTimeout(finish, safeDurationMs + 35);
-            return true;
+            return 'started';
         } catch (error) {
             console.warn('[DateDialogue] whole-turn HTMLAudio playback failed:', error);
-            return false;
+            return 'playback-failed';
         }
     };
 
@@ -847,12 +859,19 @@ const DateSession: React.FC<DateSessionProps> = ({
                 if (!isCurrent()) return;
                 const segment = batch ? resolveDialogueSegment(dialogueBatch, batch, lineId) : null;
                 if (batch && segment) {
-                    setGalVoiceLoading(false);
-                    const started = await playDialogueSegment(batch, segment, () => setDateVoicePlaying(false), isCurrent);
-                    if (isCurrent() && started) setDateVoicePlaying(true);
-                    // 整轮已经成功生成就绝不再花钱逐句生成；播放层失败只记日志。
-                    if (isCurrent() && !started) console.warn('[DateDialogue] whole-turn audio exists but this segment could not be played');
-                    return;
+                    const result = await playDialogueSegment(batch, segment, () => setDateVoicePlaying(false), isCurrent);
+                    if (result === 'cancelled' || !isCurrent()) return;
+                    if (result === 'started') {
+                        setGalVoiceLoading(false);
+                        setDateVoicePlaying(true);
+                        return;
+                    }
+                    if (result === 'playback-failed') {
+                        setGalVoiceLoading(false);
+                        console.warn('[DateDialogue] whole-turn playback failed; refusing paid single-line regeneration');
+                        return;
+                    }
+                    // segment-unusable：仅这一句的时间轴为空/越界，允许落到下方单句兜底。
                 }
             }
 
@@ -908,12 +927,19 @@ const DateSession: React.FC<DateSessionProps> = ({
             if (!isCurrent()) return;
             const segment = batch ? resolveDialogueSegment(dialogueBatch, batch, lineId) : null;
             if (batch && segment) {
-                setGalVoiceLoading(false);
-                const started = await playDialogueSegment(batch, segment, () => setDateVoicePlaying(false), isCurrent);
-                if (!isCurrent()) return;
-                if (started) setDateVoicePlaying(true);
-                else addToast('整轮语音已生成，但当前句播放失败，请重试', 'error');
-                return;
+                const result = await playDialogueSegment(batch, segment, () => setDateVoicePlaying(false), isCurrent);
+                if (result === 'cancelled' || !isCurrent()) return;
+                if (result === 'started') {
+                    setGalVoiceLoading(false);
+                    setDateVoicePlaying(true);
+                    return;
+                }
+                if (result === 'playback-failed') {
+                    setGalVoiceLoading(false);
+                    addToast('整轮语音播放失败，请重试；不会重复生成扣费', 'error');
+                    return;
+                }
+                // segment-unusable：继续到下面，只补生成当前这一句。
             }
         }
 
@@ -970,11 +996,17 @@ const DateSession: React.FC<DateSessionProps> = ({
             if (!isCurrent()) return;
             const segment = batch ? resolveDialogueSegment(historicalItems, batch, targetLineId) : null;
             if (batch && segment) {
-                const started = await playDialogueSegment(batch, segment, () => setNovelPlayingId(null), isCurrent);
-                if (!isCurrent()) return;
-                if (started) setNovelPlayingId(lineKey);
-                else addToast('整轮语音已生成，但当前句播放失败，请重试', 'error');
-                return;
+                const result = await playDialogueSegment(batch, segment, () => setNovelPlayingId(null), isCurrent);
+                if (result === 'cancelled' || !isCurrent()) return;
+                if (result === 'started') {
+                    setNovelPlayingId(lineKey);
+                    return;
+                }
+                if (result === 'playback-failed') {
+                    addToast('整轮语音播放失败，请重试；不会重复生成扣费', 'error');
+                    return;
+                }
+                // segment-unusable：只补这一句，单句 TTS 自身有持久缓存，不会反复扣费。
             }
 
             const cacheKey = singleVoiceCacheKey(speaker, speechText);
