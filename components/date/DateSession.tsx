@@ -545,7 +545,6 @@ const DateSession: React.FC<DateSessionProps> = ({
             try {
                 if (decoded.context.state === 'suspended') await decoded.context.resume();
                 if (!isCurrent()) return false;
-                if (segment.endTime > decoded.buffer.duration + 0.04) return false;
                 const startTime = Math.max(0, Math.min(segment.startTime, decoded.buffer.duration));
                 const endTime = Math.max(startTime, Math.min(segment.endTime, decoded.buffer.duration));
                 const duration = endTime - startTime;
@@ -563,14 +562,68 @@ const DateSession: React.FC<DateSessionProps> = ({
                     return true;
                 }
             } catch (error) {
-                console.warn('[DateDialogue] precise segment playback failed, falling back to HTMLAudio:', error);
+                console.warn('[DateDialogue] precise segment playback failed, reusing whole-turn audio:', error);
                 stopDialogueBufferSource();
             }
         }
 
-        // HTMLAudio MP3 seek + setTimeout 无法保证精确边界。
-        // PCM 切片不可用时返回 false，由调用方降级为独立的单句 TTS。
-        return false;
+        // Web Audio 在部分 Android WebView 里可能无法解码/恢复。这里仍然复用已经购买的整轮
+        // Dialogue 音频，按 Forced Alignment 的边界 seek + 定时停止；绝不能因为“播放层失败”
+        // 再调用一次单句 TTS。只有整轮合成本身失败时，调用方才允许进入逐句合成链路。
+        try {
+            if (!dateAudioRef.current) dateAudioRef.current = new Audio();
+            const audio = dateAudioRef.current;
+            audio.pause();
+            audio.onended = null;
+            if (audio.src !== batch.url) audio.src = batch.url;
+
+            const startTime = Math.max(0, segment.startTime);
+            const endTime = Math.max(startTime, segment.endTime);
+            const durationMs = Math.max(20, (endTime - startTime) * 1000);
+            if (!(durationMs > 20) || !Number.isFinite(durationMs)) return false;
+
+            if (audio.readyState < 1) {
+                await new Promise<void>((resolve, reject) => {
+                    const cleanup = () => {
+                        audio.removeEventListener('loadedmetadata', handleReady);
+                        audio.removeEventListener('error', handleError);
+                    };
+                    const handleReady = () => { cleanup(); resolve(); };
+                    const handleError = () => { cleanup(); reject(new Error('整轮语音载入失败')); };
+                    audio.addEventListener('loadedmetadata', handleReady, { once: true });
+                    audio.addEventListener('error', handleError, { once: true });
+                    audio.load();
+                });
+            }
+            if (!isCurrent()) return false;
+
+            const safeStart = Math.min(startTime, Math.max(0, (audio.duration || startTime) - 0.01));
+            const safeEnd = Math.min(endTime, Number.isFinite(audio.duration) ? audio.duration : endTime);
+            const safeDurationMs = Math.max(20, (safeEnd - safeStart) * 1000);
+            if (!(safeDurationMs > 20) || !Number.isFinite(safeDurationMs)) return false;
+
+            audio.currentTime = safeStart;
+            let finished = false;
+            const finish = () => {
+                if (finished) return;
+                finished = true;
+                clearSegmentTimer();
+                audio.onended = null;
+                try { audio.pause(); } catch { /* no-op */ }
+                if (isCurrent()) onEnded();
+            };
+            audio.onended = finish;
+            await audio.play();
+            if (!isCurrent()) {
+                finish();
+                return false;
+            }
+            segmentStopTimerRef.current = setTimeout(finish, safeDurationMs + 35);
+            return true;
+        } catch (error) {
+            console.warn('[DateDialogue] whole-turn HTMLAudio playback failed:', error);
+            return false;
+        }
     };
 
     // 用户切换音色、服务商或稳定性设置后，不能继续回放本次见面里旧声线的缓存音频。
