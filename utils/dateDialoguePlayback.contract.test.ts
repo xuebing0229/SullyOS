@@ -18,4 +18,13 @@ describe('DateSession precise dialogue segment playback contract', () => {
         expect(session).toContain('const isCurrent = () =>');
         expect(session).toContain('if (!isCurrent()) return false;');
     });
+
+    it('persists whole-turn Dialogue audio across meeting exit and app reload', () => {
+        expect(session).toContain('await getCachedDateDialogue(key)');
+        expect(session).toContain('await saveCachedDateDialogue(key, batch.blob, batch.segments)');
+        expect(session).toContain('await markDateDialogueForcedSingles(key)');
+        expect(session).toContain('URL.createObjectURL(persisted.blob)');
+        expect(session).toContain('await saveCachedDateDialogue(batchKey, freshBatch.blob, freshBatch.segments)');
+        expect(session).toContain('await markDateDialogueForcedSingles(batchKey)');
+    });
 });
