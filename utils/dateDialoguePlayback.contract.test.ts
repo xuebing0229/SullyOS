@@ -11,10 +11,11 @@ describe('DateSession precise dialogue segment playback contract', () => {
         expect(session).toContain('decodedDialogueRef');
     });
 
-    it('never seeks a shared MP3 with HTMLAudio timers when PCM decoding fails', () => {
-        expect(session).toContain('PCM 切片不可用时返回 false');
-        expect(session).not.toContain("audio.addEventListener('seeked'");
-        expect(session).not.toContain('const durationMs = Math.max(40, (segment.endTime - segment.startTime) * 1000)');
+    it('reuses the already generated whole-turn audio when PCM playback is unavailable', () => {
+        expect(session).toContain('reusing whole-turn audio');
+        expect(session).toContain('audio.currentTime = safeStart');
+        expect(session).toContain('segmentStopTimerRef.current = setTimeout(finish, safeDurationMs + 35)');
+        expect(session).toContain('只有整轮合成本身失败时，调用方才允许进入逐句合成链路');
         expect(session).toContain('const isCurrent = () =>');
         expect(session).toContain('if (!isCurrent()) return false;');
     });
