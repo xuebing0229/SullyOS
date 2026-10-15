@@ -140,6 +140,84 @@ export const resolveDateDialogueCharacterRanges = (
   return ranges.some(range => !range) ? null : ranges as Array<{ start: number; end: number }>;
 };
 
+
+export type DateForcedAlignmentCharacter = {
+  text?: string;
+  start?: number;
+  end?: number;
+};
+
+export type DateForcedAlignmentTranscript = {
+  text: string;
+  spans: Array<{ from: number; to: number }>;
+};
+
+/**
+ * Forced Alignment 对的是最终实际说出口的纯文本，而不是带 Audio Tags 的 Dialogue 输入。
+ * 用单个空格连接每条台词，并用 Unicode code point 索引记录每句范围，避免 emoji / 扩展字符
+ * 把 JS UTF-16 length 搞偏。
+ */
+export const buildDateForcedAlignmentTranscript = (
+  spokenTexts: string[],
+): DateForcedAlignmentTranscript | null => {
+  if (!spokenTexts.length) return null;
+  const chars: string[] = [];
+  const spans: Array<{ from: number; to: number }> = [];
+  for (let index = 0; index < spokenTexts.length; index += 1) {
+    const text = (spokenTexts[index] || '').trim();
+    if (!text) return null;
+    if (index > 0) chars.push(' ');
+    const from = chars.length;
+    chars.push(...Array.from(text));
+    spans.push({ from, to: chars.length });
+  }
+  return { text: chars.join(''), spans };
+};
+
+/**
+ * ElevenLabs Forced Alignment 返回逐字符时间。只有返回字符序列与我们提交的 transcript
+ * 一一对应时才使用；任何正规化/缺字符都直接判失败，宁可回退单句 TTS 也不猜切点。
+ */
+export const resolveDateForcedAlignmentRanges = (
+  transcript: DateForcedAlignmentTranscript,
+  characters: DateForcedAlignmentCharacter[] | undefined,
+): Array<{ start: number; end: number }> | null => {
+  if (!Array.isArray(characters) || !characters.length || !transcript.spans.length) return null;
+  const submitted = Array.from(transcript.text);
+  if (characters.length !== submitted.length) return null;
+
+  for (let index = 0; index < characters.length; index += 1) {
+    const value = characters[index]?.text;
+    if (typeof value !== 'string' || Array.from(value).length !== 1) return null;
+    const expected = submitted[index];
+    // Forced Alignment 偶尔会把换行/制表正规化；这里 transcript 只主动插入普通空格，
+    // 但用户正文自身可能含空白，所以允许“空白仍为空白”，其他字符必须完全一致。
+    if (value !== expected && !(value.trim() === '' && expected.trim() === '')) return null;
+  }
+
+  const ranges = transcript.spans.map(span => {
+    const slice = characters.slice(span.from, span.to);
+    const spoken = slice.filter(item =>
+      typeof item.text === 'string' && item.text.trim() !== ''
+      && Number.isFinite(item.start) && Number.isFinite(item.end));
+    const timed = spoken.length
+      ? spoken
+      : slice.filter(item => Number.isFinite(item.start) && Number.isFinite(item.end));
+    if (!timed.length) return null;
+    const start = Math.min(...timed.map(item => Number(item.start)));
+    const end = Math.max(...timed.map(item => Number(item.end)));
+    if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end <= start) return null;
+    return { start, end };
+  });
+
+  if (ranges.some(range => !range)) return null;
+  const typed = ranges as Array<{ start: number; end: number }>;
+  for (let index = 1; index < typed.length; index += 1) {
+    if (typed[index].start < typed[index - 1].end - 0.02) return null;
+  }
+  return typed;
+};
+
 /**
  * ElevenLabs 偶尔返回时间戳塌缩：音频正常，很多字却标成同一时刻。
  * 官方 voice_segments 的先后顺序仍可能合法，单靠相邻区间检查发现不了。

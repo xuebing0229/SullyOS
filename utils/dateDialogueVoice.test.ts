@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { alignDateDialogueSegments, buildDateDialogueBatch, hasCollapsedDateDialogueAlignment, resolveDateDialogueCharacterRanges, resolveDateDialogueSegmentForLine, resolveDateVoiceSpeaker } from './dateDialogueVoice';
+import { alignDateDialogueSegments, buildDateDialogueBatch, buildDateForcedAlignmentTranscript, hasCollapsedDateDialogueAlignment, resolveDateDialogueCharacterRanges, resolveDateDialogueSegmentForLine, resolveDateForcedAlignmentRanges, resolveDateVoiceSpeaker } from './dateDialogueVoice';
 
 const turns = [
   { lineId: '1', speaker: 'char' as const, speech: '[softly] 你怎么还没睡？', voiceId: 'char-voice' },
@@ -120,6 +120,36 @@ describe('见面逐句播放定位', () => {
     expect(resolveDateDialogueCharacterRanges([
       { dialogue_input_index: 0, character_start_index: 0, character_end_index: 99 },
     ], 1, alignment)).toBeNull();
+  });
+
+
+  it('用最终纯文本的 Forced Alignment 字符时间轴重新定位每句，不再依赖 Dialogue 自带漂移时间', () => {
+    const transcript = buildDateForcedAlignmentTranscript(['你好', '等一下']);
+    expect(transcript).toEqual({
+      text: '你好 等一下',
+      spans: [{ from: 0, to: 2 }, { from: 3, to: 6 }],
+    });
+    const characters = Array.from('你好 等一下').map((text, index) => ({
+      text,
+      start: index * 0.2,
+      end: index * 0.2 + 0.12,
+    }));
+    expect(resolveDateForcedAlignmentRanges(transcript!, characters)).toEqual([
+      { start: 0, end: 0.32 },
+      { start: 0.6, end: 1.12 },
+    ]);
+  });
+
+  it('Forced Alignment 回传字符有缺失或改写时拒绝猜切点', () => {
+    const transcript = buildDateForcedAlignmentTranscript(['你好', '再见'])!;
+    const characters = Array.from(transcript.text).map((text, index) => ({
+      text,
+      start: index * 0.1,
+      end: index * 0.1 + 0.08,
+    }));
+    characters[1] = { ...characters[1], text: '坏' };
+    expect(resolveDateForcedAlignmentRanges(transcript, characters)).toBeNull();
+    expect(resolveDateForcedAlignmentRanges(transcript, characters.slice(0, -1))).toBeNull();
   });
 
   it('供应商字符时间戳塌缩应回退逐句，正常原生时间戳照常使用', () => {

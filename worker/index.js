@@ -3922,6 +3922,57 @@ export default {
       }
     }
 
+
+    // ========== ElevenLabs Forced Alignment 代理 ==========
+    // 客户端用 JSON 传最终 Dialogue 音频 base64 + 纯文本；Worker 在边缘组装 multipart，
+    // 避免 Capacitor 原生桥直接上传 Blob/FormData 的兼容性问题。Key/文本/音频均不持久化。
+    if (url.pathname === '/elevenlabs/forced-alignment') {
+      if (request.method !== 'POST') {
+        return jsonResponse({ error: 'Method not allowed' }, { status: 405, origin });
+      }
+      const apiKey = (request.headers.get('xi-api-key') || '').trim();
+      if (!apiKey) {
+        return jsonResponse({ error: 'Missing xi-api-key header (ElevenLabs API key)' }, { status: 401, origin });
+      }
+      let body = {};
+      try { body = await request.json(); } catch {
+        return jsonResponse({ error: 'Invalid JSON body' }, { status: 400, origin });
+      }
+      const audioBase64 = typeof body.audio_base64 === 'string' ? body.audio_base64.trim() : '';
+      const text = typeof body.text === 'string' ? body.text.trim() : '';
+      if (!audioBase64 || !text) {
+        return jsonResponse({ error: 'audio_base64 and text are required' }, { status: 400, origin });
+      }
+      // 见面整轮当前硬限制 2000 字；128kbps 音频正常远小于此上限，额外限制防止代理被滥用。
+      if (audioBase64.length > 24 * 1024 * 1024 || text.length > 10000) {
+        return jsonResponse({ error: 'Forced alignment payload too large' }, { status: 413, origin });
+      }
+      try {
+        let bytes;
+        try {
+          const binary = atob(audioBase64);
+          bytes = new Uint8Array(binary.length);
+          for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+        } catch {
+          return jsonResponse({ error: 'Invalid audio_base64' }, { status: 400, origin });
+        }
+        const form = new FormData();
+        form.append('file', new Blob([bytes], { type: 'audio/mpeg' }), 'dialogue.mp3');
+        form.append('text', text);
+        const upstream = await fetch('https://api.elevenlabs.io/v1/forced-alignment', {
+          method: 'POST',
+          headers: { 'xi-api-key': apiKey, 'Accept': 'application/json' },
+          body: form,
+        });
+        const responseText = await upstream.text();
+        const respHeaders = new Headers(corsHeaders(origin));
+        respHeaders.set('Content-Type', upstream.headers.get('Content-Type') || 'application/json; charset=utf-8');
+        return new Response(responseText, { status: upstream.status, headers: respHeaders });
+      } catch (e) {
+        return jsonResponse({ error: 'ElevenLabs forced alignment upstream fetch failed', detail: String(e && e.message || e) }, { status: 502, origin });
+      }
+    }
+
     // ========== 麦当劳 MCP 代理 (浏览器 CORS 兜底, 纯透传) ==========
     // 前端 POST /mcp/mcd  + Authorization: Bearer <user_mcp_token>
     // body 即 MCP JSON-RPC 报文 (initialize / tools/list / tools/call ...)
