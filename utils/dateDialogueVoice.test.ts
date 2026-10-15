@@ -134,10 +134,11 @@ describe('见面逐句播放定位', () => {
       start: index * 0.2,
       end: index * 0.2 + 0.12,
     }));
-    expect(resolveDateForcedAlignmentRanges(transcript!, characters)).toEqual([
-      { start: 0, end: 0.32 },
-      { start: 0.6, end: 1.12 },
-    ]);
+    const ranges = resolveDateForcedAlignmentRanges(transcript!, characters)!;
+    expect(ranges[0].start).toBeCloseTo(0);
+    expect(ranges[0].end).toBeCloseTo(0.32);
+    expect(ranges[1].start).toBeCloseTo(0.6);
+    expect(ranges[1].end).toBeCloseTo(1.12);
   });
 
   it('Forced Alignment 回传字符有缺失或改写时拒绝猜切点', () => {
@@ -180,11 +181,12 @@ describe('见面 Voice ID 路由合约', () => {
     expect(session).toContain("const favoriteSpeaker = resolveDateVoiceSpeaker(target.speaker, coauthorUserEnabled);");
   });
 
-  it('校验 ElevenLabs 回传 voice_id；声线或时间戳不匹配则单句重试', () => {
+  it('整轮音频生成后用 Forced Alignment 重求时间轴；voice_segments 只做安全范围内的演出扩边', () => {
     expect(synthesis).toContain('segment.voice_id !== turns[index!].voiceId');
-    expect(synthesis).toContain('resolveDateDialogueCharacterRanges(usableSegments, turns.length, alignment)');
-    expect(synthesis).toContain('return alignDateDialogueSegments(turns, characterRanges);');
-    expect(synthesis).toContain('return alignDateDialogueSegments(turns, ranges);');
+    expect(synthesis).toContain('requestForcedAlignment(apiKey, data.audio_base64, transcript.text)');
+    expect(synthesis).toContain('resolveDateForcedAlignmentRanges(transcript, forced.data.characters)');
+    expect(synthesis).toContain('segments = toDateSegments(normalized, data.voice_segments, anchors)');
+    expect(synthesis).not.toContain('resolveDateDialogueCharacterRanges(usableSegments, turns.length, alignment)');
   });
 
   it('单句 TTS 缓存必须绑定实际声线配置与模型设置', () => {
