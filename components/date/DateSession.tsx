@@ -850,7 +850,9 @@ const DateSession: React.FC<DateSessionProps> = ({
                     setGalVoiceLoading(false);
                     const started = await playDialogueSegment(batch, segment, () => setDateVoicePlaying(false), isCurrent);
                     if (isCurrent() && started) setDateVoicePlaying(true);
-                    if (!isCurrent() || started) return;
+                    // 整轮已经成功生成就绝不再花钱逐句生成；播放层失败只记日志。
+                    if (isCurrent() && !started) console.warn('[DateDialogue] whole-turn audio exists but this segment could not be played');
+                    return;
                 }
             }
 
@@ -909,10 +911,9 @@ const DateSession: React.FC<DateSessionProps> = ({
                 setGalVoiceLoading(false);
                 const started = await playDialogueSegment(batch, segment, () => setDateVoicePlaying(false), isCurrent);
                 if (!isCurrent()) return;
-                if (started) {
-                    setDateVoicePlaying(true);
-                    return;
-                }
+                if (started) setDateVoicePlaying(true);
+                else addToast('整轮语音已生成，但当前句播放失败，请重试', 'error');
+                return;
             }
         }
 
@@ -971,10 +972,9 @@ const DateSession: React.FC<DateSessionProps> = ({
             if (batch && segment) {
                 const started = await playDialogueSegment(batch, segment, () => setNovelPlayingId(null), isCurrent);
                 if (!isCurrent()) return;
-                if (started) {
-                    setNovelPlayingId(lineKey);
-                    return;
-                }
+                if (started) setNovelPlayingId(lineKey);
+                else addToast('整轮语音已生成，但当前句播放失败，请重试', 'error');
+                return;
             }
 
             const cacheKey = singleVoiceCacheKey(speaker, speechText);
