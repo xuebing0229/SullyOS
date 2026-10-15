@@ -3887,6 +3887,53 @@ export default {
       }
     }
 
+
+    // ========== ElevenLabs Forced Alignment 代理 ==========
+    // 客户端用 JSON 传 audio_base64 + 纯文本；Worker 在这里转成官方要求的 multipart/form-data。
+    // 这样 Android 不需要自己实现 multipart 上传，且 Worker 不记录 Key / 音频 / 剧情文本。
+    if (url.pathname === '/elevenlabs/forced-alignment') {
+      if (request.method !== 'POST') {
+        return jsonResponse({ error: 'Method not allowed' }, { status: 405, origin });
+      }
+      const apiKey = (request.headers.get('xi-api-key') || '').trim();
+      if (!apiKey) {
+        return jsonResponse({ error: 'Missing xi-api-key header (ElevenLabs API key)' }, { status: 401, origin });
+      }
+      try {
+        const payload = await request.json();
+        const audioBase64 = typeof payload?.audio_base64 === 'string' ? payload.audio_base64.trim() : '';
+        const text = typeof payload?.text === 'string' ? payload.text : '';
+        const mimeType = typeof payload?.mime_type === 'string' && /^audio\/[a-z0-9.+-]+$/i.test(payload.mime_type)
+          ? payload.mime_type
+          : 'audio/mpeg';
+        if (!audioBase64 || !text.trim()) {
+          return jsonResponse({ error: 'Missing audio_base64 or text' }, { status: 400, origin });
+        }
+
+        const binary = atob(audioBase64);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+        const form = new FormData();
+        form.append('file', new Blob([bytes], { type: mimeType }), 'dialogue.mp3');
+        form.append('text', text);
+
+        const upstream = await fetch('https://api.elevenlabs.io/v1/forced-alignment', {
+          method: 'POST',
+          headers: {
+            'xi-api-key': apiKey,
+            'Accept': 'application/json',
+          },
+          body: form,
+        });
+        const responseText = await upstream.text();
+        const respHeaders = new Headers(corsHeaders(origin));
+        respHeaders.set('Content-Type', upstream.headers.get('Content-Type') || 'application/json; charset=utf-8');
+        return new Response(responseText, { status: upstream.status, headers: respHeaders });
+      } catch (e) {
+        return jsonResponse({ error: 'ElevenLabs forced alignment upstream fetch failed', detail: String(e && e.message || e) }, { status: 502, origin });
+      }
+    }
+
     // ========== ElevenLabs Text-to-Dialogue 时间戳代理 ==========
     // 前端 POST /elevenlabs/dialogue?output_format=... + xi-api-key: <user key>
     // 返回 JSON（audio_base64 + voice_segments），Worker 不记录、不持久化 Key 或剧情文本。

@@ -140,6 +140,126 @@ export const resolveDateDialogueCharacterRanges = (
   return ranges.some(range => !range) ? null : ranges as Array<{ start: number; end: number }>;
 };
 
+
+export interface DateDialogueAlignmentTranscript {
+  text: string;
+  /** Unicode code-point offsets, end-exclusive. */
+  spans: Array<{ from: number; to: number }>;
+}
+
+export type DateForcedAlignmentCharacter = {
+  text?: string;
+  start?: number;
+  end?: number;
+};
+
+/**
+ * Forced Alignment 只接收真正会被朗读的文字。每句之间插一个换行作为稳定分隔符，
+ * span 使用 Unicode code point 而不是 UTF-16 下标，避免 emoji / 扩展字符把后续句子错位。
+ */
+export const buildDateDialogueAlignmentTranscript = (
+  lines: string[],
+): DateDialogueAlignmentTranscript | null => {
+  const cleaned = lines.map(line => (line || '').trim());
+  if (!cleaned.length || cleaned.some(line => !line)) return null;
+
+  const spans: Array<{ from: number; to: number }> = [];
+  let offset = 0;
+  cleaned.forEach((line, index) => {
+    const length = Array.from(line).length;
+    spans.push({ from: offset, to: offset + length });
+    offset += length;
+    if (index < cleaned.length - 1) offset += 1; // "\n"
+  });
+  return { text: cleaned.join('\n'), spans };
+};
+
+/**
+ * 把 Forced Alignment 返回的逐字符时间映射回每句“有声文字”的锚点。
+ * 响应字符必须与我们提交的 transcript 完全一致；有任何归一化/缺字就拒绝猜切点。
+ */
+export const resolveDateDialogueForcedAlignmentRanges = (
+  transcript: DateDialogueAlignmentTranscript,
+  characters: DateForcedAlignmentCharacter[] | undefined,
+): Array<{ start: number; end: number }> | null => {
+  if (!Array.isArray(characters) || !characters.length) return null;
+
+  const aligned: Array<{ text: string; start: number; end: number }> = [];
+  for (const item of characters) {
+    if (typeof item?.text !== 'string' || !item.text) return null;
+    const start = Number(item.start);
+    const end = Number(item.end);
+    if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end < start) return null;
+    for (const unit of Array.from(item.text)) aligned.push({ text: unit, start, end });
+  }
+
+  const expected = Array.from(transcript.text);
+  if (aligned.length !== expected.length) return null;
+  for (let i = 0; i < expected.length; i += 1) {
+    if (aligned[i].text !== expected[i]) return null;
+  }
+
+  const ranges = transcript.spans.map(span => {
+    if (!Number.isInteger(span.from) || !Number.isInteger(span.to)
+        || span.from < 0 || span.to > aligned.length || span.to <= span.from) return null;
+    const slice = aligned.slice(span.from, span.to);
+    const start = slice[0]?.start;
+    const end = slice[slice.length - 1]?.end;
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end! <= start!) return null;
+    return { start: start!, end: end! };
+  });
+  return ranges.some(range => !range) ? null : ranges as Array<{ start: number; end: number }>;
+};
+
+/**
+ * Forced Alignment 的文字锚点负责保证“不切进别人的台词”；Dialogue 自带的粗分段
+ * 只允许在两个锚点之间的安全空隙里决定边界，以尽量保留句首/句尾的笑声、叹气等 Audio Tags。
+ */
+export const stabilizeDateDialogueForcedRanges = (
+  anchors: Array<{ start: number; end: number }>,
+  coarse: Array<{ start?: number; end?: number }>,
+): Array<{ start: number; end: number }> | null => {
+  if (!anchors.length || anchors.length !== coarse.length) return null;
+  for (let i = 0; i < anchors.length; i += 1) {
+    const current = anchors[i];
+    if (!Number.isFinite(current.start) || !Number.isFinite(current.end)
+        || current.start < 0 || current.end <= current.start) return null;
+    if (i > 0 && current.start < anchors[i - 1].end - 0.02) return null;
+  }
+
+  const boundaries: number[] = [];
+  for (let i = 0; i < anchors.length - 1; i += 1) {
+    const low = anchors[i].end;
+    const high = anchors[i + 1].start;
+    if (high < low - 0.02) return null;
+    const candidates = [coarse[i]?.end, coarse[i + 1]?.start]
+      .map(Number)
+      .filter(Number.isFinite);
+    const candidate = candidates.length
+      ? candidates.reduce((sum, value) => sum + value, 0) / candidates.length
+      : (low + high) / 2;
+    boundaries.push(Math.max(low, Math.min(high, candidate)));
+  }
+
+  const firstRaw = Number(coarse[0]?.start);
+  const firstAnchor = anchors[0].start;
+  const firstStart = Number.isFinite(firstRaw) && firstRaw >= 0 && firstRaw <= firstAnchor
+    ? firstRaw
+    : Math.max(0, firstAnchor - 0.2);
+
+  const lastIndex = anchors.length - 1;
+  const lastAnchor = anchors[lastIndex].end;
+  const lastRaw = Number(coarse[lastIndex]?.end);
+  const lastEnd = Number.isFinite(lastRaw) && lastRaw >= lastAnchor && lastRaw <= lastAnchor + 0.4
+    ? lastRaw
+    : lastAnchor;
+
+  return anchors.map((anchor, index) => ({
+    start: index === 0 ? firstStart : boundaries[index - 1],
+    end: index === lastIndex ? lastEnd : boundaries[index],
+  }));
+};
+
 /**
  * ElevenLabs 偶尔返回时间戳塌缩：音频正常，很多字却标成同一时刻。
  * 官方 voice_segments 的先后顺序仍可能合法，单靠相邻区间检查发现不了。

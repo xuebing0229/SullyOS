@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { alignDateDialogueSegments, buildDateDialogueBatch, hasCollapsedDateDialogueAlignment, resolveDateDialogueCharacterRanges, resolveDateDialogueSegmentForLine, resolveDateVoiceSpeaker } from './dateDialogueVoice';
+import { alignDateDialogueSegments, buildDateDialogueAlignmentTranscript, buildDateDialogueBatch, hasCollapsedDateDialogueAlignment, resolveDateDialogueCharacterRanges, resolveDateDialogueForcedAlignmentRanges, resolveDateDialogueSegmentForLine, resolveDateVoiceSpeaker, stabilizeDateDialogueForcedRanges } from './dateDialogueVoice';
 
 const turns = [
   { lineId: '1', speaker: 'char' as const, speech: '[softly] 你怎么还没睡？', voiceId: 'char-voice' },
@@ -122,6 +122,43 @@ describe('见面逐句播放定位', () => {
     ], 1, alignment)).toBeNull();
   });
 
+
+  it('Forced Alignment 按纯朗读文本映射回每句，并按 Unicode 字符计数', () => {
+    const transcript = buildDateDialogueAlignmentTranscript(['你好🙂', '等你啊。']);
+    expect(transcript).toEqual({
+      text: '你好🙂\n等你啊。',
+      spans: [{ from: 0, to: 3 }, { from: 4, to: 8 }],
+    });
+    const chars = Array.from(transcript!.text).map((text, index) => ({
+      text,
+      start: index * 0.2,
+      end: index * 0.2 + 0.15,
+    }));
+    expect(resolveDateDialogueForcedAlignmentRanges(transcript!, chars)).toEqual([
+      { start: 0, end: 0.55 },
+      { start: 0.8, end: 1.55 },
+    ]);
+  });
+
+  it('Forced Alignment 文本被供应商改写时拒绝猜切点', () => {
+    const transcript = buildDateDialogueAlignmentTranscript(['你好', '晚安'])!;
+    const chars = Array.from('你好\n早安').map((text, index) => ({
+      text, start: index * 0.2, end: index * 0.2 + 0.1,
+    }));
+    expect(resolveDateDialogueForcedAlignmentRanges(transcript, chars)).toBeNull();
+  });
+
+  it('原 Dialogue 粗时间只在 Forced Alignment 的安全句间空隙里决定边界', () => {
+    expect(stabilizeDateDialogueForcedRanges(
+      [{ start: 0.5, end: 1.5 }, { start: 2.2, end: 3.0 }, { start: 3.7, end: 4.5 }],
+      [{ start: 0.1, end: 1.9 }, { start: 2.0, end: 3.5 }, { start: 3.3, end: 4.7 }],
+    )).toEqual([
+      { start: 0.1, end: 1.95 },
+      { start: 1.95, end: 3.4 },
+      { start: 3.4, end: 4.7 },
+    ]);
+  });
+
   it('供应商字符时间戳塌缩应回退逐句，正常原生时间戳照常使用', () => {
     const voiceSegments = [{ character_start_index: 0, character_end_index: 50 }];
     expect(hasCollapsedDateDialogueAlignment(voiceSegments,
@@ -150,11 +187,12 @@ describe('见面 Voice ID 路由合约', () => {
     expect(session).toContain("const favoriteSpeaker = resolveDateVoiceSpeaker(target.speaker, coauthorUserEnabled);");
   });
 
-  it('校验 ElevenLabs 回传 voice_id；声线或时间戳不匹配则单句重试', () => {
+  it('整轮 Dialogue 只负责演绎，逐句切点改由 Forced Alignment 重建', () => {
     expect(synthesis).toContain('segment.voice_id !== turns[index!].voiceId');
-    expect(synthesis).toContain('resolveDateDialogueCharacterRanges(usableSegments, turns.length, alignment)');
-    expect(synthesis).toContain('return alignDateDialogueSegments(turns, characterRanges);');
-    expect(synthesis).toContain('return alignDateDialogueSegments(turns, ranges);');
+    expect(synthesis).toContain('requestForcedAlignment(apiKey, data.audio_base64, transcript.text)');
+    expect(synthesis).toContain('resolveDateDialogueForcedAlignmentRanges(transcript, forced.data.characters)');
+    expect(synthesis).toContain('stabilizeDateDialogueForcedRanges(anchors, coarseRanges)');
+    expect(synthesis).not.toContain('resolveDateDialogueCharacterRanges(usableSegments, turns.length, alignment)');
   });
 
   it('单句 TTS 缓存必须绑定实际声线配置与模型设置', () => {

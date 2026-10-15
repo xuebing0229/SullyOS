@@ -72,3 +72,39 @@ describe('ElevenLabs dialogue proxy', () => {
     expect(upstream).not.toHaveBeenCalled();
   });
 });
+
+
+describe('ElevenLabs forced alignment proxy', () => {
+  it('turns JSON base64 into the multipart request required by ElevenLabs', async () => {
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init: RequestInit) => {
+      calls.push({ url: String(url), init });
+      return new Response(JSON.stringify({
+        characters: [
+          { text: '你', start: 0.1, end: 0.3 },
+          { text: '好', start: 0.3, end: 0.5 },
+        ],
+        loss: 0.01,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }));
+
+    const res = await worker.fetch(new Request(
+      'https://proxy.test/elevenlabs/forced-alignment',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'xi-api-key': API_KEY },
+        body: JSON.stringify({ audio_base64: 'YWJj', mime_type: 'audio/mpeg', text: '你好' }),
+      },
+    ), {}, { waitUntil: () => {} });
+
+    expect(res.status).toBe(200);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe('https://api.elevenlabs.io/v1/forced-alignment');
+    expect((calls[0].init.headers as Record<string, string>)['xi-api-key']).toBe(API_KEY);
+    expect(calls[0].init.body).toBeInstanceOf(FormData);
+    const form = calls[0].init.body as FormData;
+    expect(form.get('text')).toBe('你好');
+    expect(form.get('file')).toBeInstanceOf(Blob);
+    expect(await res.json()).toMatchObject({ loss: 0.01 });
+  });
+});
