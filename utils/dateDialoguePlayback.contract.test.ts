@@ -15,15 +15,17 @@ describe('DateSession precise dialogue segment playback contract', () => {
         expect(session).toContain('reusing whole-turn audio');
         expect(session).toContain('audio.currentTime = safeStart');
         expect(session).toContain('segmentStopTimerRef.current = setTimeout(finish, safeDurationMs + 35)');
-        expect(session).toContain('只有整轮合成本身失败时，调用方才允许进入逐句合成链路');
+        expect(session).toContain("return 'playback-failed'");
+        expect(session).toContain("return 'segment-unusable'");
         expect(session).toContain('const isCurrent = () =>');
-        expect(session).toContain('if (!isCurrent()) return false;');
     });
 
-    it('never purchases a single-line TTS after a valid whole-turn batch already exists', () => {
-        expect(session).toContain('整轮已经成功生成就绝不再花钱逐句生成');
-        expect(session).toContain("addToast('整轮语音已生成，但当前句播放失败，请重试', 'error')");
-        expect(session).toContain("console.warn('[DateDialogue] whole-turn audio exists but this segment could not be played')");
+    it('only falls back to a paid single line when that line segment itself is unusable', () => {
+        expect(session).toContain("type DateDialoguePlayResult = 'started' | 'segment-unusable' | 'playback-failed' | 'cancelled'");
+        expect(session).toContain('segment-unusable：仅这一句的时间轴为空/越界，允许落到下方单句兜底');
+        expect(session).toContain('whole-turn playback failed; refusing paid single-line regeneration');
+        expect(session).toContain('整轮语音播放失败，请重试；不会重复生成扣费');
+        expect(session).toContain('单句 TTS 自身有持久缓存，不会反复扣费');
     });
 
     it('persists whole-turn Dialogue audio across meeting exit and app reload', () => {
