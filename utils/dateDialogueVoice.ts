@@ -154,8 +154,8 @@ export type DateForcedAlignmentCharacter = {
 };
 
 /**
- * Forced Alignment 只接收真正会被朗读的文字。每句之间插一个换行作为稳定分隔符，
- * span 使用 Unicode code point 而不是 UTF-16 下标，避免 emoji / 扩展字符把后续句子错位。
+ * Forced Alignment 只接收真正会被朗读的文字。每句之间插一个普通空格作为稳定分隔符，
+ * 避免服务端对换行做归一化；span 使用 Unicode code point 而不是 UTF-16 下标，避免 emoji / 扩展字符把后续句子错位。
  */
 export const buildDateDialogueAlignmentTranscript = (
   lines: string[],
@@ -169,9 +169,9 @@ export const buildDateDialogueAlignmentTranscript = (
     const length = Array.from(line).length;
     spans.push({ from: offset, to: offset + length });
     offset += length;
-    if (index < cleaned.length - 1) offset += 1; // "\n"
+    if (index < cleaned.length - 1) offset += 1; // separator space
   });
-  return { text: cleaned.join('\n'), spans };
+  return { text: cleaned.join(' '), spans };
 };
 
 /**

@@ -100,7 +100,6 @@ const requestDialogue = async (
 };
 
 const forcedAlignmentEndpoint = (): string => {
-  if (Capacitor.isNativePlatform()) return `${getProxyWorkerUrl()}/elevenlabs/forced-alignment`;
   if (typeof window !== 'undefined' && isStaticWebDeployment(window.location.protocol, window.location.hostname)) {
     return `${getProxyWorkerUrl()}/elevenlabs/forced-alignment`;
   }
@@ -112,20 +111,36 @@ const requestForcedAlignment = async (
   audioBase64: string,
   text: string,
 ): Promise<{ status: number; data: ElevenLabsForcedAlignmentResponse }> => {
-  const body = { audio_base64: audioBase64, mime_type: 'audio/mpeg', text };
-  const endpoint = forcedAlignmentEndpoint();
   if (Capacitor.isNativePlatform()) {
+    // Capacitor 6 的 Android HTTP 原生支持序列化 formData。手机直接请求 ElevenLabs，
+    // 不依赖作者公共 Worker 是否已经同步新路由。
+    const boundary = '----SullyOSForcedAlignmentBoundary';
     const response = await CapacitorHttp.request({
-      url: endpoint,
+      url: 'https://api.elevenlabs.io/v1/forced-alignment',
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'xi-api-key': apiKey },
-      data: body,
+      headers: {
+        'Content-Type': `multipart/form-data; boundary=${boundary}`,
+        'xi-api-key': apiKey,
+        Accept: 'application/json',
+      },
+      data: [
+        {
+          key: 'file',
+          value: audioBase64,
+          type: 'base64File',
+          contentType: 'audio/mpeg',
+          fileName: 'dialogue.mp3',
+        },
+        { key: 'text', value: text, type: 'string' },
+      ],
+      dataType: 'formData',
       responseType: 'json',
-    });
+    } as any);
     return { status: response.status, data: (response.data || {}) as ElevenLabsForcedAlignmentResponse };
   }
 
-  const response = await fetch(endpoint, {
+  const body = { audio_base64: audioBase64, mime_type: 'audio/mpeg', text };
+  const response = await fetch(forcedAlignmentEndpoint(), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'xi-api-key': apiKey },
     body: JSON.stringify(body),

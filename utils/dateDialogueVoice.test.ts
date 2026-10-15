@@ -126,7 +126,7 @@ describe('见面逐句播放定位', () => {
   it('Forced Alignment 按纯朗读文本映射回每句，并按 Unicode 字符计数', () => {
     const transcript = buildDateDialogueAlignmentTranscript(['你好🙂', '等你啊。']);
     expect(transcript).toEqual({
-      text: '你好🙂\n等你啊。',
+      text: '你好🙂 等你啊。',
       spans: [{ from: 0, to: 3 }, { from: 4, to: 8 }],
     });
     const chars = Array.from(transcript!.text).map((text, index) => ({
@@ -142,7 +142,7 @@ describe('见面逐句播放定位', () => {
 
   it('Forced Alignment 文本被供应商改写时拒绝猜切点', () => {
     const transcript = buildDateDialogueAlignmentTranscript(['你好', '晚安'])!;
-    const chars = Array.from('你好\n早安').map((text, index) => ({
+    const chars = Array.from('你好 早安').map((text, index) => ({
       text, start: index * 0.2, end: index * 0.2 + 0.1,
     }));
     expect(resolveDateDialogueForcedAlignmentRanges(transcript, chars)).toBeNull();
@@ -190,6 +190,9 @@ describe('见面 Voice ID 路由合约', () => {
   it('整轮 Dialogue 只负责演绎，逐句切点改由 Forced Alignment 重建', () => {
     expect(synthesis).toContain('segment.voice_id !== turns[index!].voiceId');
     expect(synthesis).toContain('requestForcedAlignment(apiKey, data.audio_base64, transcript.text)');
+    expect(synthesis).toContain("url: 'https://api.elevenlabs.io/v1/forced-alignment'");
+    expect(synthesis).toContain("dataType: 'formData'");
+    expect(synthesis).toContain("type: 'base64File'");
     expect(synthesis).toContain('resolveDateDialogueForcedAlignmentRanges(transcript, forced.data.characters)');
     expect(synthesis).toContain('stabilizeDateDialogueForcedRanges(anchors, coarseRanges)');
     expect(synthesis).not.toContain('resolveDateDialogueCharacterRanges(usableSegments, turns.length, alignment)');
