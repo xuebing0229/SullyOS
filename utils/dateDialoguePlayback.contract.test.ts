@@ -20,6 +20,12 @@ describe('DateSession precise dialogue segment playback contract', () => {
         expect(session).toContain('if (!isCurrent()) return false;');
     });
 
+    it('never purchases a single-line TTS after a valid whole-turn batch already exists', () => {
+        expect(session).toContain('整轮已经成功生成就绝不再花钱逐句生成');
+        expect(session).toContain("addToast('整轮语音已生成，但当前句播放失败，请重试', 'error')");
+        expect(session).toContain("console.warn('[DateDialogue] whole-turn audio exists but this segment could not be played')");
+    });
+
     it('persists whole-turn Dialogue audio across meeting exit and app reload', () => {
         expect(session).toContain('await getCachedDateDialogue(key)');
         expect(session).toContain('await saveCachedDateDialogue(key, batch.blob, batch.segments)');
