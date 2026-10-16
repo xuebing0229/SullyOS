@@ -11,10 +11,9 @@ import {
 import { getProxyWorkerUrl } from './proxyWorker';
 import { isStaticWebDeployment } from './staticWebDeployment';
 import {
-  alignDateDialogueSegments,
   buildDateDialogueBatch,
   buildDateForcedAlignmentTranscript,
-  resolveDateForcedAlignmentRanges,
+  resolveDateForcedAlignmentRangesPartial,
   type DateDialogueSegment,
   type DateDialogueTurn,
 } from './dateDialogueVoice';
@@ -149,20 +148,18 @@ const requestForcedAlignment = async (
 const toDateSegments = (
   turns: DateDialogueTurn[],
   raw: ElevenLabsDialogueSegment[] | undefined,
-  anchors: Array<{ start: number; end: number }>,
+  anchors: Array<{ start: number; end: number } | null>,
 ): DateDialogueSegment[] => {
   if (anchors.length !== turns.length) throw new Error('Forced Alignment 逐句数量与台词不一致');
 
-  // voice_segments 不再决定“说了哪一句”。它只允许在 Forced Alignment 已经证明安全的
-  // 两句锚点之间补回笑声/叹气等 Audio Tag 的前后演出，越过相邻说话锚点就拒绝采用。
+  // voice_segments 只用于给已经对齐成功的句子补回前后 Audio Tag 演出。
+  // 某一句 Forced Alignment 失败时保留一个 unusable 占位，后续只补这一句。
   const byInput = new Map<number, ElevenLabsDialogueSegment>();
   if (Array.isArray(raw)) {
     for (const segment of raw) {
       const index = segment.dialogue_input_index;
       if (!Number.isInteger(index) || index! < 0 || index! >= turns.length) continue;
-      if (segment.voice_id !== turns[index!].voiceId) {
-        throw new Error(`ElevenLabs Dialogue 第 ${index! + 1} 句的声线 ID 缺失或与请求不一致`);
-      }
+      if (segment.voice_id && segment.voice_id !== turns[index!].voiceId) continue;
       const previous = byInput.get(index!);
       if (!previous) {
         byInput.set(index!, segment);
@@ -182,16 +179,23 @@ const toDateSegments = (
     }
   }
 
-  const ranges = anchors.map((anchor, index) => {
+  let lastValidEnd = -1;
+  return anchors.map((anchor, index) => {
+    const turn = turns[index];
+    if (!anchor) {
+      return { lineId: turn.lineId, speaker: turn.speaker, startTime: 0, endTime: 0, unusable: true };
+    }
+
     const rough = byInput.get(index);
     let start = anchor.start;
     let end = anchor.end;
-    const previousAnchorEnd = index > 0 ? anchors[index - 1].end : 0;
-    const nextAnchorStart = index + 1 < anchors.length ? anchors[index + 1].start : Number.POSITIVE_INFINITY;
+    const previousAnchor = anchors.slice(0, index).reverse().find(Boolean) as { start: number; end: number } | undefined;
+    const nextAnchor = anchors.slice(index + 1).find(Boolean) as { start: number; end: number } | undefined;
+    const previousAnchorEnd = previousAnchor?.end ?? 0;
+    const nextAnchorStart = nextAnchor?.start ?? Number.POSITIVE_INFINITY;
     const roughStart = rough?.start_time_seconds;
     const roughEnd = rough?.end_time_seconds;
 
-    // 最多只向锚点外扩 2.5 秒；同时绝不跨进上一句/下一句已经对齐出的真实说话区间。
     if (Number.isFinite(roughStart)
         && roughStart! >= Math.max(previousAnchorEnd - 0.02, anchor.start - 2.5)
         && roughStart! <= anchor.start + 0.02) {
@@ -202,9 +206,14 @@ const toDateSegments = (
         && roughEnd! <= Math.min(nextAnchorStart + 0.02, anchor.end + 2.5)) {
       end = roughEnd!;
     }
-    return { start, end };
+
+    if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end <= start
+        || (lastValidEnd >= 0 && start < lastValidEnd - 0.02)) {
+      return { lineId: turn.lineId, speaker: turn.speaker, startTime: 0, endTime: 0, unusable: true };
+    }
+    lastValidEnd = end;
+    return { lineId: turn.lineId, speaker: turn.speaker, startTime: start, endTime: end };
   });
-  return alignDateDialogueSegments(turns, ranges);
 };
 
 /**
@@ -277,9 +286,9 @@ export async function synthesizeDateDialogue(
       `ElevenLabs Forced Alignment 失败 (HTTP ${forced.status})${detail ? `：${JSON.stringify(detail).slice(0, 240)}` : ''}`,
     );
   }
-  const anchors = resolveDateForcedAlignmentRanges(transcript, forced.data.characters);
-  if (!anchors) {
-    throw new DateDialogueAlignmentError('ElevenLabs Forced Alignment 返回的字符时间轴与本轮台词不一致');
+  const anchors = resolveDateForcedAlignmentRangesPartial(transcript, forced.data.characters);
+  if (!anchors || anchors.every(anchor => !anchor)) {
+    throw new DateDialogueAlignmentError('ElevenLabs Forced Alignment 无法定位本轮任何一句台词');
   }
 
   let segments: DateDialogueSegment[];
