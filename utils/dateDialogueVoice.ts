@@ -32,6 +32,8 @@ export interface DateDialogueSegment {
   speaker: DateDialogueSpeaker;
   startTime: number;
   endTime: number;
+  /** 这一句无法从整轮音频得到可靠边界；调用方只补这一句，不废掉整轮。 */
+  unusable?: boolean;
 }
 
 export interface DateDialogueBatch {
@@ -84,7 +86,7 @@ export const resolveDateDialogueSegmentForLine = (
   if (index < 0) return null;
   const segment = segments[index];
   const turn = voicedTurns[index];
-  if (!segment || segment.speaker !== turn.speaker
+  if (!segment || segment.unusable || segment.speaker !== turn.speaker
       || !Number.isFinite(segment.startTime) || !Number.isFinite(segment.endTime)
       || segment.endTime <= segment.startTime) return null;
   return { ...segment, lineId: turn.lineId };
@@ -174,48 +176,81 @@ export const buildDateForcedAlignmentTranscript = (
   return { text: chars.join(''), spans };
 };
 
+const normalizeForcedAlignmentChar = (value: string): string[] =>
+  Array.from((value || '').normalize('NFKC').toLocaleLowerCase())
+    .filter(char => /[\p{L}\p{N}]/u.test(char));
+
 /**
- * ElevenLabs Forced Alignment 返回逐字符时间。只有返回字符序列与我们提交的 transcript
- * 一一对应时才使用；任何正规化/缺字符都直接判失败，宁可回退单句 TTS 也不猜切点。
+ * Forced Alignment 会正规化省略号、破折号、全半角和空白。旧逻辑要求逐字符完全相等，
+ * 一处标点变化就把整轮全部判废，随后每句话都重新走单句 TTS。
+ *
+ * 这里按“真正会说出口的字母/数字/中日韩文字”逐句顺序匹配：
+ * - 标点/空白变化不影响对齐；
+ * - 某一句确实匹配不到时只返回该句 null；
+ * - 后面的句子继续向后寻找，不把整轮一起废掉。
  */
-export const resolveDateForcedAlignmentRanges = (
+export const resolveDateForcedAlignmentRangesPartial = (
   transcript: DateForcedAlignmentTranscript,
   characters: DateForcedAlignmentCharacter[] | undefined,
-): Array<{ start: number; end: number }> | null => {
+): Array<{ start: number; end: number } | null> | null => {
   if (!Array.isArray(characters) || !characters.length || !transcript.spans.length) return null;
   const submitted = Array.from(transcript.text);
-  if (characters.length !== submitted.length) return null;
 
-  for (let index = 0; index < characters.length; index += 1) {
-    const value = characters[index]?.text;
-    if (typeof value !== 'string' || Array.from(value).length !== 1) return null;
-    const expected = submitted[index];
-    // Forced Alignment 偶尔会把换行/制表正规化；这里 transcript 只主动插入普通空格，
-    // 但用户正文自身可能含空白，所以允许“空白仍为空白”，其他字符必须完全一致。
-    if (value !== expected && !(value.trim() === '' && expected.trim() === '')) return null;
+  const returnedSignificant: Array<{ value: string; start: number; end: number }> = [];
+  for (const item of characters) {
+    if (typeof item?.text !== 'string') continue;
+    const start = Number(item.start);
+    const end = Number(item.end);
+    if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end <= start) continue;
+    for (const value of normalizeForcedAlignmentChar(item.text)) {
+      returnedSignificant.push({ value, start, end });
+    }
   }
+  if (!returnedSignificant.length) return null;
 
+  let cursor = 0;
   const ranges = transcript.spans.map(span => {
-    const slice = characters.slice(span.from, span.to);
-    const spoken = slice.filter(item =>
-      typeof item.text === 'string' && item.text.trim() !== ''
-      && Number.isFinite(item.start) && Number.isFinite(item.end));
-    const timed = spoken.length
-      ? spoken
-      : slice.filter(item => Number.isFinite(item.start) && Number.isFinite(item.end));
-    if (!timed.length) return null;
-    const start = Math.min(...timed.map(item => Number(item.start)));
-    const end = Math.max(...timed.map(item => Number(item.end)));
+    const wanted: string[] = [];
+    for (let index = span.from; index < span.to; index += 1) {
+      wanted.push(...normalizeForcedAlignmentChar(submitted[index] || ''));
+    }
+    if (!wanted.length) return null;
+
+    let found = -1;
+    outer: for (let start = cursor; start + wanted.length <= returnedSignificant.length; start += 1) {
+      for (let offset = 0; offset < wanted.length; offset += 1) {
+        if (returnedSignificant[start + offset].value !== wanted[offset]) continue outer;
+      }
+      found = start;
+      break;
+    }
+    if (found < 0) return null;
+
+    const matched = returnedSignificant.slice(found, found + wanted.length);
+    cursor = found + wanted.length;
+    const start = Math.min(...matched.map(item => item.start));
+    const end = Math.max(...matched.map(item => item.end));
     if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end <= start) return null;
     return { start, end };
   });
 
-  if (ranges.some(range => !range)) return null;
-  const typed = ranges as Array<{ start: number; end: number }>;
-  for (let index = 1; index < typed.length; index += 1) {
-    if (typed[index].start < typed[index - 1].end - 0.02) return null;
-  }
-  return typed;
+  let lastEnd = -1;
+  return ranges.map(range => {
+    if (!range) return null;
+    if (lastEnd >= 0 && range.start < lastEnd - 0.02) return null;
+    lastEnd = range.end;
+    return range;
+  });
+};
+
+/** 兼容旧调用：必须每句都有可靠边界时才返回完整 ranges。 */
+export const resolveDateForcedAlignmentRanges = (
+  transcript: DateForcedAlignmentTranscript,
+  characters: DateForcedAlignmentCharacter[] | undefined,
+): Array<{ start: number; end: number }> | null => {
+  const partial = resolveDateForcedAlignmentRangesPartial(transcript, characters);
+  if (!partial || partial.some(range => !range)) return null;
+  return partial as Array<{ start: number; end: number }>;
 };
 
 /**
