@@ -3832,11 +3832,17 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
         }
     }, [visibleCategories, activeCategory]);
 
-    // Suggestions span all visible categories; the picker still uses its selected tab.
-    const filteredEmojis = useMemo(() => aiVisibleEmojis.filter(e => {
+    // 用户自己的表情面板只受“聊天可见范围”限制，不受“角色可用”限制。
+    // roleUsable=false 只禁止角色主动发送；用户仍可看到/发送，角色历史识别仍走全量 historyEmojis。
+    const userVisibleCategoryIds = useMemo(
+        () => new Set(visibleCategories.map(category => category.id)),
+        [visibleCategories],
+    );
+    const filteredEmojis = useMemo(() => emojis.filter(e => {
+        if (e.categoryId && !userVisibleCategoryIds.has(e.categoryId)) return false;
         if (activeCategory === 'default') return !e.categoryId || e.categoryId === 'default';
         return e.categoryId === activeCategory;
-    }), [aiVisibleEmojis, activeCategory]);
+    }), [emojis, activeCategory, userVisibleCategoryIds]);
 
     // Memoize ChatInputArea callbacks
     const handleSendCallback = useCallback(() => handleSendText(), [char, input, replyTarget, inputPreferences]);
