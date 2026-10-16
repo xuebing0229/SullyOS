@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { alignDateDialogueSegments, buildDateDialogueBatch, buildDateForcedAlignmentTranscript, hasCollapsedDateDialogueAlignment, resolveDateDialogueCharacterRanges, resolveDateDialogueSegmentForLine, resolveDateForcedAlignmentRanges, resolveDateVoiceSpeaker } from './dateDialogueVoice';
+import { alignDateDialogueSegments, buildDateDialogueBatch, buildDateForcedAlignmentTranscript, hasCollapsedDateDialogueAlignment, resolveDateDialogueCharacterRanges, resolveDateDialogueSegmentForLine, resolveDateForcedAlignmentRanges, resolveDateForcedAlignmentRangesPartial, resolveDateVoiceSpeaker } from './dateDialogueVoice';
 
 const turns = [
   { lineId: '1', speaker: 'char' as const, speech: '[softly] 你怎么还没睡？', voiceId: 'char-voice' },
@@ -151,6 +151,34 @@ describe('见面逐句播放定位', () => {
     characters[1] = { ...characters[1], text: '坏' };
     expect(resolveDateForcedAlignmentRanges(transcript, characters)).toBeNull();
     expect(resolveDateForcedAlignmentRanges(transcript, characters.slice(0, -1))).toBeNull();
+  });
+
+  it('标点与空白被 Forced Alignment 正规化时仍能逐句对齐', () => {
+    const transcript = buildDateForcedAlignmentTranscript(['呃啊——！别打了……', '祁连云，我不要机器打了……！'])!;
+    const spoken = '呃啊别打了祁连云我不要机器打了';
+    const characters = Array.from(spoken).map((text, index) => ({
+      text,
+      start: index * 0.1,
+      end: index * 0.1 + 0.08,
+    }));
+    const ranges = resolveDateForcedAlignmentRanges(transcript, characters)!;
+    expect(ranges).toHaveLength(2);
+    expect(ranges[0].start).toBeCloseTo(0);
+    expect(ranges[0].end).toBeLessThan(ranges[1].start);
+  });
+
+  it('某一句匹配失败只标记这一句，后续句子仍复用整轮音频', () => {
+    const transcript = buildDateForcedAlignmentTranscript(['第一句', '中间坏句', '第三句'])!;
+    const spoken = '第一句第三句';
+    const characters = Array.from(spoken).map((text, index) => ({
+      text,
+      start: index * 0.1,
+      end: index * 0.1 + 0.08,
+    }));
+    const partial = resolveDateForcedAlignmentRangesPartial(transcript, characters)!;
+    expect(partial[0]).not.toBeNull();
+    expect(partial[1]).toBeNull();
+    expect(partial[2]).not.toBeNull();
   });
 
   it('供应商字符时间戳塌缩应回退逐句，正常原生时间戳照常使用', () => {
