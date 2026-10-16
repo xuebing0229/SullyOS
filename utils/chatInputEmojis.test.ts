@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { act, createElement, useState } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import ChatInputArea from '../components/chat/ChatInputArea';
@@ -61,6 +62,16 @@ afterEach(() => {
     act(() => root.unmount());
     container.remove();
     vi.restoreAllMocks();
+});
+
+describe('表情面板权限分流', () => {
+    it('角色禁用分组不能从用户自己的表情网格消失', () => {
+        const chatSource = readFileSync(new URL('../apps/Chat.tsx', import.meta.url), 'utf8');
+        const block = chatSource.match(/const filteredEmojis = useMemo\(\(\) =>[\s\S]*?\n    \}\), \[[^\]]+\]\);/)?.[0] || '';
+        expect(block).toContain('emojis.filter');
+        expect(block).toContain('userVisibleCategoryIds');
+        expect(block).not.toContain('aiVisibleEmojis.filter');
+    });
 });
 
 describe('表情面板的记录身份与图片复用', () => {
