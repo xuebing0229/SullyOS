@@ -31,10 +31,11 @@ const validSegments = (segments: unknown): segments is DateDialogueSegment[] =>
     const value = segment as DateDialogueSegment;
     return (value.speaker === 'char' || value.speaker === 'user')
       && typeof value.lineId === 'string'
-      && Number.isFinite(value.startTime)
-      && Number.isFinite(value.endTime)
-      && value.startTime >= 0
-      && value.endTime > value.startTime;
+      && (value.unusable === true
+        || (Number.isFinite(value.startTime)
+          && Number.isFinite(value.endTime)
+          && value.startTime >= 0
+          && value.endTime > value.startTime));
   });
 
 export async function getCachedDateDialogue(
