@@ -20,12 +20,12 @@ describe('DateSession precise dialogue segment playback contract', () => {
         expect(session).toContain('const isCurrent = () =>');
     });
 
-    it('only falls back to a paid single line when that line segment itself is unusable', () => {
-        expect(session).toContain("type DateDialoguePlayResult = 'started' | 'segment-unusable' | 'playback-failed' | 'cancelled'");
-        expect(session).toContain('segment-unusable：仅这一句的时间轴为空/越界，允许落到下方单句兜底');
+    it('only falls back to a paid single line when Forced Alignment omitted that line', () => {
+        expect(session).toContain("type DateDialoguePlayResult = 'started' | 'playback-failed' | 'cancelled'");
+        expect(session).toContain('batch 存在但 segment 为 null = 这句在 Forced Alignment 阶段单独失败');
         expect(session).toContain('whole-turn playback failed; refusing paid single-line regeneration');
         expect(session).toContain('整轮语音播放失败，请重试；不会重复生成扣费');
-        expect(session).toContain('单句 TTS 自身有持久缓存，不会反复扣费');
+        expect(session).toContain('batch 有、segment 无：只补这一句；单句 TTS 自身有持久缓存');
     });
 
     it('persists whole-turn Dialogue audio across meeting exit and app reload', () => {
