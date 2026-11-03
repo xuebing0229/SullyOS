@@ -336,6 +336,7 @@ const DateSession: React.FC<DateSessionProps> = ({
     const broadcastPlaybackRequestRef = useRef(0);
     const broadcastActiveLineRef = useRef<string>('');
     const broadcastAutoPlaybackKeyRef = useRef<string>('');
+    const broadcastOpeningStartedRef = useRef(false);
     const voiceEnabled = !!char.dateVoiceEnabled;
     const voiceLang = char.dateVoiceLang || '';
     const coauthorUserEnabled = !!char.dateStyleConfig?.coauthorUser;
@@ -1463,6 +1464,15 @@ const DateSession: React.FC<DateSessionProps> = ({
             addToast('广播剧语音已生成；自动播放被拦截时可点播放按钮继续', 'info');
         }
     };
+
+    // 新见面的开场也是本轮剧情的一部分：广播剧模式下进入场景后直接整段生成并播放。
+    // 恢复旧会话不强制从头重播，避免把用户已经听过的内容突然再放一遍。
+    useEffect(() => {
+        if (!broadcastMode || initialState || !isShowingOpening || !dialogueBatch.length || broadcastOpeningStartedRef.current) return;
+        broadcastOpeningStartedRef.current = true;
+        void playBroadcastTurn(dialogueBatch);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [broadcastMode, isShowingOpening, dialogueBatch]);
 
     // 立绘引擎（dialogueQueue / currentText / dialogueBatch）默认只在进会话或收到新回复时解析一次。
     // 若用户在阅读模式里编辑 / 重新生成了「最后一条 AI 回复」，messages 会更新、阅读模式即时反映，
