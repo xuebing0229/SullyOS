@@ -243,7 +243,7 @@ describe('见面 Voice ID 路由合约', () => {
   it('整轮音频生成后用 Forced Alignment 重求时间轴；voice_segments 只做安全范围内的演出扩边', () => {
     expect(synthesis).toContain('segment.voice_id !== turns[index!].voiceId');
     expect(synthesis).toContain('requestForcedAlignment(apiKey, data.audio_base64, transcript.text)');
-    expect(synthesis).toContain('resolveDateForcedAlignmentRanges(transcript, forced.data.characters)');
+    expect(synthesis).toContain('resolveDateForcedAlignmentRangesPartial(transcript, forced.data.characters)');
     expect(synthesis).toContain('segments = toDateSegments(normalized, data.voice_segments, anchors)');
     expect(synthesis).not.toContain('resolveDateDialogueCharacterRanges(usableSegments, turns.length, alignment)');
   });
