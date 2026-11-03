@@ -248,13 +248,17 @@ describe('见面 Voice ID 路由合约', () => {
     expect(synthesis).not.toContain('resolveDateDialogueCharacterRanges(usableSegments, turns.length, alignment)');
   });
 
-  it('广播剧只在精确对齐失败时复用同一次 Dialogue 的 voice_segments，普通见面不改变回退策略', () => {
-    expect(synthesis).toContain('options: { allowVoiceSegmentFallback?: boolean } = {}');
-    expect(synthesis).toContain('const toDateContinuousSegments = (');
-    expect(synthesis).toContain('options.allowVoiceSegmentFallback ? toDateContinuousSegments(normalized, data.voice_segments) : null');
-    expect(session).toContain('allowVoiceSegmentFallback: broadcastMode');
+  it('广播剧整段播放不切音频，直接用上游 Dialogue 节点翻文本；普通见面仍做 Forced Alignment', () => {
+    expect(synthesis).toContain('options: { continuousPlayback?: boolean } = {}');
+    expect(synthesis).toContain('if (options.continuousPlayback)');
+    expect(synthesis).toContain('segments: toDateContinuousSegments(normalized, data.voice_segments)');
+    expect(session).toContain('continuousPlayback: broadcastMode');
+    expect(session).toContain('resolveDateVoiceSpeaker(item.speaker, coauthorUserEnabled || broadcastMode)');
     expect(session).toContain("dialogueBatchErrorRef.current = String(error?.message || error || '未知错误')");
     expect(session).toContain('广播剧整轮语音生成失败：');
+    expect(synthesis.indexOf('if (options.continuousPlayback)')).toBeLessThan(
+      synthesis.indexOf('requestForcedAlignment(apiKey, data.audio_base64, transcript.text)'),
+    );
   });
 
   it('单句 TTS 缓存必须绑定实际声线配置与模型设置', () => {
