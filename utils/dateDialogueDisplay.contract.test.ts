@@ -16,4 +16,13 @@ describe('见面 Audio Tags 显示层', () => {
     expect(source).toContain('{galShownText === currentText ? displayedText : galDisplayText}');
     expect(source).toContain('currentLineSpeechRef.current = item.speechText || extractDialogueSpeech(item.text);');
   });
+
+  it('恢复见面时复用角色当前背景与统一立绘恢复 helper，不再依赖已废弃的大图快照字段', () => {
+    const source = readFileSync('components/date/DateSession.tsx', 'utf8');
+    expect(source).toContain("setBgImage(char.dateBackground || initialState.bgImage || '')");
+    expect(source).toContain('const resumedSprite = resolveSpriteFromState(initialState);');
+    expect(source).toContain("setCurrentSpriteKey(resumedSprite.key || '')");
+    expect(source).not.toContain("setBgImage(initialState.bgImage || '')");
+    expect(source).not.toContain("const resumedSprite = initialState.currentSprite || ''");
+  });
 });

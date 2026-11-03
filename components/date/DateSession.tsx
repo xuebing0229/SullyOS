@@ -9,7 +9,7 @@ import DateSettings from './DateSettings';
 import ObserveHUD from './ObserveHUD';
 import { extractObservation, hasObservation } from '../../utils/datePrompts';
 import { pickDateFallbackSprite } from '../../utils/dateSprites';
-import { isBlobRef, useBlobRefUrl } from '../../utils/blobRef';
+import { useBlobRefUrl } from '../../utils/blobRef';
 import { getMeetingCgButtonLabel, type MeetingCgBackground } from '../../utils/meetingCg';
 import { generateMeetingCgViaChatPlanner } from '../../utils/dateCgPlanner';
 import { resolveDateCgPlannerApiConfig, resolveDateCgPlannerSystemCompatibility } from '../../utils/dateCgPlannerApi';
@@ -1238,11 +1238,13 @@ const DateSession: React.FC<DateSessionProps> = ({
         if (initialState) {
             // Resume — 防御性回填：老快照 / 落库竞态可能缺字段，缺数组兜底成 []，
             // 否则后续 dialogueQueue.length 等取值会抛异常连累整个会话渲染。
-            setBgImage(initialState.bgImage || '');
+            // 新版快照不再重复保存背景/立绘大图：背景优先读角色当前配置，旧快照 bgImage 只做兼容兜底。
+            setBgImage(char.dateBackground || initialState.bgImage || '');
             setMeetingCgBackground(initialState.meetingCgBackground || null);
-            // 老快照可能存了 blobref 令牌当立绘（chibi 误兜底期间落库的），不能直接喂 <img>，洗成头像
-            const resumedSprite = initialState.currentSprite || '';
-            setCurrentSprite(isBlobRef(resumedSprite) ? (char.avatar || '') : resumedSprite);
+            // 复用统一恢复 helper：优先 currentSpriteKey + 当时皮肤集，旧 currentSprite 仅兼容历史快照。
+            const resumedSprite = resolveSpriteFromState(initialState);
+            setCurrentSprite(resumedSprite.src || char.avatar || '');
+            setCurrentSpriteKey(resumedSprite.key || '');
             setCurrentText(initialState.currentText || '');
             setDisplayedText(initialState.currentText || '');
             const savedQueue = Array.isArray(initialState.dialogueQueue) ? initialState.dialogueQueue : [];
