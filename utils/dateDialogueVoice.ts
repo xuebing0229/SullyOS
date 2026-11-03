@@ -3,9 +3,11 @@
  * 不修改剧情生成规则：强化模式生成的 user 台词与 char 台词地位相同。
  * 一轮剧情共享一个音频，GAL/小说视图按 lineId 引用同一时间区间。
  */
-export type DateDialogueSpeaker = 'char' | 'user';
+export type DatePrimaryDialogueSpeaker = 'char' | 'user';
+/** 广播剧模式在同一份 Dialogue 音频中额外加入独立旁白声线。 */
+export type DateDialogueSpeaker = DatePrimaryDialogueSpeaker | 'narrator';
 /** NPC 会显示台词，但没有专属声线时绝不能借用主角色声线。 */
-export type DateLineSpeaker = DateDialogueSpeaker | 'npc';
+export type DateLineSpeaker = DatePrimaryDialogueSpeaker | 'npc';
 
 /**
  * 见面原版只有当前角色拥有发言权；不能因模型偶发输出 [speaker:user]
@@ -15,7 +17,7 @@ export type DateLineSpeaker = DateDialogueSpeaker | 'npc';
 export const resolveDateVoiceSpeaker = (
   claimedSpeaker: DateLineSpeaker | undefined,
   coauthorUserEnabled: boolean,
-): DateDialogueSpeaker | null => claimedSpeaker === 'npc'
+): DatePrimaryDialogueSpeaker | null => claimedSpeaker === 'npc'
   ? null
   : (coauthorUserEnabled && claimedSpeaker === 'user' ? 'user' : 'char');
 
@@ -58,13 +60,13 @@ export const alignDateDialogueSegments = (
   turns: DateDialogueTurn[],
   ranges: Array<{ start: number; end: number }>,
 ): DateDialogueSegment[] => {
-  if (turns.length !== ranges.length) throw new Error('见面双人配音时间戳数量与台词不一致');
+  if (turns.length !== ranges.length) throw new Error('见面连续配音时间戳数量与台词不一致');
   return turns.map((turn, index) => {
     const range = ranges[index];
     if (!Number.isFinite(range.start) || !Number.isFinite(range.end) ||
         range.start < 0 || range.end <= range.start ||
         (index > 0 && (range.start < ranges[index - 1].start || range.start < ranges[index - 1].end - 0.02))) {
-      throw new Error('见面双人配音时间戳无效');
+      throw new Error('见面连续配音时间戳无效');
     }
     return { lineId: turn.lineId, speaker: turn.speaker, startTime: range.start, endTime: range.end };
   });
@@ -72,7 +74,8 @@ export const alignDateDialogueSegments = (
 
 /**
  * 用实际送进 ElevenLabs 的台词顺序定位，而不是用屏幕气泡序号。
- * 叙述与 NPC 不参与配音：把它们计进索引会使后续台词全部错位。
+ * 普通模式只有 char/user 台词参与；广播剧模式会显式把精简叙述作为 narrator turn 加入。
+ * NPC 仍不参与配音，避免借用其它声线。
  * 缓存可跨实时 GAL / 历史阅读复用，缓存中的 lineId 可能不同，
  * 所以只按同一个批次的输入顺序匹配，再还原本次请求的 lineId。
  */
