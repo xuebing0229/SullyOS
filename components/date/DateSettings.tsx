@@ -480,7 +480,7 @@ const DateSettings: React.FC<DateSettingsProps> = ({ char, onBack }) => {
                                     placeholder="填写 ElevenLabs 旁白 Voice ID"
                                     className="w-full px-4 py-3 bg-slate-100 rounded-xl text-sm outline-none focus:ring-1 focus:ring-primary/30 transition-all"
                                 />
-                                <p className="text-[10px] text-slate-300 mt-1">只在广播剧模式里用于旁白；角色和用户继续沿用各自已有声线。</p>
+                                <p className="text-[10px] text-slate-300 mt-1">只在广播剧模式里用于旁白；角色和用户继续沿用各自已有声线。连续多声线播放使用 ElevenLabs。</p>
                             </div>
                         )}
                     </div>
