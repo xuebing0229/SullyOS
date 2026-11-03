@@ -219,7 +219,7 @@ const toDateSegments = (
 /**
  * 见面模式专用的整轮双 OC 配音。
  * - 直接使用剧情模型写出的 Audio Tags，不经过第二个「语音导演」LLM。
- * - 一轮所有 char/user 台词按原顺序一次性送 Text-to-Dialogue。
+ * - 一轮所有可配音 turn 按原顺序一次性送 Text-to-Dialogue；广播剧模式会额外包含 narrator。
  * - 使用官方 voice_segments.dialogue_input_index 做逐句对齐，不靠停顿/文本搜索猜切点。
  */
 export async function synthesizeDateDialogue(
@@ -241,7 +241,7 @@ export async function synthesizeDateDialogue(
     speech: cleanTextForTtsElevenLabs(turn.speech, model),
   }));
   if (!normalized.length || normalized.some(turn => !turn.voiceId || !turn.speech)) {
-    throw new Error('双人配音需要有效 Voice ID 与非空台词');
+    throw new Error('连续配音需要有效 Voice ID 与非空文本');
   }
 
   const batch = buildDateDialogueBatch(normalized);
