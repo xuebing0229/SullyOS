@@ -420,7 +420,7 @@ const DateSession: React.FC<DateSessionProps> = ({
             if (!item.lineId) return [];
             if (item.speechText && isDialogueLine(item.text)) {
                 // NPC 没有独立声线，整个 Dialogue 批次也不能把 NPC 台词借给角色。
-                const speaker = resolveDateVoiceSpeaker(item.speaker, coauthorUserEnabled);
+                const speaker = resolveDateVoiceSpeaker(item.speaker, coauthorUserEnabled || broadcastMode);
                 if (!speaker) return [];
                 return [{
                     lineId: item.lineId,
@@ -458,7 +458,7 @@ const DateSession: React.FC<DateSessionProps> = ({
         const turns = buildDateDialogueTurns(items);
         if (!turns.length || turns.some(turn => !turn.voiceId)) return null;
         const key = makeDateDialogueBatchKey(turns);
-        if (dialogueForcedSinglesRef.current.has(key)) return null;
+        if (!broadcastMode && dialogueForcedSinglesRef.current.has(key)) return null;
         const cached = dialogueAudioCacheRef.current[key];
         if (cached) return cached;
         const inFlight = dialogueAudioPromiseRef.current[key];
@@ -472,7 +472,7 @@ const DateSession: React.FC<DateSessionProps> = ({
                 const persisted = await getCachedDateDialogue(key);
                 if (revision !== (dialogueVoiceRevisionRef.current[key] || 0) ||
                     dialogueForcedSinglesRef.current.has(key)) return null;
-                if (persisted?.kind === 'forced-singles') {
+                if (persisted?.kind === 'forced-singles' && !broadcastMode) {
                     dialogueForcedSinglesRef.current.add(key);
                     return null;
                 }
@@ -488,9 +488,9 @@ const DateSession: React.FC<DateSessionProps> = ({
                 }
 
                 const result = await synthesizeDateDialogue(turns, apiConfig, {
-                    // 普通/强化见面仍要求精确切句；广播剧只整段播放，精确对齐失败时
-                    // 可复用 Dialogue 自带的 input 时间段驱动文字跟随。
-                    allowVoiceSegmentFallback: broadcastMode,
+                    // 广播剧整段播放，不切音频：直接用 Dialogue 返回的 input 节点驱动文本翻页。
+                    // 普通/强化见面仍走原有 Forced Alignment 精确切句。
+                    continuousPlayback: broadcastMode,
                 });
                 const batch: DateDialogueAudioBatch = {
                     key,
@@ -508,7 +508,7 @@ const DateSession: React.FC<DateSessionProps> = ({
                 return batch;
             } catch (error: any) {
                 // 供应商时间轴异常时不再为本轮反复购买同一段无法准确切片的音频。
-                if (error instanceof DateDialogueAlignmentError) {
+                if (!broadcastMode && error instanceof DateDialogueAlignmentError) {
                     dialogueForcedSinglesRef.current.add(key);
                     await markDateDialogueForcedSingles(key);
                 }
@@ -2222,10 +2222,10 @@ const DateSession: React.FC<DateSessionProps> = ({
                                 <div className="absolute -top-3 left-6 flex items-center gap-2">
                                     <div className="bg-white/90 text-black px-4 py-1 rounded-sm text-xs font-bold tracking-widest uppercase shadow-[0_4px_10px_rgba(0,0,0,0.3)] transform -skew-x-12">{currentLineSpeakerRef.current === 'npc' && isDialogueLine(galShownText)
                                             ? (currentLineNpcNameRef.current || 'NPC')
-                                            : !isDialogueLine(galShownText) && broadcastMode ? '旁白'
-                                            : !coauthorUserEnabled ? char.name
-                                            : !isDialogueLine(galShownText) ? '旁白'
-                                            : currentLineSpeakerRef.current === 'user' ? (userProfile.name || '用户') : char.name}</div>
+                                            : !isDialogueLine(galShownText) && (broadcastMode || coauthorUserEnabled) ? '旁白'
+                                            : (broadcastMode || coauthorUserEnabled) && currentLineSpeakerRef.current === 'user'
+                                                ? (userProfile.name || '用户')
+                                                : char.name}</div>
                                     {/* Voice play button next to name */}
                                     {voiceEnabled && !isTextAnimating && !isShowingOpening && (broadcastMode || (currentLineSpeakerRef.current !== 'npc' && isDialogueLine(galShownText))) && (
                                         <button
