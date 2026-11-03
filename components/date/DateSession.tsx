@@ -317,6 +317,7 @@ const DateSession: React.FC<DateSessionProps> = ({
     const voiceCacheRef = useRef<Partial<Record<string, DateSpeechResult>>>({});
     const dialogueAudioCacheRef = useRef<Partial<Record<string, DateDialogueAudioBatch>>>({});
     const dialogueAudioPromiseRef = useRef<Partial<Record<string, Promise<DateDialogueAudioBatch | null>>>>({});
+    const dialogueBatchErrorRef = useRef('');
     // 手动重配音需要绕开两级缓存；整轮失败后的逐句替代品不能被旧整轮抢回。
     const dialogueVoiceRevisionRef = useRef<Record<string, number>>({});
     const dialogueForcedSinglesRef = useRef<Set<string>>(new Set());
@@ -450,6 +451,7 @@ const DateSession: React.FC<DateSessionProps> = ({
         });
 
     const ensureDateDialogueBatch = async (items: DialogueItem[]): Promise<DateDialogueAudioBatch | null> => {
+        dialogueBatchErrorRef.current = '';
         // 自定义翻译语言仍沿用原逐句链路，避免整轮里二次翻译导致文本/时间戳错位。
         // ElevenLabs 整轮 Dialogue 与强化演绎独立：普通模式也按整轮合成播放。
         if (!voiceEnabled || voiceLang || resolveTtsProvider(apiConfig) !== 'elevenlabs') return null;
@@ -485,7 +487,11 @@ const DateSession: React.FC<DateSessionProps> = ({
                     return restored;
                 }
 
-                const result = await synthesizeDateDialogue(turns, apiConfig);
+                const result = await synthesizeDateDialogue(turns, apiConfig, {
+                    // 普通/强化见面仍要求精确切句；广播剧只整段播放，精确对齐失败时
+                    // 可复用 Dialogue 自带的 input 时间段驱动文字跟随。
+                    allowVoiceSegmentFallback: broadcastMode,
+                });
                 const batch: DateDialogueAudioBatch = {
                     key,
                     url: result.url,
@@ -506,7 +512,8 @@ const DateSession: React.FC<DateSessionProps> = ({
                     dialogueForcedSinglesRef.current.add(key);
                     await markDateDialogueForcedSingles(key);
                 }
-                console.warn('[DateDialogue] whole-turn synthesis unavailable, falling back:', error?.message || error);
+                dialogueBatchErrorRef.current = String(error?.message || error || '未知错误');
+                console.warn('[DateDialogue] whole-turn synthesis unavailable, falling back:', dialogueBatchErrorRef.current);
                 return null;
             } finally {
                 delete dialogueAudioPromiseRef.current[key];
@@ -1408,7 +1415,8 @@ const DateSession: React.FC<DateSessionProps> = ({
         if (!batch) {
             if (!forceReplay && broadcastAutoPlaybackKeyRef.current === autoKey) broadcastAutoPlaybackKeyRef.current = '';
             setGalVoiceLoading(false);
-            addToast('广播剧整轮语音生成失败，可稍后点击播放重试', 'error');
+            const detail = dialogueBatchErrorRef.current.trim();
+            addToast(detail ? `广播剧整轮语音生成失败：${detail}` : '广播剧整轮语音生成失败，可稍后点击播放重试', 'error');
             return;
         }
 
