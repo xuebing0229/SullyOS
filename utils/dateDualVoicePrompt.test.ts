@@ -55,6 +55,22 @@ describe('见面模式双 OC / ElevenLabs prompt', () => {
     expect(block).toContain('强化演绎已开启');
   });
 
+  it('广播剧模式才注入对白优先与精简旁白规则，普通见面不受影响', () => {
+    const normal = buildVNModeBlock(makeChar(true), '祁连云');
+    expect(normal).not.toContain('广播剧连续收听');
+    expect(normal).not.toContain('旁白必须极简');
+
+    const radio = makeChar(true);
+    radio.dateStyleConfig = { coauthorUser: true, broadcastMode: true, broadcastNarratorVoiceId: 'narrator-voice' };
+    const block = buildVNModeBlock(radio, '祁连云');
+    expect(block).toContain('广播剧连续收听');
+    expect(block).toContain('只听声音、不看文字');
+    expect(block).toContain('旁白必须极简');
+    expect(block).toContain('不写小说式环境铺陈');
+    expect(block).toContain('[speaker:char]');
+    expect(block).toContain('[speaker:user]');
+  });
+
   it('ElevenLabs 使用主聊天 v4 表演规则，同时强制 Audio Tags 留在引号内', () => {
     setTtsProvider('elevenlabs');
     setElevenLabsModel('eleven_v4');
