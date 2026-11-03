@@ -16,7 +16,7 @@ describe('DateSession precise dialogue segment playback contract', () => {
         expect(session).toContain('audio.currentTime = safeStart');
         expect(session).toContain('segmentStopTimerRef.current = setTimeout(finish, safeDurationMs + 35)');
         expect(session).toContain("return 'playback-failed'");
-        expect(session).toContain("return 'segment-unusable'");
+        expect(session).toContain('if (batch && segment)');
         expect(session).toContain('const isCurrent = () =>');
     });
 
