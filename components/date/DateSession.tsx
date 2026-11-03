@@ -335,6 +335,7 @@ const DateSession: React.FC<DateSessionProps> = ({
     const decodedDialogueRef = useRef<{ key: string; blob: Blob; buffer: AudioBuffer } | null>(null);
     const broadcastPlaybackRequestRef = useRef(0);
     const broadcastActiveLineRef = useRef<string>('');
+    const broadcastAutoPlaybackKeyRef = useRef<string>('');
     const voiceEnabled = !!char.dateVoiceEnabled;
     const voiceLang = char.dateVoiceLang || '';
     const coauthorUserEnabled = !!char.dateStyleConfig?.coauthorUser;
@@ -923,7 +924,7 @@ const DateSession: React.FC<DateSessionProps> = ({
                 stopDateAudio();
                 return;
             }
-            await playBroadcastTurn(dialogueBatch);
+            await playBroadcastTurn(dialogueBatch, true);
             return;
         }
         if (!galShownText || !isDialogueLine(galShownText)) return;
@@ -1368,7 +1369,7 @@ const DateSession: React.FC<DateSessionProps> = ({
         setDialogueQueue(remaining);
     };
 
-    const playBroadcastTurn = async (items: DialogueItem[]) => {
+    const playBroadcastTurn = async (items: DialogueItem[], forceReplay = false) => {
         if (!broadcastMode || !items.length) return;
         if (!broadcastPlaybackEnabled) {
             if (!voiceEnabled) addToast('广播剧模式需要先开启见面语音', 'info');
@@ -1392,6 +1393,10 @@ const DateSession: React.FC<DateSessionProps> = ({
             return;
         }
 
+        const autoKey = makeDateDialogueBatchKey(turns);
+        if (!forceReplay && broadcastAutoPlaybackKeyRef.current === autoKey) return;
+        if (!forceReplay) broadcastAutoPlaybackKeyRef.current = autoKey;
+
         stopDateAudio();
         const requestId = ++broadcastPlaybackRequestRef.current;
         broadcastActiveLineRef.current = '';
@@ -1400,6 +1405,7 @@ const DateSession: React.FC<DateSessionProps> = ({
         const batch = await ensureDateDialogueBatch(items);
         if (requestId !== broadcastPlaybackRequestRef.current) return;
         if (!batch) {
+            if (!forceReplay && broadcastAutoPlaybackKeyRef.current === autoKey) broadcastAutoPlaybackKeyRef.current = '';
             setGalVoiceLoading(false);
             addToast('广播剧整轮语音生成失败，可稍后点击播放重试', 'error');
             return;
@@ -1841,7 +1847,7 @@ const DateSession: React.FC<DateSessionProps> = ({
                             </button>
                         )}
 
-                        {!isTyping && voiceEnabled && dialogueBatch.some(item => !!item.speechText && isDialogueLine(item.text)) && (
+                        {!broadcastMode && !isTyping && voiceEnabled && dialogueBatch.some(item => !!item.speechText && isDialogueLine(item.text)) && (
                             <button
                                 onClick={() => { setShowMenu(false); setShowVoiceLangPicker(false); regenerateGalVoiceTurn(); }}
                                 disabled={voiceRegeneratingKey !== null}
@@ -2058,7 +2064,7 @@ const DateSession: React.FC<DateSessionProps> = ({
                                                 <ReadingAvatar src={char.avatar} name={char.name} light={!!lightReading} />
                                             )}
                                             <div className="min-w-0 flex-1">
-                                                {voiceEnabled && !isBatchSelectMode && msg.metadata?.isOpening !== true &&
+                                                {!broadcastMode && voiceEnabled && !isBatchSelectMode && msg.metadata?.isOpening !== true &&
                                                     (msgBody || '').split('\n').some(line => isDialogueLine(line)) && (
                                                     <div className="flex justify-end mb-2">
                                                         <button
