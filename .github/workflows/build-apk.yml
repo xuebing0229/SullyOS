@@ -22,6 +22,7 @@ on:
 
 permissions:
   contents: write
+  actions: write
 
 concurrency:
   group: android-release
@@ -170,6 +171,7 @@ jobs:
             SullyOS-v${{ steps.release_version.outputs.version }}.apk.sha256
             SullyOS-latest.json
           if-no-files-found: error
+          retention-days: 1
 
       - name: Create GitHub Release
         shell: bash
