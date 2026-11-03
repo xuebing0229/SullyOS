@@ -145,6 +145,56 @@ const requestForcedAlignment = async (
   return { status: response.status, data };
 };
 
+const collectDialogueVoiceSegments = (
+  turns: DateDialogueTurn[],
+  raw: ElevenLabsDialogueSegment[] | undefined,
+): Map<number, ElevenLabsDialogueSegment> => {
+  const byInput = new Map<number, ElevenLabsDialogueSegment>();
+  if (!Array.isArray(raw)) return byInput;
+  for (const segment of raw) {
+    const index = segment.dialogue_input_index;
+    if (!Number.isInteger(index) || index! < 0 || index! >= turns.length) continue;
+    if (segment.voice_id && segment.voice_id !== turns[index!].voiceId) continue;
+    const start = segment.start_time_seconds;
+    const end = segment.end_time_seconds;
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end! <= start!) continue;
+    const previous = byInput.get(index!);
+    if (!previous) {
+      byInput.set(index!, segment);
+      continue;
+    }
+    byInput.set(index!, {
+      ...previous,
+      start_time_seconds: Math.min(previous.start_time_seconds ?? start!, start!),
+      end_time_seconds: Math.max(previous.end_time_seconds ?? end!, end!),
+    });
+  }
+  return byInput;
+};
+
+/**
+ * 广播剧整段播放并不切音频；Forced Alignment 不可用时，可直接使用
+ * Text-to-Dialogue 自己返回的 input 级 voice_segments 驱动文字翻页。
+ */
+const toDateContinuousSegments = (
+  turns: DateDialogueTurn[],
+  raw: ElevenLabsDialogueSegment[] | undefined,
+): DateDialogueSegment[] => {
+  const byInput = collectDialogueVoiceSegments(turns, raw);
+  let previousStart = -1;
+  return turns.map((turn, index) => {
+    const rough = byInput.get(index);
+    const start = rough?.start_time_seconds;
+    const end = rough?.end_time_seconds;
+    if (!Number.isFinite(start) || !Number.isFinite(end) || start! < 0 || end! <= start!
+        || (previousStart >= 0 && start! < previousStart - 0.02)) {
+      return { lineId: turn.lineId, speaker: turn.speaker, startTime: 0, endTime: 0, unusable: true };
+    }
+    previousStart = start!;
+    return { lineId: turn.lineId, speaker: turn.speaker, startTime: start!, endTime: end! };
+  });
+};
+
 const toDateSegments = (
   turns: DateDialogueTurn[],
   raw: ElevenLabsDialogueSegment[] | undefined,
@@ -154,30 +204,7 @@ const toDateSegments = (
 
   // voice_segments 只用于给已经对齐成功的句子补回前后 Audio Tag 演出。
   // 某一句 Forced Alignment 失败时保留一个 unusable 占位，后续只补这一句。
-  const byInput = new Map<number, ElevenLabsDialogueSegment>();
-  if (Array.isArray(raw)) {
-    for (const segment of raw) {
-      const index = segment.dialogue_input_index;
-      if (!Number.isInteger(index) || index! < 0 || index! >= turns.length) continue;
-      if (segment.voice_id && segment.voice_id !== turns[index!].voiceId) continue;
-      const previous = byInput.get(index!);
-      if (!previous) {
-        byInput.set(index!, segment);
-        continue;
-      }
-      byInput.set(index!, {
-        ...previous,
-        start_time_seconds: Math.min(
-          previous.start_time_seconds ?? Number.POSITIVE_INFINITY,
-          segment.start_time_seconds ?? Number.POSITIVE_INFINITY,
-        ),
-        end_time_seconds: Math.max(
-          previous.end_time_seconds ?? Number.NEGATIVE_INFINITY,
-          segment.end_time_seconds ?? Number.NEGATIVE_INFINITY,
-        ),
-      });
-    }
-  }
+  const byInput = collectDialogueVoiceSegments(turns, raw);
 
   let lastValidEnd = -1;
   return anchors.map((anchor, index) => {
@@ -225,6 +252,7 @@ const toDateSegments = (
 export async function synthesizeDateDialogue(
   turns: DateDialogueTurn[],
   config: APIConfig,
+  options: { continuousPlayback?: boolean } = {},
 ): Promise<{ audio: Blob; url: string; segments: DateDialogueSegment[] }> {
   const apiKey = resolveElevenLabsApiKey(config);
   if (!apiKey) throw new Error('缺少 ElevenLabs API Key');
@@ -270,6 +298,17 @@ export async function synthesizeDateDialogue(
   const audio = base64ToBlob(data.audio_base64);
   if (!audio.size) throw new Error('ElevenLabs Dialogue 返回了空音频');
 
+  // 广播剧从头到尾播放同一份音频，不切片、不做 Forced Alignment。
+  // 这里只取 Text-to-Dialogue 自己返回的 input 节点，供 UI 在播放时切换文本框。
+  if (options.continuousPlayback) {
+    return {
+      audio,
+      url: URL.createObjectURL(audio),
+      segments: toDateContinuousSegments(normalized, data.voice_segments),
+    };
+  }
+
+  // 普通见面需要逐句播放，所以继续走原有 Forced Alignment 精确切片。
   // Dialogue 自带 timestamps 在长轮次里可能“数值合法但整体漂移”。因此整轮音频生成后，
   // 再用官方 Forced Alignment 对最终音频 + 实际说出口的纯文本重新求一遍时间轴。
   const transcript = buildDateForcedAlignmentTranscript(

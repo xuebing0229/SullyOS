@@ -317,6 +317,7 @@ const DateSession: React.FC<DateSessionProps> = ({
     const voiceCacheRef = useRef<Partial<Record<string, DateSpeechResult>>>({});
     const dialogueAudioCacheRef = useRef<Partial<Record<string, DateDialogueAudioBatch>>>({});
     const dialogueAudioPromiseRef = useRef<Partial<Record<string, Promise<DateDialogueAudioBatch | null>>>>({});
+    const dialogueBatchErrorRef = useRef('');
     // 手动重配音需要绕开两级缓存；整轮失败后的逐句替代品不能被旧整轮抢回。
     const dialogueVoiceRevisionRef = useRef<Record<string, number>>({});
     const dialogueForcedSinglesRef = useRef<Set<string>>(new Set());
@@ -419,7 +420,7 @@ const DateSession: React.FC<DateSessionProps> = ({
             if (!item.lineId) return [];
             if (item.speechText && isDialogueLine(item.text)) {
                 // NPC 没有独立声线，整个 Dialogue 批次也不能把 NPC 台词借给角色。
-                const speaker = resolveDateVoiceSpeaker(item.speaker, coauthorUserEnabled);
+                const speaker = resolveDateVoiceSpeaker(item.speaker, coauthorUserEnabled || broadcastMode);
                 if (!speaker) return [];
                 return [{
                     lineId: item.lineId,
@@ -450,13 +451,14 @@ const DateSession: React.FC<DateSessionProps> = ({
         });
 
     const ensureDateDialogueBatch = async (items: DialogueItem[]): Promise<DateDialogueAudioBatch | null> => {
+        dialogueBatchErrorRef.current = '';
         // 自定义翻译语言仍沿用原逐句链路，避免整轮里二次翻译导致文本/时间戳错位。
         // ElevenLabs 整轮 Dialogue 与强化演绎独立：普通模式也按整轮合成播放。
         if (!voiceEnabled || voiceLang || resolveTtsProvider(apiConfig) !== 'elevenlabs') return null;
         const turns = buildDateDialogueTurns(items);
         if (!turns.length || turns.some(turn => !turn.voiceId)) return null;
         const key = makeDateDialogueBatchKey(turns);
-        if (dialogueForcedSinglesRef.current.has(key)) return null;
+        if (!broadcastMode && dialogueForcedSinglesRef.current.has(key)) return null;
         const cached = dialogueAudioCacheRef.current[key];
         if (cached) return cached;
         const inFlight = dialogueAudioPromiseRef.current[key];
@@ -470,7 +472,7 @@ const DateSession: React.FC<DateSessionProps> = ({
                 const persisted = await getCachedDateDialogue(key);
                 if (revision !== (dialogueVoiceRevisionRef.current[key] || 0) ||
                     dialogueForcedSinglesRef.current.has(key)) return null;
-                if (persisted?.kind === 'forced-singles') {
+                if (persisted?.kind === 'forced-singles' && !broadcastMode) {
                     dialogueForcedSinglesRef.current.add(key);
                     return null;
                 }
@@ -485,7 +487,11 @@ const DateSession: React.FC<DateSessionProps> = ({
                     return restored;
                 }
 
-                const result = await synthesizeDateDialogue(turns, apiConfig);
+                const result = await synthesizeDateDialogue(turns, apiConfig, {
+                    // 广播剧整段播放，不切音频：直接用 Dialogue 返回的 input 节点驱动文本翻页。
+                    // 普通/强化见面仍走原有 Forced Alignment 精确切句。
+                    continuousPlayback: broadcastMode,
+                });
                 const batch: DateDialogueAudioBatch = {
                     key,
                     url: result.url,
@@ -502,11 +508,12 @@ const DateSession: React.FC<DateSessionProps> = ({
                 return batch;
             } catch (error: any) {
                 // 供应商时间轴异常时不再为本轮反复购买同一段无法准确切片的音频。
-                if (error instanceof DateDialogueAlignmentError) {
+                if (!broadcastMode && error instanceof DateDialogueAlignmentError) {
                     dialogueForcedSinglesRef.current.add(key);
                     await markDateDialogueForcedSingles(key);
                 }
-                console.warn('[DateDialogue] whole-turn synthesis unavailable, falling back:', error?.message || error);
+                dialogueBatchErrorRef.current = String(error?.message || error || '未知错误');
+                console.warn('[DateDialogue] whole-turn synthesis unavailable, falling back:', dialogueBatchErrorRef.current);
                 return null;
             } finally {
                 delete dialogueAudioPromiseRef.current[key];
@@ -1408,7 +1415,8 @@ const DateSession: React.FC<DateSessionProps> = ({
         if (!batch) {
             if (!forceReplay && broadcastAutoPlaybackKeyRef.current === autoKey) broadcastAutoPlaybackKeyRef.current = '';
             setGalVoiceLoading(false);
-            addToast('广播剧整轮语音生成失败，可稍后点击播放重试', 'error');
+            const detail = dialogueBatchErrorRef.current.trim();
+            addToast(detail ? `广播剧整轮语音生成失败：${detail}` : '广播剧整轮语音生成失败，可稍后点击播放重试', 'error');
             return;
         }
 
@@ -2214,10 +2222,10 @@ const DateSession: React.FC<DateSessionProps> = ({
                                 <div className="absolute -top-3 left-6 flex items-center gap-2">
                                     <div className="bg-white/90 text-black px-4 py-1 rounded-sm text-xs font-bold tracking-widest uppercase shadow-[0_4px_10px_rgba(0,0,0,0.3)] transform -skew-x-12">{currentLineSpeakerRef.current === 'npc' && isDialogueLine(galShownText)
                                             ? (currentLineNpcNameRef.current || 'NPC')
-                                            : !isDialogueLine(galShownText) && broadcastMode ? '旁白'
-                                            : !coauthorUserEnabled ? char.name
-                                            : !isDialogueLine(galShownText) ? '旁白'
-                                            : currentLineSpeakerRef.current === 'user' ? (userProfile.name || '用户') : char.name}</div>
+                                            : !isDialogueLine(galShownText) && (broadcastMode || coauthorUserEnabled) ? '旁白'
+                                            : (broadcastMode || coauthorUserEnabled) && currentLineSpeakerRef.current === 'user'
+                                                ? (userProfile.name || '用户')
+                                                : char.name}</div>
                                     {/* Voice play button next to name */}
                                     {voiceEnabled && !isTextAnimating && !isShowingOpening && (broadcastMode || (currentLineSpeakerRef.current !== 'npc' && isDialogueLine(galShownText))) && (
                                         <button
