@@ -179,26 +179,20 @@ const collectDialogueVoiceSegments = (
 const toDateContinuousSegments = (
   turns: DateDialogueTurn[],
   raw: ElevenLabsDialogueSegment[] | undefined,
-): DateDialogueSegment[] | null => {
+): DateDialogueSegment[] => {
   const byInput = collectDialogueVoiceSegments(turns, raw);
-  if (byInput.size !== turns.length) return null;
-  let previousEnd = -1;
-  const segments: DateDialogueSegment[] = [];
-  for (let index = 0; index < turns.length; index += 1) {
+  let previousStart = -1;
+  return turns.map((turn, index) => {
     const rough = byInput.get(index);
     const start = rough?.start_time_seconds;
     const end = rough?.end_time_seconds;
     if (!Number.isFinite(start) || !Number.isFinite(end) || start! < 0 || end! <= start!
-        || (previousEnd >= 0 && start! < previousEnd - 0.02)) return null;
-    segments.push({
-      lineId: turns[index].lineId,
-      speaker: turns[index].speaker,
-      startTime: start!,
-      endTime: end!,
-    });
-    previousEnd = end!;
-  }
-  return segments;
+        || (previousStart >= 0 && start! < previousStart - 0.02)) {
+      return { lineId: turn.lineId, speaker: turn.speaker, startTime: 0, endTime: 0, unusable: true };
+    }
+    previousStart = start!;
+    return { lineId: turn.lineId, speaker: turn.speaker, startTime: start!, endTime: end! };
+  });
 };
 
 const toDateSegments = (
@@ -258,7 +252,7 @@ const toDateSegments = (
 export async function synthesizeDateDialogue(
   turns: DateDialogueTurn[],
   config: APIConfig,
-  options: { allowVoiceSegmentFallback?: boolean } = {},
+  options: { continuousPlayback?: boolean } = {},
 ): Promise<{ audio: Blob; url: string; segments: DateDialogueSegment[] }> {
   const apiKey = resolveElevenLabsApiKey(config);
   if (!apiKey) throw new Error('缺少 ElevenLabs API Key');
@@ -304,21 +298,28 @@ export async function synthesizeDateDialogue(
   const audio = base64ToBlob(data.audio_base64);
   if (!audio.size) throw new Error('ElevenLabs Dialogue 返回了空音频');
 
+  // 广播剧从头到尾播放同一份音频，不切片、不做 Forced Alignment。
+  // 这里只取 Text-to-Dialogue 自己返回的 input 节点，供 UI 在播放时切换文本框。
+  if (options.continuousPlayback) {
+    return {
+      audio,
+      url: URL.createObjectURL(audio),
+      segments: toDateContinuousSegments(normalized, data.voice_segments),
+    };
+  }
+
+  // 普通见面需要逐句播放，所以继续走原有 Forced Alignment 精确切片。
   // Dialogue 自带 timestamps 在长轮次里可能“数值合法但整体漂移”。因此整轮音频生成后，
   // 再用官方 Forced Alignment 对最终音频 + 实际说出口的纯文本重新求一遍时间轴。
   const transcript = buildDateForcedAlignmentTranscript(
     normalized.map(turn => stripElevenLabsMarkupForDisplay(turn.speech)),
   );
   if (!transcript) {
-    const rough = options.allowVoiceSegmentFallback ? toDateContinuousSegments(normalized, data.voice_segments) : null;
-    if (rough) return { audio, url: URL.createObjectURL(audio), segments: rough };
     throw new DateDialogueAlignmentError('见面整轮配音包含无法对齐的纯 Audio Tag 台词，已改为逐句配音');
   }
 
   const forced = await requestForcedAlignment(apiKey, data.audio_base64, transcript.text);
   if (forced.status < 200 || forced.status >= 300) {
-    const rough = options.allowVoiceSegmentFallback ? toDateContinuousSegments(normalized, data.voice_segments) : null;
-    if (rough) return { audio, url: URL.createObjectURL(audio), segments: rough };
     const detail = forced.data?.detail ?? forced.data?.error ?? '';
     throw new DateDialogueAlignmentError(
       `ElevenLabs Forced Alignment 失败 (HTTP ${forced.status})${detail ? `：${JSON.stringify(detail).slice(0, 240)}` : ''}`,
@@ -326,8 +327,6 @@ export async function synthesizeDateDialogue(
   }
   const anchors = resolveDateForcedAlignmentRangesPartial(transcript, forced.data.characters);
   if (!anchors || anchors.every(anchor => !anchor)) {
-    const rough = options.allowVoiceSegmentFallback ? toDateContinuousSegments(normalized, data.voice_segments) : null;
-    if (rough) return { audio, url: URL.createObjectURL(audio), segments: rough };
     throw new DateDialogueAlignmentError('ElevenLabs Forced Alignment 无法定位本轮任何一句台词');
   }
 
@@ -335,8 +334,6 @@ export async function synthesizeDateDialogue(
   try {
     segments = toDateSegments(normalized, data.voice_segments, anchors);
   } catch (error) {
-    const rough = options.allowVoiceSegmentFallback ? toDateContinuousSegments(normalized, data.voice_segments) : null;
-    if (rough) return { audio, url: URL.createObjectURL(audio), segments: rough };
     throw new DateDialogueAlignmentError(error instanceof Error ? error.message : 'ElevenLabs Forced Alignment 时间戳不可用');
   }
   return { audio, url: URL.createObjectURL(audio), segments };
