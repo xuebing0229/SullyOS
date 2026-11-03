@@ -914,10 +914,18 @@ const DateSession: React.FC<DateSessionProps> = ({
         };
         // dialogueBatch/currentSarPair intentionally included: a freshly generated whole-turn batch
         // and SAR surface changes must select the correct playback path.
-    }, [galShownText, voiceEnabled, isNovelMode, dialogueBatch, currentSarPair, isTyping]);
+    }, [galShownText, voiceEnabled, isNovelMode, dialogueBatch, currentSarPair, isTyping, broadcastMode]);
 
     // GAL mode: manual play/pause for the current dialogue line
     const handleGalVoiceToggle = async () => {
+        if (broadcastMode) {
+            if (dateVoicePlaying) {
+                stopDateAudio();
+                return;
+            }
+            await playBroadcastTurn(dialogueBatch);
+            return;
+        }
         if (!galShownText || !isDialogueLine(galShownText)) return;
         if (dateVoicePlaying) {
             stopDateAudio();
@@ -1360,6 +1368,96 @@ const DateSession: React.FC<DateSessionProps> = ({
         setDialogueQueue(remaining);
     };
 
+    const playBroadcastTurn = async (items: DialogueItem[]) => {
+        if (!broadcastMode || !items.length) return;
+        if (!broadcastPlaybackEnabled) {
+            if (!voiceEnabled) addToast('广播剧模式需要先开启见面语音', 'info');
+            else if (voiceLang) addToast('广播剧连续播放暂不支持语音翻译，请先关闭翻译语言', 'info');
+            else addToast('广播剧模式需要使用 ElevenLabs 语音', 'info');
+            return;
+        }
+
+        const turns = buildDateDialogueTurns(items);
+        if (!turns.length) return;
+        const missingVoice = turns.find(turn => !turn.voiceId.trim());
+        if (missingVoice) {
+            addToast(
+                missingVoice.speaker === 'narrator'
+                    ? '请先在广播剧模式里填写旁白 Voice ID'
+                    : missingVoice.speaker === 'user'
+                        ? '请先在个人档案填写用户 ElevenLabs Voice ID'
+                        : '请先给当前角色填写 ElevenLabs Voice ID',
+                'info',
+            );
+            return;
+        }
+
+        stopDateAudio();
+        const requestId = ++broadcastPlaybackRequestRef.current;
+        broadcastActiveLineRef.current = '';
+        setGalVoiceLoading(true);
+
+        const batch = await ensureDateDialogueBatch(items);
+        if (requestId !== broadcastPlaybackRequestRef.current) return;
+        if (!batch) {
+            setGalVoiceLoading(false);
+            addToast('广播剧整轮语音生成失败，可稍后点击播放重试', 'error');
+            return;
+        }
+
+        if (!dateAudioRef.current) dateAudioRef.current = new Audio();
+        const audio = dateAudioRef.current;
+        const syncTextToAudio = () => {
+            if (requestId !== broadcastPlaybackRequestRef.current) return;
+            const now = Number.isFinite(audio.currentTime) ? audio.currentTime : 0;
+            let active: DateDialogueSegment | null = null;
+            for (const segment of batch.segments) {
+                if (segment.unusable || !Number.isFinite(segment.startTime) || !Number.isFinite(segment.endTime)) continue;
+                if (segment.startTime <= now + 0.02) active = segment;
+                else break;
+            }
+            if (!active || active.lineId === broadcastActiveLineRef.current) return;
+            const index = items.findIndex(item => item.lineId === active!.lineId);
+            if (index < 0) return;
+            broadcastActiveLineRef.current = active.lineId;
+            processNextDialogue(items[index], items.slice(index + 1));
+        };
+
+        try {
+            clearSegmentTimer();
+            stopDialogueBufferSource();
+            audio.pause();
+            audio.onended = null;
+            audio.ontimeupdate = null;
+            audio.onerror = null;
+            if (audio.src !== batch.url) audio.src = batch.url;
+            audio.currentTime = 0;
+            audio.ontimeupdate = syncTextToAudio;
+            audio.onended = () => {
+                if (requestId !== broadcastPlaybackRequestRef.current) return;
+                syncTextToAudio();
+                setDateVoicePlaying(false);
+                setGalVoiceLoading(false);
+            };
+            audio.onerror = () => {
+                if (requestId !== broadcastPlaybackRequestRef.current) return;
+                setDateVoicePlaying(false);
+                setGalVoiceLoading(false);
+            };
+            syncTextToAudio();
+            await audio.play();
+            if (requestId !== broadcastPlaybackRequestRef.current) return;
+            setGalVoiceLoading(false);
+            setDateVoicePlaying(true);
+        } catch (error) {
+            if (requestId !== broadcastPlaybackRequestRef.current) return;
+            console.warn('[DateDialogue] radio drama autoplay failed:', error);
+            setGalVoiceLoading(false);
+            setDateVoicePlaying(false);
+            addToast('广播剧语音已生成；自动播放被拦截时可点播放按钮继续', 'info');
+        }
+    };
+
     // 立绘引擎（dialogueQueue / currentText / dialogueBatch）默认只在进会话或收到新回复时解析一次。
     // 若用户在阅读模式里编辑 / 重新生成了「最后一条 AI 回复」，messages 会更新、阅读模式即时反映，
     // 但立绘引擎不会自动重解析 —— 于是立绘停在旧文字、旧语音，感觉「没同步」。这里监听最后一条
@@ -1382,8 +1480,9 @@ const DateSession: React.FC<DateSessionProps> = ({
         const items = parseDialogue(rest, 'normal', lastAssistant ? String(lastAssistant.id) : 'live');
         if (items.length === 0) return;
         setDialogueBatch(items);
-        void ensureDateDialogueBatch(items);
         processNextDialogue(items[0], items.slice(1));
+        if (broadcastMode) void playBroadcastTurn(items);
+        else void ensureDateDialogueBatch(items);
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [lastAssistantContent]);
 
@@ -1447,9 +1546,10 @@ const DateSession: React.FC<DateSessionProps> = ({
             const items = parseDialogue(rest, 'normal');
             setDialogueBatch(items);
             setDialogueQueue(items);
-            void ensureDateDialogueBatch(items);
             if (items.length > 0) {
                 processNextDialogue(items[0], items.slice(1));
+                if (broadcastMode) void playBroadcastTurn(items);
+                else void ensureDateDialogueBatch(items);
             }
             setPendingRetryText('');
         } catch (e: any) {
@@ -1475,8 +1575,11 @@ const DateSession: React.FC<DateSessionProps> = ({
             const items = parseDialogue(rest, 'normal');
             setDialogueBatch(items);
             setDialogueQueue(items);
-            void ensureDateDialogueBatch(items);
-            if (items.length > 0) processNextDialogue(items[0], items.slice(1));
+            if (items.length > 0) {
+                processNextDialogue(items[0], items.slice(1));
+                if (broadcastMode) void playBroadcastTurn(items);
+                else void ensureDateDialogueBatch(items);
+            }
         } catch(e: any) {
             // 父级 handleReroll 只抛不提示；这里不给反馈的话，点了「重新生成」
             // 没动静用户会以为没点上（旧版更糟：消息已被删还毫无提示）
@@ -2100,18 +2203,18 @@ const DateSession: React.FC<DateSessionProps> = ({
                                             : !isDialogueLine(galShownText) ? '旁白'
                                             : currentLineSpeakerRef.current === 'user' ? (userProfile.name || '用户') : char.name}</div>
                                     {/* Voice play button next to name */}
-                                    {voiceEnabled && currentLineSpeakerRef.current !== 'npc' && !isTextAnimating && !isShowingOpening && isDialogueLine(galShownText) && (
+                                    {voiceEnabled && !isTextAnimating && !isShowingOpening && (broadcastMode || (currentLineSpeakerRef.current !== 'npc' && isDialogueLine(galShownText))) && (
                                         <button
                                             onClick={(e) => {
                                                 e.stopPropagation();
                                                 if (voiceFavoriteLongPressTriggered.current) { voiceFavoriteLongPressTriggered.current = false; return; }
                                                 handleGalVoiceToggle();
                                             }}
-                                            onTouchStart={(e) => startDateVoiceLongPress(e, resolveCurrentDateVoiceTarget())}
-                                            onTouchMove={endDateVoiceLongPress}
-                                            onTouchEnd={endDateVoiceLongPress}
-                                            onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); void openDateVoiceFavorite(resolveCurrentDateVoiceTarget()); }}
-                                            title="播放；长按可收藏"
+                                            onTouchStart={!broadcastMode && currentLineSpeakerRef.current !== 'npc' && isDialogueLine(galShownText) ? (e) => startDateVoiceLongPress(e, resolveCurrentDateVoiceTarget()) : undefined}
+                                            onTouchMove={!broadcastMode && currentLineSpeakerRef.current !== 'npc' && isDialogueLine(galShownText) ? endDateVoiceLongPress : undefined}
+                                            onTouchEnd={!broadcastMode && currentLineSpeakerRef.current !== 'npc' && isDialogueLine(galShownText) ? endDateVoiceLongPress : undefined}
+                                            onContextMenu={!broadcastMode && currentLineSpeakerRef.current !== 'npc' && isDialogueLine(galShownText) ? (e) => { e.preventDefault(); e.stopPropagation(); void openDateVoiceFavorite(resolveCurrentDateVoiceTarget()); } : undefined}
+                                            title={broadcastMode ? '播放/暂停整段广播剧' : '播放；长按可收藏'}
                                             className={`w-6 h-6 rounded-full flex items-center justify-center transition-all active:scale-90 ${dateVoicePlaying ? 'bg-white/30 text-white/90' : 'bg-white/10 text-white/40 hover:bg-white/20'}`}
                                         >
                                             {galVoiceLoading ? (
