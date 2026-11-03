@@ -333,9 +333,17 @@ const DateSession: React.FC<DateSessionProps> = ({
     const dialogueAudioContextRef = useRef<AudioContext | null>(null);
     const dialogueAudioSourceRef = useRef<AudioBufferSourceNode | null>(null);
     const decodedDialogueRef = useRef<{ key: string; blob: Blob; buffer: AudioBuffer } | null>(null);
+    const broadcastPlaybackRequestRef = useRef(0);
+    const broadcastActiveLineRef = useRef<string>('');
     const voiceEnabled = !!char.dateVoiceEnabled;
     const voiceLang = char.dateVoiceLang || '';
     const coauthorUserEnabled = !!char.dateStyleConfig?.coauthorUser;
+    const broadcastMode = !!char.dateStyleConfig?.broadcastMode;
+    const narratorVoiceId = (char.dateStyleConfig?.broadcastNarratorVoiceId || '').trim();
+    const broadcastPlaybackEnabled = broadcastMode
+        && voiceEnabled
+        && !voiceLang
+        && resolveTtsProvider(apiConfig) === 'elevenlabs';
     // Bridges the current line's VOICE emotion ([v:xxx], 跟立绘情绪分开) to the GAL.
     const currentLineEmotionRef = useRef<string | undefined>(undefined);
     const currentLineSpeakerRef = useRef<'char' | 'user' | 'npc'>('char');
@@ -366,11 +374,15 @@ const DateSession: React.FC<DateSessionProps> = ({
 
     const stopDateAudio = () => {
         playbackGenerationRef.current += 1;
+        broadcastPlaybackRequestRef.current += 1;
+        broadcastActiveLineRef.current = '';
         clearSegmentTimer();
         stopDialogueBufferSource();
         if (dateAudioRef.current) {
             dateAudioRef.current.pause();
             dateAudioRef.current.onended = null;
+            dateAudioRef.current.ontimeupdate = null;
+            dateAudioRef.current.onerror = null;
         }
         setDateVoicePlaying(false);
     };
@@ -401,19 +413,31 @@ const DateSession: React.FC<DateSessionProps> = ({
             : char.voiceProfile?.elevenLabsVoiceId) || '';
 
     const buildDateDialogueTurns = (items: DialogueItem[]): DateDialogueTurn[] =>
-        items
-            .filter(item => !!item.lineId && !!item.speechText && isDialogueLine(item.text))
-            .flatMap(item => {
+        items.flatMap(item => {
+            if (!item.lineId) return [];
+            if (item.speechText && isDialogueLine(item.text)) {
                 // NPC 没有独立声线，整个 Dialogue 批次也不能把 NPC 台词借给角色。
                 const speaker = resolveDateVoiceSpeaker(item.speaker, coauthorUserEnabled);
                 if (!speaker) return [];
                 return [{
-                    lineId: item.lineId!,
+                    lineId: item.lineId,
                     speaker,
-                    speech: item.speechText!,
+                    speech: item.speechText,
                     voiceId: dialogueVoiceId(speaker),
                 }];
-            });
+            }
+            // 普通见面保持原样：叙述不进 TTS。只有广播剧模式把精简叙述作为 narrator turn
+            // 插入同一份 ElevenLabs Dialogue，继续复用整轮音频与 Forced Alignment。
+            if (!broadcastMode || isDialogueLine(item.text)) return [];
+            const narration = cleanTextForTtsProvider(item.text, apiConfig).trim();
+            if (!narration) return [];
+            return [{
+                lineId: item.lineId,
+                speaker: 'narrator' as const,
+                speech: narration,
+                voiceId: narratorVoiceId,
+            }];
+        });
 
     const makeDateDialogueBatchKey = (turns: DateDialogueTurn[]): string =>
         JSON.stringify({
@@ -820,6 +844,8 @@ const DateSession: React.FC<DateSessionProps> = ({
 
     // GAL mode：优先整轮 ElevenLabs Dialogue，失败/不适用时回退原逐句链路。
     useEffect(() => {
+        // 广播剧模式由整轮播放器接管，不能再让原来的逐句自动播放和它抢同一个 audio。
+        if (broadcastMode) return;
         if (!voiceEnabled || isNovelMode || !galShownText || isTyping) return;
         stopDateAudio();
         setGalVoiceLoading(false);
@@ -1288,8 +1314,8 @@ const DateSession: React.FC<DateSessionProps> = ({
 
     // Typewriter effect：只动画可见文本，原始 Audio Tags 继续留在 speechText 供 TTS 使用。
     useEffect(() => {
-        if (!currentDisplayText || isNovelMode) {
-            if (isNovelMode) setDisplayedText(currentDisplayText);
+        if (!currentDisplayText || isNovelMode || broadcastMode) {
+            if (isNovelMode || broadcastMode) setDisplayedText(currentDisplayText);
             return;
         }
         setIsTextAnimating(true);
@@ -1304,7 +1330,7 @@ const DateSession: React.FC<DateSessionProps> = ({
             }
         }, 20);
         return () => clearInterval(timer);
-    }, [currentDisplayText, isNovelMode]);
+    }, [currentDisplayText, isNovelMode, broadcastMode]);
 
     // --- Logic ---
 
@@ -1374,6 +1400,8 @@ const DateSession: React.FC<DateSessionProps> = ({
             return;
         }
         if (isNovelMode) return;
+        // 连续收听时文字位置由真实音频时间轴驱动，避免手点把文本和声音拨散。
+        if (broadcastMode && (dateVoicePlaying || galVoiceLoading)) return;
 
         // Skip animation
         if (isTextAnimating) {
@@ -2067,6 +2095,7 @@ const DateSession: React.FC<DateSessionProps> = ({
                                 <div className="absolute -top-3 left-6 flex items-center gap-2">
                                     <div className="bg-white/90 text-black px-4 py-1 rounded-sm text-xs font-bold tracking-widest uppercase shadow-[0_4px_10px_rgba(0,0,0,0.3)] transform -skew-x-12">{currentLineSpeakerRef.current === 'npc' && isDialogueLine(galShownText)
                                             ? (currentLineNpcNameRef.current || 'NPC')
+                                            : !isDialogueLine(galShownText) && broadcastMode ? '旁白'
                                             : !coauthorUserEnabled ? char.name
                                             : !isDialogueLine(galShownText) ? '旁白'
                                             : currentLineSpeakerRef.current === 'user' ? (userProfile.name || '用户') : char.name}</div>
