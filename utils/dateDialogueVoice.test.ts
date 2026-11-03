@@ -248,6 +248,15 @@ describe('见面 Voice ID 路由合约', () => {
     expect(synthesis).not.toContain('resolveDateDialogueCharacterRanges(usableSegments, turns.length, alignment)');
   });
 
+  it('广播剧只在精确对齐失败时复用同一次 Dialogue 的 voice_segments，普通见面不改变回退策略', () => {
+    expect(synthesis).toContain('options: { allowVoiceSegmentFallback?: boolean } = {}');
+    expect(synthesis).toContain('const toDateContinuousSegments = (');
+    expect(synthesis).toContain('options.allowVoiceSegmentFallback ? toDateContinuousSegments(normalized, data.voice_segments) : null');
+    expect(session).toContain('allowVoiceSegmentFallback: broadcastMode');
+    expect(session).toContain("dialogueBatchErrorRef.current = String(error?.message || error || '未知错误')");
+    expect(session).toContain('广播剧整轮语音生成失败：');
+  });
+
   it('单句 TTS 缓存必须绑定实际声线配置与模型设置', () => {
     expect(session).toContain('voice: profile,');
     expect(session).toContain('elevenLabsModel: apiConfig.elevenLabsModel,');
