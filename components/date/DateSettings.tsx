@@ -81,7 +81,11 @@ const DateSettings: React.FC<DateSettingsProps> = ({ char, onBack }) => {
     const styleConfig = char.dateStyleConfig || {};
     const [extraDraft, setExtraDraft] = useState(styleConfig.extra || '');
     const [extraEditorOpen, setExtraEditorOpen] = useState(false);
-    useEffect(() => { setExtraDraft(char.dateStyleConfig?.extra || ''); }, [char.id]);
+    const [narratorVoiceDraft, setNarratorVoiceDraft] = useState(styleConfig.broadcastNarratorVoiceId || '');
+    useEffect(() => {
+        setExtraDraft(char.dateStyleConfig?.extra || '');
+        setNarratorVoiceDraft(char.dateStyleConfig?.broadcastNarratorVoiceId || '');
+    }, [char.id]);
     const patchStyleConfig = (patch: Partial<DateStyleConfig>) => {
         updateCharacter(char.id, { dateStyleConfig: { ...(char.dateStyleConfig || {}), ...patch } });
     };
@@ -90,6 +94,12 @@ const DateSettings: React.FC<DateSettingsProps> = ({ char, onBack }) => {
         if (trimmed === (char.dateStyleConfig?.extra || '')) return;
         patchStyleConfig({ extra: trimmed || undefined });
         addToast(trimmed ? '补充要求已保存' : '补充要求已清空', 'success');
+    };
+    const saveNarratorVoiceDraft = () => {
+        const trimmed = narratorVoiceDraft.trim();
+        if (trimmed === (char.dateStyleConfig?.broadcastNarratorVoiceId || '')) return;
+        patchStyleConfig({ broadcastNarratorVoiceId: trimmed || undefined });
+        addToast(trimmed ? '旁白 Voice ID 已保存' : '旁白 Voice ID 已清空', 'success');
     };
     const readingAppearance = meetingAppearance(char.dateAppearance);
     const userName = userProfile?.name || '用户';
@@ -439,6 +449,40 @@ const DateSettings: React.FC<DateSettingsProps> = ({ char, onBack }) => {
                         >
                             <div className={`absolute top-0.5 left-0.5 w-6 h-6 bg-white rounded-full shadow-md transition-transform ${styleConfig.coauthorUser ? 'translate-x-5' : 'translate-x-0.5'}`}></div>
                         </button>
+                    </div>
+
+                    {/* 广播剧模式：整轮连续播放；旁白声线只在这个模式里启用 */}
+                    <div className="mb-5">
+                        <div className="flex items-center justify-between">
+                            <div className="pr-4">
+                                <label className="text-[11px] text-slate-500 font-bold block">广播剧模式 · 连续收听</label>
+                                <p className="text-[11px] text-slate-400 mt-1 leading-relaxed">整轮语音自动生成并连续播放，文字跟随语音推进；仅此模式使用精简旁白。</p>
+                            </div>
+                            <button
+                                onClick={() => patchStyleConfig({ broadcastMode: styleConfig.broadcastMode ? undefined : true })}
+                                type="button"
+                                role="switch"
+                                aria-checked={!!styleConfig.broadcastMode}
+                                aria-label="切换广播剧模式"
+                                className={`w-12 h-7 rounded-full transition-colors relative shrink-0 ${styleConfig.broadcastMode ? 'bg-primary' : 'bg-slate-200'}`}
+                            >
+                                <div className={`absolute top-0.5 left-0.5 w-6 h-6 bg-white rounded-full shadow-md transition-transform ${styleConfig.broadcastMode ? 'translate-x-5' : 'translate-x-0.5'}`}></div>
+                            </button>
+                        </div>
+                        {styleConfig.broadcastMode && (
+                            <div className="mt-3">
+                                <label className="text-[11px] text-slate-500 font-bold mb-2 block">旁白 Voice ID</label>
+                                <input
+                                    type="text"
+                                    value={narratorVoiceDraft}
+                                    onChange={e => setNarratorVoiceDraft(e.target.value)}
+                                    onBlur={saveNarratorVoiceDraft}
+                                    placeholder="填写 ElevenLabs 旁白 Voice ID"
+                                    className="w-full px-4 py-3 bg-slate-100 rounded-xl text-sm outline-none focus:ring-1 focus:ring-primary/30 transition-all"
+                                />
+                                <p className="text-[10px] text-slate-300 mt-1">只在广播剧模式里用于旁白；角色和用户继续沿用各自已有声线。连续多声线播放使用 ElevenLabs。</p>
+                            </div>
+                        )}
                     </div>
 
                     {/* 自定义补充 */}

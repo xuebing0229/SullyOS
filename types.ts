@@ -787,6 +787,10 @@ export interface DateStyleConfig {
   digDeeper?: boolean;
   /** 强化演绎：允许 AI 把 user 当作同人文中的另一位 OC，自由补写其台词/动作；默认关闭。 */
   coauthorUser?: boolean;
+  /** 广播剧模式：整轮自动合成并连续播放，正文尽量对白化；默认关闭。 */
+  broadcastMode?: boolean;
+  /** 广播剧模式专用的 ElevenLabs 旁白 Voice ID；普通见面模式完全不读取。 */
+  broadcastNarratorVoiceId?: string;
   /** 自定义补充文风要求，原样追加进风格块 */
   extra?: string;
 }

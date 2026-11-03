@@ -15,8 +15,9 @@ import {
 } from './dateDialogueCache';
 
 const segments = [
-  { lineId: 'live:0', speaker: 'char' as const, startTime: 0.1, endTime: 1.2 },
-  { lineId: 'live:1', speaker: 'user' as const, startTime: 1.3, endTime: 2.4 },
+  { lineId: 'live:0', speaker: 'narrator' as const, startTime: 0.05, endTime: 0.9 },
+  { lineId: 'live:1', speaker: 'char' as const, startTime: 1, endTime: 2.1 },
+  { lineId: 'live:2', speaker: 'user' as const, startTime: 2.2, endTime: 3.3 },
 ];
 
 describe('见面整轮 Dialogue 持久缓存', () => {

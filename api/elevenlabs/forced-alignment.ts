@@ -63,8 +63,10 @@ export default async function handler(req: any, res: any) {
       return;
     }
 
+    const audioBuffer = new ArrayBuffer(bytes.byteLength);
+    new Uint8Array(audioBuffer).set(bytes);
     const form = new FormData();
-    form.append('file', new Blob([bytes], { type: 'audio/mpeg' }), 'dialogue.mp3');
+    form.append('file', new Blob([audioBuffer], { type: 'audio/mpeg' }), 'dialogue.mp3');
     form.append('text', text);
 
     const upstream = await fetch(ELEVENLABS_FORCED_ALIGNMENT, {

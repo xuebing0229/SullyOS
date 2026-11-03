@@ -29,7 +29,7 @@ const validSegments = (segments: unknown): segments is DateDialogueSegment[] =>
   Array.isArray(segments) && segments.length > 0 && segments.every(segment => {
     if (!segment || typeof segment !== 'object') return false;
     const value = segment as DateDialogueSegment;
-    return (value.speaker === 'char' || value.speaker === 'user')
+    return (value.speaker === 'char' || value.speaker === 'user' || value.speaker === 'narrator')
       && typeof value.lineId === 'string'
       && (value.unusable === true
         || (Number.isFinite(value.startTime)

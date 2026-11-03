@@ -35,6 +35,28 @@ describe('见面模式双 OC 配音批次', () => {
       lineIds: ['1', '2', '3'],
     });
   });
+  it('广播剧批次可在同一条 Dialogue 中按原顺序混入独立旁白声线', () => {
+    const radioTurns = [
+      { lineId: 'r1', speaker: 'narrator' as const, speech: '门外忽然响起两声敲门声。', voiceId: 'narrator-voice' },
+      { lineId: 'r2', speaker: 'char' as const, speech: '这个点谁会来？', voiceId: 'char-voice' },
+      { lineId: 'r3', speaker: 'user' as const, speech: '先别开门。', voiceId: 'user-voice' },
+    ];
+    expect(buildDateDialogueBatch(radioTurns)).toEqual({
+      inputs: [
+        { text: '门外忽然响起两声敲门声。', voice_id: 'narrator-voice' },
+        { text: '这个点谁会来？', voice_id: 'char-voice' },
+        { text: '先别开门。', voice_id: 'user-voice' },
+      ],
+      lineIds: ['r1', 'r2', 'r3'],
+    });
+    expect(alignDateDialogueSegments(radioTurns, [
+      { start: 0, end: 1.2 }, { start: 1.3, end: 2.4 }, { start: 2.5, end: 3.4 },
+    ])).toEqual([
+      { lineId: 'r1', speaker: 'narrator', startTime: 0, endTime: 1.2 },
+      { lineId: 'r2', speaker: 'char', startTime: 1.3, endTime: 2.4 },
+      { lineId: 'r3', speaker: 'user', startTime: 2.5, endTime: 3.4 },
+    ]);
+  });
   it('按台词 ID 对齐时间区间', () => {
     expect(alignDateDialogueSegments(turns, [
       { start: 0, end: 2 }, { start: 2.1, end: 4 }, { start: 4.1, end: 7 },
@@ -209,10 +231,19 @@ describe('见面 Voice ID 路由合约', () => {
     expect(session).toContain("const favoriteSpeaker = resolveDateVoiceSpeaker(target.speaker, coauthorUserEnabled);");
   });
 
+  it('广播剧复用整轮 Dialogue 和真实时间轴，不另造一套 TTS', () => {
+    expect(session).toContain("speaker: 'narrator' as const");
+    expect(session).toContain('voiceId: narratorVoiceId');
+    expect(session).toContain('const playBroadcastTurn = async');
+    expect(session).toContain('audio.ontimeupdate = syncTextToAudio');
+    expect(session).toContain('processNextDialogue(items[index], items.slice(index + 1))');
+    expect(session).toContain("if (broadcastMode) void playBroadcastTurn(items)");
+  });
+
   it('整轮音频生成后用 Forced Alignment 重求时间轴；voice_segments 只做安全范围内的演出扩边', () => {
     expect(synthesis).toContain('segment.voice_id !== turns[index!].voiceId');
     expect(synthesis).toContain('requestForcedAlignment(apiKey, data.audio_base64, transcript.text)');
-    expect(synthesis).toContain('resolveDateForcedAlignmentRanges(transcript, forced.data.characters)');
+    expect(synthesis).toContain('resolveDateForcedAlignmentRangesPartial(transcript, forced.data.characters)');
     expect(synthesis).toContain('segments = toDateSegments(normalized, data.voice_segments, anchors)');
     expect(synthesis).not.toContain('resolveDateDialogueCharacterRanges(usableSegments, turns.length, alignment)');
   });

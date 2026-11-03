@@ -308,6 +308,20 @@ ${extra}
 `;
 };
 
+/** 广播剧模式专用：同一份规则同时供开场感知和正式见面复用。 */
+const buildBroadcastDramaBlock = (config?: DateStyleConfig): string => {
+    if (!config?.broadcastMode) return '';
+    return `### 广播剧连续收听（仅本模式）
+这一轮会被直接转成连续音频。以角色之间的自然对白作为主要叙事手段，让只听声音、不看文字的人也能理解剧情。
+- 能通过询问、回应、提醒、争论、调侃等自然对白交代的信息，不再用旁白重复说明。
+- 旁白必须极简，只保留不说就会影响理解的场景切换、关键动作、时间跳转，或对白无法自然承载的信息；通常一句短句即可。
+- 不写小说式环境铺陈、长篇心理描写或逐动作播报。能省略的旁白直接省略。
+- 不要为了减少旁白，让角色生硬地说出双方早已知道的事实；对白首先要像真实的人在说话。
+- 动作/叙述行会由独立旁白声线朗读，因此保留下来的叙述要短、清楚、适合直接听懂。
+- 如果当前开场尚未形成对话，不要为了“对白优先”让角色无缘由自言自语；用极短的必要旁白完成过渡即可。
+`;
+};
+
 // ─────────────────────────────────────────────────────────────
 // 细节深挖（反"模型八股"的正向方案）
 //
@@ -664,7 +678,9 @@ export const buildVNModeBlock = (char: CharacterProfile, userName: string): stri
     const digBlock = isDigDeeperOn(styleConfig) ? `${DIG_DEEPER_BLOCK}\n` : '';
     const observeBlock = isObserveOn(char) ? buildObserveBlock(char) : '';
     const coauthorUser = !!styleConfig?.coauthorUser;
-    const speakerRule = char.dateVoiceEnabled || coauthorUser
+    const broadcastMode = !!styleConfig?.broadcastMode;
+    const broadcastBlock = buildBroadcastDramaBlock(styleConfig);
+    const speakerRule = char.dateVoiceEnabled || coauthorUser || broadcastMode
         ? `4. **说话人标签**: 每一条带双引号的台词行末尾都必须加一个机器标签：\`[speaker:char]\` 表示 ${char.name} 在说，\`[speaker:user]\` 表示 ${userName || '用户'} 在说，\`[speaker:npc:姓名]\` 表示其他有名字的 NPC 在说（例如 \`[speaker:npc:店员]\`）；没有姓名的路人写 \`[speaker:npc]\`。标签放在引号外，动作/叙述行不要加。不要把 NPC、路人的台词标成 [speaker:char] 或 [speaker:user]；NPC 未配置独立音色时只显示文字，不得借用主角或用户声线。这个标签不会显示给用户，只用于声线配音和归属识别。${coauthorUser ? ` **强化演绎已开启**：这是主动双主角写作模式，不要等待用户逐句提供 user 台词。只要当前是双方都在场、可以正常交流的互动轮，默认至少实际写出一次 user OC 的反应；有合理发言空间时优先写成一条带 [speaker:user] 的直接台词。只有明确沉默、睡着/失去意识、暂时不在场，或本拍确实只该聚焦 ${char.name} 时才可以整轮不写 user。不要机械一人一句，允许交替、连续或一方短暂停顿。` : ` 普通模式下你不能替用户写台词；${char.name} 的台词用 [speaker:char]，场景中其他 NPC 开口时必须标 [speaker:npc:姓名]，不要归给 ${char.name}。`}`
         : '';
     return `### [Visual Novel Mode: 视觉小说脚本模式]
@@ -677,7 +693,7 @@ export const buildVNModeBlock = (char: CharacterProfile, userName: string): stri
 3. **格式**: 台词用双引号 **"..."**，动作/叙述直接写（不加引号）。
 ${speakerRule}
 ${char.dateVoiceEnabled ? resolveDateVoiceGuide() : ''}
-
+${broadcastBlock}
 ${preset.block}
 
 ${digBlock}${povBlock}${extraBlock}### 场景上下文
@@ -767,6 +783,7 @@ export const DatePrompts = {
         // 第三人称旁观镜头（用户还没"走过去"），人称指令只影响 session 内叙述
         const preset = getStylePreset(char.dateStyleConfig);
         const extraBlock = buildExtraStyleBlock(char.dateStyleConfig);
+        const broadcastBlock = buildBroadcastDramaBlock(char.dateStyleConfig);
 
         // 架空模式以剧情衔接，不用现实经过多久判断跳时，也不假定刚刚还在聊天。
         const contextSeparator = !dateTimeOn
@@ -785,8 +802,15 @@ ${dateTimeOn ? `当前时间: ${timeStr}\n时间上下文: ${gapHint}\n` : ''}
 
 ### 任务
 ${invite ? `由你主动以合理的方式与 ${userProfile?.name || '对方'} 见面。根据已有上下文中的地点、约定、关系和你自己的动机，写出你如何走近或来到对方面前；如果已经在一起，就从当前场景自然靠近、开口，不另编一次到访。未知的地点或安排不要当成已知事实，也不代写用户答应、移动或回应。` : '你现在并不在和用户直接对话。用户正在悄悄靠近你所在的地点。'}
-请用**第三人称**描写一段话。
-${invite ? '描写角色自己的到来、动作与必要的开场台词，停在留给用户回应的位置。' : `描述：${char.name} 此时此刻正在做什么？周围环境是怎样的？状态如何？`}
+${broadcastBlock
+    ? '请用**第三人称**，并按“一行一念”输出：旁白/动作独立一行；角色台词独立一行、用双引号包住并在行末加 [speaker:char]。严禁把旁白和台词混在同一行。'
+    : '请用**第三人称**描写一段话。'}
+${invite
+    ? '描写角色自己的到来、动作与必要的开场台词，停在留给用户回应的位置。'
+    : broadcastBlock
+        ? `只交代理解开场必需的信息：${char.name} 正在做什么、必要的地点/状态变化；不要展开环境铺陈。`
+        : `描述：${char.name} 此时此刻正在做什么？周围环境是怎样的？状态如何？`}
+${broadcastBlock ? `\n${broadcastBlock}` : ''}
 
 ### 逻辑检查
 1. **上下文连贯性**: ${continuityRule}
