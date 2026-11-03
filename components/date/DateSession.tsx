@@ -415,7 +415,7 @@ const DateSession: React.FC<DateSessionProps> = ({
             : char.voiceProfile?.elevenLabsVoiceId) || '';
 
     const buildDateDialogueTurns = (items: DialogueItem[]): DateDialogueTurn[] =>
-        items.flatMap(item => {
+        items.flatMap((item): DateDialogueTurn[] => {
             if (!item.lineId) return [];
             if (item.speechText && isDialogueLine(item.text)) {
                 // NPC 没有独立声线，整个 Dialogue 批次也不能把 NPC 台词借给角色。
