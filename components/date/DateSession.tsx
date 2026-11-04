@@ -29,7 +29,7 @@ import VoiceFavoriteActionSheet from '../voice/VoiceFavoriteActionSheet';
 import { getVoiceFavorite, makeVoiceFavoriteId, removeVoiceFavorite, saveVoiceFavorite } from '../../utils/voiceFavorites';
 import { saveVoiceLibraryItem, setVoiceLibraryStarredForSource } from '../../utils/voiceLibrary';
 import { resolveTtsProvider } from '../../utils/ttsProvider';
-import { resolveElevenLabsVoiceIdForTarget } from '../../utils/elevenLabsTts';
+import { resolveElevenLabsNarratorVoiceId, resolveElevenLabsVoiceIdForTarget } from '../../utils/elevenLabsTts';
 import { createUserVoiceTarget } from '../../utils/userVoice';
 import { synthesizeDateDialogue, DateDialogueAlignmentError } from '../../utils/dateDialogueSynthesis';
 import { getCachedDateDialogue, markDateDialogueForcedSingles, saveCachedDateDialogue } from '../../utils/dateDialogueCache';
@@ -344,7 +344,7 @@ const DateSession: React.FC<DateSessionProps> = ({
     const voiceLang = char.dateVoiceLang || '';
     const coauthorUserEnabled = !!char.dateStyleConfig?.coauthorUser;
     const broadcastMode = !!char.dateStyleConfig?.broadcastMode;
-    const narratorVoiceId = (char.dateStyleConfig?.broadcastNarratorVoiceId || '').trim();
+    const narratorVoiceId = resolveElevenLabsNarratorVoiceId(apiConfig, char.dateStyleConfig?.broadcastNarratorVoiceId);
     const broadcastPlaybackEnabled = broadcastMode
         && voiceEnabled
         && !voiceLang
@@ -1395,7 +1395,7 @@ const DateSession: React.FC<DateSessionProps> = ({
         if (missingVoice) {
             addToast(
                 missingVoice.speaker === 'narrator'
-                    ? '请先在广播剧模式里填写旁白 Voice ID'
+                    ? '请先在设置 → 其他 API → ElevenLabs 账号预设绑定旁白 Voice ID'
                     : missingVoice.speaker === 'user'
                         ? '请先在设置 → 其他 API → ElevenLabs 账号预设绑定用户 Voice ID'
                         : '请先在设置 → 其他 API → ElevenLabs 账号预设绑定当前角色 Voice ID',

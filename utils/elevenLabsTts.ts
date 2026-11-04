@@ -99,12 +99,14 @@ const normalizeElevenLabsAccountPreset = (preset: ElevenLabsAccountPreset): Elev
       .filter(([charId, voiceId]) => !!charId && !!voiceId),
   );
   const userVoiceId = normalizeElevenLabsVoiceId(preset.userVoiceId);
+  const narratorVoiceId = normalizeElevenLabsVoiceId(preset.narratorVoiceId);
   return {
     id,
     name: String(preset.name || '').trim() || '未命名账号',
     apiKey: normalizeApiKey(preset.apiKey || ''),
     ...(userVoiceId ? { userVoiceId } : {}),
     ...(Object.keys(characterVoiceIds).length ? { characterVoiceIds } : {}),
+    ...(narratorVoiceId ? { narratorVoiceId } : {}),
     ...(preset.legacyVoiceFallback === true ? { legacyVoiceFallback: true } : {}),
   };
 };
@@ -137,6 +139,19 @@ export const getActiveElevenLabsAccountPreset = (apiConfig: APIConfig): ElevenLa
 export const resolveElevenLabsApiKey = (apiConfig: APIConfig): string => {
   const preset = getActiveElevenLabsAccountPreset(apiConfig);
   return preset ? normalizeApiKey(preset.apiKey || '') : normalizeApiKey(apiConfig.elevenLabsApiKey || '');
+};
+
+export const resolveElevenLabsNarratorVoiceId = (
+  apiConfig: APIConfig,
+  legacyNarratorVoiceId?: string | null,
+): string => {
+  const preset = getActiveElevenLabsAccountPreset(apiConfig);
+  if (preset) {
+    const voiceId = normalizeElevenLabsVoiceId(preset.narratorVoiceId);
+    if (voiceId) return voiceId;
+    if (preset.legacyVoiceFallback !== true) return '';
+  }
+  return normalizeElevenLabsVoiceId(legacyNarratorVoiceId);
 };
 
 export const resolveElevenLabsVoiceIdForTarget = (

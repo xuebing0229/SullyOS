@@ -1079,18 +1079,29 @@ const Settings: React.FC = () => {
           if (legacyVoiceId && !characterVoiceIds[char.id]) characterVoiceIds[char.id] = legacyVoiceId;
       });
       const legacyUserVoiceId = normalizeElevenLabsVoiceId(userProfile.voiceProfile?.elevenLabsVoiceId);
+      const activeLegacyNarrator = characters.find(char => char.id === activeCharacterId)?.dateStyleConfig?.broadcastNarratorVoiceId;
+      const anyLegacyNarrator = characters.find(char => normalizeElevenLabsVoiceId(char.dateStyleConfig?.broadcastNarratorVoiceId))?.dateStyleConfig?.broadcastNarratorVoiceId;
+      const legacyNarratorVoiceId = normalizeElevenLabsVoiceId(activeLegacyNarrator || anyLegacyNarrator);
       return {
           ...preset,
           userVoiceId: preset.userVoiceId || legacyUserVoiceId || undefined,
+          narratorVoiceId: preset.narratorVoiceId || legacyNarratorVoiceId || undefined,
           characterVoiceIds,
           legacyVoiceFallback: false,
       };
-  }, [characters, userProfile.voiceProfile?.elevenLabsVoiceId]);
+  }, [activeCharacterId, characters, userProfile.voiceProfile?.elevenLabsVoiceId]);
   const selectedElevenLabsUserVoiceId = selectedElevenLabsPreset?.userVoiceId
       || (selectedElevenLabsPreset?.legacyVoiceFallback ? userProfile.voiceProfile?.elevenLabsVoiceId : '')
       || '';
   const selectedElevenLabsCharacterVoiceId = selectedElevenLabsPreset?.characterVoiceIds?.[localElevenLabsCharacterId]
       || (selectedElevenLabsPreset?.legacyVoiceFallback ? selectedElevenLabsCharacter?.voiceProfile?.elevenLabsVoiceId : '')
+      || '';
+  const legacyElevenLabsNarratorVoiceId = normalizeElevenLabsVoiceId(
+      characters.find(char => char.id === activeCharacterId)?.dateStyleConfig?.broadcastNarratorVoiceId
+      || characters.find(char => normalizeElevenLabsVoiceId(char.dateStyleConfig?.broadcastNarratorVoiceId))?.dateStyleConfig?.broadcastNarratorVoiceId
+  );
+  const selectedElevenLabsNarratorVoiceId = selectedElevenLabsPreset?.narratorVoiceId
+      || (selectedElevenLabsPreset?.legacyVoiceFallback ? legacyElevenLabsNarratorVoiceId : '')
       || '';
 
   const updateSelectedElevenLabsPreset = useCallback((
@@ -3446,7 +3457,7 @@ const Settings: React.FC = () => {
                         <div className="flex items-center justify-between gap-2">
                             <div>
                                 <div className="text-[10px] font-bold text-violet-600 uppercase tracking-widest">ElevenLabs 账号预设</div>
-                                <p className="text-[10px] text-slate-400 mt-0.5">切换预设时 Key、我的 Voice ID 和各角色 Voice ID 一起切换。</p>
+                                <p className="text-[10px] text-slate-400 mt-0.5">切换预设时 Key、我的 Voice ID、各角色 Voice ID 和旁白 Voice ID 一起切换。</p>
                             </div>
                             <button
                                 type="button"
@@ -3522,6 +3533,16 @@ const Settings: React.FC = () => {
                                     />
                                 </label>
 
+                                <label className="block">
+                                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 block">旁白 Voice ID</span>
+                                    <input
+                                        value={selectedElevenLabsNarratorVoiceId}
+                                        onChange={(e) => updateSelectedElevenLabsPreset(preset => ({ ...preset, narratorVoiceId: e.target.value }))}
+                                        placeholder="当前账号里的广播剧旁白 Voice ID"
+                                        className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2.5 text-xs font-mono"
+                                    />
+                                </label>
+
                                 <div className="grid grid-cols-1 sm:grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)] gap-2">
                                     <label className="block">
                                         <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 block">角色</span>
@@ -3557,7 +3578,7 @@ const Settings: React.FC = () => {
                                 </div>
 
                                 <p className="text-[10px] leading-relaxed text-slate-400">
-                                    原来散落在角色页 / 我的资料里的 ElevenLabs Voice ID 会自动迁入默认预设；以后那两处只显示当前预设值。旁白 Voice ID 仍按原位置独立保存，不跟账号预设绑定。
+                                    原来散落在角色页 / 我的资料 / 广播剧设置里的 ElevenLabs Voice ID 会自动迁入默认预设；以后这些位置只显示当前预设值，统一在这里修改。
                                 </p>
                             </div>
                         )}

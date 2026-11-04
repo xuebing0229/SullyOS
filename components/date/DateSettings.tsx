@@ -4,6 +4,7 @@ import MeetingAppearanceControl from './MeetingAppearanceControl';
 import React, { useState, useRef, useEffect } from 'react';
 import { useOS } from '../../context/OSContext';
 import { CharacterProfile, SpriteConfig, SkinSet, DateStyleConfig } from '../../types';
+import { resolveElevenLabsNarratorVoiceId } from '../../utils/elevenLabsTts';
 import { processImageToBlob } from '../../utils/file';
 import { putImageBlob, useBlobRefUrl } from '../../utils/blobRef';
 import { pickDateFallbackSprite } from '../../utils/dateSprites';
@@ -35,7 +36,7 @@ const Section: React.FC<{ title: string; defaultOpen?: boolean; children: React.
 );
 
 const DateSettings: React.FC<DateSettingsProps> = ({ char, onBack }) => {
-    const { updateCharacter, addToast, userProfile } = useOS();
+    const { updateCharacter, addToast, userProfile, apiConfig } = useOS();
     const fileInputRef = useRef<HTMLInputElement>(null);
     const pageRef = useRef<HTMLDivElement>(null);
     const scrollRef = useRef<HTMLDivElement>(null);
@@ -81,10 +82,8 @@ const DateSettings: React.FC<DateSettingsProps> = ({ char, onBack }) => {
     const styleConfig = char.dateStyleConfig || {};
     const [extraDraft, setExtraDraft] = useState(styleConfig.extra || '');
     const [extraEditorOpen, setExtraEditorOpen] = useState(false);
-    const [narratorVoiceDraft, setNarratorVoiceDraft] = useState(styleConfig.broadcastNarratorVoiceId || '');
     useEffect(() => {
         setExtraDraft(char.dateStyleConfig?.extra || '');
-        setNarratorVoiceDraft(char.dateStyleConfig?.broadcastNarratorVoiceId || '');
     }, [char.id]);
     const patchStyleConfig = (patch: Partial<DateStyleConfig>) => {
         updateCharacter(char.id, { dateStyleConfig: { ...(char.dateStyleConfig || {}), ...patch } });
@@ -95,12 +94,7 @@ const DateSettings: React.FC<DateSettingsProps> = ({ char, onBack }) => {
         patchStyleConfig({ extra: trimmed || undefined });
         addToast(trimmed ? '补充要求已保存' : '补充要求已清空', 'success');
     };
-    const saveNarratorVoiceDraft = () => {
-        const trimmed = narratorVoiceDraft.trim();
-        if (trimmed === (char.dateStyleConfig?.broadcastNarratorVoiceId || '')) return;
-        patchStyleConfig({ broadcastNarratorVoiceId: trimmed || undefined });
-        addToast(trimmed ? '旁白 Voice ID 已保存' : '旁白 Voice ID 已清空', 'success');
-    };
+    const narratorVoiceId = resolveElevenLabsNarratorVoiceId(apiConfig, char.dateStyleConfig?.broadcastNarratorVoiceId);
     const readingAppearance = meetingAppearance(char.dateAppearance);
     const userName = userProfile?.name || '用户';
     const POV_OPTIONS: { id: DateStyleConfig['pov']; label: string; example: string }[] = [
@@ -474,13 +468,12 @@ const DateSettings: React.FC<DateSettingsProps> = ({ char, onBack }) => {
                                 <label className="text-[11px] text-slate-500 font-bold mb-2 block">旁白 Voice ID</label>
                                 <input
                                     type="text"
-                                    value={narratorVoiceDraft}
-                                    onChange={e => setNarratorVoiceDraft(e.target.value)}
-                                    onBlur={saveNarratorVoiceDraft}
-                                    placeholder="填写 ElevenLabs 旁白 Voice ID"
-                                    className="w-full px-4 py-3 bg-slate-100 rounded-xl text-sm outline-none focus:ring-1 focus:ring-primary/30 transition-all"
+                                    value={narratorVoiceId}
+                                    readOnly
+                                    placeholder="当前 ElevenLabs 账号预设尚未绑定旁白 Voice ID"
+                                    className="w-full px-4 py-3 bg-slate-100 rounded-xl text-sm font-mono text-slate-500 outline-none"
                                 />
-                                <p className="text-[10px] text-slate-300 mt-1">只在广播剧模式里用于旁白；角色和用户继续沿用各自已有声线。连续多声线播放使用 ElevenLabs。</p>
+                                <p className="text-[10px] text-slate-300 mt-1">这里只显示当前 ElevenLabs 账号预设里的旁白 Voice ID；修改请到「设置 → 其他 API → ElevenLabs 账号预设」。切换账号时会和 Key、角色、User 声线一起切换。</p>
                             </div>
                         )}
                     </div>

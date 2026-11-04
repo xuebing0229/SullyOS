@@ -10,6 +10,7 @@ import {
   normalizeElevenLabsModel,
   normalizeElevenLabsVoiceId,
   resolveElevenLabsApiKey,
+  resolveElevenLabsNarratorVoiceId,
   resolveElevenLabsVoiceIdForTarget,
   stripElevenLabsMarkupForDisplay,
 } from './elevenLabsTts';
@@ -60,7 +61,7 @@ describe('ElevenLabs account presets', () => {
     expect(resolveElevenLabsVoiceIdForTarget(character, baseConfig)).toBe('21m00Tcm4TlvDq8ikWAM');
   });
 
-  it('switches Key + character/user Voice ID as one account preset', () => {
+  it('switches Key + character/user/narrator Voice ID as one account preset', () => {
     const config: APIConfig = {
       ...baseConfig,
       elevenLabsAccountPresets: [
@@ -69,6 +70,7 @@ describe('ElevenLabs account presets', () => {
           name: '主号',
           apiKey: 'key-a',
           userVoiceId: 'user-a',
+          narratorVoiceId: 'narrator-a',
           characterVoiceIds: { 'char-1': 'char-a' },
         },
         {
@@ -76,6 +78,7 @@ describe('ElevenLabs account presets', () => {
           name: '备用号',
           apiKey: 'key-b',
           userVoiceId: 'user-b',
+          narratorVoiceId: 'narrator-b',
           characterVoiceIds: { 'char-1': 'char-b' },
         },
       ],
@@ -88,6 +91,7 @@ describe('ElevenLabs account presets', () => {
       ...character,
       id: '__sully_user_voice__',
     }, config)).toBe('user-b');
+    expect(resolveElevenLabsNarratorVoiceId(config, 'legacy-narrator')).toBe('narrator-b');
   });
 
   it('does not reuse a legacy Voice ID when a new account preset has no binding', () => {
@@ -102,6 +106,11 @@ describe('ElevenLabs account presets', () => {
       activeElevenLabsAccountPresetId: 'fresh-account',
     };
     expect(resolveElevenLabsVoiceIdForTarget(character, config)).toBe('');
+    expect(resolveElevenLabsNarratorVoiceId(config, 'legacy-narrator')).toBe('');
+  });
+
+  it('keeps the old narrator Voice ID only while the default legacy preset is being migrated', () => {
+    expect(resolveElevenLabsNarratorVoiceId(baseConfig, 'legacy-narrator')).toBe('legacy-narrator');
   });
 });
 

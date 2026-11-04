@@ -304,7 +304,9 @@ export interface ElevenLabsAccountPreset {
   userVoiceId?: string;
   /** 角色 ID → 该 ElevenLabs 账号内对应的 Voice ID。 */
   characterVoiceIds?: Record<string, string>;
-  /** 仅用于把旧版散落在角色 / 用户资料里的 Voice ID 平滑迁入第一条账号预设。 */
+  /** 广播剧旁白在这个 ElevenLabs 账号内对应的 Voice ID。 */
+  narratorVoiceId?: string;
+  /** 仅用于把旧版散落在角色 / 用户资料 / 见面设置里的 Voice ID 平滑迁入第一条账号预设。 */
   legacyVoiceFallback?: boolean;
 }
 
@@ -803,7 +805,7 @@ export interface DateStyleConfig {
   coauthorUser?: boolean;
   /** 广播剧模式：整轮自动合成并连续播放，正文尽量对白化；默认关闭。 */
   broadcastMode?: boolean;
-  /** 广播剧模式专用的 ElevenLabs 旁白 Voice ID；普通见面模式完全不读取。 */
+  /** 旧版广播剧旁白 Voice ID。新版本只作账号预设迁移/兼容回退；实际请求读取当前 ElevenLabs 账号预设。 */
   broadcastNarratorVoiceId?: string;
   /** 自定义补充文风要求，原样追加进风格块 */
   extra?: string;

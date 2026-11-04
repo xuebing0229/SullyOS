@@ -55,6 +55,8 @@ describe('ElevenLabs account preset routing guard', () => {
     const date = readFileSync('components/date/DateSession.tsx', 'utf8');
     const story = readFileSync('components/date/story/StoryTheaterSession.tsx', 'utf8');
     expect(date).toContain("speaker === 'user' ? createUserVoiceTarget(userProfile) : char");
+    expect(date).toContain('resolveElevenLabsNarratorVoiceId(apiConfig, char.dateStyleConfig?.broadcastNarratorVoiceId)');
+    expect(date).not.toContain("const narratorVoiceId = (char.dateStyleConfig?.broadcastNarratorVoiceId || '').trim()");
     expect(date).not.toContain(':user-voice');
     expect(story).toContain("resolvedSpeaker === 'user' ? createUserVoiceTarget(userProfile)");
   });
