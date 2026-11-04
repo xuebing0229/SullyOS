@@ -268,7 +268,7 @@ describe('见面 Voice ID 路由合约', () => {
   it('单句 TTS 缓存必须绑定实际账号预设、声线配置与模型设置', () => {
     expect(session).toContain('voice: profile,');
     expect(session).toContain("elevenLabsAccountPresetId: provider === 'elevenlabs' ? apiConfig.activeElevenLabsAccountPresetId : undefined");
-    expect(session).toContain("elevenLabsVoiceId: provider === 'elevenlabs' ? resolveElevenLabsVoiceIdForTarget(target, apiConfig) : undefined");
+    expect(session).toContain("resolvedElevenLabsVoice: provider === 'elevenlabs' ? resolveElevenLabsVoiceIdForTarget(target, apiConfig) : undefined");
     expect(session).toContain('elevenLabsModel: apiConfig.elevenLabsModel,');
     expect(session).toContain('elevenLabsSimilarityBoost: apiConfig.elevenLabsSimilarityBoost,');
   });
