@@ -1654,11 +1654,11 @@ const Settings: React.FC = () => {
       setLocalElevenLabsPresets(materialized);
       setLocalElevenLabsActivePresetId(next.id);
       setLocalElevenLabsKey(next.apiKey || '');
-      updateApiConfig({
+      updateApiConfig(buildOtherApiConfig({
           elevenLabsAccountPresets: materialized,
           activeElevenLabsAccountPresetId: next.id,
           elevenLabsApiKey: next.apiKey || '',
-      });
+      }));
   };
 
   const addElevenLabsAccountPreset = () => {
@@ -1681,11 +1681,11 @@ const Settings: React.FC = () => {
       setLocalElevenLabsPresets(remaining);
       setLocalElevenLabsActivePresetId(next.id);
       setLocalElevenLabsKey(next.apiKey || '');
-      updateApiConfig({
+      updateApiConfig(buildOtherApiConfig({
           elevenLabsAccountPresets: remaining,
           activeElevenLabsAccountPresetId: next.id,
           elevenLabsApiKey: next.apiKey || '',
-      });
+      }));
   };
 
   const handleSaveOtherApis = () => {
