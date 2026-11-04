@@ -32,6 +32,7 @@ import { anyCharToggle, bucketFewCount, presetOrCustom, tweakedOrDefault } from 
 import { readStorageOverview } from './storageStats';
 import { BUILTIN_SOUNDS } from './whiteboxSound';
 import { DB } from './db';
+import { resolveElevenLabsApiKey } from './elevenLabsTts';
 import { isStandaloneDisplayMode } from './iosStandalone';
 import { loadMcpServers, getMcpUseNativeTools } from './mcpClient';
 import { getLuckinToken, isLuckinEnabled } from './luckinMcpClient';
@@ -482,7 +483,7 @@ export function collectFeatureFlags(src: FeatureSources): Record<string, string>
 
         // ── 模型线路 ──
         // 服务商是枚举，可以报；baseUrl / key / 模型名一律不报。
-        语音合成: src.apiConfig.apiKey || src.apiConfig.minimaxApiKey || src.apiConfig.fishAudioApiKey || src.apiConfig.elevenLabsApiKey
+        语音合成: src.apiConfig.apiKey || src.apiConfig.minimaxApiKey || src.apiConfig.fishAudioApiKey || resolveElevenLabsApiKey(src.apiConfig)
             ? enumOrCustom(src.apiConfig.ttsProvider, TTS_PROVIDERS, 'minimax')
             : '没配',
         API线路预设数: bucketFewCount(src.apiPresetCount),

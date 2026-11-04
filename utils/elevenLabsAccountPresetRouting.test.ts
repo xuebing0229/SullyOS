@@ -28,6 +28,7 @@ describe('ElevenLabs account preset routing guard', () => {
   it('does not let runtime features read legacy ElevenLabs key / Voice ID fields directly', () => {
     const allowed = new Set([
       'apps/Settings.tsx',       // one-time migration + settings editor compatibility mirror
+      'context/OSContext.tsx',   // initializes the legacy compatibility mirror field
       'utils/elevenLabsTts.ts',  // single compatibility fallback and canonical resolver
     ]);
     const violations: string[] = [];

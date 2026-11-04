@@ -668,7 +668,7 @@ const DateSession: React.FC<DateSessionProps> = ({
             provider,
             voice: profile,
             elevenLabsAccountPresetId: provider === 'elevenlabs' ? apiConfig.activeElevenLabsAccountPresetId : undefined,
-            elevenLabsVoiceId: provider === 'elevenlabs' ? resolveElevenLabsVoiceIdForTarget(target, apiConfig) : undefined,
+            resolvedElevenLabsVoice: provider === 'elevenlabs' ? resolveElevenLabsVoiceIdForTarget(target, apiConfig) : undefined,
             elevenLabsModel: apiConfig.elevenLabsModel,
             elevenLabsStability: apiConfig.elevenLabsStability,
             elevenLabsSimilarityBoost: apiConfig.elevenLabsSimilarityBoost,
