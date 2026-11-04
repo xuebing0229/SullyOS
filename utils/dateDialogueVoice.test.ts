@@ -217,9 +217,13 @@ describe('见面 Voice ID 路由合约', () => {
   const session = readFileSync('components/date/DateSession.tsx', 'utf8');
   const synthesis = readFileSync('utils/dateDialogueSynthesis.ts', 'utf8');
 
-  it('普通模式的一口气 Dialogue 每条都以归属解析后的声线 ID 生成', () => {
-    expect(session).toContain('const speaker = resolveDateVoiceSpeaker(item.speaker, coauthorUserEnabled);');
+  it('普通模式的一口气 Dialogue 每条都以归属解析后的当前 ElevenLabs 账号预设声线生成', () => {
+    expect(session).toContain('const speaker = resolveDateVoiceSpeaker(item.speaker, coauthorUserEnabled || broadcastMode);');
     expect(session).toContain('voiceId: dialogueVoiceId(speaker)');
+    expect(session).toContain('resolveElevenLabsVoiceIdForTarget(dateVoiceTarget(speaker), apiConfig)');
+    expect(session).toContain("speaker === 'user' ? createUserVoiceTarget(userProfile) : char");
+    expect(session).not.toContain('? userProfile.voiceProfile?.elevenLabsVoiceId');
+    expect(session).not.toContain('? profile?.elevenLabsVoiceId');
     expect(session).toContain('return resolveDateDialogueSegmentForLine(turns, batch.segments, lineId);');
     expect(session).not.toContain('batch.segments[index] || null');
     expect(session).toContain('if (!speaker) return [];');
@@ -261,8 +265,10 @@ describe('见面 Voice ID 路由合约', () => {
     );
   });
 
-  it('单句 TTS 缓存必须绑定实际声线配置与模型设置', () => {
+  it('单句 TTS 缓存必须绑定实际账号预设、声线配置与模型设置', () => {
     expect(session).toContain('voice: profile,');
+    expect(session).toContain("elevenLabsAccountPresetId: provider === 'elevenlabs' ? apiConfig.activeElevenLabsAccountPresetId : undefined");
+    expect(session).toContain("elevenLabsVoiceId: provider === 'elevenlabs' ? resolveElevenLabsVoiceIdForTarget(target, apiConfig) : undefined");
     expect(session).toContain('elevenLabsModel: apiConfig.elevenLabsModel,');
     expect(session).toContain('elevenLabsSimilarityBoost: apiConfig.elevenLabsSimilarityBoost,');
   });

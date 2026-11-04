@@ -29,6 +29,8 @@ import VoiceFavoriteActionSheet from '../voice/VoiceFavoriteActionSheet';
 import { getVoiceFavorite, makeVoiceFavoriteId, removeVoiceFavorite, saveVoiceFavorite } from '../../utils/voiceFavorites';
 import { saveVoiceLibraryItem, setVoiceLibraryStarredForSource } from '../../utils/voiceLibrary';
 import { resolveTtsProvider } from '../../utils/ttsProvider';
+import { resolveElevenLabsVoiceIdForTarget } from '../../utils/elevenLabsTts';
+import { createUserVoiceTarget } from '../../utils/userVoice';
 import { synthesizeDateDialogue, DateDialogueAlignmentError } from '../../utils/dateDialogueSynthesis';
 import { getCachedDateDialogue, markDateDialogueForcedSingles, saveCachedDateDialogue } from '../../utils/dateDialogueCache';
 import { extractDateSpokenText, isDateSpokenLine } from '../../utils/dateDialogueLines';
@@ -410,10 +412,11 @@ const DateSession: React.FC<DateSessionProps> = ({
         voiceCacheRef.current = {};
     }, []);
 
+    const dateVoiceTarget = (speaker: 'char' | 'user'): CharacterProfile =>
+        speaker === 'user' ? createUserVoiceTarget(userProfile) : char;
+
     const dialogueVoiceId = (speaker: 'char' | 'user'): string =>
-        (speaker === 'user'
-            ? userProfile.voiceProfile?.elevenLabsVoiceId
-            : char.voiceProfile?.elevenLabsVoiceId) || '';
+        resolveElevenLabsVoiceIdForTarget(dateVoiceTarget(speaker), apiConfig);
 
     const buildDateDialogueTurns = (items: DialogueItem[]): DateDialogueTurn[] =>
         items.flatMap((item): DateDialogueTurn[] => {
@@ -657,11 +660,15 @@ const DateSession: React.FC<DateSessionProps> = ({
 
     // 用户切换音色、服务商或稳定性设置后，不能继续回放本次见面里旧声线的缓存音频。
     const singleVoiceCacheKey = (speaker: 'char' | 'user', text: string): string => {
-        const profile = speaker === 'user' ? userProfile.voiceProfile : char.voiceProfile;
+        const target = dateVoiceTarget(speaker);
+        const profile = target.voiceProfile;
+        const provider = resolveTtsProvider(apiConfig);
         return JSON.stringify({
             speaker, text, language: voiceLang,
-            provider: resolveTtsProvider(apiConfig),
+            provider,
             voice: profile,
+            elevenLabsAccountPresetId: provider === 'elevenlabs' ? apiConfig.activeElevenLabsAccountPresetId : undefined,
+            elevenLabsVoiceId: provider === 'elevenlabs' ? resolveElevenLabsVoiceIdForTarget(target, apiConfig) : undefined,
             elevenLabsModel: apiConfig.elevenLabsModel,
             elevenLabsStability: apiConfig.elevenLabsStability,
             elevenLabsSimilarityBoost: apiConfig.elevenLabsSimilarityBoost,
@@ -677,9 +684,7 @@ const DateSession: React.FC<DateSessionProps> = ({
         speaker: 'char' | 'user' = 'char',
         forceRefresh = false,
     ): Promise<DateSpeechResult | null> => {
-        const speakerChar: CharacterProfile = speaker === 'user'
-            ? { ...char, id: `${char.id}:user-voice`, name: userProfile.name || '用户', voiceProfile: userProfile.voiceProfile }
-            : char;
+        const speakerChar: CharacterProfile = dateVoiceTarget(speaker);
         if (!canSynthesizeSpeech(speakerChar, apiConfig)) return null;
         try {
             let ttsText = cleanTextForTtsProvider(text, apiConfig);
@@ -718,7 +723,7 @@ const DateSession: React.FC<DateSessionProps> = ({
                 const provider = resolveTtsProvider(apiConfig);
                 const profile = speakerChar.voiceProfile;
                 const voiceId = provider === 'elevenlabs'
-                    ? profile?.elevenLabsVoiceId
+                    ? resolveElevenLabsVoiceIdForTarget(speakerChar, apiConfig)
                     : provider === 'fishaudio'
                         ? profile?.fishReferenceId
                         : profile?.voiceId;
@@ -755,13 +760,9 @@ const DateSession: React.FC<DateSessionProps> = ({
             return;
         }
         const turns = buildDateDialogueTurns(spokenItems);
-        const missingSpeaker = turns.find(turn => {
-            const profile = turn.speaker === 'user' ? userProfile.voiceProfile : char.voiceProfile;
-            return !canSynthesizeSpeech(
-                turn.speaker === 'user' ? { ...char, voiceProfile: profile } : char,
-                apiConfig,
-            );
-        });
+        const missingSpeaker = turns.find(turn =>
+            turn.speaker !== 'narrator' && !canSynthesizeSpeech(dateVoiceTarget(turn.speaker), apiConfig)
+        );
         if (missingSpeaker) {
             addToast(missingSpeaker.speaker === 'user' ? '请先为 USER 配置当前服务商的声线' : '请先配置角色声线与语音 API', 'error');
             return;
@@ -1396,8 +1397,8 @@ const DateSession: React.FC<DateSessionProps> = ({
                 missingVoice.speaker === 'narrator'
                     ? '请先在广播剧模式里填写旁白 Voice ID'
                     : missingVoice.speaker === 'user'
-                        ? '请先在个人档案填写用户 ElevenLabs Voice ID'
-                        : '请先给当前角色填写 ElevenLabs Voice ID',
+                        ? '请先在设置 → 其他 API → ElevenLabs 账号预设绑定用户 Voice ID'
+                        : '请先在设置 → 其他 API → ElevenLabs 账号预设绑定当前角色 Voice ID',
                 'info',
             );
             return;
