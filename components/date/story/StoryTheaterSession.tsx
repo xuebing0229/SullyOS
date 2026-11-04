@@ -115,6 +115,7 @@ import {
 import { canSynthesizeSpeech } from '../../../utils/ttsRouter';
 import { deletePersistedVoiceAsset, ensureVoiceAsset, storyVoiceAssetKey } from '../../../utils/voiceAsset';
 import { normalizeStoryElevenLabsAudioTags } from '../../../utils/storyElevenLabsActing';
+import { resolveElevenLabsVoiceIdForTarget } from '../../../utils/elevenLabsTts';
 import { createUserVoiceTarget } from '../../../utils/userVoice';
 import { createStoryTimingTrace, loadLastStoryTimingReport, type StoryTimingReport } from '../../../utils/storyTimingTrace';
 
@@ -762,7 +763,11 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
         const synthesisText = storyTtsProvider === 'elevenlabs'
             ? normalizeStoryElevenLabsAudioTags(sourceSpeech)
             : sourceSpeech;
-        const key = storyVoiceAssetKey(entry.id, messageId, dialogueIndex, storyTtsProvider);
+        const storyTtsApiConfig = { ...apiConfig, ttsProvider: storyTtsProvider };
+        const elevenLabsVoiceIdentity = storyTtsProvider === 'elevenlabs'
+            ? `${apiConfig.activeElevenLabsAccountPresetId || 'legacy'}:${resolveElevenLabsVoiceIdForTarget(actor, storyTtsApiConfig)}`
+            : undefined;
+        const key = storyVoiceAssetKey(entry.id, messageId, dialogueIndex, storyTtsProvider, elevenLabsVoiceIdentity);
         const currentAudio = storyVoiceAudioRef.current;
         if (!force && storyVoicePlayingKeyRef.current === key && currentAudio && !currentAudio.paused) {
             storyVoicePlayRequestRef.current += 1;
@@ -771,13 +776,12 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             return;
         }
 
-        const storyTtsApiConfig = { ...apiConfig, ttsProvider: storyTtsProvider };
         if (!canSynthesizeSpeech(actor, storyTtsApiConfig)) {
             if (storyTtsProvider === 'elevenlabs') {
                 addToast(
                     resolvedSpeaker === 'user'
-                        ? '请先在个人档案的「我的声线」填写 ElevenLabs Voice ID，并在设置 → 其他 API 保存 ElevenLabs Key'
-                        : '请先给当前角色填写 ElevenLabs Voice ID，并在设置 → 其他 API 保存 ElevenLabs Key',
+                        ? '请先在设置 → 其他 API → ElevenLabs 账号预设绑定 User Voice ID 与 Key'
+                        : '请先在设置 → 其他 API → ElevenLabs 账号预设绑定当前角色 Voice ID 与 Key',
                     'info',
                 );
             } else {

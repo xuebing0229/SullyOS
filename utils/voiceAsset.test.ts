@@ -37,6 +37,10 @@ describe('shared persistent voice assets', () => {
     expect(storyVoiceAssetKey('story-a', 42, 3)).toBe('voice_story_story-a_42_3');
     expect(storyVoiceAssetKey('story-a', 42, 3, 'minimax')).toBe('voice_story_story-a_42_3');
     expect(storyVoiceAssetKey('story-a', 42, 3, 'elevenlabs')).toBe('voice_story_story-a_42_3_elevenlabs');
+    expect(storyVoiceAssetKey('story-a', 42, 3, 'elevenlabs', 'preset-b:voice-2'))
+      .toBe('voice_story_story-a_42_3_elevenlabs_preset-b_voice-2');
+    expect(storyVoiceAssetKey('story-a', 42, 3, 'elevenlabs', 'preset-a:voice-2'))
+      .not.toBe(storyVoiceAssetKey('story-a', 42, 3, 'elevenlabs', 'preset-b:voice-2'));
   });
 
   it('replays a matching persisted asset without calling TTS again', async () => {

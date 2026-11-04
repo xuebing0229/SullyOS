@@ -49,11 +49,14 @@ export const storyVoiceAssetKey = (
   messageId: number,
   dialogueIndex: number,
   provider: 'minimax' | 'elevenlabs' = 'minimax',
+  voiceIdentity?: string,
 ): string => {
   const base = `voice_story_${storyId}_${messageId}_${dialogueIndex}`;
-  // Preserve every existing MiniMax cache key; ElevenLabs gets an isolated suffix
-  // so changing Story provider can never replay audio synthesized by the other engine.
-  return provider === 'elevenlabs' ? `${base}_elevenlabs` : base;
+  if (provider !== 'elevenlabs') return base;
+  // Preserve the old key for callers without an identity, while current Story playback
+  // isolates ElevenLabs assets by account preset + resolved Voice ID.
+  const identity = String(voiceIdentity || '').trim().replace(/[^A-Za-z0-9_-]+/g, '_');
+  return identity ? `${base}_elevenlabs_${identity}` : `${base}_elevenlabs`;
 };
 
 export const loadPersistedVoiceAsset = async (key: string): Promise<StoredVoiceAsset | null> => {

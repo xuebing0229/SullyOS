@@ -49,6 +49,8 @@ jobs:
           utils/dateCgPlanner.test.ts
           utils/dateCgArchitecture.contract.test.ts
           utils/meetingCg.test.ts
+          utils/elevenLabsAccountPresetRouting.test.ts
+          utils/voiceAsset.test.ts
           worker/elevenLabsDialogueProxy.test.ts
 
       - name: Check TypeScript types

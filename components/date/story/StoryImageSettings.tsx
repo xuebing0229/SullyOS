@@ -2,10 +2,11 @@ import React, { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { CaretDown, ImageSquare, SpeakerHigh, X } from '@phosphor-icons/react';
 import { useOS } from '../../../context/OSContext';
-import type { CharacterProfile, StoryTheaterEntry, StoryTheaterImageConfig } from '../../../types';
+import type { APIConfig, CharacterProfile, StoryTheaterEntry, StoryTheaterImageConfig } from '../../../types';
 import { getBuiltinImageMcpServers, loadBuiltinImageSettings } from '../../../utils/builtinImageMcp';
 import { getApiPresetModelEntries } from '../../../utils/apiPresetModels';
-import { normalizeElevenLabsModel } from '../../../utils/elevenLabsTts';
+import { normalizeElevenLabsModel, resolveElevenLabsVoiceIdForTarget } from '../../../utils/elevenLabsTts';
+import { createUserVoiceTarget } from '../../../utils/userVoice';
 import {
     loadStoryImageTextPresets,
     persistStoryImageTextPresets,
@@ -31,15 +32,18 @@ const fallback = (entry: StoryTheaterEntry): StoryTheaterImageConfig => ({
     characterAnchors: entry.imageGeneration?.characterAnchors || {},
 });
 
-const voiceProfileLabel = (
-    profile: CharacterProfile['voiceProfile'] | undefined,
+const voiceTargetLabel = (
+    target: CharacterProfile | undefined,
     provider: 'minimax' | 'elevenlabs',
+    apiConfig: APIConfig,
 ): string => {
-    if (!profile) return '尚未配置';
+    if (!target) return '尚未配置';
     if (provider === 'elevenlabs') {
-        const voiceId = String(profile.elevenLabsVoiceId || '').trim();
-        return voiceId || '尚未配置 ElevenLabs Voice ID';
+        const voiceId = resolveElevenLabsVoiceIdForTarget(target, apiConfig);
+        return voiceId || '当前账号预设尚未绑定 Voice ID';
     }
+    const profile = target.voiceProfile;
+    if (!profile) return '尚未配置';
     if (profile.voiceName?.trim()) return profile.voiceName.trim();
     if (profile.voiceId?.trim()) return profile.voiceId.trim();
     const mixed = profile.timberWeights?.filter(item => item.voice_id?.trim()) || [];
@@ -253,12 +257,12 @@ const StoryImageSettingsButton: React.FC<Props> = ({ entry, onChange, triggerLab
                 {selectedVoiceDirectorPreset && <div className='mt-2 rounded-xl bg-amber-50 px-3 py-2 text-[9px] leading-4 text-amber-700'>当前副导演：{selectedVoiceDirectorPreset.name} · {voiceDirectorDisplayModel}</div>}
             </div>
             <div className='border-t border-slate-100 px-4 py-3 flex items-center gap-3'>
-                <span className='min-w-0 flex-1'><strong className='block text-[10px]'>角色声线 · {actors[0]?.name || '未选择主角色'}</strong><span className='block mt-0.5 truncate text-[9px] text-slate-400'>{actors[0] ? `自动复用角色设置 · ${voiceProfileLabel(actors[0].voiceProfile, storyTtsProvider)}` : '选择主角色后自动复用该角色已保存的声线'}</span></span><span className='shrink-0 text-[9px] font-bold text-violet-500'>自动复用</span>
+                <span className='min-w-0 flex-1'><strong className='block text-[10px]'>角色声线 · {actors[0]?.name || '未选择主角色'}</strong><span className='block mt-0.5 truncate text-[9px] text-slate-400'>{actors[0] ? `自动复用当前配置 · ${voiceTargetLabel(actors[0], storyTtsProvider, apiConfig)}` : '选择主角色后自动复用该角色已保存的声线'}</span></span><span className='shrink-0 text-[9px] font-bold text-violet-500'>自动复用</span>
             </div>
             <div className='border-t border-slate-100 px-4 py-3 flex items-center gap-3'>
-                <span className='min-w-0 flex-1'><strong className='block text-[10px]'>User 声线 · 我的声线</strong><span className='block mt-0.5 truncate text-[9px] text-slate-400'>自动复用个人档案 · {voiceProfileLabel(userProfile.voiceProfile, storyTtsProvider)}</span></span><span className='shrink-0 text-[9px] font-bold text-violet-500'>自动复用</span>
+                <span className='min-w-0 flex-1'><strong className='block text-[10px]'>User 声线 · 我的声线</strong><span className='block mt-0.5 truncate text-[9px] text-slate-400'>自动复用当前配置 · {voiceTargetLabel(createUserVoiceTarget(userProfile), storyTtsProvider, apiConfig)}</span></span><span className='shrink-0 text-[9px] font-bold text-violet-500'>自动复用</span>
             </div>
-            <p className='border-t border-slate-100 px-4 py-3 text-[9px] leading-4 text-slate-400'>文游不另存声线参数。MiniMax 读取角色 voice_id / 我的声线与全局 Key；ElevenLabs 读取角色 / 个人档案里的 Voice ID，并复用全局 ElevenLabs Key、v4 模型与 Stability / Similarity。切换服务只影响之后生成或刷新的语音，另一服务的缓存不会串用。</p>
+            <p className='border-t border-slate-100 px-4 py-3 text-[9px] leading-4 text-slate-400'>文游不另存声线参数。MiniMax 读取角色 voice_id / 我的声线与全局 Key；ElevenLabs 读取当前账号预设里绑定的角色 / User Voice ID 与 Key，并复用全局 v4 模型及 Stability / Similarity。切换 ElevenLabs 账号后，新生成与刷新的语音会跟随当前预设，缓存也按账号声线隔离。</p>
         </div>}
         {open && createPortal(<div
             className='story-theme fixed inset-0 z-[95] flex items-end justify-center bg-slate-950/35'
