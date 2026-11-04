@@ -296,6 +296,18 @@ export interface VisionApiConfig {
 /** A complete dialogue endpoint, separate from TTS/vision configuration. */
 export type DialogueApiConfig = Pick<APIConfig, 'baseUrl' | 'apiKey' | 'model' | 'stream' | 'temperature'>;
 
+export interface ElevenLabsAccountPreset {
+  id: string;
+  name: string;
+  apiKey: string;
+  /** 「我」在这个 ElevenLabs 账号内对应的 Voice ID。 */
+  userVoiceId?: string;
+  /** 角色 ID → 该 ElevenLabs 账号内对应的 Voice ID。 */
+  characterVoiceIds?: Record<string, string>;
+  /** 仅用于把旧版散落在角色 / 用户资料里的 Voice ID 平滑迁入第一条账号预设。 */
+  legacyVoiceFallback?: boolean;
+}
+
 export interface APIConfig {
   baseUrl: string;
   apiKey: string;
@@ -314,8 +326,10 @@ export interface APIConfig {
   // 鱼声默认模型（s2.1-pro / s2-pro / s1）。缺省 → 's2.1-pro'。
   // 角色 voiceProfile.fishModel 优先于这个全局默认。
   fishAudioModel?: string;
-  // ElevenLabs BYOK 配置。Voice ID 存在角色 voiceProfile.elevenLabsVoiceId，避免角色串音色。
+  // ElevenLabs BYOK 配置。elevenLabsApiKey 保留为旧版兼容镜像；新版本以当前账号预设为准。
   elevenLabsApiKey?: string;
+  elevenLabsAccountPresets?: ElevenLabsAccountPreset[];
+  activeElevenLabsAccountPresetId?: string;
   // 缺省使用 eleven_v4；支持 eleven_v4 / eleven_v4_turbo。旧模型值运行时自动迁移到 v4。
   elevenLabsModel?: string;
   // Eleven v4 请求级设置：仅 Stability + Similarity。
@@ -3172,7 +3186,8 @@ export interface CharacterProfile {
       fishReferenceId?: string;
       // 该角色单独指定的鱼声模型（覆盖全局 fishAudioModel）。
       fishModel?: string;
-      // ElevenLabs 角色音色 ID。与 MiniMax voiceId / Fish reference_id 各存各的。
+      // ElevenLabs 旧版兼容字段。新版本实际调用优先读取 APIConfig 的 ElevenLabs 账号预设；
+      // 旧数据在首次保存账号预设时会迁入，字段暂留用于无损读取历史备份。
       elevenLabsVoiceId?: string;
       // 旧版备份兼容字段：Eleven v4 已取消 Speed，运行时不再发送。
       elevenLabsSpeed?: number;

@@ -3,9 +3,14 @@ import type { APIConfig, CharacterProfile } from '../types';
 import {
   buildElevenLabsRequestBody,
   cleanTextForTtsElevenLabs,
+  ELEVENLABS_LEGACY_PRESET_ID,
+  getActiveElevenLabsAccountPreset,
+  getElevenLabsAccountPresets,
   getElevenLabsVoiceActingGuide,
   normalizeElevenLabsModel,
   normalizeElevenLabsVoiceId,
+  resolveElevenLabsApiKey,
+  resolveElevenLabsVoiceIdForTarget,
   stripElevenLabsMarkupForDisplay,
 } from './elevenLabsTts';
 import { normalizeTtsProvider } from './ttsProvider';
@@ -32,6 +37,71 @@ describe('ElevenLabs voice id', () => {
     expect(normalizeElevenLabsVoiceId('https://elevenlabs.io/app/voice-library/21m00Tcm4TlvDq8ikWAM'))
       .toBe('21m00Tcm4TlvDq8ikWAM');
     expect(normalizeElevenLabsVoiceId('https://elevenlabs.io/app/settings')).toBe('');
+  });
+});
+
+describe('ElevenLabs account presets', () => {
+  const baseConfig: APIConfig = {
+    baseUrl: '',
+    apiKey: '',
+    model: '',
+    elevenLabsApiKey: 'legacy-key',
+  };
+
+  it('wraps old single-key config as a legacy default preset without breaking old voice ids', () => {
+    const presets = getElevenLabsAccountPresets(baseConfig);
+    expect(presets).toEqual([expect.objectContaining({
+      id: ELEVENLABS_LEGACY_PRESET_ID,
+      name: '默认账号',
+      apiKey: 'legacy-key',
+      legacyVoiceFallback: true,
+    })]);
+    expect(resolveElevenLabsApiKey(baseConfig)).toBe('legacy-key');
+    expect(resolveElevenLabsVoiceIdForTarget(character, baseConfig)).toBe('21m00Tcm4TlvDq8ikWAM');
+  });
+
+  it('switches Key + character/user Voice ID as one account preset', () => {
+    const config: APIConfig = {
+      ...baseConfig,
+      elevenLabsAccountPresets: [
+        {
+          id: 'account-a',
+          name: '主号',
+          apiKey: 'key-a',
+          userVoiceId: 'user-a',
+          characterVoiceIds: { 'char-1': 'char-a' },
+        },
+        {
+          id: 'account-b',
+          name: '备用号',
+          apiKey: 'key-b',
+          userVoiceId: 'user-b',
+          characterVoiceIds: { 'char-1': 'char-b' },
+        },
+      ],
+      activeElevenLabsAccountPresetId: 'account-b',
+    };
+    expect(getActiveElevenLabsAccountPreset(config)?.name).toBe('备用号');
+    expect(resolveElevenLabsApiKey(config)).toBe('key-b');
+    expect(resolveElevenLabsVoiceIdForTarget(character, config)).toBe('char-b');
+    expect(resolveElevenLabsVoiceIdForTarget({
+      ...character,
+      id: '__sully_user_voice__',
+    }, config)).toBe('user-b');
+  });
+
+  it('does not reuse a legacy Voice ID when a new account preset has no binding', () => {
+    const config: APIConfig = {
+      ...baseConfig,
+      elevenLabsAccountPresets: [{
+        id: 'fresh-account',
+        name: '新账号',
+        apiKey: 'fresh-key',
+        characterVoiceIds: {},
+      }],
+      activeElevenLabsAccountPresetId: 'fresh-account',
+    };
+    expect(resolveElevenLabsVoiceIdForTarget(character, config)).toBe('');
   });
 });
 

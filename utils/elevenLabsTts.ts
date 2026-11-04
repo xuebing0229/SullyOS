@@ -6,7 +6,7 @@
  * Worker，Capacitor 原生端直连官方接口；三条路径的请求体完全一致。
  */
 import { Capacitor, CapacitorHttp } from '@capacitor/core';
-import type { APIConfig, CharacterProfile } from '../types';
+import type { APIConfig, CharacterProfile, ElevenLabsAccountPreset } from '../types';
 import { normalizeApiKey } from './minimaxApiKey';
 import { hashTtsParams, getCachedTts, saveCachedTts } from './ttsCache';
 import type { TtsResult } from './minimaxTts';
@@ -88,8 +88,73 @@ export const normalizeElevenLabsVoiceId = (raw?: string | null): string => {
   return value.split(/[?#\s]/)[0];
 };
 
-export const resolveElevenLabsApiKey = (apiConfig: APIConfig): string =>
-  normalizeApiKey(apiConfig.elevenLabsApiKey || '');
+export const ELEVENLABS_LEGACY_PRESET_ID = 'elevenlabs-default';
+
+const normalizeElevenLabsAccountPreset = (preset: ElevenLabsAccountPreset): ElevenLabsAccountPreset | null => {
+  const id = String(preset?.id || '').trim();
+  if (!id) return null;
+  const characterVoiceIds = Object.fromEntries(
+    Object.entries(preset.characterVoiceIds || {})
+      .map(([charId, voiceId]) => [String(charId || '').trim(), normalizeElevenLabsVoiceId(voiceId)] as const)
+      .filter(([charId, voiceId]) => !!charId && !!voiceId),
+  );
+  const userVoiceId = normalizeElevenLabsVoiceId(preset.userVoiceId);
+  return {
+    id,
+    name: String(preset.name || '').trim() || '未命名账号',
+    apiKey: normalizeApiKey(preset.apiKey || ''),
+    ...(userVoiceId ? { userVoiceId } : {}),
+    ...(Object.keys(characterVoiceIds).length ? { characterVoiceIds } : {}),
+    ...(preset.legacyVoiceFallback === true ? { legacyVoiceFallback: true } : {}),
+  };
+};
+
+export const getElevenLabsAccountPresets = (apiConfig: APIConfig): ElevenLabsAccountPreset[] => {
+  const saved = Array.isArray(apiConfig.elevenLabsAccountPresets)
+    ? apiConfig.elevenLabsAccountPresets
+        .map(normalizeElevenLabsAccountPreset)
+        .filter((preset): preset is ElevenLabsAccountPreset => !!preset)
+    : [];
+  if (saved.length) return saved;
+
+  const legacyKey = normalizeApiKey(apiConfig.elevenLabsApiKey || '');
+  if (!legacyKey) return [];
+  return [{
+    id: ELEVENLABS_LEGACY_PRESET_ID,
+    name: '默认账号',
+    apiKey: legacyKey,
+    legacyVoiceFallback: true,
+  }];
+};
+
+export const getActiveElevenLabsAccountPreset = (apiConfig: APIConfig): ElevenLabsAccountPreset | null => {
+  const presets = getElevenLabsAccountPresets(apiConfig);
+  if (!presets.length) return null;
+  const activeId = String(apiConfig.activeElevenLabsAccountPresetId || '').trim();
+  return presets.find(preset => preset.id === activeId) || presets[0];
+};
+
+export const resolveElevenLabsApiKey = (apiConfig: APIConfig): string => {
+  const preset = getActiveElevenLabsAccountPreset(apiConfig);
+  return preset ? normalizeApiKey(preset.apiKey || '') : normalizeApiKey(apiConfig.elevenLabsApiKey || '');
+};
+
+export const resolveElevenLabsVoiceIdForTarget = (
+  char: CharacterProfile,
+  apiConfig: APIConfig,
+): string => {
+  const preset = getActiveElevenLabsAccountPreset(apiConfig);
+  if (preset) {
+    const bound = char.id === '__sully_user_voice__'
+      ? preset.userVoiceId
+      : preset.characterVoiceIds?.[char.id];
+    const voiceId = normalizeElevenLabsVoiceId(bound);
+    if (voiceId) return voiceId;
+    // 只有从旧版自动生成的第一条预设允许回退旧字段，避免新账号误用另一个账号的 Voice ID。
+    if (preset.legacyVoiceFallback !== true) return '';
+  }
+  return normalizeElevenLabsVoiceId(char.voiceProfile?.elevenLabsVoiceId);
+};
 
 export const resolveElevenLabsModel = (apiConfig: APIConfig): string =>
   normalizeElevenLabsModel(apiConfig.elevenLabsModel);
@@ -330,7 +395,7 @@ export async function synthesizeSpeechElevenLabsDetailed(
 ): Promise<TtsResult> {
   const apiKey = resolveElevenLabsApiKey(apiConfig);
   if (!apiKey) throw new Error('缺少 ElevenLabs API Key');
-  const voiceId = normalizeElevenLabsVoiceId(char.voiceProfile?.elevenLabsVoiceId);
+  const voiceId = resolveElevenLabsVoiceIdForTarget(char, apiConfig);
   if (!voiceId) throw new Error('角色未配置 ElevenLabs Voice ID');
 
   const payload = buildElevenLabsRequestBody(text, char, apiConfig, options);

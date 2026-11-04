@@ -10,7 +10,7 @@ import TokenImg from '../components/os/TokenImg';
 import HomeFigureStudio from '../components/character/HomeFigureStudio';
 
 import { AppID } from '../types';
-import { normalizeElevenLabsVoiceId, resolveElevenLabsApiKey, synthesizeSpeechElevenLabsDetailed } from '../utils/elevenLabsTts';
+import { resolveElevenLabsApiKey, resolveElevenLabsVoiceIdForTarget, synthesizeSpeechElevenLabsDetailed } from '../utils/elevenLabsTts';
 import { createUserVoiceTarget } from '../utils/userVoice';
 
 const DEFAULT_MINIMAX_TTS_MODEL = 'speech-2.8-hd';
@@ -64,18 +64,12 @@ const UserApp: React.FC = () => {
         });
     };
 
-    const updateMyElevenLabsVoiceId = (value: string) => {
-        // 与 MiniMax 字段各自保存，切换文游 TTS 服务商不会覆盖另一家的音色。
-        updateUserProfile({
-            voiceProfile: { ...userProfile.voiceProfile, elevenLabsVoiceId: value },
-        });
-    };
-
     const handleTestMyElevenLabsVoice = async () => {
         if (isTestingElevenLabsVoice) return;
-        const voiceId = normalizeElevenLabsVoiceId(userProfile.voiceProfile?.elevenLabsVoiceId);
+        const voiceTarget = createUserVoiceTarget(userProfile);
+        const voiceId = resolveElevenLabsVoiceIdForTarget(voiceTarget, apiConfig);
         if (!voiceId) {
-            addToast('请先填写 ElevenLabs Voice ID', 'info');
+            addToast('请先在设置 → 其他 API → ElevenLabs 账号预设绑定我的 Voice ID', 'info');
             return;
         }
         if (!resolveElevenLabsApiKey(apiConfig)) {
@@ -90,8 +84,6 @@ const UserApp: React.FC = () => {
             previewUrl = '';
         };
         try {
-            const voiceTarget = createUserVoiceTarget(userProfile);
-            voiceTarget.voiceProfile = { ...voiceTarget.voiceProfile, elevenLabsVoiceId: voiceId };
             const { url } = await synthesizeSpeechElevenLabsDetailed(
                 `你好，我是${userProfile.name || '我'}。现在能听见我的声音吗？`,
                 voiceTarget,
@@ -256,12 +248,12 @@ const UserApp: React.FC = () => {
                             </button>
                         </div>
                         <input
-                            value={userProfile.voiceProfile?.elevenLabsVoiceId || ''}
-                            onChange={(e) => updateMyElevenLabsVoiceId(e.target.value)}
-                            placeholder="粘贴 Voice ID 或 ElevenLabs 音色页面链接"
-                            className="w-full rounded-2xl border border-violet-200/70 bg-white px-4 py-3 text-sm text-slate-700 outline-none transition-colors focus:border-violet-300"
+                            value={resolveElevenLabsVoiceIdForTarget(createUserVoiceTarget(userProfile), apiConfig)}
+                            readOnly
+                            placeholder="尚未在当前 ElevenLabs 账号预设绑定"
+                            className="w-full rounded-2xl border border-violet-200/70 bg-slate-50 px-4 py-3 text-sm font-mono text-slate-500 outline-none"
                         />
-                        <p className="text-[10px] leading-5 text-slate-400">与 MiniMax 声线分开保存。文游开启对白配音并选 ElevenLabs 后，「你」的对白会使用此音色；API Key 和 v4 模型沿用设置 → 其他 API。</p>
+                        <p className="text-[10px] leading-5 text-slate-400">这里只显示当前 ElevenLabs 账号预设绑定的「我的 Voice ID」。修改请到「设置 → 其他 API → ElevenLabs 账号预设」；切换账号后这里会自动跟着切。MiniMax 配置不受影响。</p>
                     </div>
                 </div>
 

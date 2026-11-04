@@ -25,6 +25,9 @@ import { VOICE_ACTING_GUIDE } from '../utils/minimaxTts';
 import { FISH_VOICE_ACTING_GUIDE } from '../utils/fishAudioTts';
 import {
     ELEVENLABS_MODEL_OPTIONS,
+    ELEVENLABS_LEGACY_PRESET_ID,
+    getActiveElevenLabsAccountPreset,
+    getElevenLabsAccountPresets,
     getElevenLabsVoiceActingGuide,
     normalizeElevenLabsModel,
     normalizeElevenLabsVoiceId,
@@ -48,7 +51,7 @@ import ApiCallLogModal from '../components/settings/ApiCallLogModal';
 import StorageUsagePanel from '../components/settings/StorageUsagePanel';
 import ApiFailoverSettings from '../components/settings/ApiFailoverSettings';
 import ApiPricingEditor from '../components/settings/ApiPricingEditor';
-import type { APIConfig, ApiPricing, TtsProvider } from '../types';
+import type { APIConfig, ApiPricing, ElevenLabsAccountPreset, TtsProvider } from '../types';
 import { buildApiPresetConfig } from '../utils/apiPresetConfig';
 import { configFromPreset, findActivePresetId, type PresetSwitchPatch } from '../utils/apiPresetSwitch';
 import { backfillUnpricedCallsForPreset } from '../utils/apiCostBackfill';
@@ -485,6 +488,21 @@ const McpServersCard: React.FC<{
     );
 };
 
+const makeElevenLabsAccountPresetId = (): string =>
+  globalThis.crypto?.randomUUID?.() || `elevenlabs-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+const ensureElevenLabsAccountPresetDrafts = (config: APIConfig): ElevenLabsAccountPreset[] => {
+  const saved = getElevenLabsAccountPresets(config);
+  if (saved.length) return saved;
+  return [{
+    id: ELEVENLABS_LEGACY_PRESET_ID,
+    name: '默认账号',
+    apiKey: '',
+    characterVoiceIds: {},
+    legacyVoiceFallback: true,
+  }];
+};
+
 const Settings: React.FC = () => {
   const {
       apiConfig, updateApiConfig, closeApp, availableModels, setAvailableModels,
@@ -494,7 +512,7 @@ const Settings: React.FC = () => {
       sysOperation, // Get progress state
       realtimeConfig, updateRealtimeConfig, // 实时感知配置
       // 改工具凭据时要连云端提示词一起刷（见 syncAmsgToolConfigAndPrompts）
-      characters, groups, userProfile,
+      characters, activeCharacterId, groups, userProfile,
       cloudBackupConfig, updateCloudBackupConfig,
       cloudBackupToWebDAV, cloudRestoreFromWebDAV, listCloudBackups,
   } = useOS();
@@ -528,7 +546,12 @@ const Settings: React.FC = () => {
   );
   const [localFishKey, setLocalFishKey] = useState(apiConfig.fishAudioApiKey || '');
   const [localFishModel, setLocalFishModel] = useState(apiConfig.fishAudioModel || 's2.1-pro');
-  const [localElevenLabsKey, setLocalElevenLabsKey] = useState(apiConfig.elevenLabsApiKey || '');
+  const initialElevenLabsPresets = ensureElevenLabsAccountPresetDrafts(apiConfig);
+  const initialElevenLabsPreset = getActiveElevenLabsAccountPreset(apiConfig) || initialElevenLabsPresets[0];
+  const [localElevenLabsPresets, setLocalElevenLabsPresets] = useState<ElevenLabsAccountPreset[]>(initialElevenLabsPresets);
+  const [localElevenLabsActivePresetId, setLocalElevenLabsActivePresetId] = useState(initialElevenLabsPreset?.id || ELEVENLABS_LEGACY_PRESET_ID);
+  const [localElevenLabsKey, setLocalElevenLabsKey] = useState(initialElevenLabsPreset?.apiKey || '');
+  const [localElevenLabsCharacterId, setLocalElevenLabsCharacterId] = useState(activeCharacterId || characters[0]?.id || '');
   const [localElevenLabsModel, setLocalElevenLabsModel] = useState(normalizeElevenLabsModel(apiConfig.elevenLabsModel));
   const [localElevenLabsStability, setLocalElevenLabsStability] = useState(apiConfig.elevenLabsStability ?? 0.5);
   const [localElevenLabsSimilarityBoost, setLocalElevenLabsSimilarityBoost] = useState(apiConfig.elevenLabsSimilarityBoost ?? 0.8);
@@ -1006,7 +1029,11 @@ const Settings: React.FC = () => {
       );
       setLocalFishKey(apiConfig.fishAudioApiKey || '');
       setLocalFishModel(apiConfig.fishAudioModel || 's2.1-pro');
-      setLocalElevenLabsKey(apiConfig.elevenLabsApiKey || '');
+      const elevenLabsPresets = ensureElevenLabsAccountPresetDrafts(apiConfig);
+      const activeElevenLabsPreset = getActiveElevenLabsAccountPreset(apiConfig) || elevenLabsPresets[0];
+      setLocalElevenLabsPresets(elevenLabsPresets);
+      setLocalElevenLabsActivePresetId(activeElevenLabsPreset?.id || ELEVENLABS_LEGACY_PRESET_ID);
+      setLocalElevenLabsKey(activeElevenLabsPreset?.apiKey || '');
       setLocalElevenLabsModel(normalizeElevenLabsModel(apiConfig.elevenLabsModel));
       setLocalElevenLabsStability(apiConfig.elevenLabsStability ?? 0.5);
       setLocalElevenLabsSimilarityBoost(apiConfig.elevenLabsSimilarityBoost ?? 0.8);
@@ -1019,11 +1046,62 @@ const Settings: React.FC = () => {
   }, [
       apiConfig.minimaxApiKey, apiConfig.minimaxGroupId, apiConfig.minimaxRegion, apiConfig.aceStepApiKey,
       apiConfig.ttsProvider, apiConfig.fishAudioApiKey, apiConfig.fishAudioModel,
-      apiConfig.elevenLabsApiKey, apiConfig.elevenLabsModel, apiConfig.elevenLabsStability,
+      apiConfig.elevenLabsApiKey, apiConfig.elevenLabsAccountPresets, apiConfig.activeElevenLabsAccountPresetId,
+      apiConfig.elevenLabsModel, apiConfig.elevenLabsStability,
       apiConfig.elevenLabsSimilarityBoost, apiConfig.elevenLabsStyle, apiConfig.elevenLabsUseSpeakerBoost,
       apiConfig.voicePrompts?.minimax, apiConfig.voicePrompts?.fishaudio,
       apiConfig.voicePrompts?.elevenlabs, apiConfig.voicePrompts?.dateVoice,
   ]);
+
+  useEffect(() => {
+      if (activeCharacterId && characters.some(char => char.id === activeCharacterId)) {
+          setLocalElevenLabsCharacterId(activeCharacterId);
+      } else if (!characters.some(char => char.id === localElevenLabsCharacterId)) {
+          setLocalElevenLabsCharacterId(characters[0]?.id || '');
+      }
+  }, [activeCharacterId, characters]);
+
+  const selectedElevenLabsPreset = useMemo(
+      () => localElevenLabsPresets.find(preset => preset.id === localElevenLabsActivePresetId)
+          || localElevenLabsPresets[0]
+          || null,
+      [localElevenLabsPresets, localElevenLabsActivePresetId],
+  );
+  const selectedElevenLabsCharacter = useMemo(
+      () => characters.find(char => char.id === localElevenLabsCharacterId) || null,
+      [characters, localElevenLabsCharacterId],
+  );
+  const hydrateLegacyElevenLabsPreset = useCallback((preset: ElevenLabsAccountPreset): ElevenLabsAccountPreset => {
+      if (preset.legacyVoiceFallback !== true) return preset;
+      const characterVoiceIds: Record<string, string> = { ...(preset.characterVoiceIds || {}) };
+      characters.forEach(char => {
+          const legacyVoiceId = normalizeElevenLabsVoiceId(char.voiceProfile?.elevenLabsVoiceId);
+          if (legacyVoiceId && !characterVoiceIds[char.id]) characterVoiceIds[char.id] = legacyVoiceId;
+      });
+      const legacyUserVoiceId = normalizeElevenLabsVoiceId(userProfile.voiceProfile?.elevenLabsVoiceId);
+      return {
+          ...preset,
+          userVoiceId: preset.userVoiceId || legacyUserVoiceId || undefined,
+          characterVoiceIds,
+          legacyVoiceFallback: false,
+      };
+  }, [characters, userProfile.voiceProfile?.elevenLabsVoiceId]);
+  const selectedElevenLabsUserVoiceId = selectedElevenLabsPreset?.userVoiceId
+      || (selectedElevenLabsPreset?.legacyVoiceFallback ? userProfile.voiceProfile?.elevenLabsVoiceId : '')
+      || '';
+  const selectedElevenLabsCharacterVoiceId = selectedElevenLabsPreset?.characterVoiceIds?.[localElevenLabsCharacterId]
+      || (selectedElevenLabsPreset?.legacyVoiceFallback ? selectedElevenLabsCharacter?.voiceProfile?.elevenLabsVoiceId : '')
+      || '';
+
+  const updateSelectedElevenLabsPreset = useCallback((
+      updater: (preset: ElevenLabsAccountPreset) => ElevenLabsAccountPreset,
+  ) => {
+      setLocalElevenLabsPresets(prev => prev.map(preset => (
+          preset.id === localElevenLabsActivePresetId
+              ? updater(hydrateLegacyElevenLabsPreset(preset))
+              : preset
+      )));
+  }, [localElevenLabsActivePresetId, hydrateLegacyElevenLabsPreset]);
 
   // 当前生效的是哪条预设 —— 按已保存的配置反查，不额外记状态。
   // 这样刷新、手改 URL、导入备份之后，界面上的「使用中」永远等于请求真的会发去哪。
@@ -1537,7 +1615,12 @@ const Settings: React.FC = () => {
     }
   };
 
-  const buildOtherApiConfig = (overrides: Partial<APIConfig> = {}): Partial<APIConfig> => ({
+  const buildOtherApiConfig = (overrides: Partial<APIConfig> = {}): Partial<APIConfig> => {
+      const elevenLabsPresets = localElevenLabsPresets.map(hydrateLegacyElevenLabsPreset);
+      const activeElevenLabsPreset = elevenLabsPresets.find(preset => preset.id === localElevenLabsActivePresetId)
+          || elevenLabsPresets[0]
+          || null;
+      return {
       minimaxApiKey: localMiniMaxKey,
       minimaxGroupId: localMiniMaxGroupId,
       minimaxRegion: localMiniMaxRegion,
@@ -1545,7 +1628,10 @@ const Settings: React.FC = () => {
       ttsProvider: localTtsProvider,
       fishAudioApiKey: localFishKey,
       fishAudioModel: localFishModel,
-      elevenLabsApiKey: localElevenLabsKey,
+      // 旧字段继续镜像当前 Key，保证旧备份 / 旧调用兼容；真实账号切换以预设为准。
+      elevenLabsApiKey: activeElevenLabsPreset?.apiKey || localElevenLabsKey,
+      elevenLabsAccountPresets: elevenLabsPresets,
+      activeElevenLabsAccountPresetId: activeElevenLabsPreset?.id,
       elevenLabsModel: localElevenLabsModel,
       elevenLabsStability: localElevenLabsStability,
       elevenLabsSimilarityBoost: localElevenLabsSimilarityBoost,
@@ -1558,7 +1644,49 @@ const Settings: React.FC = () => {
         dateVoice: localVoicePromptDate.trim() ? localVoicePromptDate : undefined,
       },
       ...overrides,
-  });
+      };
+  };
+
+  const selectElevenLabsAccountPreset = (presetId: string) => {
+      const materialized = localElevenLabsPresets.map(hydrateLegacyElevenLabsPreset);
+      const next = materialized.find(preset => preset.id === presetId) || materialized[0];
+      if (!next) return;
+      setLocalElevenLabsPresets(materialized);
+      setLocalElevenLabsActivePresetId(next.id);
+      setLocalElevenLabsKey(next.apiKey || '');
+      updateApiConfig({
+          elevenLabsAccountPresets: materialized,
+          activeElevenLabsAccountPresetId: next.id,
+          elevenLabsApiKey: next.apiKey || '',
+      });
+  };
+
+  const addElevenLabsAccountPreset = () => {
+      const materialized = localElevenLabsPresets.map(hydrateLegacyElevenLabsPreset);
+      const preset: ElevenLabsAccountPreset = {
+          id: makeElevenLabsAccountPresetId(),
+          name: `预设${materialized.length + 1}`,
+          apiKey: '',
+          characterVoiceIds: {},
+      };
+      setLocalElevenLabsPresets([...materialized, preset]);
+      setLocalElevenLabsActivePresetId(preset.id);
+      setLocalElevenLabsKey('');
+  };
+
+  const deleteElevenLabsAccountPreset = () => {
+      if (localElevenLabsPresets.length <= 1) return;
+      const remaining = localElevenLabsPresets.filter(preset => preset.id !== localElevenLabsActivePresetId);
+      const next = remaining[0];
+      setLocalElevenLabsPresets(remaining);
+      setLocalElevenLabsActivePresetId(next.id);
+      setLocalElevenLabsKey(next.apiKey || '');
+      updateApiConfig({
+          elevenLabsAccountPresets: remaining,
+          activeElevenLabsAccountPresetId: next.id,
+          elevenLabsApiKey: next.apiKey || '',
+      });
+  };
 
   const handleSaveOtherApis = () => {
     updateApiConfig(buildOtherApiConfig());
@@ -1615,6 +1743,13 @@ const Settings: React.FC = () => {
       const { url } = await synthesizeSpeechElevenLabsDetailed(sample, testChar, {
         ...apiConfig,
         elevenLabsApiKey: localElevenLabsKey.trim(),
+        elevenLabsAccountPresets: [{
+          id: '__eleven_test_account__',
+          name: '测试账号',
+          apiKey: localElevenLabsKey.trim(),
+          characterVoiceIds: { __eleven_test__: voiceId },
+        }],
+        activeElevenLabsAccountPresetId: '__eleven_test_account__',
         elevenLabsModel: localElevenLabsModel,
         elevenLabsStability: localElevenLabsStability,
         elevenLabsSimilarityBoost: localElevenLabsSimilarityBoost,
@@ -3305,20 +3440,131 @@ const Settings: React.FC = () => {
 
 
 
-                                {/* ElevenLabs：全局账号 / 模型 / 通用声音参数；角色 Voice ID 在角色页独立保存。 */}
+                                {/* ElevenLabs：账号预设把 Key + User / 各角色 Voice ID 绑定在一起。 */}
                 <div className="group">
-                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 block pl-1">ElevenLabs API Key</label>
-                    <SensitiveTextInput
-                        name="elevenlabs-api-key"
-                        autoComplete="new-password"
-                        spellCheck={false}
-                        value={localElevenLabsKey}
-                        onChange={(e) => setLocalElevenLabsKey(e.target.value)}
-                        placeholder="ElevenLabs API Key"
-                        className="w-full bg-white/50 border border-slate-200/60 rounded-xl px-4 py-2.5 text-sm font-mono focus:bg-white transition-all"
-                    />
-                    <p className="text-[11px] text-slate-400 mt-1 pl-1">
-                        在 <a href="https://elevenlabs.io/app/settings/api-keys" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline font-semibold">ElevenLabs API Keys</a> 创建。角色音色在「角色 → 语音」填写 Voice ID。
+                    <div className="rounded-2xl border border-violet-200/70 bg-violet-50/35 p-3 space-y-3">
+                        <div className="flex items-center justify-between gap-2">
+                            <div>
+                                <div className="text-[10px] font-bold text-violet-600 uppercase tracking-widest">ElevenLabs 账号预设</div>
+                                <p className="text-[10px] text-slate-400 mt-0.5">切换预设时 Key、我的 Voice ID 和各角色 Voice ID 一起切换。</p>
+                            </div>
+                            <button
+                                type="button"
+                                onClick={addElevenLabsAccountPreset}
+                                className="shrink-0 rounded-lg border border-violet-200 bg-white px-2.5 py-1.5 text-[10px] font-bold text-violet-600"
+                            >
+                                + 新增
+                            </button>
+                        </div>
+
+                        <div className="flex gap-2 overflow-x-auto pb-0.5">
+                            {localElevenLabsPresets.map(preset => {
+                                const active = preset.id === localElevenLabsActivePresetId;
+                                return (
+                                    <button
+                                        key={preset.id}
+                                        type="button"
+                                        onClick={() => selectElevenLabsAccountPreset(preset.id)}
+                                        className={`shrink-0 rounded-xl border px-3 py-2 text-xs font-semibold transition-all ${active ? 'border-violet-300 bg-white text-violet-700 shadow-sm' : 'border-slate-200 bg-white/60 text-slate-500'}`}
+                                    >
+                                        {preset.name || '未命名账号'}
+                                    </button>
+                                );
+                            })}
+                        </div>
+
+                        {selectedElevenLabsPreset && (
+                            <div className="space-y-3">
+                                <div className="grid grid-cols-[1fr_auto] gap-2 items-end">
+                                    <label className="block">
+                                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 block">预设名</span>
+                                        <input
+                                            value={selectedElevenLabsPreset.name}
+                                            onChange={(e) => updateSelectedElevenLabsPreset(preset => ({ ...preset, name: e.target.value }))}
+                                            placeholder="例如：主账号 / 备用号"
+                                            className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2.5 text-sm"
+                                        />
+                                    </label>
+                                    <button
+                                        type="button"
+                                        onClick={deleteElevenLabsAccountPreset}
+                                        disabled={localElevenLabsPresets.length <= 1}
+                                        className="h-[42px] rounded-xl border border-rose-200 bg-white px-3 text-[11px] font-semibold text-rose-500 disabled:opacity-30"
+                                    >
+                                        删除
+                                    </button>
+                                </div>
+
+                                <label className="block">
+                                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 block">API Key</span>
+                                    <SensitiveTextInput
+                                        name="elevenlabs-api-key"
+                                        autoComplete="new-password"
+                                        spellCheck={false}
+                                        value={localElevenLabsKey}
+                                        onChange={(e) => {
+                                            const value = e.target.value;
+                                            setLocalElevenLabsKey(value);
+                                            updateSelectedElevenLabsPreset(preset => ({ ...preset, apiKey: value }));
+                                        }}
+                                        placeholder="ElevenLabs API Key"
+                                        className="w-full bg-white border border-slate-200 rounded-xl px-4 py-2.5 text-sm font-mono"
+                                    />
+                                </label>
+
+                                <label className="block">
+                                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 block">我的 Voice ID</span>
+                                    <input
+                                        value={selectedElevenLabsUserVoiceId}
+                                        onChange={(e) => updateSelectedElevenLabsPreset(preset => ({ ...preset, userVoiceId: e.target.value }))}
+                                        placeholder="当前账号里的 User Voice ID"
+                                        className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2.5 text-xs font-mono"
+                                    />
+                                </label>
+
+                                <div className="grid grid-cols-1 sm:grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)] gap-2">
+                                    <label className="block">
+                                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 block">角色</span>
+                                        <select
+                                            value={localElevenLabsCharacterId}
+                                            onChange={(e) => setLocalElevenLabsCharacterId(e.target.value)}
+                                            className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2.5 text-xs"
+                                        >
+                                            {characters.length ? characters.map(char => (
+                                                <option key={char.id} value={char.id}>{char.name || '未命名角色'}</option>
+                                            )) : <option value="">暂无角色</option>}
+                                        </select>
+                                    </label>
+                                    <label className="block">
+                                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 block">角色 Voice ID</span>
+                                        <input
+                                            value={selectedElevenLabsCharacterVoiceId}
+                                            onChange={(e) => {
+                                                const value = e.target.value;
+                                                updateSelectedElevenLabsPreset(preset => ({
+                                                    ...preset,
+                                                    characterVoiceIds: {
+                                                        ...(preset.characterVoiceIds || {}),
+                                                        ...(localElevenLabsCharacterId ? { [localElevenLabsCharacterId]: value } : {}),
+                                                    },
+                                                }));
+                                            }}
+                                            disabled={!localElevenLabsCharacterId}
+                                            placeholder="当前账号里这个角色的 Voice ID"
+                                            className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2.5 text-xs font-mono disabled:opacity-50"
+                                        />
+                                    </label>
+                                </div>
+
+                                <p className="text-[10px] leading-relaxed text-slate-400">
+                                    原来散落在角色页 / 我的资料里的 ElevenLabs Voice ID 会自动迁入默认预设；以后那两处只显示当前预设值。旁白 Voice ID 仍按原位置独立保存，不跟账号预设绑定。
+                                </p>
+                            </div>
+                        )}
+                    </div>
+
+                    <p className="text-[11px] text-slate-400 mt-2 pl-1">
+                        Key 可在 <a href="https://elevenlabs.io/app/settings/api-keys" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline font-semibold">ElevenLabs API Keys</a> 创建。预设名可随时改。
                     </p>
 
                     <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-3 mb-1.5 block pl-1">ElevenLabs 模型</label>

@@ -13,7 +13,7 @@ import { synthesizeSpeechFishDetailed } from './fishAudioTts';
 import { resolveTtsProvider } from './ttsProvider';
 import {
   cleanTextForTtsElevenLabs,
-  normalizeElevenLabsVoiceId,
+  resolveElevenLabsVoiceIdForTarget,
   resolveElevenLabsModel,
   resolveElevenLabsApiKey,
   stripElevenLabsMarkupForDisplay,
@@ -79,7 +79,7 @@ export const characterHasVoice = (char: CharacterProfile, apiConfig: APIConfig):
   if (provider === 'fishaudio') {
     return !!vp?.fishReferenceId;
   }
-  if (provider === 'elevenlabs') return !!normalizeElevenLabsVoiceId(vp?.elevenLabsVoiceId);
+  if (provider === 'elevenlabs') return !!resolveElevenLabsVoiceIdForTarget(char, apiConfig);
   return !!(vp?.voiceId || (vp?.timberWeights && vp.timberWeights.length > 0));
 };
 

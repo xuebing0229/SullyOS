@@ -31,7 +31,7 @@ import { characterLaunch } from '../utils/characterLaunch';
 import { safeFetchJson, extractContent } from '../utils/safeApi';
 import { fetchMiniMaxVoices, MiniMaxVoiceItem } from '../utils/minimaxVoice';
 import { resolveMiniMaxApiKey } from '../utils/minimaxApiKey';
-import { normalizeElevenLabsVoiceId, synthesizeSpeechElevenLabsDetailed } from '../utils/elevenLabsTts';
+import { resolveElevenLabsApiKey, resolveElevenLabsVoiceIdForTarget, synthesizeSpeechElevenLabsDetailed } from '../utils/elevenLabsTts';
 import { normalizeUserImpression } from '../utils/impression';
 import { parseGeneratedImpression } from '../utils/impressionGeneration';
 import { injectMemoryPalace } from '../utils/memoryPalace/pipeline';
@@ -258,12 +258,12 @@ const Character: React.FC = () => {
 
   const handleTestElevenLabsVoice = async () => {
       if (!formData || isTestingElevenLabsVoice) return;
-      const voiceId = normalizeElevenLabsVoiceId(formData.voiceProfile?.elevenLabsVoiceId);
+      const voiceId = resolveElevenLabsVoiceIdForTarget(formData, apiConfig);
       if (!voiceId) {
-          addToast('请先填写 ElevenLabs Voice ID', 'info');
+          addToast('请先在设置 → 其他 API → ElevenLabs 账号预设绑定角色 Voice ID', 'info');
           return;
       }
-      if (!apiConfig.elevenLabsApiKey?.trim()) {
+      if (!resolveElevenLabsApiKey(apiConfig)) {
           addToast('请先在设置 → 其他 API 保存 ElevenLabs Key', 'info');
           return;
       }
@@ -274,13 +274,9 @@ const Character: React.FC = () => {
           previewUrl = '';
       };
       try {
-          const previewChar: CharacterProfile = {
-              ...formData,
-              voiceProfile: { ...(formData.voiceProfile || {}), elevenLabsVoiceId: voiceId },
-          };
           const { url } = await synthesizeSpeechElevenLabsDetailed(
               `你好，我是${formData.name || '你的角色'}。现在能听见我的声音吗？`,
-              previewChar,
+              formData,
               apiConfig,
           );
           previewUrl = url;
@@ -1640,7 +1636,7 @@ ${isInitialGeneration ? `
                                    <p className="text-[10px] text-slate-400">从 fish.audio 选好音色后，把那一页的链接（含 ?modelId=…）或 32 位 id 直接贴进来都行，会自动识别。设置里语音选「鱼声 Fish」后该角色就用它合成；与上面的 MiniMax voice_id 各存各的。</p>
                                </div>
 
-                               {/* ElevenLabs 音色：角色独立保存，设置页负责 Key / 模型 / 通用声音参数。 */}
+                               {/* ElevenLabs 音色：只读展示当前账号预设绑定值，编辑统一收口到设置页。 */}
                                 <div className="rounded-2xl border border-violet-200/60 bg-violet-50/40 p-2.5 space-y-1.5">
                                     <div className="flex items-center justify-between gap-2">
                                         <div className="text-[10px] font-bold text-violet-600 uppercase tracking-widest">ElevenLabs 音色</div>
@@ -1654,15 +1650,12 @@ ${isInitialGeneration ? `
                                         </button>
                                     </div>
                                     <input
-                                        value={formData.voiceProfile?.elevenLabsVoiceId || ''}
-                                        onChange={(e) => handleChange('voiceProfile', {
-                                            ...(formData.voiceProfile || {}),
-                                            elevenLabsVoiceId: e.target.value,
-                                        })}
-                                        className="w-full bg-white rounded-2xl px-3 py-2 text-xs border border-slate-200"
-                                        placeholder="粘贴 Voice ID 或 ElevenLabs 音色页面链接"
+                                        value={resolveElevenLabsVoiceIdForTarget(formData, apiConfig)}
+                                        readOnly
+                                        className="w-full bg-slate-50 rounded-2xl px-3 py-2 text-xs font-mono text-slate-500 border border-slate-200"
+                                        placeholder="尚未在当前 ElevenLabs 账号预设绑定"
                                     />
-                                    <p className="text-[10px] text-slate-400">从 ElevenLabs Voices / Voice Library 复制 Voice ID；也可直接粘贴含 Voice ID 的页面链接。设置里语音选 ElevenLabs 后使用，与 MiniMax、鱼声音色分别保存。</p>
+                                    <p className="text-[10px] text-slate-400">这里只显示当前 ElevenLabs 账号预设绑定的 Voice ID。要修改请到「设置 → 其他 API → ElevenLabs 账号预设」；切换账号后这里会自动跟着切。</p>
                                 </div>
 
                                {/* Eleven v4 已移除 Speed；这里只保留 MiniMax / Fish 的角色语速。 */}

@@ -105,6 +105,7 @@ import {
     stripTtsMarkupForDisplay,
     synthesizeSpeechDetailed,
 } from '../utils/ttsRouter';
+import { resolveElevenLabsVoiceIdForTarget } from '../utils/elevenLabsTts';
 import { playVoiceAudio, primeVoiceAudio, stopVoiceAudio, voicePlaybackErrorMessage, shouldAutoGenerateVoice, shouldAutoPlayGeneratedVoice } from '../utils/voicePlayback';
 import {
     chatVoiceAssetKey,
@@ -827,7 +828,7 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
                 if (!archiveBlob || archiveBlob.size <= 0) return;
                 const profile = char.voiceProfile;
                 const archiveVoiceId = ttsProvider === 'elevenlabs'
-                    ? profile?.elevenLabsVoiceId
+                    ? resolveElevenLabsVoiceIdForTarget(char, apiConfig)
                     : ttsProvider === 'fishaudio'
                         ? profile?.fishReferenceId
                         : profile?.voiceId;

@@ -12,7 +12,7 @@ import { buildMiniMaxTtsCacheKey, buildMiniMaxTtsPayload, cleanTextForTts, conve
 import { normalizeVoiceTags } from '../utils/sanitize';
 import { FISH_VOICE_ACTING_GUIDE, stripFishMarkupForDisplay } from '../utils/fishAudioTts';
 import { resolveTtsProvider, getElevenLabsModel, getTtsProvider, getVoicePromptOverride } from '../utils/ttsProvider';
-import { getElevenLabsVoiceActingGuide, stripElevenLabsMarkupForDisplay } from '../utils/elevenLabsTts';
+import { getElevenLabsVoiceActingGuide, resolveElevenLabsVoiceIdForTarget, stripElevenLabsMarkupForDisplay } from '../utils/elevenLabsTts';
 import { canSynthesizeSpeech, cleanTextForTtsProvider, stripTtsMarkupForDisplay, synthesizeSpeechDetailed as synthesizeSpeechRoutedDetailed } from '../utils/ttsRouter';
 import { CANTONESE_VOICE_SUPPORT_NOTE, VOICE_LANGUAGE_OPTIONS, voiceLanguageAnalyticsValue, voiceLanguagePromptLabel } from '../utils/voiceLanguage';
 import { startStt, isSttSupported, type SttSession } from '../utils/speechToText';
@@ -1292,7 +1292,7 @@ const CallApp: React.FC = () => {
       if (!blob || blob.size <= 0) return;
       const profile = char.voiceProfile;
       const voiceId = provider === 'elevenlabs'
-        ? profile?.elevenLabsVoiceId
+        ? resolveElevenLabsVoiceIdForTarget(char, apiConfig)
         : provider === 'fishaudio'
           ? profile?.fishReferenceId
           : profile?.voiceId;
