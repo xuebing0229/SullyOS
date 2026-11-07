@@ -29,6 +29,10 @@ for (const name of [
   'SullyStoryReferenceUploads.java',
   'SullyChatFloatingService.java',
   'SullyChatGenerationForegroundService.kt',
+  'SullyFloatingAppLogo.kt',
+  'SullyMaterialShapes.kt',
+  'SullyFloatingIcons.kt',
+  'SullyChatFloatingBubble.kt',
 ]) {
   const source = await readFile(path.join(root, 'native', 'android', name), 'utf8');
   await writeFile(path.join(pluginDir, name), source.replaceAll('__APP_ID__', appId));
@@ -150,8 +154,16 @@ if (!rootGradle.includes('org.jetbrains.kotlin:kotlin-gradle-plugin')) {
     /dependencies\s*\{/,
     match => `${match}\n        classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:2.2.21"`,
   );
-  await writeFile(rootGradlePath, rootGradle);
 }
+if (!rootGradle.includes('org.jetbrains.kotlin:compose-compiler-gradle-plugin')) {
+  rootGradle = rootGradle.replace(
+    /dependencies\s*\{/,
+    match => `${match}\n        classpath "org.jetbrains.kotlin:compose-compiler-gradle-plugin:2.2.21"`,
+  );
+}
+// RikkaHub 浮球只用到 Tick01 / Alert01 两个 HugeIcons；已直接复制对应源文件，
+ // 避免把上游当前 Compose 依赖树整体拉进 SullyOS。
+await writeFile(rootGradlePath, rootGradle);
 
 // RikkaHub 的 OpenAI streaming provider 使用 OkHttp + okhttp-sse EventSource。
 // SullyOS 当前 compileSdk=34 / AGP=8.2.1，RikkaHub 当前 5.5.0 要求 compileSdk 37。
@@ -163,8 +175,17 @@ if (!gradle.includes("apply plugin: 'kotlin-android'")) {
     "apply plugin: 'com.android.application'\napply plugin: 'kotlin-android'",
   );
 }
+if (!gradle.includes("apply plugin: 'org.jetbrains.kotlin.plugin.compose'")) {
+  gradle = gradle.replace(
+    "apply plugin: 'kotlin-android'",
+    "apply plugin: 'kotlin-android'\napply plugin: 'org.jetbrains.kotlin.plugin.compose'",
+  );
+}
 if (!gradle.includes("kotlinOptions { jvmTarget = '17' }")) {
   gradle += "\nandroid { kotlinOptions { jvmTarget = '17' } }\n";
+}
+if (!gradle.includes("buildFeatures { compose true }")) {
+  gradle += "\nandroid { buildFeatures { compose true } }\n";
 }
 gradle = gradle.replace(
   /^\s*implementation(?:\s*\(|\s+)\s*(?:enforcedPlatform\()?["']com\.squareup\.okhttp3:[^"']+["'][^\n]*$/gm,
@@ -180,6 +201,15 @@ const okHttpDependencies = [
 // 不在 SullyOS 里平行手写 WindowManager 手势实现。
 const floatingDependencies = [
   'implementation "androidx.lifecycle:lifecycle-process:2.8.7"',
+  // RikkaHub 浮球源码保持不变的部分用 Compose 1.6.8 承载；这是 SullyOS
+  // compileSdk 34 / AGP 8.2 能稳定编译的 Compose 世代。
+  'implementation "androidx.compose.runtime:runtime:1.6.8"',
+  'implementation "androidx.compose.animation:animation-core:1.6.8"',
+  'implementation "androidx.compose.ui:ui:1.6.8"',
+  'implementation "androidx.compose.foundation:foundation:1.6.8"',
+  // MaterialShapes 的七个形状定义已从 AndroidX 源码复制到 SullyMaterialShapes.kt，
+  // 这里只保留底层 Morph/RoundedPolygon 库。
+  'implementation "androidx.graphics:graphics-shapes:1.0.1"',
   'implementation "io.github.petterpx:floatingx-core:3.0.0"',
   'implementation "io.github.petterpx:floatingx-system:3.0.0"',
 ];
@@ -189,4 +219,4 @@ for (const dependency of [...okHttpDependencies, ...floatingDependencies].slice(
 }
 await writeFile(gradlePath, gradle);
 
-console.log('[SullyStoryBackground] generation manager + keepalive + isolated cloud status monitor + RikkaHub chat FGS + floating UI installed');
+console.log('[SullyStoryBackground] generation manager + keepalive + isolated cloud status monitor + RikkaHub chat FGS + copied RikkaHub floating bubble UI installed');

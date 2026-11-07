@@ -29,10 +29,14 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-## RikkaHub ChatGenerationForegroundService
+## RikkaHub chat background / floating UI
 
 - Project: https://github.com/rikkahub/rikkahub
-- Source reused: `app/src/main/java/me/rerere/rikkahub/service/ChatGenerationForegroundService.kt`
+- Reused sources:
+  - `app/src/main/java/me/rerere/rikkahub/service/ChatGenerationForegroundService.kt`
+  - `app/src/main/java/me/rerere/rikkahub/ui/floating/ChatFloatingContent.kt` (floating bubble portion)
+  - `app/src/main/java/me/rerere/rikkahub/ui/floating/ChatFloatingWindows.kt` (bubble FloatingX configuration)
+  - `app/src/main/java/me/rerere/rikkahub/ui/components/ui/AppLogo.kt`
 - License: GNU Affero General Public License v3.0
-- SullyOS changes: package/application integration, String generation IDs, notification resources, and removal of the Android 15 `onTimeout` hook because the current SullyOS Android toolchain compiles against an older SDK.
+- SullyOS changes are limited to package/application integration, mapping SullyOS generation state onto RikkaHub's bubble state, SullyOS launcher resources, and compatibility with the SullyOS Android wrapper/toolchain.
 - Full license text: `licenses/RikkaHub-AGPL-3.0.txt`
