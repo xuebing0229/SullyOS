@@ -25,18 +25,16 @@ import androidx.core.app.NotificationCompat;
 import com.petterp.floatingx.core.FloatingX;
 import com.petterp.floatingx.core.FxControl;
 import com.petterp.floatingx.core.FxListener;
+import com.petterp.floatingx.core.animation.FxAnimations;
 import com.petterp.floatingx.core.config.FxConfig;
 import com.petterp.floatingx.core.config.FxContent;
 import com.petterp.floatingx.core.gesture.FxGesture;
 import com.petterp.floatingx.core.layout.FxAdsorb;
-import com.petterp.floatingx.core.layout.FxEdge;
 import com.petterp.floatingx.core.layout.FxGravity;
-import com.petterp.floatingx.core.layout.FxHalfHide;
 import com.petterp.floatingx.core.storage.FxSpStorage;
 import com.petterp.floatingx.system.SystemHost;
 import com.petterp.floatingx.system.permission.FxPermissionStrategy;
 
-import java.util.EnumSet;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
@@ -375,13 +373,10 @@ public class SullyChatFloatingService extends Service {
             FxConfig config = FxConfig.builder(FxContent.view(bubble))
                 .anchor(FxGravity.CENTER_END, 0f, -96f)
                 .margin(8f, 0f, 8f, 0f)
-                .adsorb(new FxAdsorb.Edges(
-                    EnumSet.of(FxEdge.START, FxEdge.END),
-                    new FxHalfHide(0f),
-                    true
-                ))
+                .adsorb(FxAdsorb.horizontal())
                 .gesture(FxGesture.Normal)
                 .storage(new FxSpStorage(app))
+                .animation(FxAnimations.scale())
                 .build();
 
             try {
@@ -454,6 +449,7 @@ public class SullyChatFloatingService extends Service {
             .anchor(FxGravity.TOP_CENTER, 0f, 8f)
             .margin(12f, 12f, 12f, 12f)
             .gesture(FxGesture.ClickOnly)
+            .animation(FxAnimations.fade())
             .build();
 
         try {
