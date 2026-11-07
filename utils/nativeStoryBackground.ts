@@ -437,6 +437,7 @@ const waitForTerminal = async (
   let lastReasoning = '';
 
   return new Promise<NativeStoryJob>((resolve, reject) => {
+    let onAbort: () => void = () => {};
     const finish = (fn: () => void) => {
       if (stopped) return;
       stopped = true;
@@ -446,7 +447,7 @@ const waitForTerminal = async (
       void resumeHandle?.remove();
       fn();
     };
-    const onAbort = () => {
+    onAbort = () => {
       void NativeStoryBackground.remove({ jobId }).catch(() => undefined);
       const error = new Error('后台生成已取消');
       error.name = 'AbortError';
