@@ -69,17 +69,32 @@ export const ensureChatFloatingNotificationPermission = async (): Promise<boolea
   return result.granted;
 };
 
-const start = (charId: string, charName: string, phase: ChatFloatingPhase, preview = '') => {
-  if (!isNativeAndroid() || !isChatFloatingEnabled() || !charId) return;
+export const ensureNativeChatFloatingStarted = async (
+  charId: string,
+  charName: string,
+  phase: ChatFloatingPhase = 'waiting',
+  preview = '',
+): Promise<boolean> => {
+  if (!isNativeAndroid() || !isChatFloatingEnabled() || !charId) return false;
   const id = chatFloatingGenerationId(charId);
-  activeIds.add(id);
-  void NativeStoryBackground.startChatFloating({
-    generationId: id,
-    title: charName || '聊天',
-    phase,
-    preview: cleanPreview(preview),
-    appForeground,
-  }).catch(error => console.warn('[ChatFloating] start failed', error));
+  try {
+    await NativeStoryBackground.startChatFloating({
+      generationId: id,
+      title: charName || '聊天',
+      phase,
+      preview: cleanPreview(preview),
+      appForeground,
+    });
+    activeIds.add(id);
+    return true;
+  } catch (error) {
+    console.warn('[ChatFloating] start failed', error);
+    return false;
+  }
+};
+
+const start = (charId: string, charName: string, phase: ChatFloatingPhase, preview = '') => {
+  void ensureNativeChatFloatingStarted(charId, charName, phase, preview);
 };
 
 const update = (charId: string, charName: string, phase: ChatFloatingPhase, preview = '') => {
