@@ -10,9 +10,7 @@ import android.content.Intent;
 import android.graphics.Color;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Build;
-import android.os.Handler;
 import android.os.IBinder;
-import android.os.Looper;
 import android.provider.Settings;
 import android.view.Gravity;
 import android.view.View;
@@ -65,13 +63,11 @@ public class SullyChatFloatingService extends Service {
 
     private static final String CHANNEL_ID = "sully_chat_completed_v1";
     private static final int COMPLETE_NOTIFICATION_BASE = 23100;
-    private static final long FINISHED_RETENTION_MS = 45_000L;
 
     private static final String FLOATING_BUBBLE_TAG = "sully-chat-generation-bubble";
     private static final String FLOATING_PANEL_TAG = "sully-chat-generation-panel";
 
     private final LinkedHashMap<String, GenerationState> generations = new LinkedHashMap<>();
-    private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
     private FxControl bubbleControl;
     private FxControl panelControl;
@@ -92,7 +88,6 @@ public class SullyChatFloatingService extends Service {
         boolean generating;
         boolean success;
         long updatedAt;
-        long finishedAt;
 
         GenerationState(String id, String title) {
             this.id = id;
@@ -103,7 +98,6 @@ public class SullyChatFloatingService extends Service {
             this.generating = true;
             this.success = false;
             this.updatedAt = System.currentTimeMillis();
-            this.finishedAt = 0L;
         }
     }
 
@@ -199,7 +193,6 @@ public class SullyChatFloatingService extends Service {
             generations.put(id, state);
         }
         state.generating = true;
-        state.finishedAt = 0L;
         state.success = false;
         cancelCompletionNotification(id);
         state.error = "";
@@ -223,7 +216,6 @@ public class SullyChatFloatingService extends Service {
             state.generating = true;
             state.success = false;
             state.error = "";
-            state.finishedAt = 0L;
             cancelCompletionNotification(id);
         }
         state.updatedAt = System.currentTimeMillis();
@@ -242,12 +234,9 @@ public class SullyChatFloatingService extends Service {
         state.error = cleanPreview(intent.getStringExtra(EXTRA_ERROR));
         state.phase = state.success ? "done" : "failed";
         state.updatedAt = System.currentTimeMillis();
-        state.finishedAt = state.updatedAt;
         postCompletionNotification(state);
         if (appForeground) {
             generations.remove(id);
-        } else {
-            scheduleFinishedCleanup(id, state.finishedAt);
         }
         refreshUi();
         maybeStopWhenEmpty();
@@ -273,18 +262,6 @@ public class SullyChatFloatingService extends Service {
             refreshUi();
         }
         maybeStopWhenEmpty();
-    }
-
-    private void scheduleFinishedCleanup(final String id, final long finishedAt) {
-        mainHandler.postDelayed(() -> {
-            GenerationState state = generations.get(id);
-            if (state != null && !state.generating && state.finishedAt == finishedAt) {
-                generations.remove(id);
-                if (id.equals(dismissedGenerationId)) dismissedGenerationId = null;
-                refreshUi();
-                maybeStopWhenEmpty();
-            }
-        }, FINISHED_RETENTION_MS);
     }
 
     private void removeFinishedStates() {
@@ -616,7 +593,6 @@ public class SullyChatFloatingService extends Service {
     @Override
     public void onDestroy() {
         removeOverlay();
-        mainHandler.removeCallbacksAndMessages(null);
         super.onDestroy();
     }
 
