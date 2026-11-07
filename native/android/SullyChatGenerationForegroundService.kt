@@ -15,7 +15,7 @@ import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 
 // Copied from RikkaHub's ChatGenerationForegroundService.kt (AGPL-3.0).
-// SullyOS changes are intentionally limited to package/app integration and String IDs.
+// Modified for SullyOS on 2026-11-07; changes are limited to package/app integration, String IDs, notification resources, and current-SDK compatibility.
 private const val TAG = "ChatGenerationFgs"
 private const val CHANNEL_ID = "sully_chat_live_update_v1"
 
