@@ -229,9 +229,14 @@ public class SullyChatFloatingService extends Service {
         state.updatedAt = System.currentTimeMillis();
         state.finishedAt = state.updatedAt;
         postCompletionNotification(state);
+        if (appForeground) {
+            generations.remove(id);
+        } else {
+            scheduleFinishedCleanup(id, state.finishedAt);
+        }
         refreshUi();
-        scheduleFinishedCleanup(id, state.finishedAt);
         if (!hasRunningGeneration()) stopForegroundKeepServiceAlive();
+        maybeStopWhenEmpty();
     }
 
     private void handleRelease(Intent intent) {
