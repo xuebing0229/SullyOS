@@ -95,6 +95,12 @@ import { parseSARUserSurfaces, selectSARUserSurfaceTargets } from '../utils/vrWo
 import { isEmotionEvalSkipped } from '../utils/devDebug';
 import { sha256Hex } from '../utils/aiRequestManager';
 import { executeCachedChatCompletion, executeCachedEmotionCompletion } from '../utils/aiCompletionPipeline';
+import {
+    clearPendingNativeStoryJob,
+    executeStoryCompletionInNativeBackground,
+    isNativeStoryBackgroundRuntime,
+} from '../utils/nativeStoryBackground';
+import { chatFloatingGenerationId, isChatFloatingEnabled } from '../utils/nativeChatFloating';
 import { recordApiCall } from '../utils/apiCallLog';
 import { executeOpenAiChatPlan, resolveApiExecutionPlan, type ApiExecutionPlan } from '../utils/apiFailover';
 import {prepareHomeSecretTask,failHomeSecretTask} from '../utils/homeSecrets';
@@ -1831,6 +1837,7 @@ export const useChatAI = ({
             // 首次请求允许按有序线路故障转移；一旦某条线路成功，本轮所有工具结果续写
             // 都固定在该线路，避免同一个工具回合中途换模型或换 API。
             let activeApiForTurn: APIConfig = effectiveApi;
+            const nativeChatOwnerKey = `chat-native:${char.id}:${Date.now().toString(36)}`;
             const executeChatBody = async (
                 body: Record<string, any>,
                 purpose: string,
@@ -1841,6 +1848,38 @@ export const useChatAI = ({
                 const plan = useFailover
                     ? apiPlan
                     : resolveApiExecutionPlan('chat', activeApiForTurn, false);
+
+                // RikkaHub 那种「切走后任务仍归原生服务所有」只在用户显式打开悬浮窗时启用。
+                // 直接复用剧情剧场已验证过的 Android okhttp-sse runner；带 tools 的轮次必须
+                // 留在 JS，因为工具执行本来就在 useChatAI 里，原生层不能越权另造一套。
+                const useNativeBackgroundChat = purpose === '聊天回复'
+                    && isChatFloatingEnabled()
+                    && isNativeStoryBackgroundRuntime()
+                    && !Array.isArray(body.tools)
+                    && !body.tool_choice;
+                if (useNativeBackgroundChat) {
+                    try {
+                        return await executeStoryCompletionInNativeBackground({
+                            ownerKey: nativeChatOwnerKey,
+                            title: char.name || '聊天',
+                            plan,
+                            body,
+                            signal: replyRun.signal,
+                            externalForeground: true,
+                            floatingGenerationId: chatFloatingGenerationId(char.id),
+                            logMeta: { appId: 'chat', appName: '消息', purpose },
+                            onStreamText: fullText => hooks?.onDelta?.('', fullText),
+                            onReasoningText: fullReasoning => hooks?.onReasoningDelta?.('', fullReasoning),
+                            onResolvedRouteIndex: routeIndex => {
+                                const route = plan.routes[routeIndex];
+                                if (route) activeApiForTurn = route.api;
+                            },
+                        });
+                    } finally {
+                        await clearPendingNativeStoryJob(nativeChatOwnerKey);
+                    }
+                }
+
                 const result = await executeOpenAiChatPlan({
                     plan,
                     body,
