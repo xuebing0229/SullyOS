@@ -545,10 +545,15 @@ public class SullyChatFloatingService extends Service {
 
     private void removeBubble() {
         FxControl control = bubbleControl;
+        SullyChatFloatingBubbleHost host = bubbleHost;
         bubbleControl = null;
         bubbleHost = null;
-        if (control == null) return;
-        try { control.cancel(); } catch (Exception ignored) { }
+        if (control != null) {
+            try { control.cancel(); } catch (Exception ignored) { }
+        }
+        if (host != null) {
+            try { host.release(); } catch (Exception ignored) { }
+        }
     }
 
     private void removePanel() {
