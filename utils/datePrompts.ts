@@ -318,7 +318,7 @@ const buildBroadcastDramaBlock = (config?: DateStyleConfig): string => {
 - 不写小说式环境铺陈、长篇心理描写或逐动作播报。能省略的旁白直接省略。
 - 不要为了减少旁白，让角色生硬地说出双方早已知道的事实；对白首先要像真实的人在说话。
 - 动作/叙述行会由独立旁白声线朗读，因此保留下来的叙述要短、清楚、适合直接听懂。
-- 如果有 NPC 开口，男性统一用 `[speaker:npc:male:姓名]`、女性统一用 `[speaker:npc:female:姓名]`；只分男女两条公共声线，不按 NPC 人物单独造 speaker。
+- 如果有 NPC 开口，男性统一用 \`[speaker:npc:male:姓名]\`、女性统一用 \`[speaker:npc:female:姓名]\`；只分男女两条公共声线，不按 NPC 人物单独造 speaker。
 - 如果当前开场尚未形成对话，不要为了“对白优先”让角色无缘由自言自语；用极短的必要旁白完成过渡即可。
 `;
 };
