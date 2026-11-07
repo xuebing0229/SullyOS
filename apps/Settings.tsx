@@ -1163,6 +1163,8 @@ const Settings: React.FC = () => {
   const selectedElevenLabsNarratorVoiceId = selectedElevenLabsPreset?.narratorVoiceId
       || (selectedElevenLabsPreset?.legacyVoiceFallback ? legacyElevenLabsNarratorVoiceId : '')
       || '';
+  const selectedElevenLabsNpcMaleVoiceId = selectedElevenLabsPreset?.npcMaleVoiceId || '';
+  const selectedElevenLabsNpcFemaleVoiceId = selectedElevenLabsPreset?.npcFemaleVoiceId || '';
 
   const updateSelectedElevenLabsPreset = useCallback((
       updater: (preset: ElevenLabsAccountPreset) => ElevenLabsAccountPreset,
@@ -3567,7 +3569,7 @@ const Settings: React.FC = () => {
                         <div className="flex items-center justify-between gap-2">
                             <div>
                                 <div className="text-[10px] font-bold text-violet-600 uppercase tracking-widest">ElevenLabs 账号预设</div>
-                                <p className="text-[10px] text-slate-400 mt-0.5">切换预设时 Key、我的 Voice ID、各角色 Voice ID 和旁白 Voice ID 一起切换。</p>
+                                <p className="text-[10px] text-slate-400 mt-0.5">切换预设时 Key、我的 / 角色 / 旁白 / 男女 NPC Voice ID 会一起切换。</p>
                             </div>
                             <button
                                 type="button"
@@ -3652,6 +3654,27 @@ const Settings: React.FC = () => {
                                         className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2.5 text-xs font-mono"
                                     />
                                 </label>
+
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                    <label className="block">
+                                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 block">男 NPC Voice ID</span>
+                                        <input
+                                            value={selectedElevenLabsNpcMaleVoiceId}
+                                            onChange={(e) => updateSelectedElevenLabsPreset(preset => ({ ...preset, npcMaleVoiceId: e.target.value }))}
+                                            placeholder="所有男性 NPC 共用"
+                                            className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2.5 text-xs font-mono"
+                                        />
+                                    </label>
+                                    <label className="block">
+                                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 block">女 NPC Voice ID</span>
+                                        <input
+                                            value={selectedElevenLabsNpcFemaleVoiceId}
+                                            onChange={(e) => updateSelectedElevenLabsPreset(preset => ({ ...preset, npcFemaleVoiceId: e.target.value }))}
+                                            placeholder="所有女性 NPC 共用"
+                                            className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2.5 text-xs font-mono"
+                                        />
+                                    </label>
+                                </div>
 
                                 <div className="grid grid-cols-1 sm:grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)] gap-2">
                                     <label className="block">
