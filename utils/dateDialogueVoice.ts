@@ -4,8 +4,8 @@
  * 一轮剧情共享一个音频，GAL/小说视图按 lineId 引用同一时间区间。
  */
 export type DatePrimaryDialogueSpeaker = 'char' | 'user';
-/** 广播剧模式在同一份 Dialogue 音频中额外加入独立旁白声线。 */
-export type DateDialogueSpeaker = DatePrimaryDialogueSpeaker | 'narrator';
+/** 广播剧模式在同一份 Dialogue 音频中额外加入旁白 + 男女 NPC 公共声线。 */
+export type DateDialogueSpeaker = DatePrimaryDialogueSpeaker | 'narrator' | 'npc-male' | 'npc-female';
 /** NPC 会显示台词，但没有专属声线时绝不能借用主角色声线。 */
 export type DateLineSpeaker = DatePrimaryDialogueSpeaker | 'npc';
 
@@ -74,8 +74,8 @@ export const alignDateDialogueSegments = (
 
 /**
  * 用实际送进 ElevenLabs 的台词顺序定位，而不是用屏幕气泡序号。
- * 普通模式只有 char/user 台词参与；广播剧模式会显式把精简叙述作为 narrator turn 加入。
- * NPC 仍不参与配音，避免借用其它声线。
+ * 普通模式只有 char/user 台词参与；广播剧模式会显式把精简叙述作为 narrator turn 加入，
+ * 并把 NPC 按 male/female 公共声线加入。
  * 缓存可跨实时 GAL / 历史阅读复用，缓存中的 lineId 可能不同，
  * 所以只按同一个批次的输入顺序匹配，再还原本次请求的 lineId。
  */

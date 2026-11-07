@@ -29,7 +29,7 @@ import VoiceFavoriteActionSheet from '../voice/VoiceFavoriteActionSheet';
 import { getVoiceFavorite, makeVoiceFavoriteId, removeVoiceFavorite, saveVoiceFavorite } from '../../utils/voiceFavorites';
 import { saveVoiceLibraryItem, setVoiceLibraryStarredForSource } from '../../utils/voiceLibrary';
 import { resolveTtsProvider } from '../../utils/ttsProvider';
-import { resolveElevenLabsNarratorVoiceId, resolveElevenLabsVoiceIdForTarget } from '../../utils/elevenLabsTts';
+import { resolveElevenLabsNarratorVoiceId, resolveElevenLabsNpcVoiceId, resolveElevenLabsVoiceIdForTarget } from '../../utils/elevenLabsTts';
 import { createUserVoiceTarget } from '../../utils/userVoice';
 import { synthesizeDateDialogue, DateDialogueAlignmentError } from '../../utils/dateDialogueSynthesis';
 import { getCachedDateDialogue, markDateDialogueForcedSingles, saveCachedDateDialogue } from '../../utils/dateDialogueCache';
@@ -59,16 +59,30 @@ const extractVoiceEmotionTag = (line: string): { voiceEmotion?: string; rest: st
 };
 
 const SPEAKER_TAG_RE = /\[(?:speaker|s):\s*(char|user|npc)(?:\s*[:：]\s*([^\]\r\n]+))?\s*\]/ig;
-const extractSpeakerTag = (line: string): { speaker?: 'char' | 'user' | 'npc'; npcName?: string; rest: string } => {
+const extractSpeakerTag = (line: string): { speaker?: 'char' | 'user' | 'npc'; npcName?: string; npcGender?: 'male' | 'female'; rest: string } => {
     let speaker: 'char' | 'user' | 'npc' | undefined;
     let npcName: string | undefined;
-    const rest = line.replace(SPEAKER_TAG_RE, (_m, raw: string, name?: string) => {
+    let npcGender: 'male' | 'female' | undefined;
+    const rest = line.replace(SPEAKER_TAG_RE, (_m, raw: string, descriptor?: string) => {
         const value = (raw || '').toLowerCase() as 'char' | 'user' | 'npc';
         speaker = value;
-        npcName = value === 'npc' ? name?.trim() || undefined : undefined;
+        if (value === 'npc') {
+            const parts = String(descriptor || '').split(/[:：]/).map(part => part.trim()).filter(Boolean);
+            const genderToken = (parts[0] || '').toLowerCase();
+            if (['male', 'm', '男', '男性'].includes(genderToken)) {
+                npcGender = 'male';
+                npcName = parts.slice(1).join('：') || undefined;
+            } else if (['female', 'f', '女', '女性'].includes(genderToken)) {
+                npcGender = 'female';
+                npcName = parts.slice(1).join('：') || undefined;
+            } else {
+                // 兼容旧记录：[speaker:npc:店员] 仍把“店员”当姓名牌，不误判成性别。
+                npcName = String(descriptor || '').trim() || undefined;
+            }
+        }
         return '';
     });
-    return { speaker, npcName, rest };
+    return { speaker, npcName, npcGender, rest };
 };
 
 // 唯一的台词来源：严格抽取完整引号里的话，旁白绝不落到 TTS 兜底。
@@ -119,7 +133,7 @@ const parseDialogue = (
         if (!rawLine || isContextNoise(rawLine) || isDateHistoryEnvelopeOnly(rawLine)) continue;
         const visibleLine = stripDateHistoryEnvelope(rawLine);
         if (!visibleLine) continue;
-        const { speaker, npcName, rest: speakerRest } = extractSpeakerTag(visibleLine);
+        const { speaker, npcName, npcGender, rest: speakerRest } = extractSpeakerTag(visibleLine);
         // 先把独立的语音情绪标记 [v:xxx] 抽出来（跟立绘情绪互不影响），再解析立绘标签
         const { voiceEmotion, rest } = extractVoiceEmotionTag(speakerRest);
         const line = rest.trim();
@@ -146,6 +160,7 @@ const parseDialogue = (
                 voiceEmotion,
                 speaker: speaker || 'char',
                 npcName,
+                npcGender,
                 speechText: dialogue ? extractDialogueSpeech(content) : undefined,
             });
         }
@@ -348,6 +363,8 @@ const DateSession: React.FC<DateSessionProps> = ({
     const coauthorUserEnabled = !!char.dateStyleConfig?.coauthorUser;
     const broadcastMode = !!char.dateStyleConfig?.broadcastMode;
     const narratorVoiceId = resolveElevenLabsNarratorVoiceId(apiConfig, char.dateStyleConfig?.broadcastNarratorVoiceId);
+    const npcMaleVoiceId = resolveElevenLabsNpcVoiceId(apiConfig, 'male');
+    const npcFemaleVoiceId = resolveElevenLabsNpcVoiceId(apiConfig, 'female');
     const broadcastPlaybackEnabled = broadcastMode
         && voiceEnabled
         && !voiceLang
@@ -426,7 +443,22 @@ const DateSession: React.FC<DateSessionProps> = ({
         items.flatMap((item): DateDialogueTurn[] => {
             if (!item.lineId) return [];
             if (item.speechText && isDialogueLine(item.text)) {
-                // NPC 没有独立声线，整个 Dialogue 批次也不能把 NPC 台词借给角色。
+                if (item.speaker === 'npc') {
+                    // 普通见面继续不替 NPC 配音；广播剧则只按男女两条公共声线加入同一整轮 Dialogue。
+                    if (!broadcastMode) return [];
+                    const resolvedNpcGender = item.npcGender
+                        || (npcMaleVoiceId ? 'male' : npcFemaleVoiceId ? 'female' : 'male');
+                    const npcSpeaker = resolvedNpcGender === 'female'
+                        ? 'npc-female' as const
+                        : 'npc-male' as const;
+                    const voiceId = resolveElevenLabsNpcVoiceId(apiConfig, resolvedNpcGender);
+                    return [{
+                        lineId: item.lineId,
+                        speaker: npcSpeaker,
+                        speech: item.speechText,
+                        voiceId,
+                    }];
+                }
                 const speaker = resolveDateVoiceSpeaker(item.speaker, coauthorUserEnabled || broadcastMode);
                 if (!speaker) return [];
                 return [{
@@ -765,7 +797,8 @@ const DateSession: React.FC<DateSessionProps> = ({
         }
         const turns = buildDateDialogueTurns(spokenItems);
         const missingSpeaker = turns.find(turn =>
-            turn.speaker !== 'narrator' && !canSynthesizeSpeech(dateVoiceTarget(turn.speaker), apiConfig)
+            (turn.speaker === 'char' || turn.speaker === 'user')
+            && !canSynthesizeSpeech(dateVoiceTarget(turn.speaker), apiConfig)
         );
         if (missingSpeaker) {
             addToast(missingSpeaker.speaker === 'user' ? '请先为 USER 配置当前服务商的声线' : '请先配置角色声线与语音 API', 'error');
@@ -1404,9 +1437,13 @@ const DateSession: React.FC<DateSessionProps> = ({
             addToast(
                 missingVoice.speaker === 'narrator'
                     ? '请先在设置 → 其他 API → ElevenLabs 账号预设绑定旁白 Voice ID'
-                    : missingVoice.speaker === 'user'
-                        ? '请先在设置 → 其他 API → ElevenLabs 账号预设绑定用户 Voice ID'
-                        : '请先在设置 → 其他 API → ElevenLabs 账号预设绑定当前角色 Voice ID',
+                    : missingVoice.speaker === 'npc-female'
+                        ? '请先在设置 → 其他 API → ElevenLabs 账号预设绑定女 NPC Voice ID'
+                        : missingVoice.speaker === 'npc-male'
+                            ? '请先在设置 → 其他 API → ElevenLabs 账号预设绑定男 NPC Voice ID'
+                            : missingVoice.speaker === 'user'
+                                ? '请先在设置 → 其他 API → ElevenLabs 账号预设绑定用户 Voice ID'
+                                : '请先在设置 → 其他 API → ElevenLabs 账号预设绑定当前角色 Voice ID',
                 'info',
             );
             return;

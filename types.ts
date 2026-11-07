@@ -306,6 +306,10 @@ export interface ElevenLabsAccountPreset {
   characterVoiceIds?: Record<string, string>;
   /** 广播剧旁白在这个 ElevenLabs 账号内对应的 Voice ID。 */
   narratorVoiceId?: string;
+  /** 广播剧所有男性 NPC 共用的 Voice ID（不按 NPC 人物单独绑定）。 */
+  npcMaleVoiceId?: string;
+  /** 广播剧所有女性 NPC 共用的 Voice ID（不按 NPC 人物单独绑定）。 */
+  npcFemaleVoiceId?: string;
   /** 仅用于把旧版散落在角色 / 用户资料 / 见面设置里的 Voice ID 平滑迁入第一条账号预设。 */
   legacyVoiceFallback?: boolean;
 }
@@ -2231,6 +2235,8 @@ export interface DialogueItem {
     speaker?: 'char' | 'user' | 'npc';
     /** NPC 说话时的姓名牌；未提供时显示 NPC。 */
     npcName?: string;
+    /** 广播剧 NPC 公共声线分类；旧记录可能没有，运行时兼容回退到任一已配置 NPC 声线。 */
+    npcGender?: 'male' | 'female';
     /** 仅供 TTS：保留引号内原始 Audio Tags；界面显示仍走 text。 */
     speechText?: string;
 }

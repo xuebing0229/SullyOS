@@ -14,7 +14,7 @@ describe('见面声线归属', () => {
     expect(resolveDateVoiceSpeaker('char', false)).toBe('char');
     expect(resolveDateVoiceSpeaker(undefined, false)).toBe('char');
   });
-  it('NPC 在任何模式下都没有主角或用户声线，绝不混入整轮配音', () => {
+  it('NPC 永远不会误借主角或用户声线，广播剧由上层单独绑定公共 NPC 声线', () => {
     expect(resolveDateVoiceSpeaker('npc', false)).toBeNull();
     expect(resolveDateVoiceSpeaker('npc', true)).toBeNull();
   });
@@ -35,26 +35,33 @@ describe('见面模式双 OC 配音批次', () => {
       lineIds: ['1', '2', '3'],
     });
   });
-  it('广播剧批次可在同一条 Dialogue 中按原顺序混入独立旁白声线', () => {
+  it('广播剧批次可在同一条 Dialogue 中按原顺序混入旁白和男女 NPC 公共声线', () => {
     const radioTurns = [
       { lineId: 'r1', speaker: 'narrator' as const, speech: '门外忽然响起两声敲门声。', voiceId: 'narrator-voice' },
-      { lineId: 'r2', speaker: 'char' as const, speech: '这个点谁会来？', voiceId: 'char-voice' },
-      { lineId: 'r3', speaker: 'user' as const, speech: '先别开门。', voiceId: 'user-voice' },
+      { lineId: 'r2', speaker: 'npc-male' as const, speech: '送餐。', voiceId: 'npc-male-voice' },
+      { lineId: 'r3', speaker: 'char' as const, speech: '这个点谁会来？', voiceId: 'char-voice' },
+      { lineId: 'r4', speaker: 'npc-female' as const, speech: '您好，是前台。', voiceId: 'npc-female-voice' },
+      { lineId: 'r5', speaker: 'user' as const, speech: '先别开门。', voiceId: 'user-voice' },
     ];
     expect(buildDateDialogueBatch(radioTurns)).toEqual({
       inputs: [
         { text: '门外忽然响起两声敲门声。', voice_id: 'narrator-voice' },
+        { text: '送餐。', voice_id: 'npc-male-voice' },
         { text: '这个点谁会来？', voice_id: 'char-voice' },
+        { text: '您好，是前台。', voice_id: 'npc-female-voice' },
         { text: '先别开门。', voice_id: 'user-voice' },
       ],
-      lineIds: ['r1', 'r2', 'r3'],
+      lineIds: ['r1', 'r2', 'r3', 'r4', 'r5'],
     });
     expect(alignDateDialogueSegments(radioTurns, [
-      { start: 0, end: 1.2 }, { start: 1.3, end: 2.4 }, { start: 2.5, end: 3.4 },
+      { start: 0, end: 1.2 }, { start: 1.3, end: 1.8 }, { start: 1.9, end: 3.0 },
+      { start: 3.1, end: 3.8 }, { start: 3.9, end: 4.8 },
     ])).toEqual([
       { lineId: 'r1', speaker: 'narrator', startTime: 0, endTime: 1.2 },
-      { lineId: 'r2', speaker: 'char', startTime: 1.3, endTime: 2.4 },
-      { lineId: 'r3', speaker: 'user', startTime: 2.5, endTime: 3.4 },
+      { lineId: 'r2', speaker: 'npc-male', startTime: 1.3, endTime: 1.8 },
+      { lineId: 'r3', speaker: 'char', startTime: 1.9, endTime: 3.0 },
+      { lineId: 'r4', speaker: 'npc-female', startTime: 3.1, endTime: 3.8 },
+      { lineId: 'r5', speaker: 'user', startTime: 3.9, endTime: 4.8 },
     ]);
   });
   it('按台词 ID 对齐时间区间', () => {
@@ -83,7 +90,7 @@ describe('见面模式双 OC 配音批次', () => {
 
 
 describe('见面逐句播放定位', () => {
-  it('NPC 与旁白不占用配音索引，历史复用相同音频也能对应正确一句', () => {
+  it('普通模式里未进入批次的 NPC/旁白不占索引，历史复用相同音频仍能对应正确一句', () => {
     const voiced = [
       { lineId: 'historical:1', speaker: 'char' as const, voiceId: 'c', speech: '早上好' },
       { lineId: 'historical:4', speaker: 'user' as const, voiceId: 'u', speech: '你好' },
@@ -238,6 +245,12 @@ describe('见面 Voice ID 路由合约', () => {
   it('广播剧复用整轮 Dialogue 和真实时间轴，不另造一套 TTS', () => {
     expect(session).toContain("speaker: 'narrator' as const");
     expect(session).toContain('voiceId: narratorVoiceId');
+    expect(session).toContain("item.speaker === 'npc'");
+    expect(session).toContain("resolveElevenLabsNpcVoiceId(apiConfig, 'male')");
+    expect(session).toContain("resolveElevenLabsNpcVoiceId(apiConfig, 'female')");
+    expect(session).toContain("'npc-male' as const");
+    expect(session).toContain("'npc-female' as const");
+    expect(session).toContain('npcGender,');
     expect(session).toContain('const playBroadcastTurn = async');
     expect(session).toContain('audio.ontimeupdate = syncTextToAudio');
     expect(session).toContain('processNextDialogue(items[index], items.slice(index + 1))');
