@@ -30,6 +30,7 @@ for (const name of [
   'SullyChatFloatingService.java',
   'SullyChatGenerationForegroundService.kt',
   'SullyFloatingAppLogo.kt',
+  'SullyFloatingComposeOwner.kt',
   'SullyMaterialShapes.kt',
   'SullyFloatingIcons.kt',
   'SullyChatFloatingBubble.kt',
@@ -201,6 +202,8 @@ const okHttpDependencies = [
 // 不在 SullyOS 里平行手写 WindowManager 手势实现。
 const floatingDependencies = [
   'implementation "androidx.lifecycle:lifecycle-process:2.8.7"',
+  'implementation "androidx.lifecycle:lifecycle-viewmodel:2.8.7"',
+  'implementation "androidx.savedstate:savedstate:1.2.1"',
   // RikkaHub 浮球源码保持不变的部分用 Compose 1.6.8 承载；这是 SullyOS
   // compileSdk 34 / AGP 8.2 能稳定编译的 Compose 世代。
   'implementation "androidx.compose.runtime:runtime:1.6.8"',
