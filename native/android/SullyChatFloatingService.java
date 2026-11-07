@@ -7,7 +7,6 @@ import android.app.PendingIntent;
 import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
-import android.content.pm.ServiceInfo;
 import android.graphics.Color;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Build;
@@ -24,8 +23,6 @@ import android.widget.LinearLayout;
 import android.widget.TextView;
 
 import androidx.core.app.NotificationCompat;
-import androidx.core.app.ServiceCompat;
-import androidx.core.content.ContextCompat;
 
 import com.petterp.floatingx.core.FloatingX;
 import com.petterp.floatingx.core.FxControl;
@@ -46,12 +43,10 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
- * 聊天后台生成前台服务 + 系统悬浮窗。
+ * 聊天系统悬浮窗与完成通知。
  *
- * 悬浮窗底层直接复用 RikkaHub 同款 FloatingX 3.x：
- * - FloatingX 负责系统浮窗挂载、拖动、左右吸附、安全区和位置持久化；
- * - SullyOS 只保留自己的聊天状态、内容展示和 FGS 生命周期；
- * - 不复制 RikkaHub 的 AGPL 业务源码。
+ * 前台保活已交给直接移植自 RikkaHub 的 SullyChatGenerationForegroundService；
+ * 本类只负责 FloatingX 窗口状态、内容展示和完成通知。
  */
 public class SullyChatFloatingService extends Service {
     public static final String ACTION_START = "SULLY_CHAT_FLOATING_START";
@@ -69,7 +64,6 @@ public class SullyChatFloatingService extends Service {
     public static final String EXTRA_FOREGROUND = "appForeground";
 
     private static final String CHANNEL_ID = "sully_chat_background_v1";
-    private static final int FOREGROUND_NOTIFICATION_ID = 23035;
     private static final int COMPLETE_NOTIFICATION_BASE = 23100;
     private static final long FINISHED_RETENTION_MS = 45_000L;
 
@@ -87,7 +81,6 @@ public class SullyChatFloatingService extends Service {
     private TextView panelPreview;
 
     private boolean appForeground = true;
-    private boolean foregroundStarted = false;
     private String dismissedGenerationId = null;
 
     private static final class GenerationState {
@@ -122,6 +115,13 @@ public class SullyChatFloatingService extends Service {
         String preview,
         boolean appForeground
     ) {
+        if (!SullyChatGenerationForegroundService.Companion.acquire(
+            context,
+            id,
+            title == null || title.trim().isEmpty() ? "聊天" : title.trim()
+        )) {
+            return false;
+        }
         try {
             Intent intent = serviceIntent(context, ACTION_START)
                 .putExtra(EXTRA_ID, id)
@@ -129,9 +129,10 @@ public class SullyChatFloatingService extends Service {
                 .putExtra(EXTRA_PHASE, phase)
                 .putExtra(EXTRA_PREVIEW, preview)
                 .putExtra(EXTRA_FOREGROUND, appForeground);
-            ContextCompat.startForegroundService(context, intent);
+            context.startService(intent);
             return true;
         } catch (Exception error) {
+            SullyChatGenerationForegroundService.Companion.release(context, id);
             return false;
         }
     }
@@ -150,10 +151,12 @@ public class SullyChatFloatingService extends Service {
             .putExtra(EXTRA_TITLE, title)
             .putExtra(EXTRA_SUCCESS, success)
             .putExtra(EXTRA_ERROR, error == null ? "" : error));
+        SullyChatGenerationForegroundService.Companion.release(context, id);
     }
 
     public static void release(Context context, String id) {
         send(context, serviceIntent(context, ACTION_RELEASE).putExtra(EXTRA_ID, id));
+        SullyChatGenerationForegroundService.Companion.release(context, id);
     }
 
     public static void setAppForeground(Context context, boolean foreground) {
@@ -165,11 +168,7 @@ public class SullyChatFloatingService extends Service {
     }
 
     private static void send(Context context, Intent intent) {
-        try {
-            context.startService(intent);
-        } catch (Exception ignored) {
-            try { ContextCompat.startForegroundService(context, intent); } catch (Exception ignoredAgain) { }
-        }
+        try { context.startService(intent); } catch (Exception ignored) { }
     }
 
     @Override
@@ -209,7 +208,6 @@ public class SullyChatFloatingService extends Service {
         state.preview = cleanPreview(intent.getStringExtra(EXTRA_PREVIEW));
         state.updatedAt = System.currentTimeMillis();
         if (id.equals(dismissedGenerationId)) dismissedGenerationId = null;
-        ensureForeground();
         refreshUi();
     }
 
@@ -229,7 +227,6 @@ public class SullyChatFloatingService extends Service {
             cancelCompletionNotification(id);
         }
         state.updatedAt = System.currentTimeMillis();
-        updateForegroundNotification();
         refreshUi();
     }
 
@@ -253,7 +250,6 @@ public class SullyChatFloatingService extends Service {
             scheduleFinishedCleanup(id, state.finishedAt);
         }
         refreshUi();
-        if (!hasRunningGeneration()) stopForegroundKeepServiceAlive();
         maybeStopWhenEmpty();
     }
 
@@ -264,7 +260,6 @@ public class SullyChatFloatingService extends Service {
         else if (state == null) generations.remove(id);
         if (id.equals(dismissedGenerationId) && !generations.containsKey(id)) dismissedGenerationId = null;
         refreshUi();
-        if (!hasRunningGeneration()) stopForegroundKeepServiceAlive();
         maybeStopWhenEmpty();
     }
 
@@ -299,82 +294,18 @@ public class SullyChatFloatingService extends Service {
         }
     }
 
-    private boolean hasRunningGeneration() {
-        for (GenerationState state : generations.values()) if (state.generating) return true;
-        return false;
-    }
-
     private GenerationState targetState() {
         GenerationState target = null;
         for (Map.Entry<String, GenerationState> entry : generations.entrySet()) target = entry.getValue();
         return target;
     }
 
-    private GenerationState runningTargetState() {
-        GenerationState target = null;
-        for (Map.Entry<String, GenerationState> entry : generations.entrySet()) {
-            if (entry.getValue().generating) target = entry.getValue();
-        }
-        return target;
-    }
-
     private void maybeStopWhenEmpty() {
         if (!generations.isEmpty()) return;
         removeOverlay();
-        stopForegroundKeepServiceAlive();
         stopSelf();
     }
 
-    private void ensureForeground() {
-        GenerationState state = runningTargetState();
-        if (state == null) return;
-        android.app.Notification notification = buildRunningNotification(state);
-        try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                ServiceCompat.startForeground(
-                    this,
-                    FOREGROUND_NOTIFICATION_ID,
-                    notification,
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
-                );
-            } else {
-                startForeground(FOREGROUND_NOTIFICATION_ID, notification);
-            }
-            foregroundStarted = true;
-        } catch (Exception ignored) { }
-    }
-
-    private void updateForegroundNotification() {
-        if (!foregroundStarted) {
-            if (hasRunningGeneration()) ensureForeground();
-            return;
-        }
-        GenerationState target = runningTargetState();
-        if (target == null) return;
-        NotificationManager manager = getSystemService(NotificationManager.class);
-        if (manager != null) manager.notify(FOREGROUND_NOTIFICATION_ID, buildRunningNotification(target));
-    }
-
-    private void stopForegroundKeepServiceAlive() {
-        if (!foregroundStarted) return;
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) stopForeground(STOP_FOREGROUND_REMOVE);
-        else stopForeground(true);
-        foregroundStarted = false;
-    }
-
-    private android.app.Notification buildRunningNotification(GenerationState state) {
-        String body = statusText(state);
-        if (!state.preview.isEmpty()) body = body + " · " + trimForNotification(state.preview);
-        return baseBuilder(FOREGROUND_NOTIFICATION_ID)
-            .setContentTitle(state.title)
-            .setContentText(body)
-            .setStyle(new NotificationCompat.BigTextStyle().bigText(body))
-            .setCategory(NotificationCompat.CATEGORY_PROGRESS)
-            .setOngoing(true)
-            .setOnlyAlertOnce(true)
-            .setSilent(true)
-            .build();
-    }
 
     private void postCompletionNotification(GenerationState state) {
         if (appForeground) return;
