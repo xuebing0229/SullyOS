@@ -363,7 +363,6 @@ public class SullyChatFloatingService extends Service {
     }
 
     private void refreshUi() {
-        updateForegroundNotification();
         if (appForeground || !canDrawOverlays()) {
             removeOverlay();
             return;
