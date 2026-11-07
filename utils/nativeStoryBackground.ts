@@ -181,6 +181,7 @@ export interface NativeStoryCompletionOptions {
   onStreamText?: (fullText: string) => void;
   onReasoningText?: (fullText: string) => void;
   onResolvedRouteIndex?: (routeIndex: number) => void;
+  signal?: AbortSignal;
   /**
    * 剧情与普通聊天共用同一套 Android SSE runner。这里仅覆盖 API 日志的展示身份，
    * 不改变请求/故障转移逻辑。
@@ -427,6 +428,7 @@ const waitForTerminal = async (
   jobId: string,
   onStreamText?: (fullText: string) => void,
   onReasoningText?: (fullText: string) => void,
+  signal?: AbortSignal,
 ): Promise<NativeStoryJob> => {
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
@@ -440,9 +442,21 @@ const waitForTerminal = async (
       stopped = true;
       if (timer) clearTimeout(timer);
       timer = null;
+      signal?.removeEventListener('abort', onAbort);
       void resumeHandle?.remove();
       fn();
     };
+    const onAbort = () => {
+      void NativeStoryBackground.remove({ jobId }).catch(() => undefined);
+      const error = new Error('后台生成已取消');
+      error.name = 'AbortError';
+      finish(() => reject(error));
+    };
+    if (signal?.aborted) {
+      onAbort();
+      return;
+    }
+    signal?.addEventListener('abort', onAbort, { once: true });
 
     const poll = async () => {
       if (stopped) return;
@@ -574,7 +588,7 @@ export const executeStoryCompletionInNativeBackground = async (
   }
 
   if (job.status === 'queued' || job.status === 'running') {
-    job = await waitForTerminal(jobId, options.onStreamText, options.onReasoningText);
+    job = await waitForTerminal(jobId, options.onStreamText, options.onReasoningText, options.signal);
   }
 
   let parsed: any | undefined;
