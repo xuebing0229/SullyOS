@@ -506,7 +506,7 @@ public final class SullyStoryGenerationManager {
         JSONObject publicJob = enqueue(context, spec);
         String jobId = spec.optString("jobId", "").trim();
         String title = spec.optString("title", "剧情");
-        // 剧情默认沿用自己的 FGS；普通聊天若已经由 SullyChatFloatingService 持有
+        // 剧情默认沿用自己的 FGS；普通聊天若已经由 SullyChatGenerationForegroundService 持有
         // foreground 生命周期，就不要再起第二条常驻通知。
         boolean externalForeground = spec.optBoolean("externalForeground", false);
         if (!externalForeground) {
