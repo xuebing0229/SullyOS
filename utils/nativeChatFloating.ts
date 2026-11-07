@@ -1,5 +1,5 @@
 import { App } from '@capacitor/app';
-import { Capacitor, registerPlugin } from '@capacitor/core';
+import { Capacitor } from '@capacitor/core';
 
 import { CHAT_GEN_EVENTS } from './chatGenEvents';
 import {
@@ -7,39 +7,14 @@ import {
   getInstantChatPending,
   listInstantChatPendings,
 } from './amsgInstantChat';
+import { NativeStoryBackground } from './nativeStoryBackground';
 
 const STORAGE_KEY = 'sully_chat_floating_enabled_v1';
 export const CHAT_FLOATING_SETTING_EVENT = 'sully-chat-floating-setting-changed';
 
 type ChatFloatingPhase = 'waiting' | 'thinking' | 'writing' | 'tool' | 'cloud';
 
-interface ChatFloatingPlugin {
-  chatFloatingStatus(): Promise<{ overlayGranted: boolean }>;
-  requestChatFloatingPermission(): Promise<void>;
-  startChatFloating(options: {
-    generationId: string;
-    title: string;
-    phase: ChatFloatingPhase;
-    preview?: string;
-    appForeground: boolean;
-  }): Promise<void>;
-  updateChatFloating(options: {
-    generationId: string;
-    title?: string;
-    phase: ChatFloatingPhase;
-    preview?: string;
-  }): Promise<void>;
-  finishChatFloating(options: {
-    generationId: string;
-    title?: string;
-    success: boolean;
-    error?: string;
-  }): Promise<void>;
-  releaseChatFloating(options: { generationId: string }): Promise<void>;
-  setChatFloatingAppForeground(options: { foreground: boolean }): Promise<void>;
-}
 
-const NativeStoryBackground = registerPlugin<ChatFloatingPlugin>('SullyStoryBackground');
 
 let installed = false;
 let appForeground = typeof document === 'undefined' ? true : !document.hidden;
