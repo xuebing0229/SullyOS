@@ -387,7 +387,7 @@ public class SullyChatFloatingService extends Service {
     private SystemHost createSystemHost() {
         Application app = getApplication();
         return SystemHost.builder(app)
-            .permission(FxPermissionStrategy.auto())
+            .permission(FxPermissionStrategy.skip())
             .build();
     }
 
@@ -396,8 +396,8 @@ public class SullyChatFloatingService extends Service {
             View bubble = createBubbleView();
             Application app = getApplication();
             FxConfig config = FxConfig.builder(FxContent.view(bubble))
-                .anchor(FxGravity.TOP_END, 12f, 180f)
-                .margin(8f, 16f, 8f, 16f)
+                .anchor(FxGravity.CENTER_END, 0f, -96f)
+                .margin(8f, 0f, 8f, 0f)
                 .adsorb(new FxAdsorb.Edges(
                     EnumSet.of(FxEdge.START, FxEdge.END),
                     new FxHalfHide(0f),
@@ -474,7 +474,7 @@ public class SullyChatFloatingService extends Service {
         panel.setLayoutParams(new ViewGroup.LayoutParams(width, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         FxConfig config = FxConfig.builder(FxContent.view(panel))
-            .anchor(FxGravity.TOP_CENTER, 0f, 16f)
+            .anchor(FxGravity.TOP_CENTER, 0f, 8f)
             .margin(12f, 12f, 12f, 12f)
             .gesture(FxGesture.ClickOnly)
             .build();
