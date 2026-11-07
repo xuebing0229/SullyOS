@@ -50,7 +50,7 @@ const instantReceived = new Map<string, { charName: string; preview: string }>()
 const isNativeAndroid = (): boolean =>
   Capacitor.isNativePlatform() && Capacitor.getPlatform() === 'android';
 
-const generationId = (charId: string): string =>
+export const chatFloatingGenerationId = (charId: string): string =>
   `chat:${String(charId || '').replace(/[^A-Za-z0-9:_-]/g, '_').slice(0, 140)}`;
 
 const cleanPreview = (value: unknown): string => {
@@ -90,7 +90,7 @@ export const requestChatFloatingPermission = async (): Promise<void> => {
 
 const start = (charId: string, charName: string, phase: ChatFloatingPhase, preview = '') => {
   if (!isNativeAndroid() || !isChatFloatingEnabled() || !charId) return;
-  const id = generationId(charId);
+  const id = chatFloatingGenerationId(charId);
   activeIds.add(id);
   void NativeStoryBackground.startChatFloating({
     generationId: id,
@@ -103,7 +103,7 @@ const start = (charId: string, charName: string, phase: ChatFloatingPhase, previ
 
 const update = (charId: string, charName: string, phase: ChatFloatingPhase, preview = '') => {
   if (!isNativeAndroid() || !isChatFloatingEnabled() || !charId) return;
-  const id = generationId(charId);
+  const id = chatFloatingGenerationId(charId);
   if (!activeIds.has(id)) {
     start(charId, charName, phase, preview);
     return;
@@ -118,7 +118,7 @@ const update = (charId: string, charName: string, phase: ChatFloatingPhase, prev
 
 const finish = (charId: string, charName: string, preview = '') => {
   if (!isNativeAndroid() || !isChatFloatingEnabled() || !charId) return;
-  const id = generationId(charId);
+  const id = chatFloatingGenerationId(charId);
   if (!activeIds.has(id)) start(charId, charName, 'writing', preview);
   void NativeStoryBackground.finishChatFloating({
     generationId: id,
@@ -129,7 +129,7 @@ const finish = (charId: string, charName: string, preview = '') => {
 
 const release = (charId: string) => {
   if (!isNativeAndroid() || !charId) return;
-  const id = generationId(charId);
+  const id = chatFloatingGenerationId(charId);
   activeIds.delete(id);
   void NativeStoryBackground.releaseChatFloating({ generationId: id }).catch(() => {});
 };
