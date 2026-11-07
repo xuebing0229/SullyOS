@@ -446,14 +446,12 @@ const DateSession: React.FC<DateSessionProps> = ({
                 if (item.speaker === 'npc') {
                     // 普通见面继续不替 NPC 配音；广播剧则只按男女两条公共声线加入同一整轮 Dialogue。
                     if (!broadcastMode) return [];
-                    const npcSpeaker = item.npcGender === 'female'
+                    const resolvedNpcGender = item.npcGender
+                        || (npcMaleVoiceId ? 'male' : npcFemaleVoiceId ? 'female' : 'male');
+                    const npcSpeaker = resolvedNpcGender === 'female'
                         ? 'npc-female' as const
                         : 'npc-male' as const;
-                    const voiceId = item.npcGender === 'female'
-                        ? npcFemaleVoiceId
-                        : item.npcGender === 'male'
-                            ? npcMaleVoiceId
-                            : resolveElevenLabsNpcVoiceId(apiConfig);
+                    const voiceId = resolveElevenLabsNpcVoiceId(apiConfig, resolvedNpcGender);
                     return [{
                         lineId: item.lineId,
                         speaker: npcSpeaker,
