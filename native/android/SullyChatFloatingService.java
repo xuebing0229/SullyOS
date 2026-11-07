@@ -71,8 +71,8 @@ public class SullyChatFloatingService extends Service {
     private final LinkedHashMap<String, GenerationState> generations = new LinkedHashMap<>();
 
     private FxControl bubbleControl;
+    private SullyChatFloatingBubbleHost bubbleHost;
     private FxControl panelControl;
-    private TextView bubbleBadge;
     private TextView panelTitle;
     private TextView panelStatus;
     private TextView panelPreview;
@@ -396,72 +396,24 @@ public class SullyChatFloatingService extends Service {
 
     private void ensureBubble(GenerationState state) {
         if (bubbleControl == null) {
-            View bubble = createBubbleView();
-            Application app = getApplication();
-            FxConfig config = FxConfig.builder(FxContent.view(bubble))
-                .anchor(FxGravity.CENTER_END, 0f, -96f)
-                .margin(8f, 0f, 8f, 0f)
-                .adsorb(FxAdsorb.horizontal())
-                .gesture(FxGesture.Normal)
-                .storage(new FxSpStorage(app))
-                .animation(FxAnimations.scale())
-                .build();
-
             try {
-                bubbleControl = FloatingX.install(FLOATING_BUBBLE_TAG, config, createSystemHost());
-                bubbleControl.addListener(new FxListener() {
-                    @Override
-                    public void onClick(FxControl control, View view) {
-                        expandPanel();
-                    }
-                });
+                // RikkaHub bubble UI is hosted by Kotlin/Compose so its original morph shape,
+                // spin timing, adaptive-icon layer scaling, status badge and FloatingX config
+                // stay intact instead of being reimplemented with a plain ImageView.
+                bubbleHost = new SullyChatFloatingBubbleHost(getApplication(), this::expandPanel);
+                bubbleControl = bubbleHost.install();
                 bubbleControl.show();
             } catch (Exception error) {
                 bubbleControl = null;
-                bubbleBadge = null;
+                bubbleHost = null;
             }
         }
         updateBubble(state);
     }
 
-    private View createBubbleView() {
-        FrameLayout root = new FrameLayout(this);
-        int outer = dp(64);
-        root.setLayoutParams(new ViewGroup.LayoutParams(outer, outer));
-
-        ImageView icon = new ImageView(this);
-        FrameLayout.LayoutParams iconLp = new FrameLayout.LayoutParams(dp(50), dp(50), Gravity.CENTER);
-        GradientDrawable circle = new GradientDrawable();
-        circle.setShape(GradientDrawable.OVAL);
-        circle.setColor(Color.WHITE);
-        icon.setBackground(circle);
-        icon.setPadding(dp(4), dp(4), dp(4), dp(4));
-        icon.setImageDrawable(getApplicationInfo().loadIcon(getPackageManager()));
-        icon.setScaleType(ImageView.ScaleType.CENTER_INSIDE);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            icon.setClipToOutline(true);
-            icon.setElevation(dp(6));
-        }
-        root.addView(icon, iconLp);
-
-        bubbleBadge = new TextView(this);
-        bubbleBadge.setTextColor(Color.WHITE);
-        bubbleBadge.setTextSize(10f);
-        bubbleBadge.setGravity(Gravity.CENTER);
-        GradientDrawable badgeBg = new GradientDrawable();
-        badgeBg.setShape(GradientDrawable.OVAL);
-        badgeBg.setColor(Color.rgb(65, 155, 120));
-        bubbleBadge.setBackground(badgeBg);
-        FrameLayout.LayoutParams badgeLp = new FrameLayout.LayoutParams(dp(20), dp(20), Gravity.TOP | Gravity.END);
-        badgeLp.setMargins(0, dp(2), dp(2), 0);
-        root.addView(bubbleBadge, badgeLp);
-        return root;
-    }
-
     private void updateBubble(GenerationState state) {
-        if (bubbleBadge == null) return;
-        bubbleBadge.setVisibility(state.generating ? View.GONE : View.VISIBLE);
-        bubbleBadge.setText(state.success ? "✓" : "!");
+        if (bubbleHost == null) return;
+        bubbleHost.update(state.generating, state.success, !state.error.isEmpty());
     }
 
     private void expandPanel() {
@@ -594,7 +546,7 @@ public class SullyChatFloatingService extends Service {
     private void removeBubble() {
         FxControl control = bubbleControl;
         bubbleControl = null;
-        bubbleBadge = null;
+        bubbleHost = null;
         if (control == null) return;
         try { control.cancel(); } catch (Exception ignored) { }
     }
