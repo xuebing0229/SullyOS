@@ -63,7 +63,7 @@ public class SullyChatFloatingService extends Service {
     public static final String EXTRA_ERROR = "error";
     public static final String EXTRA_FOREGROUND = "appForeground";
 
-    private static final String CHANNEL_ID = "sully_chat_background_v1";
+    private static final String CHANNEL_ID = "sully_chat_completed_v1";
     private static final int COMPLETE_NOTIFICATION_BASE = 23100;
     private static final long FINISHED_RETENTION_MS = 45_000L;
 
