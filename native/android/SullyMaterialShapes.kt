@@ -150,7 +150,7 @@ internal object SullyMaterialShapes {
     }
 
     private fun Float.toRadians(): Float = this / 360f * 2f * PI.toFloat()
-    private fun angleDegrees(y: Float, x: Float): Float = atan2(y, x) * 180f / PI.toFloat()
+    private fun angleDegrees(x: Float, y: Float): Float = atan2(y, x) * 180f / PI.toFloat()
 
     private fun customPolygon(
         pnr: List<PointNRound>,
