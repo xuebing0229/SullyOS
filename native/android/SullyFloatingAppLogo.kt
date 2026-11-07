@@ -3,9 +3,6 @@ package __APP_ID__.plugins
 import android.graphics.Rect
 import android.graphics.drawable.AdaptiveIconDrawable
 import android.graphics.drawable.Drawable
-import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
-import androidx.compose.material3.MaterialShapes
-import androidx.compose.material3.toPath
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
@@ -14,49 +11,44 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Matrix
 import androidx.compose.ui.graphics.Outline
 import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.asComposePath
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.LayoutDirection
-import androidx.compose.ui.util.fastForEach
 import androidx.core.content.ContextCompat
 import androidx.graphics.shapes.Morph
+import androidx.graphics.shapes.toPath
 import __APP_ID__.R
 import kotlin.math.floor
 import kotlin.math.roundToInt
 
 // Copied from RikkaHub AppLogo.kt (AGPL-3.0).
-// Adapted only for SullyOS package/resource names.
-// Source:
-// app/src/main/java/me/rerere/rikkahub/ui/components/ui/AppLogo.kt
+// The only compatibility change is sourcing the same seven Material shape definitions
+// from local copied AndroidX source instead of Material3 1.5, because current RikkaHub
+// Material3 binaries require compileSdk 37 while SullyOS intentionally stays on 34.
+// Source: app/src/main/java/me/rerere/rikkahub/ui/components/ui/AppLogo.kt
 
-/** 应用图标的各层：直接画图层，整张图标带着系统的图标蒙版，会和外面的轮廓叠在一起 */
 @Composable
 fun rememberAppLogoLayers(): List<Drawable> {
     val context = LocalContext.current
     return remember(context) {
         val icon = ContextCompat.getDrawable(context, R.mipmap.ic_launcher)
-        if (icon is AdaptiveIconDrawable) listOfNotNull(icon.background, icon.foreground) else listOfNotNull(icon)
+        if (icon is AdaptiveIconDrawable) listOfNotNull(icon.background, icon.foreground)
+        else listOfNotNull(icon)
     }
 }
 
-/** 把 logo 铺满当前区域，轮廓由外面的 clip 决定 */
 fun Modifier.drawAppLogo(layers: List<Drawable>): Modifier = drawBehind {
     drawIntoCanvas { canvas ->
-        layers.fastForEach { layer ->
+        layers.forEach { layer ->
             layer.bounds = logoLayerBounds(size)
             layer.draw(canvas.nativeCanvas)
         }
     }
 }
 
-/**
- * logo 的轮廓：[position] 的整数部分是第几段变形，小数部分是这段的进度，每段转 90 度，
- * [extraRotation] 叠加在上面（比如加载时的整体自转）。
- * 停在整数上时是一个完整的形状；弹簧过冲的部分落在下一段变形的开头。
- */
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 fun logoMorphShape(position: Float, extraRotation: Float = 0f): Shape {
     val segment = floor(position).toInt()
     return MorphShape(
@@ -66,38 +58,35 @@ fun logoMorphShape(position: Float, extraRotation: Float = 0f): Shape {
     )
 }
 
-// 自适应图标的图层是 108dp，可见的只有中间 72dp，四周各多出四分之一
 private fun logoLayerBounds(size: Size): Rect {
     val insetX = (size.width / 4f).roundToInt()
     val insetY = (size.height / 4f).roundToInt()
     return Rect(-insetX, -insetY, size.width.roundToInt() + insetX, size.height.roundToInt() + insetY)
 }
 
-// logo 依次变成的形状，最后一个接回第一个
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 private val LogoShapes = listOf(
-    MaterialShapes.Cookie12Sided,
-    MaterialShapes.Clover4Leaf,
-    MaterialShapes.Cookie9Sided,
-    MaterialShapes.Sunny,
-    MaterialShapes.Cookie6Sided,
-    MaterialShapes.Flower,
-    MaterialShapes.Cookie4Sided,
+    SullyMaterialShapes.Cookie12Sided,
+    SullyMaterialShapes.Clover4Leaf,
+    SullyMaterialShapes.Cookie9Sided,
+    SullyMaterialShapes.Sunny,
+    SullyMaterialShapes.Cookie6Sided,
+    SullyMaterialShapes.Flower,
+    SullyMaterialShapes.Cookie4Sided,
 )
 
 private val LogoMorphs = LogoShapes.indices.map { index ->
     Morph(LogoShapes[index], LogoShapes[(index + 1) % LogoShapes.size])
 }
 
-// 停在两个形状之间某一帧的轮廓
 private class MorphShape(
     private val morph: Morph,
     private val progress: Float,
     private val rotation: Float,
 ) : Shape {
     override fun createOutline(size: Size, layoutDirection: LayoutDirection, density: Density): Outline {
-        val path = morph.toPath(progress = progress)
-        // MaterialShapes 是归一化到 1x1 的，先放大到实际尺寸，再绕中心旋转
+        // graphics-shapes 1.0.1 already exposes the Android Path conversion used by
+        // Material3. Convert that path to Compose instead of pulling Material3 1.5.
+        val path = morph.toPath(progress).asComposePath()
         val matrix = Matrix().apply {
             translate(size.width / 2f, size.height / 2f)
             rotateZ(rotation)
