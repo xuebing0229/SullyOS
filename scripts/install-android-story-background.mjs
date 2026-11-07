@@ -126,7 +126,7 @@ if (!manifest.includes('android:name=".plugins.SullyChatFloatingService"')) {
     '            android:stopWithTask="false"',
     '            android:foregroundServiceType="dataSync" />',
     '    </application>',
-  ].join('\\n'));
+  ].join('\n'));
 }
 
 await writeFile(manifestPath, manifest);
