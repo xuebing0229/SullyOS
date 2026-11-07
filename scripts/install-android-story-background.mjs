@@ -159,6 +159,13 @@ if (!rootGradle.includes('org.jetbrains.kotlin:compose-compiler-gradle-plugin'))
     match => `${match}\n        classpath "org.jetbrains.kotlin:compose-compiler-gradle-plugin:2.2.21"`,
   );
 }
+// RikkaHub 的 hugeicons-compose 发布在 JitPack；沿用上游仓库来源，不复制一套图标。
+if (!rootGradle.includes("https://jitpack.io")) {
+  rootGradle = rootGradle.replace(
+    /allprojects\s*\{[\s\S]*?repositories\s*\{/,
+    match => `${match}\n        maven { url 'https://jitpack.io' }`,
+  );
+}
 await writeFile(rootGradlePath, rootGradle);
 
 // RikkaHub 的 OpenAI streaming provider 使用 OkHttp + okhttp-sse EventSource。
