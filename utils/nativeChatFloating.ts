@@ -45,6 +45,7 @@ let installed = false;
 let appForeground = typeof document === 'undefined' ? true : !document.hidden;
 const activeIds = new Set<string>();
 let knownInstantChars = new Set<string>();
+const instantReceived = new Map<string, { charName: string; preview: string }>();
 
 const isNativeAndroid = (): boolean =>
   Capacitor.isNativePlatform() && Capacitor.getPlatform() === 'android';
@@ -141,7 +142,13 @@ const syncInstantPendings = () => {
     update(item.charId, item.charName || '', 'cloud', '回复已交给云端，正在生成…');
   }
   for (const oldCharId of knownInstantChars) {
-    if (!nextChars.has(oldCharId)) release(oldCharId);
+    if (nextChars.has(oldCharId)) continue;
+    const received = instantReceived.get(oldCharId);
+    if (received) {
+      finish(oldCharId, received.charName, received.preview);
+      instantReceived.delete(oldCharId);
+    }
+    release(oldCharId);
   }
   knownInstantChars = nextChars;
 };
@@ -178,7 +185,9 @@ export const installNativeChatFloatingBridge = (): (() => void) => {
   const onActiveMessage = (event: Event) => {
     const detail = (event as CustomEvent).detail || {};
     if (!detail.charId || !getInstantChatPending(detail.charId)) return;
-    finish(detail.charId, detail.charName || '', detail.body || '');
+    const preview = cleanPreview(detail.body || '');
+    instantReceived.set(detail.charId, { charName: detail.charName || '', preview });
+    update(detail.charId, detail.charName || '', 'writing', preview);
   };
   const onPendingChanged = () => syncInstantPendings();
   const onSettingChanged = () => {
