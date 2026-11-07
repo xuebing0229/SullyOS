@@ -100,6 +100,8 @@ const normalizeElevenLabsAccountPreset = (preset: ElevenLabsAccountPreset): Elev
   );
   const userVoiceId = normalizeElevenLabsVoiceId(preset.userVoiceId);
   const narratorVoiceId = normalizeElevenLabsVoiceId(preset.narratorVoiceId);
+  const npcMaleVoiceId = normalizeElevenLabsVoiceId(preset.npcMaleVoiceId);
+  const npcFemaleVoiceId = normalizeElevenLabsVoiceId(preset.npcFemaleVoiceId);
   return {
     id,
     name: String(preset.name || '').trim() || '未命名账号',
@@ -107,6 +109,8 @@ const normalizeElevenLabsAccountPreset = (preset: ElevenLabsAccountPreset): Elev
     ...(userVoiceId ? { userVoiceId } : {}),
     ...(Object.keys(characterVoiceIds).length ? { characterVoiceIds } : {}),
     ...(narratorVoiceId ? { narratorVoiceId } : {}),
+    ...(npcMaleVoiceId ? { npcMaleVoiceId } : {}),
+    ...(npcFemaleVoiceId ? { npcFemaleVoiceId } : {}),
     ...(preset.legacyVoiceFallback === true ? { legacyVoiceFallback: true } : {}),
   };
 };
@@ -152,6 +156,19 @@ export const resolveElevenLabsNarratorVoiceId = (
     if (preset.legacyVoiceFallback !== true) return '';
   }
   return normalizeElevenLabsVoiceId(legacyNarratorVoiceId);
+};
+
+export const resolveElevenLabsNpcVoiceId = (
+  apiConfig: APIConfig,
+  gender?: 'male' | 'female' | null,
+): string => {
+  const preset = getActiveElevenLabsAccountPreset(apiConfig);
+  if (!preset) return '';
+  if (gender === 'female') return normalizeElevenLabsVoiceId(preset.npcFemaleVoiceId);
+  if (gender === 'male') return normalizeElevenLabsVoiceId(preset.npcMaleVoiceId);
+  // 旧记录没有性别标签时也不要把 NPC 整句丢掉：优先男声，其次女声。
+  return normalizeElevenLabsVoiceId(preset.npcMaleVoiceId)
+    || normalizeElevenLabsVoiceId(preset.npcFemaleVoiceId);
 };
 
 export const resolveElevenLabsVoiceIdForTarget = (
