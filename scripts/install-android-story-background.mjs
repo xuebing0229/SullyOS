@@ -179,6 +179,7 @@ const okHttpDependencies = [
 // 所以这里复用同一个成熟库来负责拖拽、边缘吸附、安全区和位置持久化，
 // 不在 SullyOS 里平行手写 WindowManager 手势实现。
 const floatingDependencies = [
+  'implementation "androidx.lifecycle:lifecycle-process:2.8.7"',
   'implementation "io.github.petterpx:floatingx-core:3.0.0"',
   'implementation "io.github.petterpx:floatingx-system:3.0.0"',
 ];

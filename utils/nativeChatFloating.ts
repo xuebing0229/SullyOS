@@ -1,4 +1,3 @@
-import { App } from '@capacitor/app';
 import { Capacitor } from '@capacitor/core';
 
 import { CHAT_GEN_EVENTS } from './chatGenEvents';
@@ -17,7 +16,6 @@ type ChatFloatingPhase = 'waiting' | 'thinking' | 'writing' | 'tool' | 'cloud';
 
 
 let installed = false;
-let appForeground = typeof document === 'undefined' ? true : !document.hidden;
 const activeIds = new Set<string>();
 let knownInstantChars = new Set<string>();
 const instantReceived = new Map<string, { charName: string; preview: string }>();
@@ -83,7 +81,8 @@ export const ensureNativeChatFloatingStarted = async (
       title: charName || '聊天',
       phase,
       preview: cleanPreview(preview),
-      appForeground,
+      // Native ProcessLifecycleOwner is now the source of truth for foreground/background.
+      appForeground: true,
     });
     activeIds.add(id);
     return true;
@@ -128,6 +127,24 @@ const release = (charId: string) => {
   const id = chatFloatingGenerationId(charId);
   activeIds.delete(id);
   void NativeStoryBackground.releaseChatFloating({ generationId: id }).catch(() => {});
+};
+
+// Shared entry points for other generation surfaces (for example Meeting/Date).
+// They deliberately reuse the same native service/FloatingX pipeline instead of
+// growing another background-window implementation.
+export const updateNativeChatFloating = update;
+export const finishNativeChatFloating = finish;
+export const releaseNativeChatFloating = release;
+export const failNativeChatFloating = (charId: string, charName: string, error = '') => {
+  if (!isNativeAndroid() || !isChatFloatingEnabled() || !charId) return;
+  const id = chatFloatingGenerationId(charId);
+  if (!activeIds.has(id)) start(charId, charName, 'waiting', '');
+  void NativeStoryBackground.finishChatFloating({
+    generationId: id,
+    title: charName || '聊天',
+    success: false,
+    error: cleanPreview(error),
+  }).catch(() => {});
 };
 
 const syncInstantPendings = () => {
@@ -204,14 +221,9 @@ export const installNativeChatFloatingBridge = (): (() => void) => {
   window.addEventListener(AMSG_INSTANT_CHAT_PENDING_EVENT, onPendingChanged);
   window.addEventListener(CHAT_FLOATING_SETTING_EVENT, onSettingChanged);
 
-  let appStateHandle: { remove: () => Promise<void> } | null = null;
-  void App.addListener('appStateChange', ({ isActive }) => {
-    appForeground = isActive;
-    if (isNativeAndroid() && isChatFloatingEnabled()) {
-      void NativeStoryBackground.setChatFloatingAppForeground({ foreground: isActive }).catch(() => {});
-      if (!isActive) syncInstantPendings();
-    }
-  }).then(handle => { appStateHandle = handle; }).catch(() => {});
+  // Foreground/background switching is intentionally not driven from JS here.
+  // RikkaHub's ChatFloatingTracker uses ProcessLifecycleOwner natively; doing the
+  // same avoids the WebView being paused before the "went background" message lands.
 
   if (isChatFloatingEnabled()) syncInstantPendings();
 
@@ -223,7 +235,6 @@ export const installNativeChatFloatingBridge = (): (() => void) => {
     window.removeEventListener('active-msg-received', onActiveMessage);
     window.removeEventListener(AMSG_INSTANT_CHAT_PENDING_EVENT, onPendingChanged);
     window.removeEventListener(CHAT_FLOATING_SETTING_EVENT, onSettingChanged);
-    void appStateHandle?.remove();
     installed = false;
   };
 };
