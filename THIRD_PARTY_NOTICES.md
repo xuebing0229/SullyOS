@@ -28,3 +28,11 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+## RikkaHub ChatGenerationForegroundService
+
+- Project: https://github.com/rikkahub/rikkahub
+- Source reused: `app/src/main/java/me/rerere/rikkahub/service/ChatGenerationForegroundService.kt`
+- License: GNU Affero General Public License v3.0
+- SullyOS changes: package/application integration, String generation IDs, notification resources, and removal of the Android 15 `onTimeout` hook because the current SullyOS Android toolchain compiles against an older SDK.
+- Full license text: `licenses/RikkaHub-AGPL-3.0.txt`
