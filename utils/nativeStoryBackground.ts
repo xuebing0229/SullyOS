@@ -133,7 +133,7 @@ interface NativeStoryJob {
   updatedAt?: number;
 }
 
-interface SullyStoryBackgroundPlugin {
+export interface SullyStoryBackgroundPlugin {
   submit(options: { spec: Record<string, any> }): Promise<{ job: NativeStoryJob }>;
   status(options: { jobId: string }): Promise<{ job: NativeStoryJob | null }>;
   remove(options: { jobId: string }): Promise<void>;
@@ -153,9 +153,32 @@ interface SullyStoryBackgroundPlugin {
     status: 'succeeded' | 'failed' | 'cancelled';
     error?: string;
   }): Promise<void>;
+  chatFloatingStatus(): Promise<{ overlayGranted: boolean }>;
+  requestChatFloatingPermission(): Promise<void>;
+  startChatFloating(options: {
+    generationId: string;
+    title: string;
+    phase: 'waiting' | 'thinking' | 'writing' | 'tool' | 'cloud';
+    preview?: string;
+    appForeground: boolean;
+  }): Promise<void>;
+  updateChatFloating(options: {
+    generationId: string;
+    title?: string;
+    phase: 'waiting' | 'thinking' | 'writing' | 'tool' | 'cloud';
+    preview?: string;
+  }): Promise<void>;
+  finishChatFloating(options: {
+    generationId: string;
+    title?: string;
+    success: boolean;
+    error?: string;
+  }): Promise<void>;
+  releaseChatFloating(options: { generationId: string }): Promise<void>;
+  setChatFloatingAppForeground(options: { foreground: boolean }): Promise<void>;
 }
 
-const NativeStoryBackground = registerPlugin<SullyStoryBackgroundPlugin>('SullyStoryBackground');
+export const NativeStoryBackground = registerPlugin<SullyStoryBackgroundPlugin>('SullyStoryBackground');
 const STORAGE_KEY = 'sully_story_background_pending_v1';
 
 export interface PendingNativeStoryJob {
