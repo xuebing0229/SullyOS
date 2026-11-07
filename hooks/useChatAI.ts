@@ -100,7 +100,11 @@ import {
     executeStoryCompletionInNativeBackground,
     isNativeStoryBackgroundRuntime,
 } from '../utils/nativeStoryBackground';
-import { chatFloatingGenerationId, isChatFloatingEnabled } from '../utils/nativeChatFloating';
+import {
+    chatFloatingGenerationId,
+    ensureNativeChatFloatingStarted,
+    isChatFloatingEnabled,
+} from '../utils/nativeChatFloating';
 import { recordApiCall } from '../utils/apiCallLog';
 import { executeOpenAiChatPlan, resolveApiExecutionPlan, type ApiExecutionPlan } from '../utils/apiFailover';
 import {prepareHomeSecretTask,failHomeSecretTask} from '../utils/homeSecrets';
@@ -1862,6 +1866,14 @@ export const useChatAI = ({
                     && !(Array.isArray(body.tools) && body.tools.length > 0)
                     && !body.tool_choice;
                 if (useNativeBackgroundChat) {
+                    // 先 await 同一个悬浮 FGS 真正启动，再把 generation owner 交给原生 SSE。
+                    // 启动失败时让既有 SullyStoryKeepAliveService 接管，绝不裸跑。
+                    const floatingServiceStarted = await ensureNativeChatFloatingStarted(
+                        char.id,
+                        char.name,
+                        'waiting',
+                        '',
+                    );
                     try {
                         return await executeStoryCompletionInNativeBackground({
                             ownerKey: nativeChatOwnerKey,
@@ -1869,7 +1881,7 @@ export const useChatAI = ({
                             plan,
                             body,
                             signal: replyRun.signal,
-                            externalForeground: true,
+                            externalForeground: floatingServiceStarted,
                             floatingGenerationId: chatFloatingGenerationId(char.id),
                             logMeta: { appId: 'chat', appName: '消息', purpose },
                             onStreamText: fullText => hooks?.onDelta?.('', fullText),
