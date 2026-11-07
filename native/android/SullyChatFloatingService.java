@@ -1,5 +1,6 @@
 package __APP_ID__.plugins;
 
+import android.app.Application;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
@@ -8,7 +9,6 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ServiceInfo;
 import android.graphics.Color;
-import android.graphics.PixelFormat;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Build;
 import android.os.Handler;
@@ -16,10 +16,8 @@ import android.os.IBinder;
 import android.os.Looper;
 import android.provider.Settings;
 import android.view.Gravity;
-import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
-import android.view.WindowManager;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
@@ -29,19 +27,31 @@ import androidx.core.app.NotificationCompat;
 import androidx.core.app.ServiceCompat;
 import androidx.core.content.ContextCompat;
 
+import com.petterp.floatingx.core.FloatingX;
+import com.petterp.floatingx.core.FxControl;
+import com.petterp.floatingx.core.FxListener;
+import com.petterp.floatingx.core.config.FxConfig;
+import com.petterp.floatingx.core.config.FxContent;
+import com.petterp.floatingx.core.gesture.FxGesture;
+import com.petterp.floatingx.core.layout.FxAdsorb;
+import com.petterp.floatingx.core.layout.FxEdge;
+import com.petterp.floatingx.core.layout.FxGravity;
+import com.petterp.floatingx.core.layout.FxHalfHide;
+import com.petterp.floatingx.core.storage.FxSpStorage;
+import com.petterp.floatingx.system.SystemHost;
+import com.petterp.floatingx.system.permission.FxPermissionStrategy;
+
+import java.util.EnumSet;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
- * Chat background keep-alive + system floating window.
+ * 聊天后台生成前台服务 + 系统悬浮窗。
  *
- * Behaviour intentionally follows RikkaHub's floating-chat lifecycle:
- * - generation ownership stays in the existing SullyOS chat pipeline;
- * - the foreground service only keeps the app process alive;
- * - the floating window appears only while the app is in background;
- * - a finished reply leaves a completion notification and a short-lived finished bubble.
- *
- * This is a clean-room Android Views implementation for SullyOS' Capacitor stack.
+ * 悬浮窗底层直接复用 RikkaHub 同款 FloatingX 3.x：
+ * - FloatingX 负责系统浮窗挂载、拖动、左右吸附、安全区和位置持久化；
+ * - SullyOS 只保留自己的聊天状态、内容展示和 FGS 生命周期；
+ * - 不复制 RikkaHub 的 AGPL 业务源码。
  */
 public class SullyChatFloatingService extends Service {
     public static final String ACTION_START = "SULLY_CHAT_FLOATING_START";
@@ -63,13 +73,14 @@ public class SullyChatFloatingService extends Service {
     private static final int COMPLETE_NOTIFICATION_BASE = 23100;
     private static final long FINISHED_RETENTION_MS = 45_000L;
 
+    private static final String FLOATING_BUBBLE_TAG = "sully-chat-generation-bubble";
+    private static final String FLOATING_PANEL_TAG = "sully-chat-generation-panel";
+
     private final LinkedHashMap<String, GenerationState> generations = new LinkedHashMap<>();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
-    private WindowManager windowManager;
-    private View bubbleView;
-    private View panelView;
-    private WindowManager.LayoutParams bubbleParams;
+    private FxControl bubbleControl;
+    private FxControl panelControl;
     private TextView bubbleBadge;
     private TextView panelTitle;
     private TextView panelStatus;
@@ -164,7 +175,6 @@ public class SullyChatFloatingService extends Service {
     @Override
     public void onCreate() {
         super.onCreate();
-        windowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
         createChannel();
     }
 
@@ -197,15 +207,6 @@ public class SullyChatFloatingService extends Service {
         state.title = cleanTitle(intent.getStringExtra(EXTRA_TITLE));
         state.phase = cleanPhase(intent.getStringExtra(EXTRA_PHASE));
         state.preview = cleanPreview(intent.getStringExtra(EXTRA_PREVIEW));
-        if (!"done".equals(state.phase) && !"failed".equals(state.phase)) {
-            // 原生首轮失败后 JS 可能走已有兼容重试；新的真实进度到来就把同一浮窗复活，
-            // 不创建第二个 generation。
-            state.generating = true;
-            state.success = false;
-            state.error = "";
-            state.finishedAt = 0L;
-            cancelCompletionNotification(id);
-        }
         state.updatedAt = System.currentTimeMillis();
         if (id.equals(dismissedGenerationId)) dismissedGenerationId = null;
         ensureForeground();
@@ -220,6 +221,13 @@ public class SullyChatFloatingService extends Service {
         if (title != null && !title.trim().isEmpty()) state.title = cleanTitle(title);
         state.phase = cleanPhase(intent.getStringExtra(EXTRA_PHASE));
         state.preview = cleanPreview(intent.getStringExtra(EXTRA_PREVIEW));
+        if (!"done".equals(state.phase) && !"failed".equals(state.phase)) {
+            state.generating = true;
+            state.success = false;
+            state.error = "";
+            state.finishedAt = 0L;
+            cancelCompletionNotification(id);
+        }
         state.updatedAt = System.currentTimeMillis();
         updateForegroundNotification();
         refreshUi();
@@ -252,11 +260,8 @@ public class SullyChatFloatingService extends Service {
     private void handleRelease(Intent intent) {
         String id = cleanId(intent.getStringExtra(EXTRA_ID));
         GenerationState state = generations.get(id);
-        if (state != null && state.generating) {
-            generations.remove(id);
-        } else if (state == null) {
-            generations.remove(id);
-        }
+        if (state != null && state.generating) generations.remove(id);
+        else if (state == null) generations.remove(id);
         if (id.equals(dismissedGenerationId) && !generations.containsKey(id)) dismissedGenerationId = null;
         refreshUi();
         if (!hasRunningGeneration()) stopForegroundKeepServiceAlive();
@@ -437,7 +442,7 @@ public class SullyChatFloatingService extends Service {
             removeOverlay();
             return;
         }
-        if (panelView != null) updatePanel(state);
+        if (panelControl != null) updatePanel(state);
         else ensureBubble(state);
     }
 
@@ -445,56 +450,82 @@ public class SullyChatFloatingService extends Service {
         return Build.VERSION.SDK_INT < Build.VERSION_CODES.M || Settings.canDrawOverlays(this);
     }
 
+    /**
+     * 系统浮窗 Host 直接用 FloatingX。权限已由设置页显式引导；
+     * 这里只在权限已存在时安装，不让库自己突然弹系统页。
+     */
+    private SystemHost createSystemHost() {
+        Application app = getApplication();
+        return SystemHost.builder(app)
+            .permission(FxPermissionStrategy.auto())
+            .build();
+    }
+
     private void ensureBubble(GenerationState state) {
-        if (bubbleView == null) {
-            FrameLayout root = new FrameLayout(this);
-            int outer = dp(64);
-            root.setLayoutParams(new FrameLayout.LayoutParams(outer, outer));
+        if (bubbleControl == null) {
+            View bubble = createBubbleView();
+            Application app = getApplication();
+            FxConfig config = FxConfig.builder(FxContent.view(bubble))
+                .anchor(FxGravity.TOP_END, 12f, 180f)
+                .margin(8f, 16f, 8f, 16f)
+                .adsorb(new FxAdsorb.Edges(
+                    EnumSet.of(FxEdge.START, FxEdge.END),
+                    new FxHalfHide(0f),
+                    true
+                ))
+                .gesture(FxGesture.Normal)
+                .storage(new FxSpStorage(app))
+                .build();
 
-            ImageView icon = new ImageView(this);
-            FrameLayout.LayoutParams iconLp = new FrameLayout.LayoutParams(dp(50), dp(50), Gravity.CENTER);
-            GradientDrawable circle = new GradientDrawable();
-            circle.setShape(GradientDrawable.OVAL);
-            circle.setColor(Color.WHITE);
-            icon.setBackground(circle);
-            icon.setPadding(dp(4), dp(4), dp(4), dp(4));
-            icon.setImageDrawable(getApplicationInfo().loadIcon(getPackageManager()));
-            icon.setScaleType(ImageView.ScaleType.CENTER_INSIDE);
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                icon.setClipToOutline(true);
-                icon.setElevation(dp(6));
+            try {
+                bubbleControl = FloatingX.install(FLOATING_BUBBLE_TAG, config, createSystemHost());
+                bubbleControl.addListener(new FxListener() {
+                    @Override
+                    public void onClick(FxControl control, View view) {
+                        expandPanel();
+                    }
+                });
+                bubbleControl.show();
+            } catch (Exception error) {
+                bubbleControl = null;
+                bubbleBadge = null;
             }
-            root.addView(icon, iconLp);
-
-            bubbleBadge = new TextView(this);
-            bubbleBadge.setTextColor(Color.WHITE);
-            bubbleBadge.setTextSize(10f);
-            bubbleBadge.setGravity(Gravity.CENTER);
-            GradientDrawable badgeBg = new GradientDrawable();
-            badgeBg.setShape(GradientDrawable.OVAL);
-            badgeBg.setColor(Color.rgb(65, 155, 120));
-            bubbleBadge.setBackground(badgeBg);
-            FrameLayout.LayoutParams badgeLp = new FrameLayout.LayoutParams(dp(20), dp(20), Gravity.TOP | Gravity.END);
-            badgeLp.setMargins(0, dp(2), dp(2), 0);
-            root.addView(bubbleBadge, badgeLp);
-
-            bubbleView = root;
-            bubbleParams = new WindowManager.LayoutParams(
-                outer,
-                outer,
-                overlayType(),
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-                    | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
-                PixelFormat.TRANSLUCENT
-            );
-            bubbleParams.gravity = Gravity.TOP | Gravity.START;
-            bubbleParams.x = getResources().getDisplayMetrics().widthPixels - outer - dp(10);
-            bubbleParams.y = getSharedPreferences("sully_chat_float", MODE_PRIVATE).getInt("bubble_y", dp(180));
-            installBubbleTouch(root);
-            try { windowManager.addView(root, bubbleParams); }
-            catch (Exception ignored) { bubbleView = null; bubbleBadge = null; }
         }
         updateBubble(state);
+    }
+
+    private View createBubbleView() {
+        FrameLayout root = new FrameLayout(this);
+        int outer = dp(64);
+        root.setLayoutParams(new ViewGroup.LayoutParams(outer, outer));
+
+        ImageView icon = new ImageView(this);
+        FrameLayout.LayoutParams iconLp = new FrameLayout.LayoutParams(dp(50), dp(50), Gravity.CENTER);
+        GradientDrawable circle = new GradientDrawable();
+        circle.setShape(GradientDrawable.OVAL);
+        circle.setColor(Color.WHITE);
+        icon.setBackground(circle);
+        icon.setPadding(dp(4), dp(4), dp(4), dp(4));
+        icon.setImageDrawable(getApplicationInfo().loadIcon(getPackageManager()));
+        icon.setScaleType(ImageView.ScaleType.CENTER_INSIDE);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            icon.setClipToOutline(true);
+            icon.setElevation(dp(6));
+        }
+        root.addView(icon, iconLp);
+
+        bubbleBadge = new TextView(this);
+        bubbleBadge.setTextColor(Color.WHITE);
+        bubbleBadge.setTextSize(10f);
+        bubbleBadge.setGravity(Gravity.CENTER);
+        GradientDrawable badgeBg = new GradientDrawable();
+        badgeBg.setShape(GradientDrawable.OVAL);
+        badgeBg.setColor(Color.rgb(65, 155, 120));
+        bubbleBadge.setBackground(badgeBg);
+        FrameLayout.LayoutParams badgeLp = new FrameLayout.LayoutParams(dp(20), dp(20), Gravity.TOP | Gravity.END);
+        badgeLp.setMargins(0, dp(2), dp(2), 0);
+        root.addView(bubbleBadge, badgeLp);
+        return root;
     }
 
     private void updateBubble(GenerationState state) {
@@ -503,56 +534,35 @@ public class SullyChatFloatingService extends Service {
         bubbleBadge.setText(state.success ? "✓" : "!");
     }
 
-    private void installBubbleTouch(View view) {
-        view.setOnTouchListener(new View.OnTouchListener() {
-            float downRawX;
-            float downRawY;
-            int startX;
-            int startY;
-            boolean moved;
-
-            @Override
-            public boolean onTouch(View v, MotionEvent event) {
-                if (bubbleParams == null || bubbleView == null) return false;
-                switch (event.getActionMasked()) {
-                    case MotionEvent.ACTION_DOWN:
-                        downRawX = event.getRawX();
-                        downRawY = event.getRawY();
-                        startX = bubbleParams.x;
-                        startY = bubbleParams.y;
-                        moved = false;
-                        return true;
-                    case MotionEvent.ACTION_MOVE:
-                        float dx = event.getRawX() - downRawX;
-                        float dy = event.getRawY() - downRawY;
-                        if (Math.abs(dx) > dp(4) || Math.abs(dy) > dp(4)) moved = true;
-                        bubbleParams.x = startX + Math.round(dx);
-                        bubbleParams.y = Math.max(0, startY + Math.round(dy));
-                        try { windowManager.updateViewLayout(bubbleView, bubbleParams); } catch (Exception ignored) { }
-                        return true;
-                    case MotionEvent.ACTION_UP:
-                        if (!moved) {
-                            expandPanel();
-                        } else {
-                            int screenWidth = getResources().getDisplayMetrics().widthPixels;
-                            bubbleParams.x = bubbleParams.x + dp(32) < screenWidth / 2 ? dp(8) : screenWidth - dp(72);
-                            getSharedPreferences("sully_chat_float", MODE_PRIVATE)
-                                .edit().putInt("bubble_y", bubbleParams.y).apply();
-                            try { windowManager.updateViewLayout(bubbleView, bubbleParams); } catch (Exception ignored) { }
-                        }
-                        return true;
-                    default:
-                        return false;
-                }
-            }
-        });
-    }
-
     private void expandPanel() {
         GenerationState state = targetState();
         if (state == null || !canDrawOverlays()) return;
         removeBubble();
 
+        View panel = createPanelView();
+        int width = Math.max(dp(280), getResources().getDisplayMetrics().widthPixels - dp(24));
+        panel.setLayoutParams(new ViewGroup.LayoutParams(width, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        FxConfig config = FxConfig.builder(FxContent.view(panel))
+            .anchor(FxGravity.TOP_CENTER, 0f, 16f)
+            .margin(12f, 12f, 12f, 12f)
+            .gesture(FxGesture.ClickOnly)
+            .build();
+
+        try {
+            panelControl = FloatingX.install(FLOATING_PANEL_TAG, config, createSystemHost());
+            panelControl.show();
+            updatePanel(state);
+        } catch (Exception error) {
+            panelControl = null;
+            panelTitle = null;
+            panelStatus = null;
+            panelPreview = null;
+            ensureBubble(state);
+        }
+    }
+
+    private View createPanelView() {
         LinearLayout panel = new LinearLayout(this);
         panel.setOrientation(LinearLayout.VERTICAL);
         panel.setPadding(dp(16), dp(14), dp(16), dp(14));
@@ -606,27 +616,7 @@ public class SullyChatFloatingService extends Service {
             ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.WRAP_CONTENT
         ));
-
-        WindowManager.LayoutParams params = new WindowManager.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT,
-            ViewGroup.LayoutParams.WRAP_CONTENT,
-            overlayType(),
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-                | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
-                | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
-            PixelFormat.TRANSLUCENT
-        );
-        params.gravity = Gravity.TOP | Gravity.CENTER_HORIZONTAL;
-        params.x = 0;
-        params.y = dp(16);
-        try {
-            windowManager.addView(panel, params);
-            panelView = panel;
-            updatePanel(state);
-        } catch (Exception ignored) {
-            panelView = null;
-            ensureBubble(state);
-        }
+        return panel;
     }
 
     private TextView headerButton(String text) {
@@ -649,7 +639,6 @@ public class SullyChatFloatingService extends Service {
             }
             panelPreview.setText(preview);
         }
-        updateBubble(state);
     }
 
     private void collapsePanel() {
@@ -672,20 +661,21 @@ public class SullyChatFloatingService extends Service {
     }
 
     private void removeBubble() {
-        if (bubbleView == null) return;
-        try { windowManager.removeView(bubbleView); } catch (Exception ignored) { }
-        bubbleView = null;
+        FxControl control = bubbleControl;
+        bubbleControl = null;
         bubbleBadge = null;
-        bubbleParams = null;
+        if (control == null) return;
+        try { control.cancel(); } catch (Exception ignored) { }
     }
 
     private void removePanel() {
-        if (panelView == null) return;
-        try { windowManager.removeView(panelView); } catch (Exception ignored) { }
-        panelView = null;
+        FxControl control = panelControl;
+        panelControl = null;
         panelTitle = null;
         panelStatus = null;
         panelPreview = null;
+        if (control == null) return;
+        try { control.cancel(); } catch (Exception ignored) { }
     }
 
     private void removeOverlay() {
@@ -703,12 +693,6 @@ public class SullyChatFloatingService extends Service {
     @Override
     public IBinder onBind(Intent intent) {
         return null;
-    }
-
-    private int overlayType() {
-        return Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
-            ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
-            : WindowManager.LayoutParams.TYPE_PHONE;
     }
 
     private String statusText(GenerationState state) {
