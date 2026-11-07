@@ -82,6 +82,13 @@ import { normalizeApiBaseUrl, normalizeApiCredential, normalizeApiModel } from '
 import { describeImageWithVisionApi, VISION_API_TEST_IMAGE_DATA_URL, visionApiConfigFromPreset } from '../utils/visionApi';
 import { presetDiffersFromConfig } from '../utils/apiPresetSwitch';
 import {
+    ensureChatFloatingNotificationPermission,
+    getChatFloatingPermission,
+    isChatFloatingEnabled,
+    requestChatFloatingPermission,
+    setChatFloatingEnabled as saveChatFloatingEnabled,
+} from '../utils/nativeChatFloating';
+import {
     FIRECRAWL_API_KEYS_URL,
     getFirecrawlApiKey,
     getFirecrawlCreditUsage,
@@ -517,6 +524,59 @@ const Settings: React.FC = () => {
       cloudBackupToWebDAV, cloudRestoreFromWebDAV, listCloudBackups,
   } = useOS();
   
+  const [chatFloatingEnabled, setChatFloatingEnabledState] = useState(() => isChatFloatingEnabled());
+  const [chatFloatingPermission, setChatFloatingPermission] = useState(false);
+
+  useEffect(() => {
+      let alive = true;
+      const refresh = async () => {
+          if (Capacitor.getPlatform() !== 'android') return;
+          const granted = await getChatFloatingPermission();
+          if (alive) setChatFloatingPermission(granted);
+      };
+      void refresh();
+      const onVisible = () => { if (!document.hidden) void refresh(); };
+      document.addEventListener('visibilitychange', onVisible);
+      return () => {
+          alive = false;
+          document.removeEventListener('visibilitychange', onVisible);
+      };
+  }, []);
+
+  const handleChatFloatingToggle = async () => {
+      if (!Capacitor.isNativePlatform() || Capacitor.getPlatform() !== 'android') {
+          addToast('悬浮窗目前仅在 Android App 中可用', 'info');
+          return;
+      }
+      const next = !chatFloatingEnabled;
+      saveChatFloatingEnabled(next);
+      setChatFloatingEnabledState(next);
+      if (!next) return;
+      const notificationsGranted = await ensureChatFloatingNotificationPermission().catch(() => false);
+      if (!notificationsGranted) {
+          addToast('通知权限未开启，悬浮窗仍可用，但生成完成不会出现在系统通知栏', 'info');
+      }
+      const granted = await getChatFloatingPermission();
+      setChatFloatingPermission(granted);
+      if (!granted) {
+          try {
+              await requestChatFloatingPermission();
+              addToast('请在系统页面允许小手机显示悬浮窗', 'info');
+          } catch {
+              addToast('无法打开悬浮窗权限设置', 'error');
+          }
+      }
+  };
+
+  const handleChatFloatingPermission = async () => {
+      try {
+          await requestChatFloatingPermission();
+          addToast('请在系统页面允许小手机显示悬浮窗', 'info');
+      } catch {
+          addToast('无法打开悬浮窗权限设置', 'error');
+      }
+  };
+
   const [localKey, setLocalKey] = useState(apiConfig.apiKey);
   const [localUrl, setLocalUrl] = useState(apiConfig.baseUrl);
   const [localModel, setLocalModel] = useState(String(apiConfig.model || ''));
@@ -2592,6 +2652,56 @@ const Settings: React.FC = () => {
 
         </SettingsSection>
         
+        <SettingsSection
+            title="后台生成悬浮窗"
+            icon={
+                <div className="p-2 bg-emerald-100 rounded-xl text-emerald-600">
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.6} stroke="currentColor" className="w-4 h-4">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M7.5 7.5h9m-9 3h6m-7.5 9h12a2.25 2.25 0 0 0 2.25-2.25V6.75A2.25 2.25 0 0 0 18 4.5H6A2.25 2.25 0 0 0 3.75 6.75v10.5A2.25 2.25 0 0 0 6 19.5Z" />
+                    </svg>
+                </div>
+            }
+            badge={chatFloatingEnabled
+                ? <span className="text-[9px] bg-emerald-100 text-emerald-700 px-1.5 py-0.5 rounded-full font-bold shrink-0">已开启</span>
+                : undefined}
+        >
+            <div className="flex items-start justify-between gap-4">
+                <div className="min-w-0">
+                    <p className="text-xs text-slate-600 leading-relaxed">
+                        生成回复时切到其他 App，会变成贴边小浮球；点开可以看当前阶段和已生成内容，完成后会收到提醒。
+                    </p>
+                    <p className="mt-1 text-[10px] text-slate-400 leading-relaxed">
+                        回到小手机后自动收起。没有悬浮窗权限时仍会保留后台生成与系统进度提醒。
+                    </p>
+                </div>
+                <button
+                    type="button"
+                    role="switch"
+                    aria-checked={chatFloatingEnabled}
+                    onClick={handleChatFloatingToggle}
+                    className={`relative mt-0.5 h-7 w-12 shrink-0 rounded-full transition-colors ${chatFloatingEnabled ? 'bg-emerald-500' : 'bg-slate-200'}`}
+                >
+                    <span className={`absolute top-1 h-5 w-5 rounded-full bg-white shadow-sm transition-all ${chatFloatingEnabled ? 'left-6' : 'left-1'}`} />
+                </button>
+            </div>
+            {chatFloatingEnabled && Capacitor.getPlatform() === 'android' && (
+                <div className="mt-4 border-t border-slate-100 pt-3 flex items-center justify-between gap-3">
+                    <span className={`text-[10px] ${chatFloatingPermission ? 'text-emerald-600' : 'text-amber-600'}`}>
+                        {chatFloatingPermission ? '悬浮窗权限已开启' : '还需要允许悬浮窗权限'}
+                    </span>
+                    {!chatFloatingPermission && (
+                        <button
+                            type="button"
+                            onClick={handleChatFloatingPermission}
+                            className="shrink-0 rounded-lg border border-amber-200 bg-amber-50 px-3 py-1.5 text-[10px] font-bold text-amber-700 active:scale-95 transition-transform"
+                        >
+                            去开启
+                        </button>
+                    )}
+                </div>
+            )}
+        </SettingsSection>
+
         {/* 数据备份区域 */}
         <SettingsSection
             title="备份与恢复 (ZIP)"

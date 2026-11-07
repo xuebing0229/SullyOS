@@ -18,6 +18,8 @@
 export const CHAT_GEN_EVENTS = {
     /** 主回复生成开始（本地 fetch 与即时对话两条路径都算） */
     replyStart: 'chat-gen-reply-start',
+    /** 主回复生成中的实时阶段/预览，给根级状态 UI 与 Android 悬浮窗共用。 */
+    replyProgress: 'chat-gen-reply-progress',
     /** 主回复生成会话结束（triggerAI finally，成功/失败/即时对话均触发） */
     replyEnd: 'chat-gen-reply-end',
     /** 本地 fetch 路径：回复已全部落库（后处理管线跑完）。即时对话路径不发——它走 'active-msg-received' */
@@ -48,6 +50,10 @@ export interface ChatGenDetail {
     reason?: string;
     /** Optional lifetime for long-running cloud generation indicators. */
     ttlMs?: number;
+    /** replyProgress 专用：与 RikkaHub GenerationPhase 对齐的粗粒度阶段。 */
+    phase?: 'waiting' | 'thinking' | 'writing' | 'tool' | 'cloud';
+    /** replyProgress 专用：已生成正文或思考内容的可见预览。 */
+    preview?: string;
 }
 
 export function announceChatGen(event: string, detail: ChatGenDetail): void {

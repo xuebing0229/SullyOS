@@ -36,6 +36,7 @@ interface NativeStoryJob {
   status: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled';
   responseJson?: string;
   partialContent?: string;
+  partialReasoning?: string;
   error?: string;
   statusCode?: number;
   promptTokens?: number;
@@ -132,7 +133,7 @@ interface NativeStoryJob {
   updatedAt?: number;
 }
 
-interface SullyStoryBackgroundPlugin {
+export interface SullyStoryBackgroundPlugin {
   submit(options: { spec: Record<string, any> }): Promise<{ job: NativeStoryJob }>;
   status(options: { jobId: string }): Promise<{ job: NativeStoryJob | null }>;
   remove(options: { jobId: string }): Promise<void>;
@@ -152,9 +153,32 @@ interface SullyStoryBackgroundPlugin {
     status: 'succeeded' | 'failed' | 'cancelled';
     error?: string;
   }): Promise<void>;
+  chatFloatingStatus(): Promise<{ overlayGranted: boolean }>;
+  requestChatFloatingPermission(): Promise<void>;
+  startChatFloating(options: {
+    generationId: string;
+    title: string;
+    phase: 'waiting' | 'thinking' | 'writing' | 'tool' | 'cloud';
+    preview?: string;
+    appForeground: boolean;
+  }): Promise<void>;
+  updateChatFloating(options: {
+    generationId: string;
+    title?: string;
+    phase: 'waiting' | 'thinking' | 'writing' | 'tool' | 'cloud';
+    preview?: string;
+  }): Promise<void>;
+  finishChatFloating(options: {
+    generationId: string;
+    title?: string;
+    success: boolean;
+    error?: string;
+  }): Promise<void>;
+  releaseChatFloating(options: { generationId: string }): Promise<void>;
+  setChatFloatingAppForeground(options: { foreground: boolean }): Promise<void>;
 }
 
-const NativeStoryBackground = registerPlugin<SullyStoryBackgroundPlugin>('SullyStoryBackground');
+export const NativeStoryBackground = registerPlugin<SullyStoryBackgroundPlugin>('SullyStoryBackground');
 const STORAGE_KEY = 'sully_story_background_pending_v1';
 
 export interface PendingNativeStoryJob {
@@ -178,6 +202,21 @@ export interface NativeStoryCompletionOptions {
   meta?: Record<string, any>;
   onPromptTokens?: (tokens: number) => void;
   onStreamText?: (fullText: string) => void;
+  onReasoningText?: (fullText: string) => void;
+  onResolvedRouteIndex?: (routeIndex: number) => void;
+  signal?: AbortSignal;
+  /**
+   * 剧情与普通聊天共用同一套 Android SSE runner。这里仅覆盖 API 日志的展示身份，
+   * 不改变请求/故障转移逻辑。
+   */
+  logMeta?: { appId?: string; appName?: string; purpose?: string };
+  /**
+   * 外层已经有 foreground service 时跳过 SullyStoryKeepAliveService，避免两条常驻通知。
+   * 生成任务仍由 SullyStoryGenerationManager 持有。
+   */
+  externalForeground?: boolean;
+  /** 让原生 SSE runner 把真实 reasoning / 正文增量直接推给同一条聊天悬浮窗。 */
+  floatingGenerationId?: string;
 }
 
 const readPending = (): PendingMap => {
@@ -273,7 +312,7 @@ export interface NativeCloudStoryMonitorOptions {
   onSubmitTiming?: (label: string, ms: number) => void;
 }
 
-const ensureStoryNotificationPermission = async (): Promise<{
+export const ensureBackgroundNotificationPermission = async (): Promise<{
   granted: boolean;
   prompted: boolean;
 }> => {
@@ -318,7 +357,7 @@ export const startNativeCloudStoryMonitor = async (
     immediateStartError = error;
   }
 
-  const permission = await ensureStoryNotificationPermission();
+  const permission = await ensureBackgroundNotificationPermission();
   if (!permission.granted) {
     console.warn('[StoryTheater] 系统通知权限未授予，剧情后台状态牌无法显示');
     if (immediateStartError) throw immediateStartError;
@@ -411,21 +450,37 @@ const checkJob = async (jobId: string): Promise<NativeStoryJob | null> => {
 const waitForTerminal = async (
   jobId: string,
   onStreamText?: (fullText: string) => void,
+  onReasoningText?: (fullText: string) => void,
+  signal?: AbortSignal,
 ): Promise<NativeStoryJob> => {
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let resumeHandle: { remove: () => Promise<void> } | null = null;
   let lastPartial = '';
+  let lastReasoning = '';
 
   return new Promise<NativeStoryJob>((resolve, reject) => {
+    let onAbort: () => void = () => {};
     const finish = (fn: () => void) => {
       if (stopped) return;
       stopped = true;
       if (timer) clearTimeout(timer);
       timer = null;
+      signal?.removeEventListener('abort', onAbort);
       void resumeHandle?.remove();
       fn();
     };
+    onAbort = () => {
+      void NativeStoryBackground.remove({ jobId }).catch(() => undefined);
+      const error = new Error('后台生成已取消');
+      error.name = 'AbortError';
+      finish(() => reject(error));
+    };
+    if (signal?.aborted) {
+      onAbort();
+      return;
+    }
+    signal?.addEventListener('abort', onAbort, { once: true });
 
     const poll = async () => {
       if (stopped) return;
@@ -439,6 +494,11 @@ const waitForTerminal = async (
         if (partial && partial !== lastPartial) {
           lastPartial = partial;
           onStreamText?.(partial);
+        }
+        const reasoning = String(job.partialReasoning || '');
+        if (reasoning && reasoning !== lastReasoning) {
+          lastReasoning = reasoning;
+          onReasoningText?.(reasoning);
         }
         if (job.status === 'succeeded' || job.status === 'failed' || job.status === 'cancelled') {
           finish(() => resolve(job));
@@ -463,6 +523,7 @@ const logNativeAttempts = (
   plan: ApiExecutionPlan,
   baseBody: Record<string, any>,
   response: any | undefined,
+  logMeta?: { appId?: string; appName?: string; purpose?: string },
 ): void => {
   const attempts = Array.isArray(job.attempts) ? job.attempts : [];
   for (const attempt of attempts) {
@@ -481,9 +542,9 @@ const logNativeAttempts = (
       durationMs: Number.isFinite(Number(attempt.durationMs)) ? Number(attempt.durationMs) : undefined,
       networkRequest: true,
       meta: {
-        appId: 'date',
-        appName: '剧情剧场',
-        purpose: '剧情后台续写',
+        appId: logMeta?.appId || 'date',
+        appName: logMeta?.appName || '剧情剧场',
+        purpose: logMeta?.purpose || '剧情后台续写',
         apiPresetId: String(attempt.presetId || route?.presetId || ''),
         apiPresetName: String(attempt.presetName || route?.presetName || ''),
         failoverGroupId: plan.group?.id,
@@ -533,6 +594,8 @@ export const executeStoryCompletionInNativeBackground = async (
           mode: options.plan.mode,
           timeoutMs,
           routes,
+          ...(options.externalForeground ? { externalForeground: true } : {}),
+          ...(options.floatingGenerationId ? { floatingGenerationId: options.floatingGenerationId } : {}),
           baseBody: {
             ...options.body,
             // ForegroundService 从一开始就持有官方 okhttp-sse EventSource，
@@ -549,7 +612,7 @@ export const executeStoryCompletionInNativeBackground = async (
   }
 
   if (job.status === 'queued' || job.status === 'running') {
-    job = await waitForTerminal(jobId, options.onStreamText);
+    job = await waitForTerminal(jobId, options.onStreamText, options.onReasoningText, options.signal);
   }
 
   let parsed: any | undefined;
@@ -559,10 +622,15 @@ export const executeStoryCompletionInNativeBackground = async (
 
   const pendingBeforeLog = getPendingNativeStoryJob(options.ownerKey);
   if (pendingBeforeLog?.loggedJobId !== job.jobId) {
-    logNativeAttempts(job, options.plan, options.body, parsed);
+    logNativeAttempts(job, options.plan, options.body, parsed, options.logMeta);
     if (pendingBeforeLog) {
       setPending({ ...pendingBeforeLog, loggedJobId: job.jobId });
     }
+  }
+
+  const resolvedRouteIndex = Number(job.routeIndex);
+  if (Number.isFinite(resolvedRouteIndex) && resolvedRouteIndex >= 0) {
+    options.onResolvedRouteIndex?.(resolvedRouteIndex);
   }
 
   const promptTokens = Number(job.promptTokens ?? parsed?.usage?.prompt_tokens);

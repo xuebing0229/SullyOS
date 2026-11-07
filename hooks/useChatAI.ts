@@ -95,6 +95,16 @@ import { parseSARUserSurfaces, selectSARUserSurfaceTargets } from '../utils/vrWo
 import { isEmotionEvalSkipped } from '../utils/devDebug';
 import { sha256Hex } from '../utils/aiRequestManager';
 import { executeCachedChatCompletion, executeCachedEmotionCompletion } from '../utils/aiCompletionPipeline';
+import {
+    clearPendingNativeStoryJob,
+    executeStoryCompletionInNativeBackground,
+    isNativeStoryBackgroundRuntime,
+} from '../utils/nativeStoryBackground';
+import {
+    chatFloatingGenerationId,
+    ensureNativeChatFloatingStarted,
+    isChatFloatingEnabled,
+} from '../utils/nativeChatFloating';
 import { recordApiCall } from '../utils/apiCallLog';
 import { executeOpenAiChatPlan, resolveApiExecutionPlan, type ApiExecutionPlan } from '../utils/apiFailover';
 import {prepareHomeSecretTask,failHomeSecretTask} from '../utils/homeSecrets';
@@ -955,6 +965,7 @@ export const useChatAI = ({
         // 闭包都会保留并继续落库——横幅靠 window 事件与组件生命周期
         // 解耦，用户切走 Chat 也能看到生成还活着。finally 里派发 end（两条路径都经过）。
         announceChatGen(CHAT_GEN_EVENTS.replyStart, { charId: char.id, charName: char.name });
+        announceChatGen(CHAT_GEN_EVENTS.replyProgress, { charId: char.id, charName: char.name, phase: 'waiting', preview: '' });
 
         // 本轮里角色自己新排出来的任务。排程现状块每轮现算时靠它把这些点名标出来——不标
         // 的话角色分不清清单上哪条是自己刚排的，回头又排一条一模一样的。
@@ -972,6 +983,12 @@ export const useChatAI = ({
         ): Promise<Amsg2ToolOutcome> => {
             replyRun.check();
             setSearchStatus(`正在执行：${fname}...`);
+            announceChatGen(CHAT_GEN_EVENTS.replyProgress, {
+                charId: char.id,
+                charName: char.name,
+                phase: 'tool',
+                preview: `正在执行：${fname}`,
+            });
             const taskUuidsBefore = new Set(
                 (amsg2Session.getConfig()?.tasks ?? []).map((t) => t.taskUuid),
             );
@@ -1791,6 +1808,14 @@ export const useChatAI = ({
                         setStreamingBubbles(prev =>
                             (prev.length === bubbles.length && prev.every((b, i) => b === bubbles[i])) ? prev : bubbles
                         );
+                        if (bubbles.length > 0) {
+                            announceChatGen(CHAT_GEN_EVENTS.replyProgress, {
+                                charId: char.id,
+                                charName: char.name,
+                                phase: 'writing',
+                                preview: bubbles.join('\n\n'),
+                            });
+                        }
                     }
                     if (streamThinkingEligible) {
                         latestEmbeddedThinking = extractStreamingEmbeddedThinking(fullText);
@@ -1802,12 +1827,21 @@ export const useChatAI = ({
                     if (!streamThinkingEligible) return;
                     latestNativeReasoning = fullReasoning;
                     publishStreamingThinking();
+                    if (fullReasoning.trim()) {
+                        announceChatGen(CHAT_GEN_EVENTS.replyProgress, {
+                            charId: char.id,
+                            charName: char.name,
+                            phase: 'thinking',
+                            preview: fullReasoning,
+                        });
+                    }
                 },
             } : undefined;
 
             // 首次请求允许按有序线路故障转移；一旦某条线路成功，本轮所有工具结果续写
             // 都固定在该线路，避免同一个工具回合中途换模型或换 API。
             let activeApiForTurn: APIConfig = effectiveApi;
+            const nativeChatOwnerKey = `chat-native:${char.id}:${Date.now().toString(36)}`;
             const executeChatBody = async (
                 body: Record<string, any>,
                 purpose: string,
@@ -1818,6 +1852,50 @@ export const useChatAI = ({
                 const plan = useFailover
                     ? apiPlan
                     : resolveApiExecutionPlan('chat', activeApiForTurn, false);
+
+                // RikkaHub 那种「切走后任务仍归原生服务所有」只在用户显式打开悬浮窗时启用。
+                // 直接复用剧情剧场已验证过的 Android okhttp-sse runner；带 tools 的轮次必须
+                // 留在 JS，因为工具执行本来就在 useChatAI 里，原生层不能越权另造一套。
+                const useNativeBackgroundChat = purpose === '聊天回复'
+                    && isChatFloatingEnabled()
+                    && isNativeStoryBackgroundRuntime()
+                    // 点单 / MCP / 主动消息工具循环都必须留在现有 JS 管线；即使兼容模式
+                    // 把 tools 字段改写进正文，也不能误判成「普通无工具聊天」。
+                    && !toolModeActive
+                    && !amsg2ToolsInjected
+                    && !(Array.isArray(body.tools) && body.tools.length > 0)
+                    && !body.tool_choice;
+                if (useNativeBackgroundChat) {
+                    // 先 await 同一个悬浮 FGS 真正启动，再把 generation owner 交给原生 SSE。
+                    // 启动失败时让既有 SullyStoryKeepAliveService 接管，绝不裸跑。
+                    const floatingServiceStarted = await ensureNativeChatFloatingStarted(
+                        char.id,
+                        char.name,
+                        'waiting',
+                        '',
+                    );
+                    try {
+                        return await executeStoryCompletionInNativeBackground({
+                            ownerKey: nativeChatOwnerKey,
+                            title: char.name || '聊天',
+                            plan,
+                            body,
+                            signal: replyRun.signal,
+                            externalForeground: floatingServiceStarted,
+                            floatingGenerationId: chatFloatingGenerationId(char.id),
+                            logMeta: { appId: 'chat', appName: '消息', purpose },
+                            onStreamText: fullText => hooks?.onDelta?.('', fullText),
+                            onReasoningText: fullReasoning => hooks?.onReasoningDelta?.('', fullReasoning),
+                            onResolvedRouteIndex: routeIndex => {
+                                const route = plan.routes[routeIndex];
+                                if (route) activeApiForTurn = route.api;
+                            },
+                        });
+                    } finally {
+                        await clearPendingNativeStoryJob(nativeChatOwnerKey);
+                    }
+                }
+
                 const result = await executeOpenAiChatPlan({
                     plan,
                     body,

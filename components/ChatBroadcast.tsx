@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { CHAT_GEN_EVENTS, CHAT_VIEW_CHANGED_EVENT, getChatViewSnapshot } from '../utils/chatGenEvents';
 import { AMSG_INSTANT_CHAT_PENDING_EVENT, listInstantChatPendings } from '../utils/amsgInstantChat';
 import { INSTANT_TOTAL_TIMEOUT_MS } from '../worker/amsg/src/instantChat';
+import { installNativeChatFloatingBridge } from '../utils/nativeChatFloating';
 
 /**
  * 聊天生成全局横幅（对标彼方的 VRBroadcast，App 根级挂载）。
@@ -39,6 +40,8 @@ const INSTANT_PENDING_TTL_MS = INSTANT_TOTAL_TIMEOUT_MS + 60_000;
 
 const ChatBroadcast: React.FC = () => {
     const [entries, setEntries] = useState<GenEntry[]>([]);
+
+    useEffect(() => installNativeChatFloatingBridge(), []);
     const [, setViewTick] = useState(0);
     // 即时对话的「正在回应」不靠 replyStart/replyEnd 撑：instant 分支 POST 完就 return，
     // finally 的 replyEnd 几秒内就把事件条目撤了，而云端还要跑最长十分钟。这里直接以
