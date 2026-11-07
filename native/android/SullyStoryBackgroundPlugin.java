@@ -162,6 +162,109 @@ public class SullyStoryBackgroundPlugin extends Plugin {
     }
 
     @PluginMethod
+    public void chatFloatingStatus(PluginCall call) {
+        JSObject result = new JSObject();
+        boolean granted = android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.M
+            || android.provider.Settings.canDrawOverlays(getContext());
+        result.put("overlayGranted", granted);
+        call.resolve(result);
+    }
+
+    @PluginMethod
+    public void requestChatFloatingPermission(PluginCall call) {
+        if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.M
+            || android.provider.Settings.canDrawOverlays(getContext())) {
+            call.resolve();
+            return;
+        }
+        try {
+            android.content.Intent intent = new android.content.Intent(
+                android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                android.net.Uri.parse("package:" + getContext().getPackageName())
+            );
+            intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
+            getContext().startActivity(intent);
+            call.resolve();
+        } catch (Exception error) {
+            call.reject(error.getMessage() == null ? "无法打开悬浮窗权限设置" : error.getMessage());
+        }
+    }
+
+    @PluginMethod
+    public void startChatFloating(PluginCall call) {
+        String generationId = call.getString("generationId", "").trim();
+        String title = call.getString("title", "聊天");
+        String phase = call.getString("phase", "waiting");
+        String preview = call.getString("preview", "");
+        boolean appForeground = call.getBoolean("appForeground", true);
+        if (!generationId.matches("[A-Za-z0-9:_-]{4,160}")) {
+            call.reject("聊天后台任务 ID 无效");
+            return;
+        }
+        if (SullyChatFloatingService.start(
+            getContext(), generationId, title, phase, preview, appForeground
+        )) {
+            call.resolve();
+        } else {
+            call.reject("无法启动聊天后台悬浮服务");
+        }
+    }
+
+    @PluginMethod
+    public void updateChatFloating(PluginCall call) {
+        String generationId = call.getString("generationId", "").trim();
+        if (!generationId.matches("[A-Za-z0-9:_-]{4,160}")) {
+            call.reject("聊天后台任务 ID 无效");
+            return;
+        }
+        SullyChatFloatingService.update(
+            getContext(),
+            generationId,
+            call.getString("title", "聊天"),
+            call.getString("phase", "waiting"),
+            call.getString("preview", "")
+        );
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void finishChatFloating(PluginCall call) {
+        String generationId = call.getString("generationId", "").trim();
+        if (!generationId.matches("[A-Za-z0-9:_-]{4,160}")) {
+            call.reject("聊天后台任务 ID 无效");
+            return;
+        }
+        SullyChatFloatingService.finish(
+            getContext(),
+            generationId,
+            call.getString("title", "聊天"),
+            call.getBoolean("success", true),
+            call.getString("error", "")
+        );
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void releaseChatFloating(PluginCall call) {
+        String generationId = call.getString("generationId", "").trim();
+        if (!generationId.matches("[A-Za-z0-9:_-]{4,160}")) {
+            call.reject("聊天后台任务 ID 无效");
+            return;
+        }
+        SullyChatFloatingService.release(getContext(), generationId);
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void setChatFloatingAppForeground(PluginCall call) {
+        SullyChatFloatingService.setAppForeground(
+            getContext(),
+            call.getBoolean("foreground", true)
+        );
+        call.resolve();
+    }
+
+    @PluginMethod
     public void submit(PluginCall call) {
         JSObject spec = call.getObject("spec");
         if (spec == null) {
