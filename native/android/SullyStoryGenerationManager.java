@@ -469,7 +469,7 @@ public final class SullyStoryGenerationManager {
         JSONObject result = new JSONObject();
         String[] keys = new String[] {
             "jobId", "ownerKey", "title", "status", "createdAt", "updatedAt",
-            "startedAt", "completedAt", "statusCode", "responseJson", "partialContent",
+            "startedAt", "completedAt", "statusCode", "responseJson", "partialContent", "partialReasoning",
             "error", "promptTokens", "completionTokens", "totalTokens",
             "routeIndex", "routePresetId", "routePresetName", "routeBaseUrl", "routeModel",
             "openedAt", "firstEventAt", "firstVisibleAt",
@@ -506,11 +506,15 @@ public final class SullyStoryGenerationManager {
         JSONObject publicJob = enqueue(context, spec);
         String jobId = spec.optString("jobId", "").trim();
         String title = spec.optString("title", "剧情");
-        // 与 RikkaHub launchGenerationJob 一致：先 acquire FGS，再启动真正 generation job。
-        recordForegroundEvent(context, jobId, "fgsAcquireRequested", "foregroundRequestedAt", null);
+        // 剧情默认沿用自己的 FGS；普通聊天若已经由 SullyChatFloatingService 持有
+        // foreground 生命周期，就不要再起第二条常驻通知。
+        boolean externalForeground = spec.optBoolean("externalForeground", false);
+        if (!externalForeground) {
+            recordForegroundEvent(context, jobId, "fgsAcquireRequested", "foregroundRequestedAt", null);
+        }
         recordObserverStatus(jobId);
         recordCurrentNetworkSnapshot(jobId);
-        boolean foregroundStarted = SullyStoryKeepAliveService.acquire(context, jobId, title);
+        boolean foregroundStarted = !externalForeground && SullyStoryKeepAliveService.acquire(context, jobId, title);
         start(jobId, foregroundStarted);
         return publicJob;
     }
@@ -598,6 +602,35 @@ public final class SullyStoryGenerationManager {
         }
     }
 
+    private String floatingGenerationId(JSONObject job) {
+        String id = job == null ? "" : job.optString("floatingGenerationId", "").trim();
+        return id.matches("[A-Za-z0-9:_-]{4,160}") ? id : "";
+    }
+
+    private void publishChatFloating(JSONObject job, String phase, String preview) {
+        String id = floatingGenerationId(job);
+        if (id.isEmpty()) return;
+        SullyChatFloatingService.update(
+            context,
+            id,
+            job.optString("title", "聊天"),
+            phase,
+            preview == null ? "" : preview
+        );
+    }
+
+    private void finishChatFloating(JSONObject job, boolean success, String error) {
+        String id = floatingGenerationId(job);
+        if (id.isEmpty()) return;
+        SullyChatFloatingService.finish(
+            context,
+            id,
+            job.optString("title", "聊天"),
+            success,
+            error == null ? "" : error
+        );
+    }
+
     private void processJob(JSONObject job) {
         String jobId = job.optString("jobId", "");
         long startedAt = job.optLong("startedAt", System.currentTimeMillis());
@@ -608,6 +641,7 @@ public final class SullyStoryGenerationManager {
                 job.put("updatedAt", startedAt);
                 writeJobFile(context, job);
             }
+            publishChatFloating(job, "waiting", "正在连接模型…");
 
             JSONArray routes = job.optJSONArray("routes");
             JSONObject baseBody = job.optJSONObject("baseBody");
@@ -641,6 +675,14 @@ public final class SullyStoryGenerationManager {
                     job.put("completedAt", done);
                     job.put("updatedAt", done);
                     mergeLatestRuntimeDiagnostics(context, job);
+                    // 先让悬浮窗拿到最终正文，再清请求体；即使 WebView 此时被冻结，
+                    // 用户也能立刻看到完成提示。
+                    publishChatFloating(job, "writing", result.response
+                        .optJSONArray("choices")
+                        .optJSONObject(0)
+                        .optJSONObject("message")
+                        .optString("content", ""));
+                    finishChatFloating(job, true, "");
                     scrubRequest(job);
                     writeJobFile(context, job);
                     return;
@@ -665,6 +707,7 @@ public final class SullyStoryGenerationManager {
             job.put("completedAt", done);
             job.put("updatedAt", done);
             mergeLatestRuntimeDiagnostics(context, job);
+            finishChatFloating(job, false, job.optString("error", "生成失败"));
             scrubRequest(job);
             writeJobFile(context, job);
         } catch (Exception error) {
@@ -675,6 +718,7 @@ public final class SullyStoryGenerationManager {
                 job.put("completedAt", done);
                 job.put("updatedAt", done);
                 mergeLatestRuntimeDiagnostics(context, job);
+                finishChatFloating(job, false, job.optString("error", "生成失败"));
                 scrubRequest(job);
                 writeJobFile(context, job);
             } catch (Exception ignored) { }
@@ -1176,6 +1220,7 @@ public final class SullyStoryGenerationManager {
         long lastReasoningAt = 0L;
         long lastVisibleAt = 0L;
         long lastPersistAt = 0L;
+        long lastFloatingUpdateAt = 0L;
         boolean visible = false;
         boolean meaningfulActivity = false;
         boolean terminalMarker = false;
@@ -1333,6 +1378,7 @@ public final class SullyStoryGenerationManager {
             meaningfulActivity = true;
             lastReasoningAt = now;
             lastActivityAt.set(now);
+            if (now - lastFloatingUpdateAt >= 800L) publishFloating("thinking", reasoning.toString(), now);
         }
 
         private void appendVisible(String piece, long now) throws Exception {
@@ -1374,6 +1420,7 @@ public final class SullyStoryGenerationManager {
             JSONObject liveJob = readJobFile(context, jobId);
             if (liveJob != null && "running".equals(liveJob.optString("status"))) {
                 liveJob.put("partialContent", content.toString());
+                liveJob.put("partialReasoning", reasoning.toString());
                 liveJob.put("visibleChars", content.length());
                 liveJob.put("reasoningChars", reasoningChars);
                 liveJob.put("sseEvents", sseEvents);
@@ -1384,8 +1431,20 @@ public final class SullyStoryGenerationManager {
                 liveJob.put("lastActivityAt", lastActivityAt.get());
                 liveJob.put("updatedAt", now);
                 writeJobFile(context, liveJob);
+                publishFloating("writing", content.toString(), now);
             }
             lastPersistAt = now;
+        }
+
+        private void publishFloating(String phase, String preview, long now) {
+            if (now - lastFloatingUpdateAt < 800L) return;
+            try {
+                JSONObject liveJob = readJobFile(context, jobId);
+                if (liveJob != null && "running".equals(liveJob.optString("status"))) {
+                    publishChatFloating(liveJob, phase, preview);
+                    lastFloatingUpdateAt = now;
+                }
+            } catch (Exception ignored) { }
         }
 
         synchronized void persistDiagnostics() {
@@ -1397,6 +1456,7 @@ public final class SullyStoryGenerationManager {
                     liveJob.put("sseEvents", sseEvents);
                     liveJob.put("chunkCount", chunkCount);
                     liveJob.put("reasoningChars", reasoningChars);
+                    if (reasoning.length() > 0) liveJob.put("partialReasoning", reasoning.toString());
                     liveJob.put("visibleChars", content.length());
                     if (lastChunkAt > 0L) liveJob.put("lastChunkAt", lastChunkAt);
                     if (lastReasoningAt > 0L) liveJob.put("lastReasoningAt", lastReasoningAt);
