@@ -797,7 +797,8 @@ const DateSession: React.FC<DateSessionProps> = ({
         }
         const turns = buildDateDialogueTurns(spokenItems);
         const missingSpeaker = turns.find(turn =>
-            turn.speaker !== 'narrator' && !canSynthesizeSpeech(dateVoiceTarget(turn.speaker), apiConfig)
+            (turn.speaker === 'char' || turn.speaker === 'user')
+            && !canSynthesizeSpeech(dateVoiceTarget(turn.speaker), apiConfig)
         );
         if (missingSpeaker) {
             addToast(missingSpeaker.speaker === 'user' ? '请先为 USER 配置当前服务商的声线' : '请先配置角色声线与语音 API', 'error');
