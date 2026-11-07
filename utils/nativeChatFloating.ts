@@ -7,7 +7,7 @@ import {
   getInstantChatPending,
   listInstantChatPendings,
 } from './amsgInstantChat';
-import { NativeStoryBackground } from './nativeStoryBackground';
+import { ensureBackgroundNotificationPermission, NativeStoryBackground } from './nativeStoryBackground';
 
 const STORAGE_KEY = 'sully_chat_floating_enabled_v1';
 export const CHAT_FLOATING_SETTING_EVENT = 'sully-chat-floating-setting-changed';
@@ -61,6 +61,12 @@ export const getChatFloatingPermission = async (): Promise<boolean> => {
 export const requestChatFloatingPermission = async (): Promise<void> => {
   if (!isNativeAndroid()) return;
   await NativeStoryBackground.requestChatFloatingPermission();
+};
+
+export const ensureChatFloatingNotificationPermission = async (): Promise<boolean> => {
+  if (!isNativeAndroid()) return false;
+  const result = await ensureBackgroundNotificationPermission();
+  return result.granted;
 };
 
 const start = (charId: string, charName: string, phase: ChatFloatingPhase, preview = '') => {
