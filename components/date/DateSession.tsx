@@ -327,6 +327,9 @@ const DateSession: React.FC<DateSessionProps> = ({
     const [voiceRegeneratingKey, setVoiceRegeneratingKey] = useState<string | null>(null);
     const [novelVoiceLoading, setNovelVoiceLoading] = useState<Set<string>>(new Set());
     const [novelPlayingId, setNovelPlayingId] = useState<string | null>(null);
+    // 广播剧整轮重播也复用同一播放器；额外记住当前正在播哪一轮，
+    // 让“本轮”和历史轮次都能给出明确的播放/暂停状态。
+    const [broadcastPlayingTurnKey, setBroadcastPlayingTurnKey] = useState<string | null>(null);
 
     const dateAudioRef = useRef<HTMLAudioElement | null>(null);
     const segmentStopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -390,6 +393,7 @@ const DateSession: React.FC<DateSessionProps> = ({
             dateAudioRef.current.onerror = null;
         }
         setDateVoicePlaying(false);
+        setBroadcastPlayingTurnKey(null);
     };
 
     useEffect(() => () => {
@@ -1380,7 +1384,11 @@ const DateSession: React.FC<DateSessionProps> = ({
         setDialogueQueue(remaining);
     };
 
-    const playBroadcastTurn = async (items: DialogueItem[], forceReplay = false) => {
+    const playBroadcastTurn = async (
+        items: DialogueItem[],
+        forceReplay = false,
+        playbackKey = 'current',
+    ) => {
         if (!broadcastMode || !items.length) return;
         if (!broadcastPlaybackEnabled) {
             if (!voiceEnabled) addToast('广播剧模式需要先开启见面语音', 'info');
@@ -1411,6 +1419,7 @@ const DateSession: React.FC<DateSessionProps> = ({
         stopDateAudio();
         const requestId = ++broadcastPlaybackRequestRef.current;
         broadcastActiveLineRef.current = '';
+        setBroadcastPlayingTurnKey(playbackKey);
         setGalVoiceLoading(true);
 
         const batch = await ensureDateDialogueBatch(items);
@@ -1418,6 +1427,7 @@ const DateSession: React.FC<DateSessionProps> = ({
         if (!batch) {
             if (!forceReplay && broadcastAutoPlaybackKeyRef.current === autoKey) broadcastAutoPlaybackKeyRef.current = '';
             setGalVoiceLoading(false);
+            setBroadcastPlayingTurnKey(current => current === playbackKey ? null : current);
             const detail = dialogueBatchErrorRef.current.trim();
             addToast(detail ? `广播剧整轮语音生成失败：${detail}` : '广播剧整轮语音生成失败，可稍后点击播放重试', 'error');
             return;
@@ -1428,16 +1438,20 @@ const DateSession: React.FC<DateSessionProps> = ({
         const syncTextToAudio = () => {
             if (requestId !== broadcastPlaybackRequestRef.current) return;
             const now = Number.isFinite(audio.currentTime) ? audio.currentTime : 0;
-            let active: DateDialogueSegment | null = null;
-            for (const segment of batch.segments) {
+            let activeTurnIndex = -1;
+            for (let segmentIndex = 0; segmentIndex < batch.segments.length; segmentIndex += 1) {
+                const segment = batch.segments[segmentIndex];
                 if (segment.unusable || !Number.isFinite(segment.startTime) || !Number.isFinite(segment.endTime)) continue;
-                if (segment.startTime <= now + 0.02) active = segment;
+                if (segment.startTime <= now + 0.02) activeTurnIndex = segmentIndex;
                 else break;
             }
-            if (!active || active.lineId === broadcastActiveLineRef.current) return;
-            const index = items.findIndex(item => item.lineId === active!.lineId);
+            // 整轮缓存会跨“实时本轮 / 历史消息”复用；缓存 segment 的旧 lineId 不能直接拿来
+            // 找当前消息。按 Dialogue input 顺序还原本次 turns 的 lineId，和单句回放的映射规则一致。
+            const activeTurn = activeTurnIndex >= 0 ? turns[activeTurnIndex] : undefined;
+            if (!activeTurn || activeTurn.lineId === broadcastActiveLineRef.current) return;
+            const index = items.findIndex(item => item.lineId === activeTurn.lineId);
             if (index < 0) return;
-            broadcastActiveLineRef.current = active.lineId;
+            broadcastActiveLineRef.current = activeTurn.lineId;
             processNextDialogue(items[index], items.slice(index + 1));
         };
 
@@ -1456,11 +1470,13 @@ const DateSession: React.FC<DateSessionProps> = ({
                 syncTextToAudio();
                 setDateVoicePlaying(false);
                 setGalVoiceLoading(false);
+                setBroadcastPlayingTurnKey(current => current === playbackKey ? null : current);
             };
             audio.onerror = () => {
                 if (requestId !== broadcastPlaybackRequestRef.current) return;
                 setDateVoicePlaying(false);
                 setGalVoiceLoading(false);
+                setBroadcastPlayingTurnKey(current => current === playbackKey ? null : current);
             };
             syncTextToAudio();
             await audio.play();
@@ -1472,8 +1488,30 @@ const DateSession: React.FC<DateSessionProps> = ({
             console.warn('[DateDialogue] radio drama autoplay failed:', error);
             setGalVoiceLoading(false);
             setDateVoicePlaying(false);
+            setBroadcastPlayingTurnKey(current => current === playbackKey ? null : current);
             addToast('广播剧语音已生成；自动播放被拦截时可点播放按钮继续', 'info');
         }
+    };
+
+    const replayHistoricalBroadcastTurn = (
+        msg: Message,
+        shownContent: string,
+    ) => {
+        const { rest: body } = extractObservation(shownContent || '', {
+            lenient: observeEnabled,
+            custom: char.dateObserve?.custom,
+        });
+        const items = parseDialogue(body, 'normal', String(msg.id));
+        if (!items.length || !buildDateDialogueTurns(items).length) {
+            addToast('这一轮没有可播放的广播剧语音', 'info');
+            return;
+        }
+        const playbackKey = `history:${msg.id}`;
+        if (dateVoicePlaying && broadcastPlayingTurnKey === playbackKey) {
+            stopDateAudio();
+            return;
+        }
+        void playBroadcastTurn(items, true, playbackKey);
     };
 
     // 新见面的开场也是本轮剧情的一部分：广播剧模式下进入场景后直接整段生成并播放。
@@ -2079,27 +2117,56 @@ const DateSession: React.FC<DateSessionProps> = ({
                                         const sarRevealed = sarTruthMessageIds.has(msg.id);
                                         const shown = sarSurface && !sarRevealed ? sarSurface : msg.content;
                                         const { observation: msgObs, rest: msgBody } = extractObservation(shown || '', { lenient: observeEnabled, custom: char.dateObserve?.custom });
+                                        const historicalBroadcastItems = broadcastMode
+                                            ? parseDialogue(msgBody || '', 'normal', String(msg.id))
+                                            : [];
+                                        const canReplayHistoricalBroadcast = broadcastMode
+                                            && buildDateDialogueTurns(historicalBroadcastItems).length > 0;
                                         return (
                                         <div className="flex min-w-0 items-start gap-3">
                                             {!decoratedReading && char.dateReadingShowAvatars && (
                                                 <ReadingAvatar src={char.avatar} name={char.name} light={!!lightReading} />
                                             )}
                                             <div className="min-w-0 flex-1">
-                                                {!broadcastMode && voiceEnabled && !isBatchSelectMode && msg.metadata?.isOpening !== true &&
-                                                    (msgBody || '').split('\n').some(line => isDialogueLine(line)) && (
+                                                {voiceEnabled && !isBatchSelectMode &&
+                                                    (canReplayHistoricalBroadcast || (!broadcastMode && msg.metadata?.isOpening !== true &&
+                                                        (msgBody || '').split('\n').some(line => isDialogueLine(line)))) && (
                                                     <div className="flex justify-end mb-2">
-                                                        <button
-                                                            type="button"
-                                                            aria-label="重新合成这轮语音，保留原文"
-                                                            title="仅重新配音，文字不变；会消耗语音 API 额度"
-                                                            disabled={voiceRegeneratingKey !== null || isTyping}
-                                                            onClick={(e) => { e.stopPropagation(); regenerateNovelVoiceTurn(msg, shown); }}
-                                                            onTouchStart={e => e.stopPropagation()}
-                                                            onTouchEnd={e => e.stopPropagation()}
-                                                            className={`rounded-full border px-3 py-1 text-[11px] font-medium transition-opacity disabled:opacity-40 ${lightReading ? 'border-stone-200 bg-stone-100 text-stone-600' : 'border-white/15 bg-white/5 text-slate-300'}`}
-                                                        >
-                                                            {voiceRegeneratingKey === `novel:${msg.id}` ? '重新配音中…' : '♫ 重配这轮语音'}
-                                                        </button>
+                                                        {broadcastMode ? (() => {
+                                                            const playbackKey = `history:${msg.id}`;
+                                                            const playingThisTurn = dateVoicePlaying && broadcastPlayingTurnKey === playbackKey;
+                                                            return (
+                                                                <button
+                                                                    type="button"
+                                                                    aria-label={playingThisTurn ? '暂停这一轮广播剧' : '从头重播这一轮广播剧'}
+                                                                    title="复用已生成的整轮语音，从头播放；不会重复生成扣费"
+                                                                    disabled={galVoiceLoading && broadcastPlayingTurnKey !== playbackKey}
+                                                                    onClick={(e) => { e.stopPropagation(); replayHistoricalBroadcastTurn(msg, shown); }}
+                                                                    onTouchStart={e => e.stopPropagation()}
+                                                                    onTouchEnd={e => e.stopPropagation()}
+                                                                    className={`rounded-full border px-3 py-1 text-[11px] font-medium transition-opacity disabled:opacity-40 ${playingThisTurn
+                                                                        ? (lightReading ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-emerald-400/30 bg-emerald-500/10 text-emerald-200')
+                                                                        : (lightReading ? 'border-stone-200 bg-stone-100 text-stone-600' : 'border-white/15 bg-white/5 text-slate-300')}`}
+                                                                >
+                                                                    {galVoiceLoading && broadcastPlayingTurnKey === playbackKey
+                                                                        ? '载入整轮…'
+                                                                        : playingThisTurn ? 'Ⅱ 暂停整轮' : '↻ 重播整轮'}
+                                                                </button>
+                                                            );
+                                                        })() : (
+                                                            <button
+                                                                type="button"
+                                                                aria-label="重新合成这轮语音，保留原文"
+                                                                title="仅重新配音，文字不变；会消耗语音 API 额度"
+                                                                disabled={voiceRegeneratingKey !== null || isTyping}
+                                                                onClick={(e) => { e.stopPropagation(); regenerateNovelVoiceTurn(msg, shown); }}
+                                                                onTouchStart={e => e.stopPropagation()}
+                                                                onTouchEnd={e => e.stopPropagation()}
+                                                                className={`rounded-full border px-3 py-1 text-[11px] font-medium transition-opacity disabled:opacity-40 ${lightReading ? 'border-stone-200 bg-stone-100 text-stone-600' : 'border-white/15 bg-white/5 text-slate-300'}`}
+                                                            >
+                                                                {voiceRegeneratingKey === `novel:${msg.id}` ? '重新配音中…' : '♫ 重配这轮语音'}
+                                                            </button>
+                                                        )}
                                                     </div>
                                                 )}
                                                 {observeEnabled && hasObservation(msgObs) && (
@@ -2241,15 +2308,28 @@ const DateSession: React.FC<DateSessionProps> = ({
                                             onTouchMove={!broadcastMode && currentLineSpeakerRef.current !== 'npc' && isDialogueLine(galShownText) ? endDateVoiceLongPress : undefined}
                                             onTouchEnd={!broadcastMode && currentLineSpeakerRef.current !== 'npc' && isDialogueLine(galShownText) ? endDateVoiceLongPress : undefined}
                                             onContextMenu={!broadcastMode && currentLineSpeakerRef.current !== 'npc' && isDialogueLine(galShownText) ? (e) => { e.preventDefault(); e.stopPropagation(); void openDateVoiceFavorite(resolveCurrentDateVoiceTarget()); } : undefined}
-                                            title={broadcastMode ? '播放/暂停整段广播剧' : '播放；长按可收藏'}
-                                            className={`w-6 h-6 rounded-full flex items-center justify-center transition-all active:scale-90 ${dateVoicePlaying ? 'bg-white/30 text-white/90' : 'bg-white/10 text-white/40 hover:bg-white/20'}`}
+                                            title={broadcastMode ? '从头重播/暂停本轮广播剧' : '播放；长按可收藏'}
+                                            className={`${broadcastMode ? 'h-6 px-2.5 gap-1' : 'w-6 h-6'} rounded-full flex items-center justify-center transition-all active:scale-90 ${dateVoicePlaying ? 'bg-white/30 text-white/90' : 'bg-white/10 text-white/50 hover:bg-white/20'}`}
                                         >
                                             {galVoiceLoading ? (
-                                                <svg className="animate-spin h-3 w-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+                                                <>
+                                                    <svg className="animate-spin h-3 w-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+                                                    {broadcastMode && <span className="text-[10px] font-medium whitespace-nowrap">载入整轮</span>}
+                                                </>
                                             ) : dateVoicePlaying ? (
-                                                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-3 h-3"><path d="M5.75 3a.75.75 0 0 0-.75.75v12.5c0 .414.336.75.75.75h1.5a.75.75 0 0 0 .75-.75V3.75A.75.75 0 0 0 7.25 3h-1.5ZM12.75 3a.75.75 0 0 0-.75.75v12.5c0 .414.336.75.75.75h1.5a.75.75 0 0 0 .75-.75V3.75a.75.75 0 0 0-.75-.75h-1.5Z" /></svg>
+                                                <>
+                                                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-3 h-3"><path d="M5.75 3a.75.75 0 0 0-.75.75v12.5c0 .414.336.75.75.75h1.5a.75.75 0 0 0 .75-.75V3.75A.75.75 0 0 0 7.25 3h-1.5ZM12.75 3a.75.75 0 0 0-.75.75v12.5c0 .414.336.75.75.75h1.5a.75.75 0 0 0 .75-.75V3.75a.75.75 0 0 0-.75-.75h-1.5Z" /></svg>
+                                                    {broadcastMode && <span className="text-[10px] font-medium whitespace-nowrap">暂停整轮</span>}
+                                                </>
                                             ) : (
-                                                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-3 h-3"><path d="M6.3 2.84A1.5 1.5 0 0 0 4 4.11v11.78a1.5 1.5 0 0 0 2.3 1.27l9.344-5.891a1.5 1.5 0 0 0 0-2.538L6.3 2.841Z" /></svg>
+                                                <>
+                                                    {broadcastMode ? (
+                                                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-3 h-3"><path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99" /></svg>
+                                                    ) : (
+                                                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-3 h-3"><path d="M6.3 2.84A1.5 1.5 0 0 0 4 4.11v11.78a1.5 1.5 0 0 0 2.3 1.27l9.344-5.891a1.5 1.5 0 0 0 0-2.538L6.3 2.841Z" /></svg>
+                                                    )}
+                                                    {broadcastMode && <span className="text-[10px] font-medium whitespace-nowrap">重播本轮</span>}
+                                                </>
                                             )}
                                         </button>
                                     )}
