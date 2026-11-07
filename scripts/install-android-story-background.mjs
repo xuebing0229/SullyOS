@@ -144,8 +144,15 @@ const okHttpDependencies = [
   'implementation "com.squareup.okhttp3:okhttp"',
   'implementation "com.squareup.okhttp3:okhttp-sse"',
 ];
+// RikkaHub 的系统浮窗本身直接用 FloatingX 3.0.0。FloatingX 是 MIT，
+// 所以这里复用同一个成熟库来负责拖拽、边缘吸附、安全区和位置持久化，
+// 不在 SullyOS 里平行手写 WindowManager 手势实现。
+const floatingDependencies = [
+  'implementation "io.github.petterpx:floatingx-core:3.0.0"',
+  'implementation "io.github.petterpx:floatingx-system:3.0.0"',
+];
 if (!/dependencies\s*\{/.test(gradle)) throw new Error('无法定位 android/app/build.gradle dependencies');
-for (const dependency of okHttpDependencies.slice().reverse()) {
+for (const dependency of [...okHttpDependencies, ...floatingDependencies].slice().reverse()) {
   gradle = gradle.replace(/dependencies\s*\{/, match => `${match}\n    ${dependency}`);
 }
 await writeFile(gradlePath, gradle);
