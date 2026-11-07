@@ -955,6 +955,7 @@ export const useChatAI = ({
         // 闭包都会保留并继续落库——横幅靠 window 事件与组件生命周期
         // 解耦，用户切走 Chat 也能看到生成还活着。finally 里派发 end（两条路径都经过）。
         announceChatGen(CHAT_GEN_EVENTS.replyStart, { charId: char.id, charName: char.name });
+        announceChatGen(CHAT_GEN_EVENTS.replyProgress, { charId: char.id, charName: char.name, phase: 'waiting', preview: '' });
 
         // 本轮里角色自己新排出来的任务。排程现状块每轮现算时靠它把这些点名标出来——不标
         // 的话角色分不清清单上哪条是自己刚排的，回头又排一条一模一样的。
@@ -972,6 +973,12 @@ export const useChatAI = ({
         ): Promise<Amsg2ToolOutcome> => {
             replyRun.check();
             setSearchStatus(`正在执行：${fname}...`);
+            announceChatGen(CHAT_GEN_EVENTS.replyProgress, {
+                charId: char.id,
+                charName: char.name,
+                phase: 'tool',
+                preview: `正在执行：${fname}`,
+            });
             const taskUuidsBefore = new Set(
                 (amsg2Session.getConfig()?.tasks ?? []).map((t) => t.taskUuid),
             );
@@ -1791,6 +1798,14 @@ export const useChatAI = ({
                         setStreamingBubbles(prev =>
                             (prev.length === bubbles.length && prev.every((b, i) => b === bubbles[i])) ? prev : bubbles
                         );
+                        if (bubbles.length > 0) {
+                            announceChatGen(CHAT_GEN_EVENTS.replyProgress, {
+                                charId: char.id,
+                                charName: char.name,
+                                phase: 'writing',
+                                preview: bubbles.join('\n\n'),
+                            });
+                        }
                     }
                     if (streamThinkingEligible) {
                         latestEmbeddedThinking = extractStreamingEmbeddedThinking(fullText);
@@ -1802,6 +1817,14 @@ export const useChatAI = ({
                     if (!streamThinkingEligible) return;
                     latestNativeReasoning = fullReasoning;
                     publishStreamingThinking();
+                    if (fullReasoning.trim()) {
+                        announceChatGen(CHAT_GEN_EVENTS.replyProgress, {
+                            charId: char.id,
+                            charName: char.name,
+                            phase: 'thinking',
+                            preview: fullReasoning,
+                        });
+                    }
                 },
             } : undefined;
 
