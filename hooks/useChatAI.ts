@@ -1855,7 +1855,11 @@ export const useChatAI = ({
                 const useNativeBackgroundChat = purpose === '聊天回复'
                     && isChatFloatingEnabled()
                     && isNativeStoryBackgroundRuntime()
-                    && !Array.isArray(body.tools)
+                    // 点单 / MCP / 主动消息工具循环都必须留在现有 JS 管线；即使兼容模式
+                    // 把 tools 字段改写进正文，也不能误判成「普通无工具聊天」。
+                    && !toolModeActive
+                    && !amsg2ToolsInjected
+                    && !(Array.isArray(body.tools) && body.tools.length > 0)
                     && !body.tool_choice;
                 if (useNativeBackgroundChat) {
                     try {
