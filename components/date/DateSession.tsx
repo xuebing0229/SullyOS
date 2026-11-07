@@ -42,6 +42,13 @@ import { VOICE_LANGUAGE_OPTIONS, voiceLanguageAnalyticsValue, voiceLanguageLabel
 import { SARSpeechSwitch } from '../sar/SARSpeechSwitch';
 import { resolveSARDateSpeech } from '../../utils/sarDatePresentation';
 import { isDateHistoryEnvelopeOnly, stripDateHistoryEnvelope } from '../../utils/dateModelOutput';
+import {
+    ensureNativeChatFloatingStarted,
+    failNativeChatFloating,
+    finishNativeChatFloating,
+    releaseNativeChatFloating,
+    updateNativeChatFloating,
+} from '../../utils/nativeChatFloating';
 
 // 语音情绪标记 [v:xxx]：跟立绘情绪 [emotion] 分开的独立通道。立绘的 happy 是
 // 夸张的表情、语音的 happy 是音色情绪，两者强度/语义差异大，不能一概而论。
@@ -1640,10 +1647,20 @@ const DateSession: React.FC<DateSessionProps> = ({
         setIsTyping(true);
         setIsShowingOpening(false); // First user interaction - opening phase is over
 
+        const floatingKey = `date:${char.id}`;
+        const floatingTitle = `${char.name || '角色'} · 见面`;
+        // Reuse the same native RikkaHub-style generation window as ordinary chat.
+        // Await startup before the request so a fast app switch cannot beat service creation.
+        const floatingStarted = await ensureNativeChatFloatingStarted(floatingKey, floatingTitle, 'waiting', '');
+
         try {
             const aiContent = await onSendMessage(text, kind);
             // 先剥出观测块更新 HUD，再解析剩余正文
             const { observation: obs, rest } = extractObservation(aiContent, { lenient: observeEnabled, custom: char.dateObserve?.custom });
+            if (floatingStarted) {
+                updateNativeChatFloating(floatingKey, floatingTitle, 'writing', rest);
+                finishNativeChatFloating(floatingKey, floatingTitle, rest);
+            }
             if (hasObservation(obs)) setObservation(obs);
             const items = parseDialogue(rest, 'normal');
             setDialogueBatch(items);
@@ -1656,10 +1673,12 @@ const DateSession: React.FC<DateSessionProps> = ({
             setPendingRetryText('');
         } catch (e: any) {
             // onSendMessage 内部含 API 调用 + 回复后处理, 抛错不一定是网络。用中性文案, 不误导成"连接中断"。
+            if (floatingStarted) failNativeChatFloating(floatingKey, floatingTitle, e?.message || '未知错误');
             setPendingRetryText(text);
             setCurrentText(`(出错了: ${e?.message || '未知错误'})`);
             setShowInputBox(true);
         } finally {
+            if (floatingStarted) releaseNativeChatFloating(floatingKey);
             setIsTyping(false);
         }
     };
@@ -1670,9 +1689,16 @@ const DateSession: React.FC<DateSessionProps> = ({
     const handleRerollClick = async () => {
         if (isTyping) return;
         setIsTyping(true);
+        const floatingKey = `date:${char.id}`;
+        const floatingTitle = `${char.name || '角色'} · 见面`;
+        const floatingStarted = await ensureNativeChatFloatingStarted(floatingKey, floatingTitle, 'waiting', '');
         try {
             const aiContent = await onReroll();
             const { observation: obs, rest } = extractObservation(aiContent, { lenient: observeEnabled, custom: char.dateObserve?.custom });
+            if (floatingStarted) {
+                updateNativeChatFloating(floatingKey, floatingTitle, 'writing', rest);
+                finishNativeChatFloating(floatingKey, floatingTitle, rest);
+            }
             if (hasObservation(obs)) setObservation(obs);
             const items = parseDialogue(rest, 'normal');
             setDialogueBatch(items);
@@ -1683,10 +1709,12 @@ const DateSession: React.FC<DateSessionProps> = ({
                 else void ensureDateDialogueBatch(items);
             }
         } catch(e: any) {
+            if (floatingStarted) failNativeChatFloating(floatingKey, floatingTitle, e?.message || '未知错误');
             // 父级 handleReroll 只抛不提示；这里不给反馈的话，点了「重新生成」
             // 没动静用户会以为没点上（旧版更糟：消息已被删还毫无提示）
             addToast(`重新生成失败: ${e?.message || '未知错误'}`, 'error');
         } finally {
+            if (floatingStarted) releaseNativeChatFloating(floatingKey);
             setIsTyping(false);
         }
     };
