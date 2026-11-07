@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.Recomposer
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -26,8 +27,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.rememberVectorPainter
+import androidx.compose.ui.platform.AndroidUiDispatcher
 import androidx.compose.ui.platform.ComposeView
-import androidx.compose.ui.platform.ViewCompositionStrategy
 import androidx.compose.ui.unit.dp
 import com.petterp.floatingx.core.FloatingX
 import com.petterp.floatingx.core.FxControl
@@ -40,6 +41,8 @@ import com.petterp.floatingx.core.layout.FxGravity
 import com.petterp.floatingx.core.storage.FxSpStorage
 import com.petterp.floatingx.system.SystemHost
 import com.petterp.floatingx.system.permission.FxPermissionStrategy
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.ceil
@@ -75,10 +78,21 @@ class SullyChatFloatingBubbleHost(
     private val onClick: Runnable,
 ) {
     private val state = mutableStateOf(SullyFloatingBubbleState())
+    private var recomposer: Recomposer? = null
+    private var recomposeScope: CoroutineScope? = null
 
     fun install(): FxControl {
+        // Copied from FloatingX FxComposeContent: give an overlay ComposeView its own
+        // main-thread Recomposer, so it does not depend on an Activity/ViewTree owner.
+        val dispatcher = AndroidUiDispatcher.CurrentThread
+        val r = Recomposer(dispatcher)
+        val scope = CoroutineScope(dispatcher)
+        recomposer = r
+        recomposeScope = scope
+        scope.launch { r.runRecomposeAndApplyChanges() }
+
         val view = ComposeView(context).apply {
-            setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnDetachedFromWindow)
+            setParentCompositionContext(r)
             setContent {
                 ChatFloatingBubble(state.value, onClick = { onClick.run() })
             }
@@ -99,6 +113,13 @@ class SullyChatFloatingBubbleHost(
 
     fun update(generating: Boolean, success: Boolean, error: Boolean) {
         state.value = SullyFloatingBubbleState(generating = generating, success = success, error = error)
+    }
+
+    fun release() {
+        recomposer?.cancel()
+        recomposer = null
+        recomposeScope?.cancel()
+        recomposeScope = null
     }
 
     private fun dp(value: Float): Float = value * context.resources.displayMetrics.density
