@@ -1438,16 +1438,20 @@ const DateSession: React.FC<DateSessionProps> = ({
         const syncTextToAudio = () => {
             if (requestId !== broadcastPlaybackRequestRef.current) return;
             const now = Number.isFinite(audio.currentTime) ? audio.currentTime : 0;
-            let active: DateDialogueSegment | null = null;
-            for (const segment of batch.segments) {
+            let activeTurnIndex = -1;
+            for (let segmentIndex = 0; segmentIndex < batch.segments.length; segmentIndex += 1) {
+                const segment = batch.segments[segmentIndex];
                 if (segment.unusable || !Number.isFinite(segment.startTime) || !Number.isFinite(segment.endTime)) continue;
-                if (segment.startTime <= now + 0.02) active = segment;
+                if (segment.startTime <= now + 0.02) activeTurnIndex = segmentIndex;
                 else break;
             }
-            if (!active || active.lineId === broadcastActiveLineRef.current) return;
-            const index = items.findIndex(item => item.lineId === active!.lineId);
+            // 整轮缓存会跨“实时本轮 / 历史消息”复用；缓存 segment 的旧 lineId 不能直接拿来
+            // 找当前消息。按 Dialogue input 顺序还原本次 turns 的 lineId，和单句回放的映射规则一致。
+            const activeTurn = activeTurnIndex >= 0 ? turns[activeTurnIndex] : undefined;
+            if (!activeTurn || activeTurn.lineId === broadcastActiveLineRef.current) return;
+            const index = items.findIndex(item => item.lineId === activeTurn.lineId);
             if (index < 0) return;
-            broadcastActiveLineRef.current = active.lineId;
+            broadcastActiveLineRef.current = activeTurn.lineId;
             processNextDialogue(items[index], items.slice(index + 1));
         };
 
