@@ -188,8 +188,12 @@ public class SullyChatFloatingService extends Service {
         GenerationState state = generations.get(id);
         if (state == null) {
             state = new GenerationState(id, intent.getStringExtra(EXTRA_TITLE));
-            generations.put(id, state);
+        } else {
+            // RikkaHub tracker always promotes a newly-started generation to the current target.
+            // Reinsert the existing state so LinkedHashMap keeps the same target ordering.
+            generations.remove(id);
         }
+        generations.put(id, state);
         state.generating = true;
         state.success = false;
         cancelCompletionNotification(id);
