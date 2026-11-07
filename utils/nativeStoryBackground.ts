@@ -36,6 +36,7 @@ interface NativeStoryJob {
   status: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled';
   responseJson?: string;
   partialContent?: string;
+  partialReasoning?: string;
   error?: string;
   statusCode?: number;
   promptTokens?: number;
@@ -178,6 +179,20 @@ export interface NativeStoryCompletionOptions {
   meta?: Record<string, any>;
   onPromptTokens?: (tokens: number) => void;
   onStreamText?: (fullText: string) => void;
+  onReasoningText?: (fullText: string) => void;
+  onResolvedRouteIndex?: (routeIndex: number) => void;
+  /**
+   * 剧情与普通聊天共用同一套 Android SSE runner。这里仅覆盖 API 日志的展示身份，
+   * 不改变请求/故障转移逻辑。
+   */
+  logMeta?: { appId?: string; appName?: string; purpose?: string };
+  /**
+   * 外层已经有 foreground service 时跳过 SullyStoryKeepAliveService，避免两条常驻通知。
+   * 生成任务仍由 SullyStoryGenerationManager 持有。
+   */
+  externalForeground?: boolean;
+  /** 让原生 SSE runner 把真实 reasoning / 正文增量直接推给同一条聊天悬浮窗。 */
+  floatingGenerationId?: string;
 }
 
 const readPending = (): PendingMap => {
@@ -411,11 +426,13 @@ const checkJob = async (jobId: string): Promise<NativeStoryJob | null> => {
 const waitForTerminal = async (
   jobId: string,
   onStreamText?: (fullText: string) => void,
+  onReasoningText?: (fullText: string) => void,
 ): Promise<NativeStoryJob> => {
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let resumeHandle: { remove: () => Promise<void> } | null = null;
   let lastPartial = '';
+  let lastReasoning = '';
 
   return new Promise<NativeStoryJob>((resolve, reject) => {
     const finish = (fn: () => void) => {
@@ -440,6 +457,11 @@ const waitForTerminal = async (
           lastPartial = partial;
           onStreamText?.(partial);
         }
+        const reasoning = String(job.partialReasoning || '');
+        if (reasoning && reasoning !== lastReasoning) {
+          lastReasoning = reasoning;
+          onReasoningText?.(reasoning);
+        }
         if (job.status === 'succeeded' || job.status === 'failed' || job.status === 'cancelled') {
           finish(() => resolve(job));
           return;
@@ -463,6 +485,7 @@ const logNativeAttempts = (
   plan: ApiExecutionPlan,
   baseBody: Record<string, any>,
   response: any | undefined,
+  logMeta?: { appId?: string; appName?: string; purpose?: string },
 ): void => {
   const attempts = Array.isArray(job.attempts) ? job.attempts : [];
   for (const attempt of attempts) {
@@ -481,9 +504,9 @@ const logNativeAttempts = (
       durationMs: Number.isFinite(Number(attempt.durationMs)) ? Number(attempt.durationMs) : undefined,
       networkRequest: true,
       meta: {
-        appId: 'date',
-        appName: '剧情剧场',
-        purpose: '剧情后台续写',
+        appId: logMeta?.appId || 'date',
+        appName: logMeta?.appName || '剧情剧场',
+        purpose: logMeta?.purpose || '剧情后台续写',
         apiPresetId: String(attempt.presetId || route?.presetId || ''),
         apiPresetName: String(attempt.presetName || route?.presetName || ''),
         failoverGroupId: plan.group?.id,
@@ -533,6 +556,8 @@ export const executeStoryCompletionInNativeBackground = async (
           mode: options.plan.mode,
           timeoutMs,
           routes,
+          ...(options.externalForeground ? { externalForeground: true } : {}),
+          ...(options.floatingGenerationId ? { floatingGenerationId: options.floatingGenerationId } : {}),
           baseBody: {
             ...options.body,
             // ForegroundService 从一开始就持有官方 okhttp-sse EventSource，
@@ -549,7 +574,7 @@ export const executeStoryCompletionInNativeBackground = async (
   }
 
   if (job.status === 'queued' || job.status === 'running') {
-    job = await waitForTerminal(jobId, options.onStreamText);
+    job = await waitForTerminal(jobId, options.onStreamText, options.onReasoningText);
   }
 
   let parsed: any | undefined;
@@ -559,10 +584,15 @@ export const executeStoryCompletionInNativeBackground = async (
 
   const pendingBeforeLog = getPendingNativeStoryJob(options.ownerKey);
   if (pendingBeforeLog?.loggedJobId !== job.jobId) {
-    logNativeAttempts(job, options.plan, options.body, parsed);
+    logNativeAttempts(job, options.plan, options.body, parsed, options.logMeta);
     if (pendingBeforeLog) {
       setPending({ ...pendingBeforeLog, loggedJobId: job.jobId });
     }
+  }
+
+  const resolvedRouteIndex = Number(job.routeIndex);
+  if (Number.isFinite(resolvedRouteIndex) && resolvedRouteIndex >= 0) {
+    options.onResolvedRouteIndex?.(resolvedRouteIndex);
   }
 
   const promptTokens = Number(job.promptTokens ?? parsed?.usage?.prompt_tokens);
