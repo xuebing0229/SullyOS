@@ -17,7 +17,7 @@ import androidx.core.content.ContextCompat
 // Copied from RikkaHub's ChatGenerationForegroundService.kt (AGPL-3.0).
 // SullyOS changes are intentionally limited to package/app integration and String IDs.
 private const val TAG = "ChatGenerationFgs"
-private const val CHANNEL_ID = "sully_chat_background_v1"
+private const val CHANNEL_ID = "sully_chat_live_update_v1"
 
 /**
  * Keeps the app process in the foreground while one or more chat generations are active.
