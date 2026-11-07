@@ -21,6 +21,9 @@ import android.widget.LinearLayout;
 import android.widget.TextView;
 
 import androidx.core.app.NotificationCompat;
+import androidx.lifecycle.Lifecycle;
+import androidx.lifecycle.LifecycleEventObserver;
+import androidx.lifecycle.ProcessLifecycleOwner;
 
 import com.petterp.floatingx.core.FloatingX;
 import com.petterp.floatingx.core.FxControl;
@@ -76,6 +79,17 @@ public class SullyChatFloatingService extends Service {
 
     private boolean appForeground = true;
     private String dismissedGenerationId = null;
+
+    // Match RikkaHub ChatFloatingTracker: background visibility is owned by Android's
+    // process lifecycle, not a WebView/JS visibility callback that may be frozen or
+    // rejected exactly when the app is entering background.
+    private final LifecycleEventObserver appLifecycleObserver = (source, event) -> {
+        if (event == Lifecycle.Event.ON_START) {
+            applyAppForeground(true);
+        } else if (event == Lifecycle.Event.ON_STOP) {
+            applyAppForeground(false);
+        }
+    };
 
     private static final class GenerationState {
         final String id;
@@ -167,6 +181,9 @@ public class SullyChatFloatingService extends Service {
     public void onCreate() {
         super.onCreate();
         createChannel();
+        Lifecycle lifecycle = ProcessLifecycleOwner.get().getLifecycle();
+        appForeground = lifecycle.getCurrentState().isAtLeast(Lifecycle.State.STARTED);
+        lifecycle.addObserver(appLifecycleObserver);
     }
 
     @Override
@@ -184,7 +201,8 @@ public class SullyChatFloatingService extends Service {
     private void handleStart(Intent intent) {
         String id = cleanId(intent.getStringExtra(EXTRA_ID));
         if (id.isEmpty()) return;
-        appForeground = intent.getBooleanExtra(EXTRA_FOREGROUND, appForeground);
+        // Do not trust the WebView's foreground snapshot here. RikkaHub's tracker uses
+        // ProcessLifecycleOwner so ON_STOP is observed natively even when JS is frozen.
         GenerationState state = generations.get(id);
         if (state == null) {
             state = new GenerationState(id, intent.getStringExtra(EXTRA_TITLE));
@@ -255,7 +273,13 @@ public class SullyChatFloatingService extends Service {
     }
 
     private void handleVisibility(Intent intent) {
-        appForeground = intent.getBooleanExtra(EXTRA_FOREGROUND, true);
+        // Legacy compatibility only. Native ProcessLifecycleOwner is the source of truth;
+        // this action may arrive late or be blocked once Android has backgrounded the app.
+    }
+
+    private void applyAppForeground(boolean foreground) {
+        if (appForeground == foreground) return;
+        appForeground = foreground;
         if (appForeground) {
             removeOverlay();
             removeFinishedStates();
@@ -592,6 +616,7 @@ public class SullyChatFloatingService extends Service {
 
     @Override
     public void onDestroy() {
+        ProcessLifecycleOwner.get().getLifecycle().removeObserver(appLifecycleObserver);
         removeOverlay();
         super.onDestroy();
     }
