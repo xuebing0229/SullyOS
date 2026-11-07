@@ -273,7 +273,10 @@ public class SullyChatFloatingService extends Service {
     }
 
     private void removeFinishedStates() {
-        generations.entrySet().removeIf(entry -> !entry.getValue().generating);
+        java.util.Iterator<Map.Entry<String, GenerationState>> iterator = generations.entrySet().iterator();
+        while (iterator.hasNext()) {
+            if (!iterator.next().getValue().generating) iterator.remove();
+        }
     }
 
     private boolean hasRunningGeneration() {
