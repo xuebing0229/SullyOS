@@ -148,7 +148,7 @@ let rootGradle = await readFile(rootGradlePath, 'utf8');
 if (!rootGradle.includes('org.jetbrains.kotlin:kotlin-gradle-plugin')) {
   rootGradle = rootGradle.replace(
     /dependencies\s*\{/,
-    match => `${match}\n        classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:1.9.22"`,
+    match => `${match}\n        classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:2.2.21"`,
   );
   await writeFile(rootGradlePath, rootGradle);
 }
