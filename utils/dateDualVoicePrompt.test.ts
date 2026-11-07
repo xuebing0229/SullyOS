@@ -30,7 +30,6 @@ describe('见面模式双 OC / ElevenLabs prompt', () => {
     expect(block).toContain('[speaker:char]');
     expect(block).toContain('普通模式下你不能替用户写台词');
     expect(block).toContain('[speaker:npc:姓名]');
-    expect(block).toContain('[speaker:npc:姓名]');
   });
 
   it('强化演绎允许 AI 补写 user OC，并要求双方 speaker 标签', () => {
