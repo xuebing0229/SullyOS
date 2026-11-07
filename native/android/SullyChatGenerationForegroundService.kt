@@ -14,7 +14,7 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 
-// Copied from RikkaHub's SullyChatGenerationForegroundService.kt (AGPL-3.0).
+// Copied from RikkaHub's ChatGenerationForegroundService.kt (AGPL-3.0).
 // SullyOS changes are intentionally limited to package/app integration and String IDs.
 private const val TAG = "ChatGenerationFgs"
 private const val CHANNEL_ID = "sully_chat_background_v1"
@@ -22,7 +22,7 @@ private const val CHANNEL_ID = "sully_chat_background_v1"
 /**
  * Keeps the app process in the foreground while one or more chat generations are active.
  *
- * Generation itself remains owned by [ChatService]. This service only provides the Android
+ * Generation itself remains owned by SullyOS' native generation owner. This service only provides the Android
  * foreground-service lifetime required for streaming to continue after the activity is hidden.
  */
 class SullyChatGenerationForegroundService : Service() {
