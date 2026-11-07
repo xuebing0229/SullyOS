@@ -14,8 +14,9 @@ const drawableDir = path.join(root, 'android', 'app', 'src', 'main', 'res', 'dra
 const mainPath = path.join(packageDir, 'MainActivity.java');
 const manifestPath = path.join(root, 'android', 'app', 'src', 'main', 'AndroidManifest.xml');
 const gradlePath = path.join(root, 'android', 'app', 'build.gradle');
+const rootGradlePath = path.join(root, 'android', 'build.gradle');
 
-await Promise.all([access(mainPath), access(manifestPath), access(gradlePath)]);
+await Promise.all([access(mainPath), access(manifestPath), access(gradlePath), access(rootGradlePath)]);
 await mkdir(pluginDir, { recursive: true });
 await mkdir(drawableDir, { recursive: true });
 
@@ -27,6 +28,7 @@ for (const name of [
   'SullyStoryStatusPush.java',
   'SullyStoryReferenceUploads.java',
   'SullyChatFloatingService.java',
+  'SullyChatGenerationForegroundService.kt',
 ]) {
   const source = await readFile(path.join(root, 'native', 'android', name), 'utf8');
   await writeFile(path.join(pluginDir, name), source.replaceAll('__APP_ID__', appId));
@@ -115,26 +117,52 @@ if (cloudMonitorPattern.test(manifest)) {
   manifest = manifest.replace('</application>', `${cloudMonitorService}\n    </application>`);
 }
 
-// 聊天后台悬浮窗沿用现有 story installer 注入，避免再造第二套 Android 安装脚本。
-// Service 与 WebView 同进程：它的职责和 RikkaHub 的 generation FGS 一样，只保活现有生成闭包；
-// SYSTEM_ALERT_WINDOW 只控制悬浮 UI，未授权时后台生成/系统进度通知仍照常工作。
+// 聊天生成保活直接复用 RikkaHub 的 ChatGenerationForegroundService 结构；
+const chatGenerationService = [
+  '        <service',
+  '            android:name=".plugins.SullyChatGenerationForegroundService"',
+  '            android:exported="false"',
+  '            android:stopWithTask="false"',
+  '            android:foregroundServiceType="dataSync" />',
+].join('\n');
+if (!manifest.includes('android:name=".plugins.SullyChatGenerationForegroundService"')) {
+  manifest = manifest.replace('</application>', `${chatGenerationService}\n    </application>`);
+}
+
+// 悬浮层本身不再承担 foreground service 职责，只负责 FloatingX UI 与完成通知。
 if (!manifest.includes('android:name=".plugins.SullyChatFloatingService"')) {
   manifest = manifest.replace('</application>', [
     '        <service',
     '            android:name=".plugins.SullyChatFloatingService"',
     '            android:exported="false"',
-    '            android:stopWithTask="false"',
-    '            android:foregroundServiceType="dataSync" />',
+    '            android:stopWithTask="false" />',
     '    </application>',
   ].join('\n'));
 }
 
 await writeFile(manifestPath, manifest);
 
+// ChatGenerationForegroundService 直接保留 Kotlin 源文件，因此只给 Capacitor 生成工程补 Kotlin 编译器；
+// 不把 RikkaHub 的 Compose/Koin/ChatService 依赖链拖进 SullyOS。
+let rootGradle = await readFile(rootGradlePath, 'utf8');
+if (!rootGradle.includes('org.jetbrains.kotlin:kotlin-gradle-plugin')) {
+  rootGradle = rootGradle.replace(
+    /dependencies\s*\{/,
+    match => `${match}\n        classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:1.9.22"`,
+  );
+  await writeFile(rootGradlePath, rootGradle);
+}
+
 // RikkaHub 的 OpenAI streaming provider 使用 OkHttp + okhttp-sse EventSource。
 // SullyOS 当前 compileSdk=34 / AGP=8.2.1，RikkaHub 当前 5.5.0 要求 compileSdk 37。
 // 因此只在版本上做最小工具链适配：锁定稳定 OkHttp 5.1.0，其余请求/连接行为保持同架构。
 let gradle = await readFile(gradlePath, 'utf8');
+if (!gradle.includes("apply plugin: 'kotlin-android'")) {
+  gradle = gradle.replace(
+    "apply plugin: 'com.android.application'",
+    "apply plugin: 'com.android.application'\napply plugin: 'kotlin-android'",
+  );
+}
 gradle = gradle.replace(
   /^\s*implementation(?:\s*\(|\s+)\s*(?:enforcedPlatform\()?["']com\.squareup\.okhttp3:[^"']+["'][^\n]*$/gm,
   '',
@@ -157,4 +185,4 @@ for (const dependency of [...okHttpDependencies, ...floatingDependencies].slice(
 }
 await writeFile(gradlePath, gradle);
 
-console.log('[SullyStoryBackground] generation manager + keepalive + isolated cloud status monitor + chat floating service installed');
+console.log('[SullyStoryBackground] generation manager + keepalive + isolated cloud status monitor + RikkaHub chat FGS + floating UI installed');
