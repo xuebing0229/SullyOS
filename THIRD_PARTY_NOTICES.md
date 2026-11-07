@@ -6,6 +6,8 @@ SullyOS includes or links to third-party software that remains under its own lic
 
 - Project: https://github.com/Petterpx/FloatingX
 - Version used by the Android floating-generation feature: 3.0.0
+- Source reused in addition to the published core/system artifacts:
+  - `floatingx-compose/src/main/kotlin/com/petterp/floatingx/compose/FxComposeOwner.kt`
 - License: MIT
 - Copyright (c) 2021 Petterp
 
