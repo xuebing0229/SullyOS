@@ -135,6 +135,17 @@ const release = (charId: string) => {
 export const updateNativeChatFloating = update;
 export const finishNativeChatFloating = finish;
 export const releaseNativeChatFloating = release;
+export const failNativeChatFloating = (charId: string, charName: string, error = '') => {
+  if (!isNativeAndroid() || !isChatFloatingEnabled() || !charId) return;
+  const id = chatFloatingGenerationId(charId);
+  if (!activeIds.has(id)) start(charId, charName, 'waiting', '');
+  void NativeStoryBackground.finishChatFloating({
+    generationId: id,
+    title: charName || '聊天',
+    success: false,
+    error: cleanPreview(error),
+  }).catch(() => {});
+};
 
 const syncInstantPendings = () => {
   if (!isNativeAndroid() || !isChatFloatingEnabled()) return;
