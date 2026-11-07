@@ -82,6 +82,7 @@ import { normalizeApiBaseUrl, normalizeApiCredential, normalizeApiModel } from '
 import { describeImageWithVisionApi, VISION_API_TEST_IMAGE_DATA_URL, visionApiConfigFromPreset } from '../utils/visionApi';
 import { presetDiffersFromConfig } from '../utils/apiPresetSwitch';
 import {
+    ensureChatFloatingNotificationPermission,
     getChatFloatingPermission,
     isChatFloatingEnabled,
     requestChatFloatingPermission,
@@ -551,6 +552,10 @@ const Settings: React.FC = () => {
       saveChatFloatingEnabled(next);
       setChatFloatingEnabledState(next);
       if (!next) return;
+      const notificationsGranted = await ensureChatFloatingNotificationPermission().catch(() => false);
+      if (!notificationsGranted) {
+          addToast('通知权限未开启，悬浮窗仍可用，但生成完成不会出现在系统通知栏', 'info');
+      }
       const granted = await getChatFloatingPermission();
       setChatFloatingPermission(granted);
       if (!granted) {
