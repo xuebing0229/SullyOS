@@ -30,6 +30,7 @@ import androidx.compose.ui.graphics.vector.rememberVectorPainter
 import androidx.compose.ui.platform.AndroidUiDispatcher
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
 import com.petterp.floatingx.core.FloatingX
 import com.petterp.floatingx.core.FxControl
 import com.petterp.floatingx.core.animation.FxAnimations
@@ -80,10 +81,16 @@ class SullyChatFloatingBubbleHost(
     private val state = mutableStateOf(SullyFloatingBubbleState())
     private var recomposer: Recomposer? = null
     private var recomposeScope: CoroutineScope? = null
+    private var owner: SullyFloatingComposeOwner? = null
 
     fun install(): FxControl {
-        // Copied from FloatingX FxComposeContent: give an overlay ComposeView its own
-        // main-thread Recomposer, so it does not depend on an Activity/ViewTree owner.
+        // FloatingX FxComposeContent is not just a Recomposer: it also installs its own
+        // Lifecycle / ViewModelStore / SavedStateRegistry owners on the overlay view.
+        // System WindowManager views do not inherit those from an Activity.
+        val overlayOwner = SullyFloatingComposeOwner()
+        overlayOwner.moveTo(Lifecycle.State.RESUMED)
+        owner = overlayOwner
+
         val dispatcher = AndroidUiDispatcher.CurrentThread
         val r = Recomposer(dispatcher)
         val scope = CoroutineScope(dispatcher)
@@ -92,6 +99,7 @@ class SullyChatFloatingBubbleHost(
         scope.launch { r.runRecomposeAndApplyChanges() }
 
         val view = ComposeView(context).apply {
+            overlayOwner.attachTo(this)
             setParentCompositionContext(r)
             setContent {
                 ChatFloatingBubble(state.value, onClick = { onClick.run() })
@@ -108,7 +116,13 @@ class SullyChatFloatingBubbleHost(
         val host = SystemHost.builder(context)
             .permission(FxPermissionStrategy.skip())
             .build()
-        return FloatingX.install(BUBBLE_TAG, config, host)
+
+        return try {
+            FloatingX.install(BUBBLE_TAG, config, host)
+        } catch (error: Throwable) {
+            release()
+            throw error
+        }
     }
 
     fun update(generating: Boolean, success: Boolean, error: Boolean) {
@@ -116,6 +130,8 @@ class SullyChatFloatingBubbleHost(
     }
 
     fun release() {
+        owner?.destroy()
+        owner = null
         recomposer?.cancel()
         recomposer = null
         recomposeScope?.cancel()
