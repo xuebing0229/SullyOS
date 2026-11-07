@@ -312,7 +312,7 @@ export interface NativeCloudStoryMonitorOptions {
   onSubmitTiming?: (label: string, ms: number) => void;
 }
 
-const ensureStoryNotificationPermission = async (): Promise<{
+export const ensureBackgroundNotificationPermission = async (): Promise<{
   granted: boolean;
   prompted: boolean;
 }> => {
@@ -357,7 +357,7 @@ export const startNativeCloudStoryMonitor = async (
     immediateStartError = error;
   }
 
-  const permission = await ensureStoryNotificationPermission();
+  const permission = await ensureBackgroundNotificationPermission();
   if (!permission.granted) {
     console.warn('[StoryTheater] 系统通知权限未授予，剧情后台状态牌无法显示');
     if (immediateStartError) throw immediateStartError;
