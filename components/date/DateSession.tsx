@@ -2113,14 +2113,20 @@ const DateSession: React.FC<DateSessionProps> = ({
                                         const sarRevealed = sarTruthMessageIds.has(msg.id);
                                         const shown = sarSurface && !sarRevealed ? sarSurface : msg.content;
                                         const { observation: msgObs, rest: msgBody } = extractObservation(shown || '', { lenient: observeEnabled, custom: char.dateObserve?.custom });
+                                        const historicalBroadcastItems = broadcastMode
+                                            ? parseDialogue(msgBody || '', 'normal', String(msg.id))
+                                            : [];
+                                        const canReplayHistoricalBroadcast = broadcastMode
+                                            && buildDateDialogueTurns(historicalBroadcastItems).length > 0;
                                         return (
                                         <div className="flex min-w-0 items-start gap-3">
                                             {!decoratedReading && char.dateReadingShowAvatars && (
                                                 <ReadingAvatar src={char.avatar} name={char.name} light={!!lightReading} />
                                             )}
                                             <div className="min-w-0 flex-1">
-                                                {voiceEnabled && !isBatchSelectMode && msg.metadata?.isOpening !== true &&
-                                                    (msgBody || '').split('\n').some(line => isDialogueLine(line)) && (
+                                                {voiceEnabled && !isBatchSelectMode &&
+                                                    (canReplayHistoricalBroadcast || (!broadcastMode && msg.metadata?.isOpening !== true &&
+                                                        (msgBody || '').split('\n').some(line => isDialogueLine(line)))) && (
                                                     <div className="flex justify-end mb-2">
                                                         {broadcastMode ? (() => {
                                                             const playbackKey = `history:${msg.id}`;
