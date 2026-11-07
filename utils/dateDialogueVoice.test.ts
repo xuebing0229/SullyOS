@@ -245,6 +245,12 @@ describe('见面 Voice ID 路由合约', () => {
   it('广播剧复用整轮 Dialogue 和真实时间轴，不另造一套 TTS', () => {
     expect(session).toContain("speaker: 'narrator' as const");
     expect(session).toContain('voiceId: narratorVoiceId');
+    expect(session).toContain("item.speaker === 'npc'");
+    expect(session).toContain("resolveElevenLabsNpcVoiceId(apiConfig, 'male')");
+    expect(session).toContain("resolveElevenLabsNpcVoiceId(apiConfig, 'female')");
+    expect(session).toContain("'npc-male' as const");
+    expect(session).toContain("'npc-female' as const");
+    expect(session).toContain('npcGender,');
     expect(session).toContain('const playBroadcastTurn = async');
     expect(session).toContain('audio.ontimeupdate = syncTextToAudio');
     expect(session).toContain('processNextDialogue(items[index], items.slice(index + 1))');
