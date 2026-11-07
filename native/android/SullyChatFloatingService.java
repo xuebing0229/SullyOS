@@ -12,6 +12,7 @@ import android.graphics.drawable.GradientDrawable;
 import android.os.Build;
 import android.os.IBinder;
 import android.provider.Settings;
+import android.util.Log;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
@@ -48,6 +49,7 @@ import java.util.Map;
  * 本类只负责 FloatingX 窗口状态、内容展示和完成通知。
  */
 public class SullyChatFloatingService extends Service {
+    private static final String TAG = "SullyChatFloating";
     public static final String ACTION_START = "SULLY_CHAT_FLOATING_START";
     public static final String ACTION_UPDATE = "SULLY_CHAT_FLOATING_UPDATE";
     public static final String ACTION_FINISH = "SULLY_CHAT_FLOATING_FINISH";
@@ -396,16 +398,28 @@ public class SullyChatFloatingService extends Service {
 
     private void ensureBubble(GenerationState state) {
         if (bubbleControl == null) {
+            SullyChatFloatingBubbleHost host = null;
+            FxControl control = null;
             try {
                 // RikkaHub bubble UI is hosted by Kotlin/Compose so its original morph shape,
                 // spin timing, adaptive-icon layer scaling, status badge and FloatingX config
                 // stay intact instead of being reimplemented with a plain ImageView.
-                bubbleHost = new SullyChatFloatingBubbleHost(getApplication(), this::expandPanel);
-                bubbleControl = bubbleHost.install();
-                bubbleControl.show();
-            } catch (Exception error) {
+                host = new SullyChatFloatingBubbleHost(getApplication(), this::expandPanel);
+                control = host.install();
+                control.show();
+                bubbleHost = host;
+                bubbleControl = control;
+            } catch (Throwable error) {
+                Log.e(TAG, "Unable to attach floating generation bubble", error);
+                if (control != null) {
+                    try { control.cancel(); } catch (Throwable ignored) { }
+                }
+                if (host != null) {
+                    try { host.release(); } catch (Throwable ignored) { }
+                }
                 bubbleControl = null;
                 bubbleHost = null;
+                return;
             }
         }
         updateBubble(state);
