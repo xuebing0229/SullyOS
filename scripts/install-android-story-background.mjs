@@ -26,6 +26,7 @@ for (const name of [
   'SullyStoryCloudMonitorService.java',
   'SullyStoryStatusPush.java',
   'SullyStoryReferenceUploads.java',
+  'SullyChatFloatingService.java',
 ]) {
   const source = await readFile(path.join(root, 'native', 'android', name), 'utf8');
   await writeFile(path.join(pluginDir, name), source.replaceAll('__APP_ID__', appId));
@@ -73,6 +74,7 @@ for (const permission of [
   'android.permission.FOREGROUND_SERVICE_DATA_SYNC',
   'android.permission.ACCESS_NETWORK_STATE',
   'android.permission.WAKE_LOCK',
+  'android.permission.SYSTEM_ALERT_WINDOW',
 ]) {
   if (!manifest.includes(permission)) {
     manifest = manifest.replace(
@@ -112,6 +114,21 @@ if (cloudMonitorPattern.test(manifest)) {
 } else {
   manifest = manifest.replace('</application>', `${cloudMonitorService}\n    </application>`);
 }
+
+// 聊天后台悬浮窗沿用现有 story installer 注入，避免再造第二套 Android 安装脚本。
+// Service 与 WebView 同进程：它的职责和 RikkaHub 的 generation FGS 一样，只保活现有生成闭包；
+// SYSTEM_ALERT_WINDOW 只控制悬浮 UI，未授权时后台生成/系统进度通知仍照常工作。
+if (!manifest.includes('android:name=".plugins.SullyChatFloatingService"')) {
+  manifest = manifest.replace('</application>', [
+    '        <service',
+    '            android:name=".plugins.SullyChatFloatingService"',
+    '            android:exported="false"',
+    '            android:stopWithTask="false"',
+    '            android:foregroundServiceType="dataSync" />',
+    '    </application>',
+  ].join('\\n'));
+}
+
 await writeFile(manifestPath, manifest);
 
 // RikkaHub 的 OpenAI streaming provider 使用 OkHttp + okhttp-sse EventSource。
@@ -133,4 +150,4 @@ for (const dependency of okHttpDependencies.slice().reverse()) {
 }
 await writeFile(gradlePath, gradle);
 
-console.log('[SullyStoryBackground] generation manager + keepalive + isolated cloud status monitor installed');
+console.log('[SullyStoryBackground] generation manager + keepalive + isolated cloud status monitor + chat floating service installed');
