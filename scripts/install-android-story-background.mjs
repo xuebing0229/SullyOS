@@ -163,6 +163,9 @@ if (!gradle.includes("apply plugin: 'kotlin-android'")) {
     "apply plugin: 'com.android.application'\napply plugin: 'kotlin-android'",
   );
 }
+if (!gradle.includes("kotlinOptions { jvmTarget = '17' }")) {
+  gradle += "\nandroid { kotlinOptions { jvmTarget = '17' } }\n";
+}
 gradle = gradle.replace(
   /^\s*implementation(?:\s*\(|\s+)\s*(?:enforcedPlatform\()?["']com\.squareup\.okhttp3:[^"']+["'][^\n]*$/gm,
   '',
