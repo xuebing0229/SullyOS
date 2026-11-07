@@ -29,6 +29,8 @@ for (const name of [
   'SullyStoryReferenceUploads.java',
   'SullyChatFloatingService.java',
   'SullyChatGenerationForegroundService.kt',
+  'SullyFloatingAppLogo.kt',
+  'SullyChatFloatingBubble.kt',
 ]) {
   const source = await readFile(path.join(root, 'native', 'android', name), 'utf8');
   await writeFile(path.join(pluginDir, name), source.replaceAll('__APP_ID__', appId));
@@ -150,8 +152,14 @@ if (!rootGradle.includes('org.jetbrains.kotlin:kotlin-gradle-plugin')) {
     /dependencies\s*\{/,
     match => `${match}\n        classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:2.2.21"`,
   );
-  await writeFile(rootGradlePath, rootGradle);
 }
+if (!rootGradle.includes('org.jetbrains.kotlin:compose-compiler-gradle-plugin')) {
+  rootGradle = rootGradle.replace(
+    /dependencies\s*\{/,
+    match => `${match}\n        classpath "org.jetbrains.kotlin:compose-compiler-gradle-plugin:2.2.21"`,
+  );
+}
+await writeFile(rootGradlePath, rootGradle);
 
 // RikkaHub 的 OpenAI streaming provider 使用 OkHttp + okhttp-sse EventSource。
 // SullyOS 当前 compileSdk=34 / AGP=8.2.1，RikkaHub 当前 5.5.0 要求 compileSdk 37。
@@ -163,8 +171,17 @@ if (!gradle.includes("apply plugin: 'kotlin-android'")) {
     "apply plugin: 'com.android.application'\napply plugin: 'kotlin-android'",
   );
 }
+if (!gradle.includes("apply plugin: 'org.jetbrains.kotlin.plugin.compose'")) {
+  gradle = gradle.replace(
+    "apply plugin: 'kotlin-android'",
+    "apply plugin: 'kotlin-android'\napply plugin: 'org.jetbrains.kotlin.plugin.compose'",
+  );
+}
 if (!gradle.includes("kotlinOptions { jvmTarget = '17' }")) {
   gradle += "\nandroid { kotlinOptions { jvmTarget = '17' } }\n";
+}
+if (!gradle.includes("buildFeatures { compose true }")) {
+  gradle += "\nandroid { buildFeatures { compose true } }\n";
 }
 gradle = gradle.replace(
   /^\s*implementation(?:\s*\(|\s+)\s*(?:enforcedPlatform\()?["']com\.squareup\.okhttp3:[^"']+["'][^\n]*$/gm,
@@ -180,7 +197,15 @@ const okHttpDependencies = [
 // 不在 SullyOS 里平行手写 WindowManager 手势实现。
 const floatingDependencies = [
   'implementation "androidx.lifecycle:lifecycle-process:2.8.7"',
+  'implementation "androidx.lifecycle:lifecycle-runtime-compose:2.11.0"',
+  'implementation platform("androidx.compose:compose-bom:2026.09.00")',
+  'implementation "androidx.compose.ui:ui"',
+  'implementation "androidx.compose.foundation:foundation"',
+  'implementation "androidx.compose.material3:material3:1.5.0-rc01"',
+  'implementation "androidx.graphics:graphics-shapes:1.1.0"',
+  'implementation "com.github.rikkahub:hugeicons-compose:1.5"',
   'implementation "io.github.petterpx:floatingx-core:3.0.0"',
+  'implementation "io.github.petterpx:floatingx-compose:3.0.0"',
   'implementation "io.github.petterpx:floatingx-system:3.0.0"',
 ];
 if (!/dependencies\s*\{/.test(gradle)) throw new Error('无法定位 android/app/build.gradle dependencies');
@@ -189,4 +214,4 @@ for (const dependency of [...okHttpDependencies, ...floatingDependencies].slice(
 }
 await writeFile(gradlePath, gradle);
 
-console.log('[SullyStoryBackground] generation manager + keepalive + isolated cloud status monitor + RikkaHub chat FGS + floating UI installed');
+console.log('[SullyStoryBackground] generation manager + keepalive + isolated cloud status monitor + RikkaHub chat FGS + copied RikkaHub floating bubble UI installed');
