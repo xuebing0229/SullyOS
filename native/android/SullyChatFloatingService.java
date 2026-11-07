@@ -192,10 +192,20 @@ public class SullyChatFloatingService extends Service {
         state.generating = true;
         state.finishedAt = 0L;
         state.success = false;
+        cancelCompletionNotification(id);
         state.error = "";
         state.title = cleanTitle(intent.getStringExtra(EXTRA_TITLE));
         state.phase = cleanPhase(intent.getStringExtra(EXTRA_PHASE));
         state.preview = cleanPreview(intent.getStringExtra(EXTRA_PREVIEW));
+        if (!"done".equals(state.phase) && !"failed".equals(state.phase)) {
+            // 原生首轮失败后 JS 可能走已有兼容重试；新的真实进度到来就把同一浮窗复活，
+            // 不创建第二个 generation。
+            state.generating = true;
+            state.success = false;
+            state.error = "";
+            state.finishedAt = 0L;
+            cancelCompletionNotification(id);
+        }
         state.updatedAt = System.currentTimeMillis();
         if (id.equals(dismissedGenerationId)) dismissedGenerationId = null;
         ensureForeground();
@@ -295,6 +305,14 @@ public class SullyChatFloatingService extends Service {
         return target;
     }
 
+    private GenerationState runningTargetState() {
+        GenerationState target = null;
+        for (Map.Entry<String, GenerationState> entry : generations.entrySet()) {
+            if (entry.getValue().generating) target = entry.getValue();
+        }
+        return target;
+    }
+
     private void maybeStopWhenEmpty() {
         if (!generations.isEmpty()) return;
         removeOverlay();
@@ -303,7 +321,7 @@ public class SullyChatFloatingService extends Service {
     }
 
     private void ensureForeground() {
-        GenerationState state = targetState();
+        GenerationState state = runningTargetState();
         if (state == null) return;
         android.app.Notification notification = buildRunningNotification(state);
         try {
@@ -326,8 +344,8 @@ public class SullyChatFloatingService extends Service {
             if (hasRunningGeneration()) ensureForeground();
             return;
         }
-        GenerationState target = targetState();
-        if (target == null || !hasRunningGeneration()) return;
+        GenerationState target = runningTargetState();
+        if (target == null) return;
         NotificationManager manager = getSystemService(NotificationManager.class);
         if (manager != null) manager.notify(FOREGROUND_NOTIFICATION_ID, buildRunningNotification(target));
     }
@@ -358,7 +376,7 @@ public class SullyChatFloatingService extends Service {
         String body = state.success
             ? state.title + " 的回复已经生成好了"
             : state.title + " 的回复生成失败" + (state.error.isEmpty() ? "" : "：" + trimForNotification(state.error));
-        int id = COMPLETE_NOTIFICATION_BASE + Math.abs(state.id.hashCode() % 500);
+        int id = completionNotificationId(state.id);
         NotificationManager manager = getSystemService(NotificationManager.class);
         if (manager != null) {
             manager.notify(id, baseBuilder(id)
@@ -370,6 +388,15 @@ public class SullyChatFloatingService extends Service {
                 .setPriority(NotificationCompat.PRIORITY_HIGH)
                 .build());
         }
+    }
+
+    private int completionNotificationId(String generationId) {
+        return COMPLETE_NOTIFICATION_BASE + Math.abs(generationId.hashCode() % 500);
+    }
+
+    private void cancelCompletionNotification(String generationId) {
+        NotificationManager manager = getSystemService(NotificationManager.class);
+        if (manager != null) manager.cancel(completionNotificationId(generationId));
     }
 
     private NotificationCompat.Builder baseBuilder(int requestCode) {
