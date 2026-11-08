@@ -4,7 +4,6 @@ import MeetingAppearanceControl from './MeetingAppearanceControl';
 import React, { useState, useRef, useEffect } from 'react';
 import { useOS } from '../../context/OSContext';
 import { CharacterProfile, SpriteConfig, SkinSet, DateStyleConfig } from '../../types';
-import { resolveElevenLabsNarratorVoiceId } from '../../utils/elevenLabsTts';
 import { processImageToBlob } from '../../utils/file';
 import { putImageBlob, useBlobRefUrl } from '../../utils/blobRef';
 import { pickDateFallbackSprite } from '../../utils/dateSprites';
@@ -36,7 +35,7 @@ const Section: React.FC<{ title: string; defaultOpen?: boolean; children: React.
 );
 
 const DateSettings: React.FC<DateSettingsProps> = ({ char, onBack }) => {
-    const { updateCharacter, addToast, userProfile, apiConfig } = useOS();
+    const { updateCharacter, addToast, userProfile } = useOS();
     const fileInputRef = useRef<HTMLInputElement>(null);
     const pageRef = useRef<HTMLDivElement>(null);
     const scrollRef = useRef<HTMLDivElement>(null);
@@ -94,7 +93,6 @@ const DateSettings: React.FC<DateSettingsProps> = ({ char, onBack }) => {
         patchStyleConfig({ extra: trimmed || undefined });
         addToast(trimmed ? '补充要求已保存' : '补充要求已清空', 'success');
     };
-    const narratorVoiceId = resolveElevenLabsNarratorVoiceId(apiConfig, char.dateStyleConfig?.broadcastNarratorVoiceId);
     const readingAppearance = meetingAppearance(char.dateAppearance);
     const userName = userProfile?.name || '用户';
     const POV_OPTIONS: { id: DateStyleConfig['pov']; label: string; example: string }[] = [
@@ -463,19 +461,6 @@ const DateSettings: React.FC<DateSettingsProps> = ({ char, onBack }) => {
                                 <div className={`absolute top-0.5 left-0.5 w-6 h-6 bg-white rounded-full shadow-md transition-transform ${styleConfig.broadcastMode ? 'translate-x-5' : 'translate-x-0.5'}`}></div>
                             </button>
                         </div>
-                        {styleConfig.broadcastMode && (
-                            <div className="mt-3">
-                                <label className="text-[11px] text-slate-500 font-bold mb-2 block">旁白 Voice ID</label>
-                                <input
-                                    type="text"
-                                    value={narratorVoiceId}
-                                    readOnly
-                                    placeholder="当前 ElevenLabs 账号预设尚未绑定旁白 Voice ID"
-                                    className="w-full px-4 py-3 bg-slate-100 rounded-xl text-sm font-mono text-slate-500 outline-none"
-                                />
-                                <p className="text-[10px] text-slate-300 mt-1">这里只显示当前 ElevenLabs 账号预设里的旁白 Voice ID；修改请到「设置 → 其他 API → ElevenLabs 账号预设」。切换账号时会和 Key、角色、User 声线一起切换。</p>
-                            </div>
-                        )}
                     </div>
 
                     {/* 自定义补充 */}
