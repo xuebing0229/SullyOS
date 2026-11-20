@@ -3848,6 +3848,25 @@ export default {
       }
     }
 
+    // ========== ElevenLabs 账号剩余额度（只读、无缓存）==========
+    if (url.pathname === '/elevenlabs/subscription') {
+      if (request.method !== 'GET') return jsonResponse({ error: 'Method not allowed' }, { status: 405, origin });
+      const apiKey = (request.headers.get('xi-api-key') || '').trim();
+      if (!apiKey) return jsonResponse({ error: 'Missing xi-api-key header' }, { status: 401, origin });
+      try {
+        const upstream = await fetch('https://api.elevenlabs.io/v1/user/subscription', {
+          method: 'GET',
+          headers: { 'xi-api-key': apiKey, 'Accept': 'application/json' },
+        });
+        const headers = new Headers(corsHeaders(origin));
+        headers.set('Content-Type', upstream.headers.get('Content-Type') || 'application/json; charset=utf-8');
+        headers.set('Cache-Control', 'no-store');
+        return new Response(await upstream.text(), { status: upstream.status, headers });
+      } catch {
+        return jsonResponse({ error: 'ElevenLabs subscription request failed' }, { status: 502, origin });
+      }
+    }
+
     // ========== ElevenLabs TTS 代理（静态部署绕 CORS，纯透传）==========
     // 前端 POST /elevenlabs/tts?voice_id=...&output_format=... + xi-api-key: <user key>
     // Worker 不记录、不持久化 Key 或待合成文本。
