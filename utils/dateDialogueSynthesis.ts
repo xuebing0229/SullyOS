@@ -2,7 +2,9 @@ import { Capacitor, CapacitorHttp } from '@capacitor/core';
 import type { APIConfig } from '../types';
 import {
   cleanTextForTtsElevenLabs,
+  ELEVENLABS_LEGACY_PRESET_ID,
   ELEVENLABS_OUTPUT_FORMAT,
+  getActiveElevenLabsAccountPreset,
   normalizeElevenLabsVoiceId,
   resolveElevenLabsApiKey,
   resolveElevenLabsModel,
@@ -10,6 +12,7 @@ import {
 } from './elevenLabsTts';
 import { getProxyWorkerUrl } from './proxyWorker';
 import { isStaticWebDeployment } from './staticWebDeployment';
+import { notifyElevenLabsUsageChanged } from './elevenLabsSubscription';
 import {
   buildDateDialogueBatch,
   buildDateForcedAlignmentTranscript,
@@ -297,6 +300,8 @@ export async function synthesizeDateDialogue(
   }
   const audio = base64ToBlob(data.audio_base64);
   if (!audio.size) throw new Error('ElevenLabs Dialogue 返回了空音频');
+  // 只在真实生成后通知；即使后续时间轴处理失败，额度也已消耗。
+  notifyElevenLabsUsageChanged(getActiveElevenLabsAccountPreset(config)?.id || ELEVENLABS_LEGACY_PRESET_ID);
 
   // 广播剧从头到尾播放同一份音频，不切片、不做 Forced Alignment。
   // 这里只取 Text-to-Dialogue 自己返回的 input 节点，供 UI 在播放时切换文本框。
