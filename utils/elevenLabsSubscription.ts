@@ -12,6 +12,10 @@ export interface ElevenLabsSubscriptionBalance {
   limit: number;
   remaining: number;
   tier: string;
+  /** 官方订阅状态；无法读取时为 null，不能推断为免费或到期。 */
+  status: string | null;
+  /** 官方是否报告有未结清账单；未提供时为 null。 */
+  hasOpenInvoices: boolean | null;
   nextResetUnix: number | null;
   overageEnabled: boolean;
 }
@@ -31,9 +35,30 @@ export function parseElevenLabsSubscriptionBalance(raw: unknown): ElevenLabsSubs
     limit: Math.trunc(limit),
     remaining: Math.max(0, Math.trunc(limit) - Math.trunc(used)),
     tier: typeof data.tier === 'string' ? data.tier : '',
+    status: typeof data.status === 'string' ? data.status : null,
+    hasOpenInvoices: typeof data.has_open_invoices === 'boolean' ? data.has_open_invoices : null,
     nextResetUnix: typeof reset === 'number' && Number.isFinite(reset) && reset > 0 ? reset : null,
     overageEnabled: data.can_extend_character_limit === true && data.max_credit_limit_extension !== 0,
   };
+}
+
+/** 只翻译服务端订阅状态；不通过重置日期推断订阅是否过期。 */
+export function getElevenLabsSubscriptionStatusLabel(status: string | null): string {
+  switch (status) {
+    case 'active': return '有效';
+    case 'trialing': return '试用中';
+    case 'past_due': return '付款逾期';
+    case 'incomplete': return '订阅未完成';
+    case 'free': return '免费账户';
+    case 'free_disabled': return '免费账户受限';
+    case null: return '官方未提供';
+    default: return '未知状态';
+  }
+}
+
+/** 重置日已过只说明官方返回了过去的时间，不能据此判定订阅已失效。 */
+export function isElevenLabsResetDatePast(nextResetUnix: number | null, nowUnix = Date.now() / 1000): boolean {
+  return nextResetUnix !== null && nextResetUnix <= nowUnix;
 }
 
 function subscriptionError(status: number): Error {
