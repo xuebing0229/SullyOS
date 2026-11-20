@@ -33,6 +33,7 @@ import {
     normalizeElevenLabsVoiceId,
     synthesizeSpeechElevenLabsDetailed,
 } from '../utils/elevenLabsTts';
+import { ELEVENLABS_USAGE_CHANGED_EVENT, fetchElevenLabsSubscriptionBalance, type ElevenLabsSubscriptionBalance } from '../utils/elevenLabsSubscription';
 import { DATE_VOICE_GUIDE } from '../utils/datePrompts';
 import { Sun, Newspaper, NotePencil, Notebook, Book, ForkKnife, Coffee, PlugsConnected } from '@phosphor-icons/react';
 import { loadMcpServers, saveMcpServers, createMcpServer, testMcpConnection, resetMcpSession, getMcpUseNativeTools, setMcpUseNativeTools, type McpServerConfig } from '../utils/mcpClient';
@@ -510,6 +511,8 @@ const ensureElevenLabsAccountPresetDrafts = (config: APIConfig): ElevenLabsAccou
   }];
 };
 
+type ElevenLabsBalanceState = { status: 'idle' | 'loading' | 'success' | 'error'; data?: ElevenLabsSubscriptionBalance; error?: string };
+
 const Settings: React.FC = () => {
   const {
       apiConfig, updateApiConfig, closeApp, availableModels, setAvailableModels,
@@ -619,6 +622,8 @@ const Settings: React.FC = () => {
   const [localElevenLabsUseSpeakerBoost, setLocalElevenLabsUseSpeakerBoost] = useState(apiConfig.elevenLabsUseSpeakerBoost === true);
   const [localElevenLabsTestVoiceId, setLocalElevenLabsTestVoiceId] = useState('');
   const [testingElevenLabs, setTestingElevenLabs] = useState(false);
+  const [elevenLabsBalance, setElevenLabsBalance] = useState<ElevenLabsBalanceState>({ status: 'idle' });
+  const elevenLabsBalanceRequestRef = useRef(0);
   // 自定义语音表演指南（留空 → 用内置默认）。按服务商分别保存。
   const [localVoicePromptMinimax, setLocalVoicePromptMinimax] = useState(apiConfig.voicePrompts?.minimax || '');
   const [localVoicePromptFish, setLocalVoicePromptFish] = useState(apiConfig.voicePrompts?.fishaudio || '');
@@ -1127,6 +1132,58 @@ const Settings: React.FC = () => {
           || null,
       [localElevenLabsPresets, localElevenLabsActivePresetId],
   );
+  const refreshElevenLabsBalance = useCallback(async (presetId: string, key: string) => {
+      const requestId = ++elevenLabsBalanceRequestRef.current;
+      if (!presetId || !key.trim()) {
+          setElevenLabsBalance({ status: 'idle' });
+          return;
+      }
+      setElevenLabsBalance({ status: 'loading' });
+      try {
+          const data = await fetchElevenLabsSubscriptionBalance(key);
+          if (requestId === elevenLabsBalanceRequestRef.current) {
+              setElevenLabsBalance({ status: 'success', data });
+          }
+      } catch (error) {
+          if (requestId === elevenLabsBalanceRequestRef.current) {
+              setElevenLabsBalance({ status: 'error', error: error instanceof Error ? error.message : '查询失败' });
+          }
+      }
+  }, []);
+
+  // 只查询所选账号；编辑 Key 时防抖，切换后丢弃旧请求。
+  useEffect(() => {
+      const presetId = selectedElevenLabsPreset?.id || '';
+      const key = selectedElevenLabsPreset?.apiKey || '';
+      if (!presetId || !key.trim()) {
+          ++elevenLabsBalanceRequestRef.current;
+          setElevenLabsBalance({ status: 'idle' });
+          return;
+      }
+      const timer = setTimeout(() => { void refreshElevenLabsBalance(presetId, key); }, 500);
+      return () => {
+          clearTimeout(timer);
+          ++elevenLabsBalanceRequestRef.current;
+      };
+  }, [selectedElevenLabsPreset?.id, selectedElevenLabsPreset?.apiKey, refreshElevenLabsBalance]);
+
+  // 合成成功通知合并到一次查询，不持续轮询。
+  useEffect(() => {
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      const presetId = selectedElevenLabsPreset?.id;
+      const key = selectedElevenLabsPreset?.apiKey;
+      const onUsageChanged = (event: Event) => {
+          if ((event as CustomEvent<{ presetId?: string }>).detail?.presetId !== presetId || !key || !presetId) return;
+          if (timer) clearTimeout(timer);
+          timer = setTimeout(() => { void refreshElevenLabsBalance(presetId, key); }, 1800);
+      };
+      window.addEventListener(ELEVENLABS_USAGE_CHANGED_EVENT, onUsageChanged);
+      return () => {
+          window.removeEventListener(ELEVENLABS_USAGE_CHANGED_EVENT, onUsageChanged);
+          if (timer) clearTimeout(timer);
+      };
+  }, [selectedElevenLabsPreset?.id, selectedElevenLabsPreset?.apiKey, refreshElevenLabsBalance]);
+
   const selectedElevenLabsCharacter = useMemo(
       () => characters.find(char => char.id === localElevenLabsCharacterId) || null,
       [characters, localElevenLabsCharacterId],
@@ -1727,6 +1784,7 @@ const Settings: React.FC = () => {
       setLocalElevenLabsPresets(materialized);
       setLocalElevenLabsActivePresetId(next.id);
       setLocalElevenLabsKey(next.apiKey || '');
+      setElevenLabsBalance({ status: 'idle' });
       updateApiConfig(buildOtherApiConfig({
           elevenLabsAccountPresets: materialized,
           activeElevenLabsAccountPresetId: next.id,
@@ -1832,6 +1890,7 @@ const Settings: React.FC = () => {
       audio.onended = releasePreviewUrl;
       audio.onerror = releasePreviewUrl;
       await audio.play();
+      if (selectedElevenLabsPreset) void refreshElevenLabsBalance(selectedElevenLabsPreset.id, localElevenLabsKey);
       addToast('ElevenLabs 测试语音已开始播放', 'success');
     } catch (error) {
       releasePreviewUrl();
@@ -3628,12 +3687,49 @@ const Settings: React.FC = () => {
                                         onChange={(e) => {
                                             const value = e.target.value;
                                             setLocalElevenLabsKey(value);
+                                            setElevenLabsBalance({ status: 'idle' });
                                             updateSelectedElevenLabsPreset(preset => ({ ...preset, apiKey: value }));
                                         }}
                                         placeholder="ElevenLabs API Key"
                                         className="w-full bg-white border border-slate-200 rounded-xl px-4 py-2.5 text-sm font-mono"
                                     />
                                 </label>
+
+                                 <div className="rounded-xl border border-violet-200/60 bg-white/80 px-3 py-2.5 space-y-2">
+                                     <div className="flex items-center justify-between gap-2">
+                                         <span className="text-[11px] font-semibold text-slate-600">账号剩余额度</span>
+                                         <button type="button"
+                                             onClick={() => void refreshElevenLabsBalance(selectedElevenLabsPreset.id, localElevenLabsKey)}
+                                             disabled={!localElevenLabsKey.trim() || elevenLabsBalance.status === 'loading'}
+                                             className="text-[10px] font-semibold text-violet-600 disabled:opacity-40">
+                                             {elevenLabsBalance.status === 'loading' ? '查询中…' : '↻ 刷新'}
+                                         </button>
+                                     </div>
+                                     {elevenLabsBalance.status === 'success' && elevenLabsBalance.data ? (
+                                         <>
+                                             <p className="text-sm font-semibold text-violet-700 tabular-nums">
+                                                 {elevenLabsBalance.data.remaining.toLocaleString('zh-CN')}
+                                                 <span className="text-[10px] font-normal text-slate-400"> / {elevenLabsBalance.data.limit.toLocaleString('zh-CN')} 额度</span>
+                                             </p>
+                                             <div className="h-1.5 rounded-full overflow-hidden bg-violet-100">
+                                                 <div className="h-full bg-violet-400 rounded-full"
+                                                     style={{ width: (elevenLabsBalance.data.limit > 0 ? Math.min(100, elevenLabsBalance.data.remaining / elevenLabsBalance.data.limit * 100) : 0) + '%' }} />
+                                             </div>
+                                             <p className="text-[10px] text-slate-400 leading-relaxed">
+                                                 已使用 {elevenLabsBalance.data.used.toLocaleString('zh-CN')}
+                                                 {elevenLabsBalance.data.tier ? ' · ' + elevenLabsBalance.data.tier : ''}
+                                                 {elevenLabsBalance.data.nextResetUnix ? ' · 下次重置 ' + new Date(elevenLabsBalance.data.nextResetUnix * 1000).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : ''}
+                                                 {elevenLabsBalance.data.overageEnabled ? ' · 可能允许额外付费额度' : ''}
+                                             </p>
+                                         </>
+                                     ) : (
+                                         <p className={'text-[10px] leading-relaxed ' + (elevenLabsBalance.status === 'error' ? 'text-amber-600' : 'text-slate-400')}>
+                                             {elevenLabsBalance.status === 'error' ? elevenLabsBalance.error
+                                               : elevenLabsBalance.status === 'loading' ? '正在读取官方订阅信息…'
+                                               : '填写 API Key 后自动查询，不消耗语音额度'}
+                                         </p>
+                                     )}
+                                 </div>
 
                                 <label className="block">
                                     <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 block">我的 Voice ID</span>

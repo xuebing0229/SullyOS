@@ -13,6 +13,7 @@ import type { TtsResult } from './minimaxTts';
 import { normalizeVoiceTags } from './sanitize';
 import { getProxyWorkerUrl } from './proxyWorker';
 import { isStaticWebDeployment } from './staticWebDeployment';
+import { notifyElevenLabsUsageChanged } from './elevenLabsSubscription';
 
 export const DEFAULT_ELEVENLABS_MODEL = 'eleven_v4';
 export const ELEVENLABS_OUTPUT_FORMAT = 'mp3_44100_128';
@@ -449,6 +450,7 @@ export async function synthesizeSpeechElevenLabsDetailed(
     language_code: payload.language_code || 'auto',
   });
   const blob = await elevenLabsFetchAudio(voiceId, apiKey, payload);
+  notifyElevenLabsUsageChanged(getActiveElevenLabsAccountPreset(apiConfig)?.id || ELEVENLABS_LEGACY_PRESET_ID);
   saveCachedTts(cacheKey, blob).catch(() => { /* cache failure must not block playback */ });
   return { url: URL.createObjectURL(blob), blob };
 }
