@@ -51,8 +51,10 @@ jobs:
           utils/meetingCg.test.ts
           utils/elevenLabsTts.test.ts
           utils/elevenLabsAccountPresetRouting.test.ts
+          utils/elevenLabsSubscription.test.ts
           utils/voiceAsset.test.ts
           worker/elevenLabsDialogueProxy.test.ts
+          worker/elevenLabsSubscriptionProxy.test.ts
 
       - name: Check TypeScript types
         run: pnpm exec tsc --noEmit
