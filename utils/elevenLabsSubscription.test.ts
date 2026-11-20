@@ -44,14 +44,20 @@ describe('ElevenLabs subscription balance', () => {
   });
 
   it('publishes only the account preset ID', () => {
-    const listener = vi.fn();
-    window.addEventListener(ELEVENLABS_USAGE_CHANGED_EVENT, listener);
-    try {
-      notifyElevenLabsUsageChanged('account-b');
-      expect(listener).toHaveBeenCalledTimes(1);
-      expect(listener.mock.calls[0][0].detail).toEqual({ presetId: 'account-b' });
-    } finally {
-      window.removeEventListener(ELEVENLABS_USAGE_CHANGED_EVENT, listener);
-    }
+    // The repository uses Vitest's node environment, not jsdom.
+    const dispatchEvent = vi.fn();
+    vi.stubGlobal('window', { dispatchEvent });
+    vi.stubGlobal('CustomEvent', class {
+      type: string;
+      detail: unknown;
+      constructor(type: string, init: { detail: unknown }) {
+        this.type = type;
+        this.detail = init.detail;
+      }
+    });
+    notifyElevenLabsUsageChanged('account-b');
+    expect(dispatchEvent).toHaveBeenCalledTimes(1);
+    expect(dispatchEvent.mock.calls[0][0].type).toBe(ELEVENLABS_USAGE_CHANGED_EVENT);
+    expect(dispatchEvent.mock.calls[0][0].detail).toEqual({ presetId: 'account-b' });
   });
 });
