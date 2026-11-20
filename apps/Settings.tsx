@@ -33,7 +33,7 @@ import {
     normalizeElevenLabsVoiceId,
     synthesizeSpeechElevenLabsDetailed,
 } from '../utils/elevenLabsTts';
-import { ELEVENLABS_USAGE_CHANGED_EVENT, fetchElevenLabsSubscriptionBalance, type ElevenLabsSubscriptionBalance } from '../utils/elevenLabsSubscription';
+import { ELEVENLABS_USAGE_CHANGED_EVENT, fetchElevenLabsSubscriptionBalance, getElevenLabsSubscriptionStatusLabel, isElevenLabsResetDatePast, type ElevenLabsSubscriptionBalance } from '../utils/elevenLabsSubscription';
 import { DATE_VOICE_GUIDE } from '../utils/datePrompts';
 import { Sun, Newspaper, NotePencil, Notebook, Book, ForkKnife, Coffee, PlugsConnected } from '@phosphor-icons/react';
 import { loadMcpServers, saveMcpServers, createMcpServer, testMcpConnection, resetMcpSession, getMcpUseNativeTools, setMcpUseNativeTools, type McpServerConfig } from '../utils/mcpClient';
@@ -3718,8 +3718,23 @@ const Settings: React.FC = () => {
                                              <p className="text-[10px] text-slate-400 leading-relaxed">
                                                  已使用 {elevenLabsBalance.data.used.toLocaleString('zh-CN')}
                                                  {elevenLabsBalance.data.tier ? ' · ' + elevenLabsBalance.data.tier : ''}
-                                                 {elevenLabsBalance.data.nextResetUnix ? ' · 下次重置 ' + new Date(elevenLabsBalance.data.nextResetUnix * 1000).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : ''}
                                                  {elevenLabsBalance.data.overageEnabled ? ' · 可能允许额外付费额度' : ''}
+                                             </p>
+                                             <p className="text-[10px] text-slate-500 leading-relaxed">
+                                                 订阅状态：
+                                                 <span className={['past_due', 'incomplete', 'free_disabled'].includes(elevenLabsBalance.data.status || '')
+                                                     ? 'font-semibold text-amber-600' : 'font-semibold'}>
+                                                     {getElevenLabsSubscriptionStatusLabel(elevenLabsBalance.data.status)}
+                                                 </span>
+                                                 {elevenLabsBalance.data.hasOpenInvoices === true ? ' · 存在未结清账单' : ''}
+                                             </p>
+                                             <p className="text-[10px] text-slate-400 leading-relaxed">
+                                                 {elevenLabsBalance.data.nextResetUnix
+                                                     ? (isElevenLabsResetDatePast(elevenLabsBalance.data.nextResetUnix)
+                                                         ? '官方返回的重置时间：' : '下次重置 ')
+                                                         + new Date(elevenLabsBalance.data.nextResetUnix * 1000).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+                                                         + (isElevenLabsResetDatePast(elevenLabsBalance.data.nextResetUnix) ? '（日期已过，不能据此判断订阅过期）' : '')
+                                                     : '官方未提供下次重置时间'}
                                              </p>
                                          </>
                                      ) : (
