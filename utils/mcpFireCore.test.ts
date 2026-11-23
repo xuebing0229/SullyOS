@@ -420,6 +420,42 @@ describe('extractTextFakedMcpCalls 的 mcp__ 前缀兼容', () => {
             expect(calls[0]).toMatchObject({ exposedName: 'get_weather', args: { city: '北京' } });
         }
     });
+
+    it('NovelAI 画师串中的半角括号与转义引号不会截断 JSON 工具参数', () => {
+        const imageMap = buildMcpNameMap([srv({
+            tools: [{
+                name: 'novelai_generate_image',
+                inputSchema: { type: 'object', properties: {
+                    prompt: { type: 'string' },
+                    negative_prompt: { type: 'string' },
+                } },
+            }],
+        })]);
+        const prompt = '1.2::kiki_(re_6xxx)_, artist:gaoo (frpjx283), "gently (smiling)"';
+        const negative = 'bad (eyes)';
+        const content = '我来画。\nmcp__novelai_generate_image('
+            + JSON.stringify({ prompt, negative_prompt: negative })
+            + ')\n完成后给你看';
+        const calls = extractTextFakedMcpCalls(content, imageMap, withPrefix);
+        expect(calls).toHaveLength(1);
+        expect(calls[0].args).toEqual({ prompt, negative_prompt: negative });
+        expect(calls[0].matched).toContain('artist:gaoo (frpjx283)');
+        expect(calls[0].matched.endsWith('})')).toBe(true);
+        expect(stripTextFakedMcpCalls(content, calls)).toBe('我来画。\n\n完成后给你看');
+    });
+
+    it('未闭合的括号调用不截取半截参数，也不吞并后续有效调用', () => {
+        const incomplete = 'get_weather({"city":"上海 (黄浦)"';
+        expect(extractTextFakedMcpCalls(incomplete, map, withPrefix)).toEqual([]);
+        const calls = extractTextFakedMcpCalls(
+            incomplete + '\nget_weather({"city":"北京 (朝阳)"})',
+            map,
+            withPrefix,
+        );
+        expect(calls).toHaveLength(1);
+        expect(calls[0].args).toEqual({ city: '北京 (朝阳)' });
+    });
+
 });
 
 describe('叶子纪律', () => {

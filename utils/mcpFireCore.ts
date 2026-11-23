@@ -159,6 +159,52 @@ export const stripTextFakedMcpCalls = (content: string, calls: Array<{ matched: 
 
 const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
 
+/** 完整匹配工具调用的最外层括号，忽略引号内的半角括号及转义引号。 */
+export interface McpParenthesizedCallMatch {
+    matched: string;
+    inner: string;
+    index: number;
+}
+
+export const matchMcpParenthesizedCalls = (
+    content: string,
+    toolName: string,
+): McpParenthesizedCallMatch[] => {
+    const startRe = new RegExp('(^|[^\\w./])' + escapeRegExp(toolName) + '\\s*\\(', 'g');
+    const calls: McpParenthesizedCallMatch[] = [];
+    let start: RegExpExecArray | null;
+    while ((start = startRe.exec(content)) !== null) {
+        const open = start.index + start[0].length - 1;
+        let depth = 1;
+        let quote = '';
+        let escaped = false;
+        for (let i = open + 1; i < content.length; i++) {
+            const ch = content[i];
+            if (quote) {
+                if (escaped) { escaped = false; continue; }
+                if (ch === '\\') { escaped = true; continue; }
+                if (ch === quote) quote = '';
+                continue;
+            }
+            if (ch === '"' || ch === "'" || ch === '\x60') { quote = ch; continue; }
+            if (ch === '(') depth++;
+            else if (ch === ')' && --depth === 0) {
+                const index = start.index + start[1].length;
+                calls.push({
+                    matched: content.slice(index, i + 1),
+                    inner: content.slice(open + 1, i),
+                    index,
+                });
+                startRe.lastIndex = i + 1;
+                break;
+            }
+        }
+        // 括号未闭合就忽略该候选，绝不把 JSON 的半截当作可执行工具参数。
+    }
+    return calls;
+};
+
+
 const stripQuotes = (s: string): string => {
     const t = s.trim();
     const m = t.match(/^(['"`「『])([\s\S]*)(['"`」』])$/);
@@ -272,9 +318,8 @@ export const extractTextFakedMcpCalls = <S extends McpFireServer>(
         const esc = escapeRegExp(name);
 
         // 形态1: name(args) —— 前面不能是单词字符/点/斜杠（防止匹配到更长标识符的一部分）
-        const parenRe = new RegExp(`(^|[^\\w./])${esc}\\s*\\(([^)]*)\\)`, 'g');
-        for (const m of content.matchAll(parenRe)) {
-            const matched = m[0].slice(m[1].length);
+        for (const call of matchMcpParenthesizedCalls(content, name)) {
+            const { matched } = call;
             const key = `${exposed}|${matched}`;
             if (seen.has(key)) continue;
             seen.add(key);
@@ -282,9 +327,9 @@ export const extractTextFakedMcpCalls = <S extends McpFireServer>(
                 exposedName: exposed,
                 server: hit.server,
                 toolName: hit.toolName,
-                args: parseFakedArgs(m[2], schema),
+                args: parseFakedArgs(call.inner, schema),
                 matched,
-                index: (m.index ?? 0) + m[1].length,
+                index: call.index,
             });
         }
 

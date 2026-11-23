@@ -10,6 +10,7 @@
  */
 
 import { getEnabledMcpServers, type McpServerConfig, type McpToolDef, type McpToolResult } from './mcpClient';
+import { matchMcpParenthesizedCalls } from './mcpFireCore';
 import { resolveMcpExecutionPolicy, type McpExecutionPolicy } from './mcpExecutionPolicy';
 import { augmentImageToolSchema } from './imageToolPostAction';
 import {
@@ -563,9 +564,8 @@ export const extractTextFakedMcpCalls = (
         const esc = escapeRegExp(name);
 
         // 形态1: name(args) —— 前面不能是单词字符/点/斜杠（防止匹配到更长标识符的一部分）
-        const parenRe = new RegExp(`(^|[^\\w./])${esc}\\s*\\(([^)]*)\\)`, 'g');
-        for (const m of content.matchAll(parenRe)) {
-            const matched = m[0].slice(m[1].length);
+        for (const call of matchMcpParenthesizedCalls(content, name)) {
+            const { matched } = call;
             const key = `${exposed}|${matched}`;
             if (seen.has(key)) continue;
             seen.add(key);
@@ -574,9 +574,9 @@ export const extractTextFakedMcpCalls = (
                 server: hit.server,
                 toolName: hit.toolName,
                 executionPolicy: hit.executionPolicy,
-                args: parseFakedArgs(m[2], schema),
+                args: parseFakedArgs(call.inner, schema),
                 matched,
-                index: (m.index ?? 0) + m[1].length,
+                index: call.index,
             });
         }
 
