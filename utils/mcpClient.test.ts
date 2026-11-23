@@ -406,6 +406,25 @@ describe('extractTextFakedMcpCalls（掉格式容错）', () => {
         expect(extractTextFakedMcpCalls('ask_question(question="SullyOS", lang=zh)', resolve)[0].args).toEqual({ question: 'SullyOS', lang: 'zh' });
     });
 
+    it('文字兼容模式保留括号中的 NovelAI 画师串、转义引号和完整 JSON', async () => {
+        const { extractTextFakedMcpCalls } = await import('./mcpToolBridge');
+        const resolve = setup();
+        const question = '1.2::kiki_(re_6xxx)_, artist:gaoo (frpjx283), "smile (soft)"';
+        const raw = '准备生成\nask_question(' + JSON.stringify({ question, lang: 'zh' }) + ')\n继续';
+        const calls = extractTextFakedMcpCalls(raw, resolve);
+        expect(calls).toHaveLength(1);
+        expect(calls[0].args).toEqual({ question, lang: 'zh' });
+        expect(calls[0].matched).toContain('artist:gaoo (frpjx283)');
+        expect(stripTextFakedMcpCalls(raw, calls)).toBe('准备生成\n\n继续');
+
+        const kwargs = extractTextFakedMcpCalls('ask_question(question="artist (frpjx283)", lang=zh)', resolve);
+        expect(kwargs).toHaveLength(1);
+        expect(kwargs[0].args).toEqual({ question: 'artist (frpjx283)', lang: 'zh' });
+
+        expect(extractTextFakedMcpCalls('ask_question({"question":"artist (broken)"', resolve)).toEqual([]);
+    });
+
+
     it('冒号传参(整行) + 尾部标点剥离 + 数字按 schema 转型', async () => {
         const { extractTextFakedMcpCalls } = await import('./mcpToolBridge');
         const resolve = setup();
